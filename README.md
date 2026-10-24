@@ -207,10 +207,12 @@ Each exchange can run either the fixed DCA strategy or the adaptive regime strat
 | `kFactor` | ATR multiplier for interval scaling |
 | `minIntervalMs` / `maxIntervalMs` | Bounds for adaptive trade interval |
 | `tpMinPercent` / `tpMaxPercent` | Take-profit range |
-| `holdbackRatio` | Fraction of each buy kept as reserves |
+| `holdbackRatio` | Base share of gross TP profit allocated to retained asset (0–1, default 0.5); tier-adjusted and capped at 0.95 |
 | `maxUsdcDeployed` | Maximum capital deployed at once |
 | `maxAssetExposure` | Maximum base asset exposure (0 = uncapped) |
 | `ladderSizeMode` | Ladder sizing: `flat`, `linear`, `sqrt`, `fibonacci` |
+
+For regime `holdbackRatio`, gross TP profit is position quantity × (target price − average cost). The engine multiplies the configured ratio by the body tier’s `holdbackScale`, caps the effective share at 0.95, and converts that share of profit to asset at the target price; the rest of the position is sized for sale. For example, with 0.01 BTC at an average cost of $100,000/BTC, a target of $110,000/BTC, ratio 0.5 and tier scale 1, gross profit is $100: $50 represents about 0.00045455 BTC of retained value, leaving about 0.00954545 BTC to sell (about 4.55% retained). This illustration excludes fees and rounds quantities to eight decimals; actual placement also applies quantity rounding, a minimum holdback, fee floors and exchange minimums. It is not a guaranteed net return. Simple DCA’s separate `holdbackPercent` setting retains its own meaning.
 
 ## Usage
 

@@ -880,22 +880,14 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
                 <FormInput label="TP Multiplier" hint="ATR-based TP scaling factor" value={regimeConfig.tpMult || 1.0} onChange={(v) => handleRegimeChange('tpMult', v)} type="number" />
                 <FormInput label="TP Min %" hint="Floor for take-profit percentage" value={regimeConfig.tpMinPercent || 2.0} onChange={(v) => handleRegimeChange('tpMinPercent', v)} type="number" />
                 <FormInput label="TP Max %" hint="Ceiling for take-profit percentage" value={regimeConfig.tpMaxPercent || 15.0} onChange={(v) => handleRegimeChange('tpMaxPercent', v)} type="number" />
-                <FormInput label="Holdback Ratio" hint="Fraction of position to keep as asset (0-1)" value={regimeConfig.holdbackRatio ?? 0.5} onChange={(v) => handleRegimeChange('holdbackRatio', v)} type="number" />
+                <FormInput label="Holdback Ratio" hint="Base share of gross TP profit allocated to retained asset (0-1)" value={regimeConfig.holdbackRatio ?? 0.5} onChange={(v) => handleRegimeChange('holdbackRatio', v)} type="number" />
               </div>
-              {(() => {
-                const holdbackRatio = regimeConfig.holdbackRatio ?? 0.5;
-                const sellRatio = 1 - holdbackRatio;
-                const tpMin = regimeConfig.tpMinPercent || 0.1;
-                const usdcProfitPct = (sellRatio * tpMin).toFixed(2);
-                const assetProfitPct = (holdbackRatio * tpMin).toFixed(2);
-
-                return (
-                  <div className="mt-2 text-xs text-gray-400">
-                    Sell <span className="text-white font-medium">{(sellRatio * 100).toFixed(0)}%</span>, hold <span className="text-white font-medium">{(holdbackRatio * 100).toFixed(0)}%</span> of position.
-                    {' '}At min TP ({tpMin}%): <span className="text-green-400">+{usdcProfitPct}% {quoteCurrency}</span>, <span className="text-blue-400">+{assetProfitPct}% {baseCurrency} value</span>
-                  </div>
-                );
-              })()}
+              <div className="mt-2 text-xs text-gray-400">
+                Base allocation: <span className="text-white font-medium">{((regimeConfig.holdbackRatio ?? 0.5) * 100).toFixed(0)}%</span> of gross TP profit to retained {baseCurrency}, valued at the target price.
+                {' '}The body tier multiplies this ratio; the effective profit share is capped at 95%.
+                {' '}Example: 0.01 BTC at $100,000/BTC targeting $110,000/BTC, with ratio 0.5 and tier scale 1, has $100 gross profit. Allocating $50 to retained BTC leaves about 0.00045455 BTC (4.55% of the position), with about 0.00954545 BTC to sell.
+                {' '}This example excludes fees and rounds quantities to eight decimals. Actual placement also applies quantity rounding, a minimum holdback, fee floors and exchange minimums; net returns are not guaranteed.
+              </div>
             </SectionCard>
 
             {/* Regime Detection */}
