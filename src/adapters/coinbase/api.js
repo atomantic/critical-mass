@@ -34,6 +34,7 @@ const HTTP_RETRY_CEILING_MS = 10000;
 const RETRYABLE_HTTP_STATUSES = new Set([429, 502, 503, 504]);
 // Returned from the deadline-scoped request body to ask the attempt loop to retry.
 const HTTP_RETRY = Symbol('coinbase-http-retry');
+const CLIENT_ORDER_LOOKUP_MAX_PAGES = 64;
 
 /**
  * Parse a Retry-After header (delta-seconds or HTTP date) to milliseconds.
@@ -537,9 +538,9 @@ const createCoinbaseAdapter = (keysPath = null, { sleep = defaultSleep, random =
    * Used to reconcile an ambiguous 'unknown' placement outcome (issue #226): a
    * network error after the order POST may have reached the matching engine, so
    * before re-placing we look for an order carrying the client_order_id we sent.
-   * Scans recent history (scoped to productId when provided) and normalizes the
-   * match into the same shape as getOrder. Returns null when no such order
-   * exists — i.e. the placement genuinely never landed and is safe to re-place.
+   * Scans paginated history (scoped to productId when provided) and normalizes
+   * the match into the same shape as getOrder. Only a completed scan returns
+   * null; incomplete or malformed history throws so callers retain ownership.
    * @param {string} clientOrderId - Deterministic client order ID we submitted
    * @param {string|null} [productId] - Optional product to scope the lookup
    * @returns {Promise<OrderDetails|null>} Normalized order details, or null if absent
@@ -550,10 +551,33 @@ const createCoinbaseAdapter = (keysPath = null, { sleep = defaultSleep, random =
     const params = productId
       ? `?product_ids=${encodeURIComponent(productId)}&limit=100`
       : '?limit=100';
-    const data = await makeRequest('GET', `/api/v3/brokerage/orders/historical/batch${params}`);
-
-    const match = (data.orders || []).find(o => o.client_order_id === clientOrderId);
-    if (!match) return null;
+    let cursor = null;
+    const seenCursors = new Set();
+    let match;
+    for (let page = 0; page < CLIENT_ORDER_LOOKUP_MAX_PAGES; page++) {
+      const continuation = cursor === null ? '' : `&cursor=${encodeURIComponent(cursor)}`;
+      let data;
+      try {
+        data = await makeRequest('GET', `/api/v3/brokerage/orders/historical/batch${params}${continuation}`);
+      } catch (err) {
+        throw new Error(`Coinbase client order lookup inconclusive: ${err.message}`, { cause: err });
+      }
+      if (!data || !Array.isArray(data.orders) || typeof data.has_next !== 'boolean'
+        || data.orders.some(order => !order || typeof order !== 'object' || Array.isArray(order))) {
+        throw new Error('Coinbase client order lookup inconclusive: malformed history page');
+      }
+      match = data.orders.find(order => order.client_order_id === clientOrderId);
+      if (match) break;
+      if (!data.has_next) return null;
+      if (typeof data.cursor !== 'string' || !data.cursor.trim() || seenCursors.has(data.cursor)) {
+        throw new Error('Coinbase client order lookup inconclusive: missing or repeated history cursor');
+      }
+      seenCursors.add(data.cursor);
+      cursor = data.cursor;
+    }
+    if (!match) {
+      throw new Error(`Coinbase client order lookup inconclusive: exceeded ${CLIENT_ORDER_LOOKUP_MAX_PAGES}-page history budget`);
+    }
 
     return {
       orderId: match.order_id,
