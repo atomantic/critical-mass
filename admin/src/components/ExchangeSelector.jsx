@@ -1,5 +1,5 @@
 import Button from './ui/Button'
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useLayoutEffect, useRef } from 'react'
 import { EXCHANGE_ICONS, EXCHANGE_COLORS } from './exchangeStyles'
 
 // Get engine status for an exchange
@@ -41,6 +41,46 @@ const getEngineStatus = (exchange) => {
 function ExchangeSelector({ currentExchange, currentPair, exchanges, onChange, onRefresh, onAddFund }) {
   const [isOpen, setIsOpen] = useState(false)
   const triggerRef = useRef(null)
+  const [popupStyle, setPopupStyle] = useState({})
+
+  // Fixed positioning uses the visible viewport on both mobile and desktop.
+  // Keep the whole popup scrollable so footer actions remain reachable too.
+  useLayoutEffect(() => {
+    if (!isOpen) return
+    const viewport = window.visualViewport
+    const updateBounds = () => {
+      const trigger = triggerRef.current?.getBoundingClientRect()
+      if (!trigger) return
+      const leftEdge = viewport?.offsetLeft || 0
+      const topEdge = viewport?.offsetTop || 0
+      const viewportWidth = viewport?.width ?? window.innerWidth
+      const viewportHeight = viewport?.height ?? window.innerHeight
+      const margin = Math.min(16, viewportWidth / 4, viewportHeight / 4)
+      const availableWidth = viewportWidth - margin * 2
+      const width = viewportWidth >= 768 ? Math.min(320, availableWidth) : availableWidth
+      const bottomEdge = topEdge + viewportHeight - margin
+      // Leave enough space to browse when the trigger is near the bottom.
+      const minimumBrowseHeight = Math.min(160, viewportHeight - margin * 2)
+      const top = Math.max(topEdge + margin, Math.min(trigger.bottom + 8, bottomEdge - minimumBrowseHeight))
+      setPopupStyle({
+        top,
+        left: Math.max(leftEdge + margin, Math.min(trigger.right - width, leftEdge + viewportWidth - margin - width)),
+        width,
+        maxHeight: Math.max(0, bottomEdge - top),
+      })
+    }
+    updateBounds()
+    window.addEventListener('resize', updateBounds)
+    window.addEventListener('scroll', updateBounds, true)
+    viewport?.addEventListener('resize', updateBounds)
+    viewport?.addEventListener('scroll', updateBounds)
+    return () => {
+      window.removeEventListener('resize', updateBounds)
+      window.removeEventListener('scroll', updateBounds, true)
+      viewport?.removeEventListener('resize', updateBounds)
+      viewport?.removeEventListener('scroll', updateBounds)
+    }
+  }, [isOpen])
 
   const handleKeyDown = (event) => {
     if (event.key === 'Escape') {
@@ -109,7 +149,7 @@ function ExchangeSelector({ currentExchange, currentPair, exchanges, onChange, o
       </button>
 
       {isOpen && (
-        <div id="exchange-selector-options" className="fixed left-4 right-4 md:absolute md:left-auto md:right-0 mt-2 md:w-80 bg-gray-800 border border-gray-700 rounded-lg shadow-lg z-50">
+        <div id="exchange-selector-options" style={popupStyle} className="fixed overflow-y-auto overscroll-contain bg-gray-800 border border-gray-700 rounded-lg shadow-lg z-50">
           <div className="p-2">
             <div className="text-xs text-gray-400 uppercase tracking-wider px-2 py-1">Select Exchange & Pair</div>
 
