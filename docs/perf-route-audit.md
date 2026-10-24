@@ -13,12 +13,16 @@ always reports **UNVERIFIED** rather than passing the 60-second performance requ
 
 The runner builds a temporary copy of the actual UI, starts the actual gateway on an ephemeral loopback
 port, and connects three real engine IPC servers with synthetic read handlers and telemetry. It generates
-30,000 fills, including oversized detail metadata, and four funds (including two on one exchange). Files,
+30,000 schema-valid fills per fund, including unique trade IDs, numeric timestamps and oversized detail
+metadata, loaded by the real ledger reader from each temporary fund namespace, and four funds (including two on one exchange). Files,
 auth hashes and the dedicated Chrome profile live in external OS temporary storage. No source configuration,
 keys, operator browser profiles, live services or production state are used. The gateway child receives an
-allowlist of environment variables, no credentials; public candle seeding and prediction startup are disabled,
+allowlist of environment variables and a generated fixture-only IPC secret, no caller credentials; public candle seeding and prediction startup are disabled,
 and outbound gateway HTTP is refused except its fixture IPC ports. Only fixture processes are stopped, with
 a bounded forced termination fallback, and storage is removed on success or failure.
+
+Enrollment consumes only the bootstrap credential generated in the temporary installation; no bootstrap
+secret or password is inherited from the caller. Aggregate reads use the actual fill aggregate view.
 
 The browser uses the real operator sign-in form with a randomly generated fixture-only password. After
 sign-in, a cache-disabled cold Transactions navigation measures time until 100 real DOM rows and pagination

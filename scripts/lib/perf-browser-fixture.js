@@ -62,19 +62,34 @@ async function startBrowserFixture() {
     fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify(config));
     fs.mkdirSync(path.join(dir, 'data'));
     const ledger = syntheticFills(30000).map(fill => ({ ...fill, rawExchangeResponse: 'synthetic-detail-only'.repeat(10) }));
-    fs.writeFileSync(path.join(dir, 'data/fill-ledger.json'), JSON.stringify(ledger));
     require(path.join(dir, 'src/logger')).createContextLogger = () => ({ info() {}, warn() {}, error() {} });
     const { createIPCServer } = require(path.join(dir, 'src/ipc/ipc-server'));
     const { createTransactionsReadView } = require(path.join(dir, 'src/transactions-regime-query'));
+    const { createFillLedger } = require(path.join(dir, 'src/fill-ledger'));
+    const { resolveFundPath, withFundDataDirOverride } = require(path.join(dir, 'src/migration'));
+    const views = new Map();
+    const storedRows = new Map();
+    for (const [exchange, pair] of FUNDS) {
+      const fundDir = resolveFundPath(path.join(dir, 'data', exchange), pair);
+      fs.mkdirSync(fundDir, { recursive: true });
+      fs.writeFileSync(path.join(fundDir, 'fill-ledger.json'), JSON.stringify(ledger));
+      // Read the stored schema, not an in-memory stub that can conceal drift.
+      const stored = createFillLedger(exchange, pair, pair, { quiet: true });
+      withFundDataDirOverride(exchange, pair, fundDir, () => stored.load());
+      storedRows.set(`${exchange}:${pair}`, stored.getAllFills());
+      views.set(`${exchange}:${pair}`, createTransactionsReadView(() => stored.getAllFills(), () => 'synthetic-1'));
+    }
     const { createRealtimeProxy } = require(path.join(dir, 'src/ipc/realtime-proxy'));
-    const env = childEnv();
+    const ipcSecret = require('node:crypto').randomBytes(32).toString('hex');
+    const env = { ...childEnv(), CRITICAL_MASS_IPC_SECRET: ipcSecret };
     for (const exchange of ['coinbase', 'gemini', 'cryptocom']) {
       const port = await freePort();
       env[`${exchange.toUpperCase()}_IPC_PORT`] = String(port);
-      const engine = createIPCServer(port, `perf-${exchange}`);
+      const engine = createIPCServer(port, `perf-${exchange}`, { secret: ipcSecret });
       engines.push(engine);
-      const view = createTransactionsReadView(() => ledger, () => 'synthetic-1');
-      engine.onRequest('regime:fills', query => query.paged ? view.query(query) : ({ fills: ledger }));
+      const viewFor = pair => views.get(`${exchange}:${pair || FUNDS.find(fund => fund[0] === exchange)[1]}`);
+      engine.onRequest('regime:fills', (query, _exchange, pair) => query.paged ? viewFor(pair).query(query) : ({ fills: storedRows.get(`${exchange}:${pair || FUNDS.find(fund => fund[0] === exchange)[1]}`) }));
+      engine.onRequest('regime:fills:cycles', (_query, _exchange, pair) => viewFor(pair).aggregates());
       engine.onRequest('regime:status', () => ({ success: true, status: { running: false, isDryRun: true, market: { lastPrice: 50000 }, health: { mode: 'STOPPED' }, position: {} } }));
       engine.onRequest('regime:open-orders', () => ({ success: true, orders: [] }));
       engine.onRequest('regime:manual-trades', () => ({ success: true, trades: [] }));
@@ -120,7 +135,8 @@ async function startBrowserFixture() {
     // Enroll only in the disposable fixture. The browser subsequently uses the
     // ordinary sign-in form, rather than a bearer or authentication bypass.
     const password = require('node:crypto').randomBytes(24).toString('hex');
-    const enrolled = await fetch(`${baseUrl}/api/auth/password`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password }) });
+    const bootstrapSecret = fs.readFileSync(path.join(dir, 'data/operator-bootstrap-secret'), 'utf8').trim();
+    const enrolled = await fetch(`${baseUrl}/api/auth/password`, { method: 'PUT', headers: { 'content-type': 'application/json', 'x-operator-bootstrap': bootstrapSecret }, body: JSON.stringify({ password }) });
     if (!enrolled.ok) throw new Error('fixture enrollment failed');
     let sequence = 0;
     feed = setInterval(() => {

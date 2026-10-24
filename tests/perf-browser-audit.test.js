@@ -89,3 +89,66 @@ describe('browser audit evidence', () => {
     }
   });
 });
+
+
+describe('real disposable browser fixture', () => {
+  it('enrolls privately and serves all scenario reads from valid fund ledgers', async () => {
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const { startBrowserFixture } = require('../scripts/lib/perf-browser-fixture');
+    const fixture = await startBrowserFixture();
+    try {
+      const anonymous = await fetch(`${fixture.baseUrl}/api/auth/session`).then(response => response.json());
+      assert.equal(anonymous.authenticated, false);
+      assert.equal(anonymous.bootstrapRequired, false);
+      assert.equal(fs.existsSync(path.join(fixture.dir, 'data/operator-bootstrap-secret')), false);
+      const login = await fetch(`${fixture.baseUrl}/api/auth/session`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: fixture.password }),
+      });
+      assert.equal(login.status, 200);
+      const cookie = login.headers.get('set-cookie').split(';')[0];
+      for (const [exchange, pair] of fixture.funds) {
+        const rows = JSON.parse(fs.readFileSync(path.join(fixture.dir, 'data', exchange, pair, 'fill-ledger.json')));
+        assert.equal(rows.length, 30000);
+        assert.equal(new Set(rows.map(row => row.tradeId)).size, rows.length);
+        assert.ok(rows.every(row => typeof row.tradeId === 'string' && row.tradeId && Number.isFinite(row.timestamp)));
+        for (const route of ['fills?paged=true&limit=100', 'fills/cycles?', 'status?', 'open-orders?', 'manual-trades?']) {
+          const response = await fetch(`${fixture.baseUrl}/api/${exchange}/regime/${route}&pair=${encodeURIComponent(pair)}`, { headers: { cookie } });
+          assert.equal(response.status, 200, `${exchange}/${pair}/${route}`);
+          const body = await response.json();
+          assert.notEqual(body.success, false);
+          if (route.startsWith('fills?')) {
+            assert.equal(body.fills.length, 100);
+            assert.equal(body.pageInfo.total, rows.length);
+          }
+          if (route.startsWith('fills/cycles')) {
+            const { createTransactionsReadView } = require('../src/transactions-regime-query');
+            const expected = createTransactionsReadView(() => rows, () => 'synthetic-1').aggregates();
+            for (const key of Object.keys(expected)) assert.deepEqual(body[key], expected[key]);
+          }
+        }
+      }
+    } finally {
+      await fixture.stop();
+      assert.equal(fs.existsSync(fixture.dir), false);
+    }
+  });
+  it('cleans owned gateway, engines and storage after enrollment setup fails', async t => {
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const { startBrowserFixture } = require('../scripts/lib/perf-browser-fixture');
+    const read = fs.readFileSync;
+    let dir;
+    t.mock.method(fs, 'readFileSync', function (file, ...args) {
+      if (String(file).endsWith('/data/operator-bootstrap-secret')) {
+        dir = path.dirname(path.dirname(file));
+        throw new Error('synthetic bootstrap read failure');
+      }
+      return read.call(this, file, ...args);
+    });
+    await assert.rejects(startBrowserFixture(), /synthetic bootstrap read failure/);
+    assert.ok(dir);
+    assert.equal(fs.existsSync(dir), false);
+  });
+
+});
