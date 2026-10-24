@@ -84,6 +84,7 @@ describe('PUT /api/sentinel/config rejects unsafe feed URLs (issue #215-A)', () 
     const res = await invoke(app, { feeds: [{ name: 'ok', url: 'http://1.1.1.1/rss' }] });
     assert.equal(res.statusCode, 200);
     assert.equal(res.body.success, true);
+    assert.deepEqual(res.body.persistence, { configSaved: true, alertStateSaved: true });
     assert.ok(getUpdatedWith(), 'expected updateSentinelConfig to have been called');
     assert.equal(getUpdatedWith().feeds[0].url, 'http://1.1.1.1/rss');
     assert.equal(wasStarted(), true, 'service should be restarted after a successful config update');
@@ -132,6 +133,7 @@ describe('GET /api/sentinel/status response structure (issue #456)', () => {
 describe('PUT /api/sentinel/config when stop() fails to save state (issue #1503)', () => {
   it('still restarts Sentinel and names the failed state save', async () => {
     let running = true;
+    let savedConfig = { enabled: true, feeds: [] };
     const app = createFakeApp();
     registerSentinelRoutes(app, {
       sentinelService: {
@@ -139,14 +141,17 @@ describe('PUT /api/sentinel/config when stop() fails to save state (issue #1503)
         stop: () => { running = false; throw new Error('ENOSPC disk full'); },
         start: () => { running = true; },
       },
-      getSentinelConfig: () => ({ feeds: [] }),
-      updateSentinelConfig: () => {},
+      getSentinelConfig: () => savedConfig,
+      updateSentinelConfig: (updates) => { savedConfig = { ...savedConfig, ...updates }; },
     });
-    const res = await invoke(app, { feeds: [] });
+    const feeds = [{ name: 'Saved feed', url: 'http://1.1.1.1/rss', enabled: true }];
+    const res = await invoke(app, { feeds, enabled: false });
     assert.equal(running, true, 'Sentinel must be running after the restart');
     assert.equal(res.statusCode, 500);
     assert.equal(res.body.success, false);
     assert.match(res.body.error, /saved and Sentinel restarted/);
     assert.match(res.body.error, /alert state could not be written/);
+    assert.deepEqual(res.body.persistence, { configSaved: true, alertStateSaved: false });
+    assert.deepEqual(res.body.config, { enabled: false, feeds });
   });
 });
