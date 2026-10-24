@@ -43,6 +43,8 @@ const { createFundStartSupervisor, isTransientStartError } = require('./fund-sta
  * @property {(exchange: string, pair: string, isRunning: boolean) => void} saveRegimeRunningFlag - Persists the fund's running flag to disk
  * @property {(exchange: string, pair: string) => {recovered: boolean}} [recoverPendingImport] - Completes/discards an interrupted DCA import; throws when the fund must stay offline (issue #860)
  * @property {(exchange: string, pair: string) => Promise<{drained: boolean}>} [drainFundWrites] - Waits for accepted fund callbacks before releasing ownership
+ * @property {Function} [beforeStop] - Cancel/join retained backup recovery before fund stop
+ * @property {Function} [beforeCancelAll] - Cancel/join backup recovery before restore or shutdown
  * @property {Function} [isPaused] - Retry maintenance gate
  * @property {Function} [setTimer] - Injectable retry timer
  * @property {Function} [clearTimer] - Injectable retry cancellation
@@ -217,6 +219,7 @@ const registerEngineLifecycleHandlers = (registry, deps) => {
     startAttempt, fundKey, resolvePair, regimeEngines,
     saveRegimeRunningFlag, logger,
     isPaused: deps.isPaused,
+    beforeStop: deps.beforeStop, beforeCancelAll: deps.beforeCancelAll,
     setTimer: deps.setTimer, clearTimer: deps.clearTimer,
   });
   const { startFund, autoResumeFund, resumeAfterBackup } = supervisor;

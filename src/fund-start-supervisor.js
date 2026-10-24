@@ -14,6 +14,7 @@ const isTransientStartError = (error) => {
 /** One owner per fund across boot, manual requests, retry callbacks and stop. */
 const createFundStartSupervisor = ({
   startAttempt, fundKey, resolvePair, regimeEngines, saveRegimeRunningFlag, logger,
+  beforeStop = () => {}, beforeCancelAll = () => {},
   isPaused = () => refuseDuringMaintenance('regime:start'), setTimer = setTimeout, clearTimer = clearTimeout,
 }) => {
   const entries = new Map();
@@ -84,6 +85,8 @@ const createFundStartSupervisor = ({
     pair = resolvePair(exchange, pair);
     const key = fundKey(exchange, pair);
     if (stopping.has(key)) return stopping.get(key);
+    // Cancel retained backup recovery synchronously, then join it before handover.
+    const backupRecovery = beforeStop(key);
     const entry = entries.get(key);
     const previousState = entry?.state;
     const pending = entry?.promise;
@@ -91,7 +94,7 @@ const createFundStartSupervisor = ({
     if (entry) cancel(entry);
     // Clear pending auto-resume intent even when there is no running object.
     if (wasPending) saveRegimeRunningFlag(exchange, pair, false);
-    const stopped = Promise.resolve(pending).then(() => {
+    const stopped = Promise.all([pending, backupRecovery]).then(() => {
       if (wasPending && !regimeEngines.has(key)) return { success: true, exchange, pair, stopped: true };
       return stopFund(payload, exchange, pair);
     }).then(result => {
@@ -106,7 +109,7 @@ const createFundStartSupervisor = ({
   };
   const cancelAll = async ({ shutdown = false, clearDesired = false } = {}) => {
     if (shutdown) shuttingDown = true;
-    const pending = [];
+    const pending = [beforeCancelAll()];
     for (const entry of entries.values()) {
       const wasRunning = entry.state === 'running';
       cancel(entry);
