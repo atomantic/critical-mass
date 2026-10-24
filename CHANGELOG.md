@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- **[issue-1751] Tablet action buttons keep touch-sized targets** — shared buttons and touch-target helpers retain a 44px minimum for coarse pointers at every width; compact desktop sizing applies only to fine pointers at md and above, preserving always-touch and inline actions.
+
 - **[issue-1698] Paginated alerts and trade history retain request ownership** — changing filters, clearing alerts, refreshing trades or leaving the page cancels every page of an obsolete read and prevents it from replacing newer lists, summaries or loading/error state.
 - **[issue-1699] Incomplete paginated reads report errors** — trade history and Sentinel retain their last complete data with Retry, the global banner keeps alert failures visible, and Clear-all waits for a complete count.
 

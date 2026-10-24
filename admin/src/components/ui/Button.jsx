@@ -1,6 +1,8 @@
-// Shared button. Variants standardise colour/radius; touch-sized targets on
-// mobile viewports reset on md+ by default. Existing always-touch controls
-// opt in to keeping the 44px minimum at every viewport.
+import { TOUCH_TARGET_RESET } from './touchTarget'
+
+// Shared button. Variants standardise colour/radius; touch-sized targets only
+// reset for fine pointers at md+. Always-touch controls keep the 44px minimum
+// for every pointer and viewport.
 const VARIANTS = {
   primary: 'bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-50',
   // Idle state of a primary action with nothing pending (e.g. Save with no edits).
@@ -75,7 +77,7 @@ export default function Button({
     isInlineText
       ? 'inline rounded-sm transition-colors disabled:cursor-not-allowed'
       : 'min-h-11 min-w-11 inline-flex items-center justify-center rounded-sm transition-colors disabled:cursor-not-allowed',
-    !isInlineText && touchTarget !== 'always' ? 'md:min-h-0 md:min-w-0' : '',
+    !isInlineText && touchTarget !== 'always' ? TOUCH_TARGET_RESET : '',
     VARIANTS[variant] ?? VARIANTS.primary,
     SIZES[size] ?? SIZES.md,
     className,
