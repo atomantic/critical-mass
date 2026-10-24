@@ -1,3 +1,4 @@
-// Shared 44px touch-target idiom (same classes Button.jsx uses): coarse/mobile
-// viewports get a min 44px hit area, md+ resets so desktop density is unchanged.
-export const TOUCH_TARGET = 'min-h-11 min-w-11 md:min-h-0 md:min-w-0 inline-flex items-center justify-center'
+// Keep 44px targets at every width for coarse pointers and on narrow screens.
+// Only a fine primary pointer at md+ opts into compact desktop controls.
+export const TOUCH_TARGET_RESET = 'md:pointer-fine:min-h-0 md:pointer-fine:min-w-0'
+export const TOUCH_TARGET = `min-h-11 min-w-11 ${TOUCH_TARGET_RESET} inline-flex items-center justify-center`

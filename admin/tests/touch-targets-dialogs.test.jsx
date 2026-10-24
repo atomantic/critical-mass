@@ -13,7 +13,7 @@ HTMLDialogElement.prototype.close = function () { this.open = false; this.dispat
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
-const TOUCH_CLASSES = ['min-h-11', 'min-w-11', 'md:min-h-0', 'md:min-w-0']
+const TOUCH_CLASSES = ['min-h-11', 'min-w-11', 'md:pointer-fine:min-h-0', 'md:pointer-fine:min-w-0']
 const expectTouchSized = (el) => TOUCH_CLASSES.forEach(c => expect(el.className).toContain(c))
 
 it('shared TOUCH_TARGET constant carries the Button.jsx touch idiom', () => {
