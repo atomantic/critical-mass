@@ -9,7 +9,7 @@ import { BrowserRouter } from '../src/lib/router'
 // only mocked UI boundary: all HTTP below is synthetic and never leaves jsdom.
 vi.mock('../src/hooks/useTradeEvents', () => ({
   useTradeEvents: () => ({ latestEvent: null }),
-  useRegimeEvents: () => ({ connected: false }),
+  useRegimeEvents: () => ({ connected: true }),
 }))
 
 const response = (data, ok = true) => ({ ok, json: async () => data })
@@ -112,6 +112,32 @@ it('never renders or writes A config while B loads, then saves only B values wit
   await act(async () => statusB.resolve(response(status(false, false, 'closed'))))
   expect(await screen.findByRole('button', { name: 'Reopen', exact: true })).toBeTruthy()
   expect(screen.queryByRole('button', { name: 'Restart Engine' })).toBeNull()
+})
+
+it('keeps fund-view navigation reachable beside the populated running dry-run controls', async () => {
+  read.mockImplementation(url => {
+    if (url.includes('/summary')) return response({ config: config(111, true) })
+    if (url.includes('/regime/status')) return response(status(true, true, 'active'))
+    return response({})
+  })
+  mount()
+  const tabs = await screen.findByRole('navigation', { name: 'Fund views' })
+  for (const label of ['Dashboard', 'Cost Basis', 'Transactions', 'Charts', 'Config', 'API Keys', 'Logs']) {
+    expect(screen.getByRole('link', { name: label })).toBeTruthy()
+  }
+  expect(screen.getByText('DRY-RUN')).toBeTruthy()
+  expect(screen.getByText('Running')).toBeTruthy()
+  expect(screen.getByText('Live')).toBeTruthy()
+  for (const label of ['Reset', 'Close Fund', 'Stop']) {
+    expect(screen.getByRole('button', { name: label, exact: true })).toBeTruthy()
+  }
+  expect(tabs.querySelectorAll('a')).toHaveLength(7)
+
+  for (const [label, route] of [['Config', 'config'], ['Charts', 'charts'], ['Logs', 'logs']]) {
+    fireEvent.click(screen.getByRole('link', { name: label }))
+    await waitFor(() => expect(window.location.pathname).toBe(`/coinbase/BTC-USDC/${route}`))
+    expect(screen.getByRole('navigation', { name: 'Fund views' })).toBeTruthy()
+  }
 })
 
 for (const failure of ['http', 'network']) it(`shows B ${failure} failures with independent Retry actions and no prior configuration/status`, async () => {

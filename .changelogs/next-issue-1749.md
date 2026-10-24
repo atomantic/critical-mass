@@ -1,0 +1,1 @@
+- **[issue-1749] Fund view tabs stay usable on tablets** — the tab strip keeps the full row through tablet widths while lifecycle controls wrap below it, and the selector and tabs share a row at `xl`.
