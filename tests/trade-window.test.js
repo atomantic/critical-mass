@@ -2,6 +2,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const { createTradeWindow } = require('../src/trade-window');
+const { createMessage, MSG_TYPE, serialize } = require('../src/ipc/ipc-protocol');
 
 // Exercise the actual engine callback without creating a fund or a live engine.
 const source = fs.readFileSync(require.resolve('../src/regime-engine'), 'utf8');
@@ -40,7 +41,8 @@ test('engine trade callback matches the full-window reference across shuffled tr
     if (i % 500 === 0) assert.deepEqual(market.trades, reference);
   }
   assert.deepEqual(market.trades, reference);
-  assert.deepEqual(JSON.parse(JSON.stringify(market)).trades, reference, 'status JSON retains the trade array');
+  assert.equal(Object.getOwnPropertyDescriptor(market, 'trades').enumerable, false);
+  assert.equal(JSON.parse(JSON.stringify(market)).trades, undefined, 'status JSON omits the internal trade array');
 });
 
 test('inclusive boundary, duplicate rows, delayed/future trades and snapshots preserve arrival order', () => {
@@ -86,4 +88,25 @@ test('ordinary trade ingestion touches sizes only on arrival and expiry', () => 
   }
   assert.ok(reads < 50000, `size accesses should grow with events, not the retained window: ${reads}`);
   assert.equal(window.getTrades().length, 1001);
+});
+
+test('serialized status bytes stay constant as the internal retained window grows', () => {
+  const now = 1_800_000;
+  const bytesByRate = [];
+  let snapshots = 0;
+  for (const rate of [20, 100, 500]) {
+    const window = createTradeWindow(180_000);
+    for (let i = 0; i < rate * 180; i++) {
+      window.add({ id: 100000000 + i, timestamp: now - 180_000 + i, price: 50000,
+        size: 0.001, side: i % 2 ? 'sell' : 'buy' }, now);
+    }
+    const market = { lastPrice: 50000, tradeImbalance: 0, realizedVol: 0.01 };
+    Object.defineProperty(market, 'trades', { enumerable: false, get() { snapshots++; return window.getTrades(); } });
+    const before = snapshots;
+    const wire = serialize(createMessage(MSG_TYPE.EVENT, 'regime:status', { market }));
+    assert.equal(snapshots, before, 'JSON serialization does not materialize the trade snapshot');
+    assert.equal(window.getTrades().length, rate * 180, 'internal window retains every feed-shaped trade');
+    bytesByRate.push(Buffer.byteLength(wire));
+  }
+  assert.deepEqual(bytesByRate, [bytesByRate[0], bytesByRate[0], bytesByRate[0]]);
 });

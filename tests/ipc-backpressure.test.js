@@ -7,6 +7,8 @@ const { WebSocketServer, OPEN } = require('../src/ipc/ws-server');
 const { createIPCServer, MAX_PENDING_BYTES, MAX_HELD_EVENTS } = require('../src/ipc/ipc-server');
 const { createMessage, MSG_TYPE, IPC_SECRET_HEADER } = require('../src/ipc/ipc-protocol');
 const { forwardTradeEvents } = require('../src/ipc/realtime-proxy');
+const { createIPCClient } = require('../src/ipc/ipc-client');
+const { createTradeWindow } = require('../src/trade-window');
 const { EventEmitter } = require('node:events');
 const { getFreePort, until } = require('./helpers/ipc-command-harness');
 
@@ -47,8 +49,37 @@ const fixture = async (t) => {
       : Buffer.from([0x81, 0xfe, data.length >> 8, data.length & 255]);
     socket.write(Buffer.concat([header, Buffer.alloc(4), data]));
   };
-  return { server, connect, command };
+  return { server, connect, command, port };
 };
+
+it('keeps a real IPC peer connected after high-rate status and serves a following read', { timeout: 10000 }, async (t) => {
+  const { server, port } = await fixture(t);
+  const window = createTradeWindow(180_000);
+  const now = 1_800_000;
+  for (let i = 0; i < 180_000; i++) {
+    window.add({ id: 100000000 + i, timestamp: now - 180_000 + i, price: 50000,
+      size: 0.001, side: i % 2 ? 'sell' : 'buy' }, now);
+  }
+  let snapshots = 0;
+  const market = { lastPrice: 50000, tradeImbalance: 0, realizedVol: 0.01 };
+  Object.defineProperty(market, 'trades', { enumerable: false, get() { snapshots++; return window.getTrades(); } });
+  server.onRequest('regime:status', async () => ({ success: true, market }));
+  server.onRequest('control:read', async () => ({ alive: true }));
+  const client = createIPCClient(`ws://127.0.0.1:${port}`, 'high-rate-status', {
+    secret: 'synthetic-backpressure-test', reconnectMin: 50, reconnectMax: 100,
+  });
+  t.after(() => client.disconnect());
+  client.connect();
+  await until(() => client.isConnected(), 'authenticated IPC connection');
+
+  const status = await client.request('regime:status', {});
+  assert.equal(status.market.trades, undefined, 'real IPC status response omits the raw window');
+  assert.equal(snapshots, 0, 'status serialization never invokes the snapshot getter');
+  assert.equal(window.getTrades().length, 180_000, 'the internal high-rate window remains complete');
+  assert.equal(client.isConnected(), true, 'status response stays below IPC backpressure limit');
+  assert.deepEqual(await client.request('control:read', {}), { alive: true });
+  assert.equal(client.isConnected(), true, 'the peer answers a following control/read request');
+});
 
 it('disconnects a real paused IPC reader within 8 MiB, flushes and lets a healthy peer progress', { timeout: 10000 }, async (t) => {
   const { server, connect } = await fixture(t);

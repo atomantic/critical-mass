@@ -409,7 +409,7 @@
  * @property {number} recentSwing - Recent price swing range
  * @property {number} tradeImbalance - Buy/sell imbalance (-1 to +1)
  * @property {{magnitude: number, direction: 'up' | 'down' | 'neutral'}} momentum - Price momentum indicator
- * @property {Array<{price: number, size: number, side: string, timestamp: number}>} trades - Recent trades
+ * @property {Array<{price: number, size: number, side: string, timestamp: number}>} trades - Internal recent trades; non-enumerable and omitted from status snapshots
  * @property {number} lastUpdate - Timestamp of last market data update
  * @property {number} [ath] - All-time high price (for ladder mode)
  * @property {number} [athDistance] - Current distance from ATH (negative when below)
