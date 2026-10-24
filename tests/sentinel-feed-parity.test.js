@@ -12,6 +12,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const { createRequire } = require('node:module');
+const { spawnSync } = require('node:child_process');
 
 const FIXTURES = path.join(__dirname, 'fixtures', 'sentinel-feeds');
 const { fixtures: RECORDED } = JSON.parse(fs.readFileSync(path.join(FIXTURES, 'recorded-normalization.json'), 'utf8'));
@@ -107,5 +108,65 @@ describe('Sentinel feed malformed documents (issue #1175)', () => {
     const outcome = await fetchOutcome('<!DOCTYPE rss [<!ENTITY a "AAAAAAAAAA"><!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;">]>'
       + '<rss><channel><item><guid>e</guid><title>&b;</title></item></channel></rss>');
     assert.equal(outcome.items[0].title, '&b;');
+  });
+});
+
+describe('Sentinel bounded description normalization (issue #1727)', () => {
+  it('preserves tag stripping, literal brackets, whitespace and XML text semantics', async () => {
+    const cases = [
+      ['<![CDATA[ \t<b>Hello</b> <i>world</i>\n ]]>', 'Hello world'],
+      ['<![CDATA[ <> <<b>kept</b> <unfinished ]]>', '<> kept <unfinished'],
+      ['<![CDATA[ < << unfinished ]]>', '< << unfinished'],
+      ['&lt;b&gt;Decoded&lt;/b&gt; &amp; &#65;', 'Decoded & A'],
+      ['<![CDATA[ &lt;b&gt;literal&lt;/b&gt; &amp; ]]>', '&lt;b&gt;literal&lt;/b&gt; &amp;'],
+      ['<![CDATA[\uFEFF \t<b></b> \n]]>', ''],
+      [`<![CDATA[${'x'.repeat(499)}   <b></b> ]]>`, 'x'.repeat(499)],
+      [`<![CDATA[${'x'.repeat(499)}   <b>y</b>]]>`, `${'x'.repeat(499)} `],
+      [`<![CDATA[${'x'.repeat(600)}]]>`, 'x'.repeat(500)],
+    ];
+    for (const [body, expected] of cases) {
+      const outcome = await fetchOutcome(`<rss><channel><item><description>${body}</description></item></channel></rss>`);
+      assert.equal(outcome.ok, true);
+      assert.equal(outcome.items[0].description, expected, body);
+    }
+  });
+
+  it('normalizes hostile RSS/Atom primary and fallback descriptions within a child watchdog', () => {
+    // The old regex takes quadratic time on this complete, sub-MiB XML body.
+    // A separate process bounds failure even while synchronous matching stalls.
+    const script = `
+      const assert = require('node:assert/strict');
+      const fs = require('node:fs');
+      const vm = require('node:vm');
+      const { createRequire } = require('node:module');
+      const filename = process.argv[1];
+      const realRequire = createRequire(filename);
+      const NOW = '<now>';
+      const fetchOutcome = ${fetchOutcome.toString()};
+      (async () => {
+        const hostile = '<'.repeat(512 * 1024);
+        for (const [root, container, item, id, field, emptyPrimary] of [
+          ['rss', 'channel', 'item', 'guid', 'description', ''],
+          ['rss', 'channel', 'item', 'guid', 'content:encoded', '<description/>'],
+          ['feed', '', 'entry', 'id', 'summary', ''],
+          ['feed', '', 'entry', 'id', 'content', '<summary/>'],
+        ]) {
+          const items = '<' + item + '><' + id + '>hostile</' + id + '>' + emptyPrimary
+            + '<' + field + '><![CDATA[' + hostile + ']]></' + field + '></' + item + '>'
+            + '<' + item + '><' + id + '>neighbor</' + id + '><title>Healthy</title></' + item + '>';
+          const xml = '<' + root + '>' + (container ? '<' + container + '>' : '') + items
+            + (container ? '</' + container + '>' : '') + '</' + root + '>';
+          const outcome = await fetchOutcome(xml);
+          assert.equal(outcome.ok, true, field);
+          assert.deepEqual(outcome.items.map(item => item.guid), ['hostile', 'neighbor'], field);
+          assert.equal(outcome.items[0].description, '<'.repeat(500), field);
+          assert.equal(outcome.items[1].title, 'Healthy', field);
+          assert.deepEqual(outcome.warnings, [], field);
+        }
+      })().catch(error => { console.error(error); process.exitCode = 1; });
+    `;
+    const child = spawnSync(process.execPath, ['-e', script, filename], { encoding: 'utf8', timeout: 10000 });
+    assert.ifError(child.error);
+    assert.equal(child.status, 0, child.stderr || child.stdout);
   });
 });
