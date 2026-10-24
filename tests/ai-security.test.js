@@ -2,7 +2,7 @@ const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('http');
 
-const { REDACTED, createAllowlistedFetch, redactSecrets, restoreRedactedValues, validateProvider } = require('../src/ai-security');
+const { MAX_RESPONSE_BYTES, REDACTED, createAllowlistedFetch, redactSecrets, restoreRedactedValues, validateProvider } = require('../src/ai-security');
 
 const listen = async (handler) => {
   const server = http.createServer(handler);
@@ -78,4 +78,84 @@ describe('AI provider security policy', () => {
     assert.equal(await response.text(), 'ok');
     assert.deepEqual(seen, [{ method: 'POST', auth: 'Bearer secret' }, { method: 'GET', auth: undefined }]);
   });
+
+  for (const contentLength of [undefined, '1', String(MAX_RESPONSE_BYTES + 1000000)]) {
+    it(`bounds streamed bytes despite Content-Length=${contentLength}`, async () => {
+      let emitted = 0;
+      let cancelled = 0;
+      let cancellationReason;
+      const chunk = Buffer.from('é'.repeat(32 * 1024));
+      const guarded = createAllowlistedFetch(allowed, async () => new Response(new ReadableStream({
+        pull(controller) { emitted += chunk.byteLength; controller.enqueue(chunk); },
+        cancel(reason) { cancelled += 1; cancellationReason = reason; },
+      }, { highWaterMark: 0 }), { headers: contentLength ? { 'Content-Length': contentLength } : {} }));
+      const response = await guarded('https://api.example.com/models');
+      assert.equal(emitted, 0, 'wrapper does not eagerly accumulate a body');
+      await assert.rejects(response.text(), /response exceeded 20971520 bytes \(20 MiB\)/);
+      assert.equal(emitted, MAX_RESPONSE_BYTES + chunk.byteLength);
+      assert.equal(cancelled, 1);
+      assert.match(cancellationReason.message, /response exceeded/);
+    });
+  }
+
+  it('accepts exactly 20 MiB and preserves response metadata and empty bodies', async () => {
+    let emitted = 0;
+    let cancelled = false;
+    const chunk = new Uint8Array(64 * 1024).fill(120);
+    const source = new Response(new ReadableStream({
+      pull(controller) {
+        if (emitted === MAX_RESPONSE_BYTES) return controller.close();
+        emitted += chunk.byteLength;
+        controller.enqueue(chunk);
+      },
+      cancel() { cancelled = true; },
+    }), { status: 201, statusText: 'Created', headers: { 'Content-Type': 'text/plain' } });
+    Object.defineProperty(source, 'url', { value: 'https://api.example.com/final' });
+    const guarded = createAllowlistedFetch(allowed, async () => source);
+    const response = await guarded('https://api.example.com/models');
+    assert.equal(response.status, 201);
+    assert.equal(response.statusText, 'Created');
+    assert.equal(response.headers.get('content-type'), 'text/plain');
+    assert.equal(response.url, source.url);
+    assert.equal((await response.arrayBuffer()).byteLength, MAX_RESPONSE_BYTES);
+    assert.equal(cancelled, false);
+    const empty = createAllowlistedFetch(allowed, async () => new Response(null, { status: 204 }));
+    assert.equal((await empty('https://api.example.com/models')).body, null);
+  });
+
+  it('propagates caller body cancellation to the upstream reader', async () => {
+    let reason;
+    const guarded = createAllowlistedFetch(allowed, async () => new Response(new ReadableStream({
+      cancel(value) { reason = value; },
+    })));
+    const response = await guarded('https://api.example.com/models');
+    await response.body.cancel('consumer stopped');
+    assert.equal(reason, 'consumer stopped');
+  });
+
+  it('aborts a pending read even when the upstream ignores the request signal', async () => {
+    let cancelled = false;
+    const controller = new AbortController();
+    const guarded = createAllowlistedFetch(allowed, async () => new Response(new ReadableStream({
+      pull() { /* stalled peer */ },
+      cancel() { cancelled = true; },
+    })));
+    const response = await guarded('https://api.example.com/models', { signal: controller.signal });
+    const pending = response.text();
+    controller.abort(new Error('caller aborted'));
+    await assert.rejects(pending, /caller aborted/);
+    assert.equal(cancelled, true);
+  });
+
+  it('reports overflow without waiting for a stalled upstream cancellation', async () => {
+    let cancelled = false;
+    const guarded = createAllowlistedFetch(allowed, async () => new Response(new ReadableStream({
+      pull(controller) { controller.enqueue(new Uint8Array(MAX_RESPONSE_BYTES + 1)); },
+      cancel() { cancelled = true; return new Promise(() => {}); },
+    }, { highWaterMark: 0 })));
+    const response = await guarded('https://api.example.com/models');
+    await assert.rejects(response.json(), /response exceeded/);
+    assert.equal(cancelled, true);
+  });
+
 });

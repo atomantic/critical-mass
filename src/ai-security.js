@@ -12,6 +12,7 @@ const REDACTED = '[REDACTED]';
 const SECRET_KEYS = /(api[-_]?key|authorization|credential|password|private[-_]?key|secret|token)$/i;
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 const MAX_REDIRECTS = 5;
+const MAX_RESPONSE_BYTES = 20 * 1024 * 1024;
 
 /**
  * Replace secret-looking values (and declared secretEnvVars) with REDACTED.
@@ -75,6 +76,73 @@ const validateProvider = (provider, allowedOrigins) => {
 };
 
 /**
+ * Bound bytes before any text/JSON decoding or SSE buffering. Content-Length
+ * is only a peer claim, so the streamed count is always authoritative.
+ * @param {Response} response
+ * @param {AbortSignal | null | undefined} signal
+ * @returns {Response}
+ */
+const boundResponse = (response, signal) => {
+  if (!response.body) return response;
+  const reader = response.body.getReader();
+  let bytes = 0;
+  let finished = false;
+  let onAbort;
+  const finish = () => {
+    finished = true;
+    signal?.removeEventListener('abort', onAbort);
+  };
+  // Cancellation must not delay the bounded failure if the peer stalls while
+  // closing. Release the lock after an outstanding read/cancel has settled.
+  const cancel = (reason) => {
+    finish();
+    void reader.cancel(reason).catch(() => {}).finally(() => reader.releaseLock());
+  };
+  const body = new ReadableStream({
+    start(controller) {
+      onAbort = () => {
+        if (finished) return;
+        const error = signal?.reason || new DOMException('The operation was aborted', 'AbortError');
+        controller.error(error);
+        cancel(error);
+      };
+      signal?.addEventListener('abort', onAbort, { once: true });
+      if (signal?.aborted) onAbort();
+    },
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read();
+        if (finished) return;
+        if (done) {
+          finish();
+          reader.releaseLock();
+          controller.close();
+          return;
+        }
+        bytes += value.byteLength;
+        if (bytes > MAX_RESPONSE_BYTES) {
+          const error = new Error(`AI provider response exceeded ${MAX_RESPONSE_BYTES} bytes (20 MiB)`);
+          controller.error(error);
+          cancel(error);
+          return;
+        }
+        controller.enqueue(value);
+      } catch (error) {
+        if (finished) return;
+        controller.error(error);
+        cancel(error);
+      }
+    },
+    cancel(reason) { cancel(reason); },
+  }, { highWaterMark: 0 });
+  const bounded = new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
+  for (const key of ['url', 'redirected', 'type']) {
+    Object.defineProperty(bounded, key, { value: response[key] });
+  }
+  return bounded;
+};
+
+/**
  * A fetch that only contacts allowlisted origins and follows redirects
  * manually, re-checking each hop and dropping Authorization across origins.
  * @param {Set<string>} allowedOrigins
@@ -90,9 +158,9 @@ const createAllowlistedFetch = (allowedOrigins, fetchImpl = globalThis.fetch) =>
       throw new Error(`AI provider ${redirects ? 'redirect ' : ''}origin is not allowlisted: ${url.origin}`);
     }
     const response = await fetchImpl(url, options);
-    if (!REDIRECT_STATUSES.has(response.status)) return response;
+    if (!REDIRECT_STATUSES.has(response.status)) return boundResponse(response, options.signal);
     const location = response.headers.get('location');
-    if (!location) return response;
+    if (!location) return boundResponse(response, options.signal);
     await response.body?.cancel().catch(() => {});
     if (redirects === MAX_REDIRECTS) throw new Error('AI provider exceeded the redirect limit');
 
@@ -110,4 +178,4 @@ const createAllowlistedFetch = (allowedOrigins, fetchImpl = globalThis.fetch) =>
   }
 };
 
-module.exports = { REDACTED, createAllowlistedFetch, parseAllowedOrigins, redactSecrets, restoreRedactedValues, validateProvider };
+module.exports = { MAX_RESPONSE_BYTES, REDACTED, createAllowlistedFetch, parseAllowedOrigins, redactSecrets, restoreRedactedValues, validateProvider };
