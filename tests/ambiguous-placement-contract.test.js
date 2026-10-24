@@ -17,7 +17,7 @@
  *
  * All exchange traffic is stubbed; no live API is contacted.
  */
-const { describe, it, beforeEach, afterEach } = require('node:test');
+const { describe, it, beforeEach, afterEach, mock } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -26,6 +26,8 @@ const path = require('node:path');
 const { createGeminiAdapter } = require('../src/adapters/gemini/api');
 const { createCryptocomAdapter } = require('../src/adapters/cryptocom/api');
 const { placeWithUnknownReconcile } = require('../src/order-manager');
+const migration = require('../src/migration');
+const stateTracker = require('../src/state-tracker');
 
 let keysPath;
 let originalFetch;
@@ -334,4 +336,129 @@ describe('cryptocom definitive rejection stays an ordinary failure (issue #427)'
       (err) => err.unknownOutcome === undefined && /INVALID_PRICE/.test(err.message)
     );
   });
+});
+
+describe('Crypto.com ambiguous terminal execution quantity keeps durable intent (issue #1732)', () => {
+  const exchange = 'cryptocom';
+  const pair = 'BTC-USD';
+  const makeLookup = (clientOrderId, fields) => textResponse(JSON.stringify({ code: 0, result: { order_info: {
+    order_id: '55501', client_oid: clientOrderId, instrument_name: 'BTC_USD', side: 'BUY',
+    status: 'CANCELED', quantity: '0.019', avg_price: '100', create_time: 1700000000000,
+    ...fields,
+  } } }));
+
+  const withDurableFixture = async (run) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cryptocom-quantity-intent-'));
+    mock.method(migration, 'getExchangeDataDir', () => path.join(root, exchange));
+    try {
+      await run();
+    } finally {
+      mock.restoreAll();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  };
+
+  for (const [label, fields] of [
+    ['missing', {}], ['null', { cumulative_quantity: null }], ['empty', { cumulative_quantity: '' }],
+    ['boolean', { cumulative_quantity: false }], ['non-finite', { cumulative_quantity: 'Infinity' }],
+    ['negative', { cumulative_quantity: '-0.01' }], ['partially numeric', { cumulative_quantity: '0.01oops' }],
+    ['underflowing positive', { cumulative_quantity: '1e-324' }],
+  ]) {
+    it(`${label} terminal execution quantity stays pending and blocks a second placement after reload`, async () => {
+      await withDurableFixture(async () => {
+        const adapter = createCryptocomAdapter(keysPath);
+        stubProduct(adapter);
+        let placements = 0;
+        global.fetch = async (url, options = {}) => {
+          const method = JSON.parse(options.body).method;
+          if (method === 'private/create-order') {
+            placements++;
+            throw new Error('socket hang up');
+          }
+          if (method === 'private/get-order-detail') {
+            const clientOrderId = JSON.parse(options.body).params.client_oid;
+            return makeLookup(clientOrderId, fields);
+          }
+          throw new Error(`unexpected request ${url}`);
+        };
+        const opts = { retryDelaysMs: [], intent: { exchange, pair, action: 'entry_bid', side: 'buy', price: 100, size: 0.019 } };
+        const first = await placeWithUnknownReconcile(adapter, pair,
+          () => adapter.placeLimitBuy(pair, 0.019, 100), opts);
+        assert.equal(first.pending, true);
+        assert.equal(first.success, false);
+        assert.equal(stateTracker.loadPlacementIntents(exchange, pair).length, 1);
+
+        // A different process sees the on-disk unresolved intent and refuses
+        // before dispatch, even though the exchange reply had an order id.
+        const pendingRows = stateTracker.loadPlacementIntents(exchange, pair);
+        stateTracker.savePlacementIntents(pendingRows.map(row => ({ ...row, instanceId: 'restarted-process' })), exchange, pair);
+        const second = await placeWithUnknownReconcile(adapter, pair,
+          () => adapter.placeLimitBuy(pair, 0.019, 100), opts);
+        assert.equal(second.pending, true);
+        assert.equal(placements, 1);
+        assert.equal(stateTracker.loadPlacementIntents(exchange, pair).length, 1);
+      });
+    });
+  }
+
+  it('supports compatibility quantity only when canonical is absent and preserves explicit zero', async () => {
+    const adapter = createCryptocomAdapter(keysPath);
+    global.fetch = async (_url, options = {}) => {
+      const clientOrderId = JSON.parse(options.body).params.client_oid;
+      return makeLookup(clientOrderId, { filled_quantity: '0' });
+    };
+    assert.equal((await adapter.findOrderByClientOrderId('coid-zero', pair)).filledSize, 0);
+
+    global.fetch = async (_url, options = {}) => {
+      const clientOrderId = JSON.parse(options.body).params.client_oid;
+      return makeLookup(clientOrderId, { filled_quantity: '0.01' });
+    };
+    const found = await adapter.findOrderByClientOrderId('coid-partial', pair);
+    assert.equal(found.filledSize, 0.01);
+    assert.equal(found.status, 'CANCELLED');
+
+    global.fetch = async (_url, options = {}) => {
+      const clientOrderId = JSON.parse(options.body).params.client_oid;
+      return makeLookup(clientOrderId, { cumulative_quantity: '', filled_quantity: '0.01' });
+    };
+    await assert.rejects(() => adapter.findOrderByClientOrderId('coid-canonical-invalid', pair), /invalid cumulative_quantity/);
+  });
+
+  for (const [label, fields, expectedSuccess] of [
+    ['explicit numeric zero', { cumulative_quantity: 0 }, false],
+    ['explicit string zero', { cumulative_quantity: '0' }, false],
+    ['explicit scientific zero', { cumulative_quantity: '0e-8' }, false],
+    ['positive partial fill', { cumulative_quantity: '0.01' }, true],
+  ]) {
+    it(`${label} resolves through the durable placement boundary`, async () => {
+      await withDurableFixture(async () => {
+        const adapter = createCryptocomAdapter(keysPath);
+        stubProduct(adapter);
+        let placements = 0;
+        global.fetch = async (url, options = {}) => {
+          const method = JSON.parse(options.body).method;
+          if (method === 'private/create-order') {
+            placements++;
+            throw new Error('socket hang up');
+          }
+          if (method === 'private/get-order-detail') {
+            return makeLookup(JSON.parse(options.body).params.client_oid, fields);
+          }
+          throw new Error(`unexpected request ${url}`);
+        };
+        let adopted = 0;
+        const result = await placeWithUnknownReconcile(adapter, pair,
+          () => adapter.placeLimitBuy(pair, 0.019, 100), {
+            retryDelaysMs: [],
+            intent: { exchange, pair, action: 'entry_bid', side: 'buy', price: 100, size: 0.019 },
+            onAccepted: () => { adopted++; },
+          });
+        assert.equal(result.success, expectedSuccess);
+        assert.equal(result.pending, undefined);
+        assert.equal(adopted, expectedSuccess ? 1 : 0);
+        assert.equal(placements, 1);
+        assert.equal(stateTracker.loadPlacementIntents(exchange, pair).length, 0);
+      });
+    });
+  }
 });
