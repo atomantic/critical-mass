@@ -36,6 +36,10 @@ export default function SentinelDashboard() {
   const [feedWritePending, setFeedWritePending] = useState(false)
   const feedWriteLock = useRef(false)
   const configRevision = useRef(0)
+  const configReadbackRequired = useRef(false)
+  const [configUncertain, setConfigUncertain] = useState(false)
+  const [configWarning, setConfigWarning] = useState(null)
+  const configWriteBlocked = feedWritePending || configUncertain
   // The poll, socket alerts, filter switches and post-action refreshes overlap;
   // only the newest read of each snapshot may commit.
   const [statusOwner] = useState(createRequestOwner)
@@ -52,13 +56,19 @@ export default function SentinelDashboard() {
   const fetchStatus = useCallback(async () => {
     const revision = configRevision.current
     const { owned, data } = await statusOwner.read('/api/sentinel/status')
-    if (!owned) return
-    if (!data?.config) {
+    if (!owned || revision !== configRevision.current) return false
+    if (data?.success === false || !Array.isArray(data?.config?.feeds)) {
       setStatusError('Could not load Sentinel status.')
-      return
+      return false
     }
     setStatusError(null)
-    if (revision === configRevision.current) setStatus(data)
+    setStatus(data)
+    if (configReadbackRequired.current) {
+      configReadbackRequired.current = false
+      feedWriteLock.current = false
+      setConfigUncertain(false)
+    }
+    return true
   }, [statusOwner])
 
   const fetchAlerts = useCallback(async () => {
@@ -139,22 +149,43 @@ export default function SentinelDashboard() {
     fetchStatus()
   }
 
-  const handleToggleEnabled = async () => {
-    if (feedWriteLock.current) return
-    const newEnabled = !status?.config?.enabled
+  // Config writes can save successfully even when the subsequent alert-state
+  // save fails. Keep that warning separate from whether the config was saved.
+  const saveConfig = async (updates, options) => {
+    if (feedWriteLock.current) return false
     feedWriteLock.current = true
     setFeedWritePending(true)
     try {
-      const result = await request('Could not update Sentinel settings', () => apiPut('/api/sentinel/config', { enabled: newEnabled }))
-      if (result) {
-        configRevision.current += 1
-        setStatus(prev => ({ ...(prev || {}), config: { ...(prev?.config || {}), ...(result.config || {}), enabled: newEnabled } }))
+      const result = await apiPut('/api/sentinel/config', updates).catch(error => ({ ok: false, status: 0, error: error.message }))
+      const saved = result.ok || (result.data?.persistence?.configSaved === true && Array.isArray(result.data?.config?.feeds))
+      // Revoke reads started before the outcome, including polls during the PUT.
+      configRevision.current += 1
+      statusOwner.invalidate()
+      if (result.data?.persistence?.alertStateSaved === false || (!result.ok && result.data?.persistence?.configSaved === true)) {
+        setConfigWarning(result.data?.error || 'Configuration saved, but Sentinel alert state could not be written.')
+      }
+      if (saved) {
+        setStatus(prev => ({ ...(prev || {}), config: result.data?.config || { ...(prev?.config || {}), ...updates } }))
+        await fetchStatus()
+        return true
+      }
+      // A validation/auth rejection did not save. Transport/server failures may
+      // have persisted the replacement list: a readback must own the next write.
+      const rejected = result.data?.persistence?.configSaved === false || (result.data?.persistence?.configSaved !== true && result.status >= 400 && result.status < 500)
+      if (!rejected) {
+        configReadbackRequired.current = true
+        setConfigUncertain(true)
         await fetchStatus()
       }
+      return request('Could not update Sentinel configuration', () => Promise.resolve(result), options)
     } finally {
-      feedWriteLock.current = false
+      feedWriteLock.current = configReadbackRequired.current
       setFeedWritePending(false)
     }
+  }
+
+  const handleToggleEnabled = async () => {
+    await saveConfig({ enabled: !status?.config?.enabled })
   }
 
   const handleStart = async () => {
@@ -165,23 +196,7 @@ export default function SentinelDashboard() {
     if (await request('Could not stop Sentinel', () => apiPost('/api/sentinel/stop'))) await fetchStatus()
   }
 
-  const updateFeeds = async (feeds, options) => {
-    if (feedWriteLock.current) return false
-    feedWriteLock.current = true
-    setFeedWritePending(true)
-    try {
-      const result = await request('Could not update feeds', () => apiPut('/api/sentinel/config', { feeds }), options)
-      if (result) {
-        configRevision.current += 1
-        setStatus(prev => ({ ...(prev || {}), config: { ...(prev?.config || {}), ...(result.config || {}), feeds } }))
-        await fetchStatus()
-      }
-      return Boolean(result)
-    } finally {
-      feedWriteLock.current = false
-      setFeedWritePending(false)
-    }
-  }
+  const updateFeeds = (feeds, options) => saveConfig({ feeds }, options)
 
   const handleAddFeed = async () => {
     // Feeds are saved as a whole list; without the loaded list this would
@@ -308,7 +323,7 @@ export default function SentinelDashboard() {
             </Button>
             <Button
               onClick={handleToggleEnabled}
-              disabled={!status?.config || feedWritePending}
+              disabled={!status?.config || configWriteBlocked}
               variant={status?.config?.enabled ? 'warning' : 'secondary'} size="compact" touchTarget="always" className="shrink-0"
             >
               {serviceEnabled ? 'Disable service' : 'Enable service'}
@@ -328,6 +343,13 @@ export default function SentinelDashboard() {
         </p>
       </div>
 
+      {configWarning && <p role="alert" className="text-yellow-300">{configWarning}</p>}
+      {configUncertain && (
+        <p role="alert" className="text-yellow-300">
+          Configuration save outcome is unknown. Feed and service changes are paused until status can be read back.
+        </p>
+      )}
+
       {/* Feed Configuration */}
       <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
         <h2 className="text-lg font-semibold text-white mb-3">RSS Feeds</h2>
@@ -339,7 +361,7 @@ export default function SentinelDashboard() {
                 aria-checked={feed.enabled}
                 aria-label={`Enable ${feed.name} feed`}
                 onClick={() => handleToggleFeed(i)}
-                disabled={feedWritePending}
+                disabled={configWriteBlocked}
                 className={`${TOUCH_BTN}`}
               >
                 <span className={`block w-8 h-5 rounded-full relative transition-colors ${feed.enabled ? 'bg-green-600' : 'bg-gray-600'}`}>
@@ -348,7 +370,7 @@ export default function SentinelDashboard() {
               </button>
               <span className="text-sm text-white font-medium min-w-0 flex-1 sm:flex-none sm:min-w-[120px] wrap-break-word">{feed.name}</span>
               <span className="order-last basis-full sm:order-0 sm:basis-0 text-xs text-gray-400 truncate min-w-0 sm:flex-1">{feed.url}</span>
-              <Button aria-label={`Remove ${feed.name} feed`} onClick={() => setConfirmation({ kind: 'feed', feed: { ...feed } })} disabled={feedWritePending} variant="quiet-danger" size="xs" touchTarget="always" className="shrink-0">Remove</Button>
+              <Button aria-label={`Remove ${feed.name} feed`} onClick={() => setConfirmation({ kind: 'feed', feed: { ...feed } })} disabled={configWriteBlocked} variant="quiet-danger" size="xs" touchTarget="always" className="shrink-0">Remove</Button>
             </div>
           ))}
         </div>
@@ -371,7 +393,7 @@ export default function SentinelDashboard() {
           />
           <Button
             onClick={handleAddFeed}
-            disabled={feedWritePending || !status?.config || !newFeedName.trim() || !newFeedUrl.trim()}
+            disabled={configWriteBlocked || !status?.config || !newFeedName.trim() || !newFeedUrl.trim()}
             variant="success" size="compact" touchTarget="always"
           >
             Add Feed

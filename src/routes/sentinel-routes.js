@@ -120,6 +120,7 @@ module.exports = (app, deps) => {
     }
 
     updateSentinelConfig(sanitized);
+    const savedConfig = getSentinelConfig();
     // Restart service with new config
     // stop() clears timers before persisting alert state and rethrows a save
     // failure; start() must still run so Sentinel is not left stopped.
@@ -141,10 +142,12 @@ module.exports = (app, deps) => {
       });
       return res.status(500).json({
         success: false,
+        config: savedConfig,
+        persistence: { configSaved: true, alertStateSaved: false },
         error: `Config saved and Sentinel restarted, but its alert state could not be written: ${stopError.message}`,
       });
     }
-    res.json({ success: true, config: getSentinelConfig() });
+    res.json({ success: true, config: savedConfig, persistence: { configSaved: true, alertStateSaved: true } });
   }));
 
   app.delete('/api/sentinel/alerts', (req, res) => {
