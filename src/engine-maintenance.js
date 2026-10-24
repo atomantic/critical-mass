@@ -85,6 +85,8 @@ const deriveLegacyKind = (reason) => {
 
 /** @type {MaintenanceWindow | null} */
 let window_ = null;
+// Monotonic fence even when two windows open in the same millisecond.
+let generation = 0;
 // A confirmed backup pause survives the IPC window TTL: stopped producers
 // cannot safely accept new mutations until resume finishes or the process restarts.
 let backupPaused = false;
@@ -111,6 +113,7 @@ const setEngineMaintenance = (payload = {}) => {
     window_ = null;
     return { success: true, maintenance: null };
   }
+  generation++;
   const requested = Number(payload.ttlMs);
   const ttlMs = Number.isFinite(requested) && requested > 0
     ? Math.min(requested, MAX_MAINTENANCE_TTL_MS)
@@ -177,6 +180,7 @@ module.exports = {
   setEngineRestoreQuiescing: (active) => { restoreQuiescing = Boolean(active); },
   setEngineBackupPaused: (active) => { backupPaused = Boolean(active); },
   getEngineMaintenance,
+  getEngineMaintenanceGeneration: () => generation,
   refuseDuringMaintenance,
   MAINTENANCE_SAFE_CHANNELS,
   MAINTENANCE_KINDS,

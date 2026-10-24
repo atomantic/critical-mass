@@ -212,8 +212,11 @@ const createEngineCallbacks = (exchange, pair) => ({
 // fill-consumer handover ordering around engine stop/start can be tested
 // directly against these production callbacks. Ledger ownership transfers
 // exclusively between the engine and the standalone service (issue #1008).
+let backupRecovery;
 const { autoResumeFund, resumeAfterBackup, getStartStatus, cancelStarts, settleStarts } = registerEngineLifecycleHandlers(ipcServer, {
   regimeEngines,
+  beforeStop: (key) => backupRecovery?.cancelFund(key),
+  beforeCancelAll: () => backupRecovery?.cancelAll(),
   resolvePair,
   fundKey,
   fundLabel,
@@ -237,7 +240,7 @@ const { autoResumeFund, resumeAfterBackup, getStartStatus, cancelStarts, settleS
 // Stop all running regime engines (used by backup restore). The reply is the
 // restore path's proof of writer quiescence, so a fund that failed to stop is
 // reported as failed and stays owned by this process (issue #429).
-registerEngineBackupHandlers(ipcServer, {
+backupRecovery = registerEngineBackupHandlers(ipcServer, {
   regimeEngines, getMarketFunds: getActiveMarketDataFunds,
   stopMarketServices: stopAllMarketDataServices, drainMarketStarts: drainMarketDataStarts,
   drainPendingWrites, startMarketService: startMarketDataService,

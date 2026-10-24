@@ -1,0 +1,1 @@
+- **[issue-1753] Recover funds after backup final-flush failures** — Retain the original engine and retry its final flush after storage recovers, using explicit resume or capped automatic backoff. Healthy funds resume independently; Stop, shutdown, replacement and newer maintenance fence stale recovery attempts.

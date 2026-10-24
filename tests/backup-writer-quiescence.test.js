@@ -22,6 +22,7 @@ afterEach(() => { maintenance.endMaintenance(); setEngineMaintenance({ active: f
 // spies reload flushed files and replace registry owners, without live adapters.
 const backupWorkflow = (t, { restart = async () => ({ success: true }), shuttingDown = () => false } = {}) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-backup-resume-'));
+  let clock = Date.now();
   const disconnects = [];
   const timers = [];
   const paths = { dataDir: path.join(root, 'data'), baseConfigFile: path.join(root, 'config.json') };
@@ -54,7 +55,7 @@ const backupWorkflow = (t, { restart = async () => ({ success: true }), shutting
   // Introduced after capture; cleanup must not stop or replace this owner.
   const unrelated = { stop: () => assert.fail('unrelated fund stopped'), flushForBackup: () => assert.fail('unrelated fund flushed') };
   const workflowLogger = { ...logger, error: (message, details) => errors.push({ message, details }) };
-  registerEngineBackupHandlers({ onRequest: (name, handler) => handlers.set(name, handler) }, {
+  const recovery = registerEngineBackupHandlers({ onRequest: (name, handler) => handlers.set(name, handler) }, {
     regimeEngines: registry,
     getMarketFunds: () => [{ exchange: 'coinbase', pair: 'SOL-USDC' }],
     stopMarketServices: () => events.push('stop-market'),
@@ -75,6 +76,7 @@ const backupWorkflow = (t, { restart = async () => ({ success: true }), shutting
     logger: workflowLogger,
     onGatewayDisconnect: (listener) => disconnects.push(listener),
     isShuttingDown: shuttingDown,
+    now: () => clock,
     setTimer: (fn, delay) => { const timer = { fn, delay, cleared: false }; timers.push(timer); return timer; },
     clearTimer: (timer) => { timer.cleared = true; },
   });
@@ -95,7 +97,12 @@ const backupWorkflow = (t, { restart = async () => ({ success: true }), shutting
     fs.rmSync(root, { recursive: true, force: true });
   });
   return {
-    registry, originals, unrelated, flushFailures, events, errors, replies,
+    registry, originals, unrelated, flushFailures, events, errors, replies, recovery,
+    fireRecovery: async (timer = timers.filter(timer => !timer.cleared)[0]) => {
+      timer.cleared = true;
+      clock += timer.delay;
+      await timer.fn();
+    },
     backup: (beforeCopy = () => {}) => run({
       exchangeIPCMap: { coinbase: client }, logger: workflowLogger,
       create: () => {
@@ -296,6 +303,114 @@ describe('coordinator and engine resume failure contracts', () => {
     assert.deepEqual(workflow.replies.find(({ channel }) => channel === 'engine:backup-resume').result, { success: false, failures });
     assert.deepEqual(workflow.errors.find(({ message }) => message === 'Backup completed but some engine writers could not resume').details, { failures });
     assert.deepEqual(workflow.errors.find(({ message }) => message === 'Backup test writer resume warnings').details, { warnings: result.warnings });
+    assert.equal((await workflow.resume()).success, false, 'a retained failed flush is not a successful recovery');
+    workflow.flushFailures.clear();
+    assert.equal((await workflow.resume()).success, true);
+    assert.deepEqual(workflow.registry.get('coinbase::BTC-USDC'), { generation: 1, replacement: true });
+    assert.equal(workflow.events.filter((event) => event === 'start:BTC-USDC').length, 1);
+    assert.equal(workflow.events.filter((event) => event === 'start:ETH-USDC').length, 1);
+    assert.deepEqual(await workflow.resume(), { success: true });
+  });
+
+  it('automatically recovers repaired storage once, with capped backoff and independent healthy funds', async (t) => {
+    const w = backupWorkflow(t);
+    await w.backup(() => w.flushFailures.add('BTC-USDC'));
+    const first = w.liveTimers()[0];
+    assert.equal(first.delay, 5_000);
+    for (let i = 0; i < 9; i++) {
+      assert.equal(w.liveTimers().length, 1);
+      await w.fireRecovery();
+      assert.ok(w.liveTimers()[0].delay <= 300_000);
+    }
+    assert.equal(w.liveTimers()[0].delay, 300_000);
+    const retry = w.liveTimers()[0];
+    w.flushFailures.clear();
+    await w.fireRecovery(retry);
+    assert.equal(w.liveTimers().length, 0);
+    assert.deepEqual(await w.resume(), { success: true });
+    await w.fireRecovery(retry); // a fired callback is stale too
+    for (const pair of ['BTC-USDC', 'ETH-USDC']) {
+      assert.equal(w.events.filter(event => event === `start:${pair}`).length, 1);
+    }
+    assert.equal(w.events.filter(event => event === 'resume-buffers').length, 1);
+  });
+
+  it('drains accepted writes again before recovering the retained generation', async (t) => {
+    const w = backupWorkflow(t);
+    await w.backup(() => w.flushFailures.add('BTC-USDC'));
+    const writer = w.deferWriter('BTC-USDC');
+    w.flushFailures.clear();
+    assert.equal((await w.resume()).success, false);
+    assert.equal(w.events.includes('start:BTC-USDC'), false);
+    await writer.settle();
+    const stale = w.liveTimers()[0];
+    const [a, b] = await Promise.all([w.resume(), w.resume()]);
+    assert.equal(a.success, true); assert.equal(b.success, true);
+    await w.fireRecovery(stale);
+    assert.deepEqual(w.registry.get('coinbase::BTC-USDC'), { generation: 1, replacement: true });
+    assert.equal(w.events.filter(event => event === 'start:BTC-USDC').length, 1);
+    assert.equal(w.liveTimers().length, 0);
+  });
+
+  it('drops a replaced owner without flushing or deleting its replacement', async (t) => {
+    const w = backupWorkflow(t);
+    await w.backup(() => w.flushFailures.add('BTC-USDC'));
+    const replacement = {};
+    w.registry.set('coinbase::BTC-USDC', replacement);
+    w.originals.get('coinbase::BTC-USDC').flushForBackup = () => assert.fail('stale flush');
+    await w.fireRecovery();
+    assert.equal(w.registry.get('coinbase::BTC-USDC'), replacement);
+    assert.equal(w.events.includes('start:BTC-USDC'), false);
+    assert.equal(w.liveTimers().length, 0);
+    assert.deepEqual(await w.resume(), { success: true });
+  });
+
+  for (const kind of ['backup', 'restore']) {
+    it(`defers retained-owner retries during a newer ${kind} window`, async (t) => {
+      const w = backupWorkflow(t);
+      await w.backup(() => w.flushFailures.add('BTC-USDC'));
+      w.flushFailures.clear();
+      setEngineMaintenance({ active: true, kind, reason: `${kind} later` });
+      await w.fireRecovery();
+      assert.equal(w.events.includes('start:BTC-USDC'), false);
+      assert.equal(w.liveTimers().length, 1);
+      setEngineMaintenance({ active: false });
+      await w.fireRecovery();
+      assert.equal(w.events.filter(event => event === 'start:BTC-USDC').length, 1);
+    });
+  }
+
+  it('fences old callbacks when a new backup captures retained owners', async (t) => {
+    const w = backupWorkflow(t);
+    await w.backup(() => w.flushFailures.add('BTC-USDC'));
+    const stale = w.liveTimers()[0];
+    // Remove the fixture's intentionally unrelated owner before another capture.
+    w.registry.delete('coinbase::ADA-USDC');
+    const healthy = w.registry.get('coinbase::ETH-USDC');
+    healthy.stop = async () => {};
+    healthy.flushForBackup = () => {};
+    setEngineMaintenance({ active: true, kind: 'backup', reason: 'backup newer' });
+    assert.equal((await w.request('engine:backup-pause')).success, false, 'storage still fails in the new pause');
+    w.flushFailures.clear();
+    await w.fireRecovery(stale);
+    assert.equal(w.events.includes('start:BTC-USDC'), false);
+    assert.equal((await w.resume()).success, true);
+    assert.equal(w.events.filter(event => event === 'start:BTC-USDC').length, 1);
+  });
+
+  it('fences a maintenance generation that changes during an awaited final flush', async (t) => {
+    const w = backupWorkflow(t);
+    await w.backup(() => w.flushFailures.add('BTC-USDC'));
+    const gate = deferred();
+    const owner = w.originals.get('coinbase::BTC-USDC');
+    owner.flushForBackup = () => gate.promise;
+    const retry = w.resume();
+    await new Promise(resolve => setTimeout(resolve, 10));
+    setEngineMaintenance({ active: true, kind: 'restore', reason: 'restore newer' });
+    gate.resolve();
+    assert.equal((await retry).success, false);
+    assert.equal(w.registry.get('coinbase::BTC-USDC'), owner);
+    assert.equal(w.events.includes('start:BTC-USDC'), false);
   });
 
   for (const mode of ['reject', 'negative acknowledgement']) {
@@ -377,7 +492,7 @@ describe('backup resume keeps automatic fund supervision', () => {
   const settle = () => new Promise((r) => setImmediate(r));
   const transient = () => Object.assign(new Error('connection reset'), { code: 'ECONNRESET' });
 
-  const supervisedWorkflow = (t) => {
+  const supervisedWorkflow = (t, { drain = (_, matches) => drainPendingWrites(0, matches) } = {}) => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-backup-supervised-'));
     const paths = { dataDir: path.join(root, 'data'), baseConfigFile: path.join(root, 'config.json') };
     const pairsConfig = Object.fromEntries(PAIRS.map((pair) => [pair, { enabled: true, productId: pair }]));
@@ -404,10 +519,14 @@ describe('backup resume keeps automatic fund supervision', () => {
         return plan ? plan : { success: true };
       },
       stop: async () => ({}),
-      flushForBackup: () => {},
+      flushForBackup: () => { if (flushFailures.has(pair)) throw Error('ENOSPC'); },
       getStatus: () => ({ mode: 'RUNNING' }),
     });
+    let backupRecovery;
+    const flushFailures = new Set();
     const lifecycle = registerEngineLifecycleHandlers(registry, {
+      beforeStop: (key) => backupRecovery?.cancelFund(key),
+      beforeCancelAll: () => backupRecovery?.cancelAll(),
       regimeEngines, resolvePair: (_, pair) => pair, fundKey, fundLabel, logger: () => logger,
       getFundConfig: (exchange, pair) => ({ exchange, pair }), getAdapter: () => ({ hasValidKeys: () => true }),
       loadFundRegimeState: () => ({ position: { lifecycle: LIFECYCLE.ACTIVE } }), LIFECYCLE,
@@ -418,9 +537,11 @@ describe('backup resume keeps automatic fund supervision', () => {
       setTimer: (run, delay) => { const id = ++timerId; timers.set(id, { run, delay }); return id; },
       clearTimer: (id) => timers.delete(id),
     });
-    registerEngineBackupHandlers(registry, {
+    backupRecovery = registerEngineBackupHandlers(registry, {
+      setTimer: (run, delay) => { const id = ++timerId; timers.set(id, { run, delay }); return id; },
+      clearTimer: (id) => timers.delete(id),
       regimeEngines, getMarketFunds: () => [], stopMarketServices: () => {}, drainMarketStarts: async () => {},
-      drainPendingWrites: (_, matches) => drainPendingWrites(0, matches), startMarketService: async () => ({ success: true }),
+      drainPendingWrites: drain, startMarketService: async () => ({ success: true }),
       resumeFund: lifecycle.resumeAfterBackup, getStartStatus: lifecycle.getStartStatus, drainStarts: lifecycle.settleStarts,
       logger,
     });
@@ -436,11 +557,11 @@ describe('backup resume keeps automatic fund supervision', () => {
       fs.rmSync(root, { recursive: true, force: true });
     });
     return {
-      ...lifecycle, handlers, regimeEngines, timers, plans, starts, readFlag, replies,
+      ...lifecycle, handlers, regimeEngines, timers, plans, starts, readFlag, replies, flushFailures,
       stop: (pair) => handlers.get('regime:stop')({}, 'coinbase', pair),
       resume: () => handlers.get('engine:backup-resume')(),
-      backup: (kind) => run({ kind, exchangeIPCMap: { coinbase: client },
-        create: () => (kind === 'archive' ? createBackup({ paths }) : createFundStateBackup({ paths })) }),
+      backup: (kind, beforeCopy = () => {}) => run({ kind, exchangeIPCMap: { coinbase: client },
+        create: () => { beforeCopy(); return kind === 'archive' ? createBackup({ paths }) : createFundStateBackup({ paths }); } }),
       fire: async () => {
         const [id, timer] = timers.entries().next().value;
         timers.delete(id);
@@ -517,6 +638,82 @@ describe('backup resume keeps automatic fund supervision', () => {
     await w.backup('fund-state');
     await w.cancelStarts({ shutdown: true });
     assert.equal(w.timers.size, 0);
+  });
+
+  it('retries a retained flush explicitly under the real startup supervisor', async (t) => {
+    const w = supervisedWorkflow(t);
+    await w.bootAll();
+    await w.backup('fund-state', () => w.flushFailures.add('BTC-USDC'));
+    const original = w.regimeEngines.get('coinbase::BTC-USDC');
+    assert.equal((await w.startFund({}, 'coinbase', 'BTC-USDC')).success, false);
+    assert.equal((await w.resume()).success, false);
+    assert.equal(w.regimeEngines.get('coinbase::BTC-USDC'), original);
+    w.flushFailures.clear();
+    assert.equal((await w.resume()).success, true);
+    assert.notEqual(w.regimeEngines.get('coinbase::BTC-USDC'), original);
+    assert.equal(w.getStartStatus('coinbase', 'BTC-USDC').state, 'running');
+    assert.equal(w.starts.get('BTC-USDC'), 2);
+    assert.equal(w.starts.get('ETH-USDC'), 2);
+    assert.equal(w.timers.size, 0);
+  });
+
+  for (const cancel of ['stop', 'shutdown', 'stop-all']) {
+    it(`${cancel} cancels retained flush recovery and fences stale timer callbacks`, async (t) => {
+      const w = supervisedWorkflow(t);
+      await w.bootAll();
+      await w.backup('fund-state', () => w.flushFailures.add('BTC-USDC'));
+      const original = w.regimeEngines.get('coinbase::BTC-USDC');
+      assert.ok(original);
+      assert.equal(w.timers.size, 1);
+      const stale = [...w.timers.values()][0].run;
+      if (cancel === 'stop') assert.equal((await w.stop('BTC-USDC')).success, true);
+      else await w.cancelStarts(cancel === 'shutdown' ? { shutdown: true } : { clearDesired: true });
+      w.flushFailures.clear();
+      stale(); await settle();
+      assert.equal(w.starts.get('BTC-USDC'), 1, 'retained owner never restarts after cancellation');
+      assert.equal(w.timers.size, 0);
+      assert.deepEqual(await w.resume(), { success: true });
+      if (cancel === 'stop') assert.equal(w.readFlag('BTC-USDC'), false);
+    });
+  }
+
+  it('does not join a tracked Stop coordinator that is joining retained recovery', async (t) => {
+    const w = supervisedWorkflow(t, { drain: (_, matches) => drainPendingWrites(1_000, matches) });
+    await w.bootAll();
+    await w.backup('fund-state', () => w.flushFailures.add('BTC-USDC'));
+    const gate = deferred();
+    const writer = trackPendingWrite('engine-booking:BTC-USDC', () => gate.promise);
+    const retry = w.resume();
+    await settle();
+    const stop = trackPendingWrite('ipc:regime:stop', () => w.stop('BTC-USDC'));
+    await settle();
+    gate.resolve();
+    await writer;
+    assert.equal((await stop).success, true);
+    assert.equal((await retry).success, true, 'cancelled recovery drains without waiting for Stop itself');
+    assert.equal(w.starts.get('BTC-USDC'), 1);
+  });
+
+  it('joins an in-flight retained flush before explicit stop handover', async (t) => {
+    const w = supervisedWorkflow(t);
+    await w.bootAll();
+    await w.backup('fund-state', () => w.flushFailures.add('BTC-USDC'));
+    const owner = w.regimeEngines.get('coinbase::BTC-USDC');
+    const gate = deferred();
+    const entered = deferred();
+    owner.flushForBackup = () => { entered.resolve(); return gate.promise; };
+    const retry = w.resume();
+    await entered.promise;
+    let stopped = false;
+    const stop = w.stop('BTC-USDC').then(result => { stopped = true; return result; });
+    await settle();
+    assert.equal(stopped, false);
+    gate.resolve();
+    await retry;
+    assert.equal((await stop).success, true);
+    assert.equal(w.starts.get('BTC-USDC'), 1);
+    assert.equal(w.regimeEngines.has('coinbase::BTC-USDC'), false);
+    assert.equal(w.readFlag('BTC-USDC'), false);
   });
 
   it('keeps permanent restart failures operator-blocked', async (t) => {
@@ -599,6 +796,19 @@ describe('abandoned backup pause recovery', () => {
     fire(timer);
     await settle();
     assertResumedOnce(workflow);
+  });
+
+  it('does not close a newer restore window or restart its owners from an old pause timer', async (t) => {
+    const w = backupWorkflow(t);
+    await openAndPause(w);
+    const stale = w.liveTimers()[0];
+    setEngineMaintenance({ active: true, kind: 'restore', reason: 'restore newer' });
+    await w.fireRecovery(stale);
+    await settle();
+    assert.equal(getEngineMaintenance().kind, 'restore');
+    assert.equal(w.events.some(event => event.startsWith('start:')), false);
+    for (const [key, engine] of w.originals) assert.equal(w.registry.get(key), engine);
+    assert.equal((await w.resume()).success, false, 'new maintenance keeps the retained owners pending');
   });
 
   it('keeps retrying an abandoned resume while writers are still draining', async (t) => {

@@ -1,5 +1,5 @@
 // @ts-check
-const { getEngineMaintenance, setEngineMaintenance, setEngineBackupPaused, DEFAULT_MAINTENANCE_TTL_MS } = require('./engine-maintenance');
+const { getEngineMaintenance, getEngineMaintenanceGeneration, refuseDuringMaintenance, setEngineMaintenance, setEngineBackupPaused, DEFAULT_MAINTENANCE_TTL_MS } = require('./engine-maintenance');
 const { IPC_CHANNELS } = require('./ipc/ipc-protocol');
 
 // Grace after the gateway's maintenance window expires before this process
@@ -17,8 +17,13 @@ const registerEngineBackupHandlers = (registry, {
 }) => {
   let paused = null;
   let pausePromise = null;
+  let pauseGeneration = null;
   let resumePromise = null;
   let recoveryTimer = null;
+  let timerGeneration = 0;
+  // Keep the only owner of unflushed state separate from replacement-start
+  // failures. Healthy funds and passive buffers can resume independently.
+  const failedFlushes = new Map();
   // Funds whose post-backup restart failed; reported until they run again,
   // are stopped by the operator, or the process restarts.
   const unresumed = new Set();
@@ -40,12 +45,18 @@ const registerEngineBackupHandlers = (registry, {
     try { return await Promise.race([Promise.resolve(drainStarts()).then(() => true), expired]); } finally { clearTimeout(timer); }
   };
   const clearRecoveryTimer = () => {
+    timerGeneration++;
     if (recoveryTimer) clearTimer(recoveryTimer);
     recoveryTimer = null;
   };
   const scheduleRecovery = (why, delayMs) => {
     clearRecoveryTimer();
-    recoveryTimer = setTimer(() => { recoveryTimer = null; void recoverAbandonedPause(why); }, delayMs);
+    const generation = timerGeneration;
+    recoveryTimer = setTimer(() => {
+      if (generation !== timerGeneration) return;
+      recoveryTimer = null;
+      void recoverAbandonedPause(why);
+    }, delayMs);
     recoveryTimer?.unref?.();
   };
   /** A pause that captured nothing (or finished resuming) only holds the gate. */
@@ -55,6 +66,87 @@ const registerEngineBackupHandlers = (registry, {
     setEngineBackupPaused(false);
   };
 
+  const owns = ({ key, engine, cancelled }) => !cancelled && !isShuttingDown() && regimeEngines.get(key) === engine;
+  const flushFailures = () => {
+    for (const [key, owner] of failedFlushes) if (!owns(owner)) failedFlushes.delete(key);
+    return [...failedFlushes.values()].map(({ key, error }) => ({ fund: key, error }));
+  };
+  const scheduleFlushRecovery = () => {
+    clearRecoveryTimer();
+    flushFailures();
+    if (!failedFlushes.size || isShuttingDown()) return;
+    const generation = timerGeneration;
+    const delay = Math.max(0, Math.min(...[...failedFlushes.values()].map(owner => owner.nextRetryAt)) - now());
+    recoveryTimer = setTimer(() => {
+      if (generation !== timerGeneration) return;
+      recoveryTimer = null;
+      return retryFailedFlushes(false);
+    }, delay);
+    recoveryTimer?.unref?.();
+  };
+  const deferOwner = (owner, error) => {
+    owner.error = error;
+    owner.nextRetryAt = now() + Math.min(RECOVERY_RETRY_MS * 2 ** Math.min(owner.attempts++, 6), 300_000);
+    failedFlushes.set(owner.key, owner);
+  };
+  /** Final flush and identity check must precede every replacement. */
+  const resumeOwner = async (owner, current) => {
+    if (!owns(owner)) return null;
+    if (!current()) {
+      const error = 'A newer maintenance window fenced backup recovery';
+      deferOwner(owner, error);
+      return { fund: owner.key, error };
+    }
+    const { key, engine } = owner;
+    let flushError;
+    try { await engine.flushForBackup(); }
+    catch (err) { flushError = err; }
+    // Stop, shutdown, replacement or a new maintenance window may have won
+    // while the flush settled. Never delete the winner or admit a stale start.
+    if (!owns(owner)) { failedFlushes.delete(key); return null; }
+    if (flushError || !current()) {
+      const error = flushError?.message || 'A newer maintenance window fenced backup recovery';
+      deferOwner(owner, error);
+      return { fund: key, error };
+    }
+    failedFlushes.delete(key);
+    const [exchange, pair] = key.split('::');
+    regimeEngines.delete(key);
+    let result;
+    try { result = await resumeFund(exchange, pair); }
+    catch (err) { result = { success: false, error: err.message }; }
+    if (result?.success) { unresumed.delete(key); return null; }
+    unresumed.add(key);
+    return { exchange, pair, error: result?.error || 'No restart acknowledgement', ...recovery(getStartStatus(exchange, pair)) };
+  };
+  const retryFailedFlushes = (explicit = true) => {
+    if (resumePromise) return resumePromise;
+    clearRecoveryTimer();
+    resumePromise = (async () => {
+      const generation = getEngineMaintenanceGeneration();
+      const current = () => generation === getEngineMaintenanceGeneration() && !refuseDuringMaintenance('regime:start');
+      const owners = [...failedFlushes.values()].filter(owner => explicit || owner.nextRetryAt <= now());
+      // A newer maintenance owner (or retained restore journal) owns writes.
+      // Drain accepted work again: callbacks can arrive after the first resume.
+      // Stop coordinators cancel this recovery and join it before handover;
+      // joining their IPC promises here would form a cycle. Their fund owners
+      // are cancelled synchronously and cannot enter resumeOwner below.
+      const drain = current() && !isShuttingDown() ? await drainPendingWrites(30_000,
+        entry => !['ipc:regime:stop', 'ipc:regime:stop-all'].includes(entry.label)) : null;
+      for (const owner of owners) {
+        if (!owns(owner)) { failedFlushes.delete(owner.key); continue; }
+        if (!drain?.drained || !current()) {
+          deferOwner(owner, owner.error);
+          continue;
+        }
+        await resumeOwner(owner, current);
+      }
+      const failures = [...flushFailures(), ...pendingRecovery()];
+      return failures.length ? { success: false, failures } : { success: true };
+    })().finally(() => { resumePromise = null; scheduleFlushRecovery(); });
+    return resumePromise;
+  };
+
   /** Restart every captured owner; shared by the gateway's resume and self-recovery. */
   const resumeWriters = () => {
     if (resumePromise) return resumePromise;
@@ -62,28 +154,22 @@ const registerEngineBackupHandlers = (registry, {
       const drain = await drainPendingWrites();
       if (!drain.drained) return { success: false, error: 'Engine writers are still draining; funds remain stopped' };
       const failures = [];
-      for (const { key, engine } of paused.funds) {
-        const flushError = await Promise.resolve().then(() => engine.flushForBackup()).then(() => null, (err) => err);
-        if (flushError) { failures.push({ fund: key, error: flushError.message }); continue; }
-        const [exchange, pair] = key.split('::');
-        // Lifecycle start must replace the stopped object and reload its final files.
-        regimeEngines.delete(key);
-        const result = await Promise.resolve().then(() => resumeFund(exchange, pair)).catch((err) => ({ success: false, error: err.message }));
-        if (result?.success) { unresumed.delete(key); continue; }
-        unresumed.add(key);
-        failures.push({ exchange, pair, error: result?.error || 'No restart acknowledgement', ...recovery(getStartStatus(exchange, pair)) });
+      const current = () => paused.generation === getEngineMaintenanceGeneration();
+      for (const owner of paused.funds) {
+        const failure = await resumeOwner(owner, current);
+        if (failure) failures.push(failure);
       }
       for (const { exchange, pair } of paused.marketFunds) {
-        if (regimeEngines.has(`${exchange}::${pair}`)) continue;
+        if (!current() || isShuttingDown() || regimeEngines.has(`${exchange}::${pair}`)) continue;
         const result = await Promise.resolve().then(() => startMarketService(exchange, pair)).catch((err) => ({ success: false, error: err.message }));
         if (!result?.success) failures.push({ exchange, pair, error: result?.error || 'No restart acknowledgement' });
       }
-      resumeBuffers();
+      if (current() && !isShuttingDown()) resumeBuffers();
       paused = null;
       releaseGate();
       if (failures.length) logger.error('Backup completed but some engine writers could not resume', { failures });
       return { success: failures.length === 0, failures };
-    })().finally(() => { resumePromise = null; });
+    })().finally(() => { resumePromise = null; if (!paused) scheduleFlushRecovery(); });
     return resumePromise;
   };
 
@@ -96,13 +182,13 @@ const registerEngineBackupHandlers = (registry, {
    */
   const recoverAbandonedPause = async (why) => {
     if (isShuttingDown()) return;
-    const ownerWindow = getEngineMaintenance();
+    const ownerGeneration = pauseGeneration;
     await pausePromise;
     if (!pausePromise || resumePromise || isShuttingDown()) return;
     logger.warn(`Backup pause has no gateway owner (${why}); resuming engine writers`, { reason: why });
     // The owner's transport window closes with it; a newer gateway's window stays.
-    if (ownerWindow && getEngineMaintenance()?.startedAt === ownerWindow.startedAt) setEngineMaintenance({ active: false });
-    if (!paused) { releaseGate(); return; }
+    if (getEngineMaintenanceGeneration() === ownerGeneration) setEngineMaintenance({ active: false });
+    if (!paused) { releaseGate(); scheduleFlushRecovery(); return; }
     const result = await resumeWriters();
     if (paused) scheduleRecovery(why, RECOVERY_RETRY_MS);
     else if (!result.success) logger.error('Self-resume after an abandoned backup pause left funds stopped', { reason: why, failures: result.failures });
@@ -118,6 +204,10 @@ const registerEngineBackupHandlers = (registry, {
     await resumePromise;
     if (!getEngineMaintenance()) return { success: false, error: 'Maintenance window is required' };
     if (pausePromise) return pausePromise;
+    // The new capture assumes ownership of retained objects; fence all old
+    // callbacks before it drains and stops this generation.
+    clearRecoveryTimer();
+    pauseGeneration = getEngineMaintenanceGeneration();
     setEngineBackupPaused(true);
     // The gateway bounds its own copy by this window; past it, nobody owns the pause.
     const expiresAt = getEngineMaintenance()?.expiresAt ?? now() + DEFAULT_MAINTENANCE_TTL_MS;
@@ -128,7 +218,8 @@ const registerEngineBackupHandlers = (registry, {
       // Automatic retries are not IPC requests: let an in-flight one settle so
       // its engine (if any) is captured and stopped like every other owner.
       if (!await settleStarts(30_000)) return { success: false, error: 'Fund startups are still running' };
-      paused = { funds: [...regimeEngines].map(([key, engine]) => ({ key, engine })), marketFunds: getMarketFunds() };
+      failedFlushes.clear();
+      paused = { generation: pauseGeneration, funds: [...regimeEngines].map(([key, engine]) => ({ key, engine, attempts: 0 })), marketFunds: getMarketFunds() };
       stopMarketServices();
       const stopped = await Promise.allSettled(paused.funds.map(({ engine }) => engine.stop({ keepHeartbeat: true })));
       await drainMarketStarts();
@@ -149,11 +240,24 @@ const registerEngineBackupHandlers = (registry, {
     if (!paused) {
       await resumePromise;
       releaseGate();
+      if (failedFlushes.size) return retryFailedFlushes();
       // A repeat resume must not report a fund still awaiting recovery as restored.
       const failures = pendingRecovery();
       return failures.length ? { success: false, failures } : { success: true };
     }
     return resumeWriters();
   });
+  // Cancellation happens before awaiting the shared attempt. Lifecycle callers
+  // then join it before flushing/stopping or handing ownership to a consumer.
+  const cancelFund = (key) => {
+    for (const owner of [...failedFlushes.values(), ...(paused?.funds || [])]) {
+      if (key === undefined || owner.key === key) { owner.cancelled = true; failedFlushes.delete(owner.key); }
+    }
+    if (key === undefined) unresumed.clear();
+    else unresumed.delete(key);
+    if (!paused) scheduleFlushRecovery();
+    return resumePromise;
+  };
+  return { cancelFund, cancelAll: () => cancelFund() };
 };
 module.exports = { registerEngineBackupHandlers, ABANDON_GRACE_MS, RECOVERY_RETRY_MS };
