@@ -64,7 +64,20 @@ limits; see [Simulation endpoint limits](docs/simulation-limits.md).
 - Node.js 22.12.0 or newer. Production accounting synchronously loads shared ESM modules, and the locked admin toolchain also requires Node 22.12 or newer on the Node 22 line.
 - PM2 available on your `PATH` for the production commands below (installed separately from the project dependencies)
 - `lsof` for the native npm startup port checks
+- `zip` and `unzip` for creating, listing, and restoring full backup archives
 - Exchange API key with View and Trade permissions
+
+For a native install, confirm both archive tools are available on `PATH` before
+relying on full backups or restores:
+
+```bash
+command -v zip
+command -v unzip
+```
+
+The Docker image already installs `zip` and `unzip`. Hourly fund-state snapshots
+are separate JSON recovery points and do not use these tools; they are not a
+replacement for a full backup archive.
 
 ## Installation
 
