@@ -34,7 +34,35 @@ const sanitizeLink = (link) => {
 const childText = (node, name) => text(child(node, name));
 
 /** Feed description text: markup stripped, capped at 500 characters. */
-const plainDescription = (value) => value.replace(/<[^>]+>/g, '').trim().slice(0, 500);
+const plainDescription = (value) => {
+  let result = '';
+  let lastTextLength = 0;
+  let mayHaveTags = true;
+  for (let i = 0; i < value.length; i++) {
+    const character = value[i];
+    if (mayHaveTags && character === '<') {
+      const end = value.indexOf('>', i + 1);
+      if (end > i + 1) {
+        i = end;
+        continue;
+      }
+      // No closing bracket remains: keep the literal suffix without searching
+      // it again for each '<'. Empty '<>' also stays literal, as before.
+      if (end === -1) mayHaveTags = false;
+    }
+    const whitespace = character.trim() === '';
+    if (!result.length && whitespace) continue;
+    if (!whitespace) {
+      if (result.length === 500) return result;
+      lastTextLength = result.length + 1;
+    }
+    if (result.length < 500) result += character;
+    if (lastTextLength === 500) return result;
+  }
+  // Keep scanning after a whitespace-filled cap until text or EOF decides
+  // whether those spaces survive trim(). The output buffer stays bounded.
+  return result.slice(0, lastTextLength);
+};
 
 /** Normalize independently so one malformed item cannot suppress the feed. */
 const normalizeItems = (items, normalize, feed) => items.flatMap(item => {
