@@ -331,6 +331,7 @@ describe('placeWithUnknownReconcile — Coinbase response-body boundary end-to-e
           return {
             ok: true, status: 200, statusText: 'OK',
             json: async () => ({
+              has_next: false,
               orders: [{
                 order_id: 'real-428', client_order_id: sentClientOrderId, status: 'FILLED',
                 filled_size: '0.002', filled_value: '100', average_filled_price: '50000',

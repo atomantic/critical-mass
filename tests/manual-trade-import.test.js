@@ -19,6 +19,8 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const crypto = require('crypto');
+const { createCoinbaseAdapter } = require('../src/adapters/coinbase/api');
 
 const migration = require('../src/migration');
 const originalGetExchangeDataDir = migration.getExchangeDataDir;
@@ -550,6 +552,97 @@ describe('Manual Trade Import', () => {
         assert.equal(retry.success, true);
         assert.equal(adapter.calls.placeLimitBuy.length, 1);
       });
+
+      // Join the real REST lookup to the disk-backed importer after a crash.
+      // Stub only fetch: no live exchange traffic or replacement POST is allowed.
+      const withCoinbaseHistory = async (page, run) => {
+        const { privateKey } = crypto.generateKeyPairSync('ec', {
+          namedCurve: 'prime256v1',
+          privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+          publicKeyEncoding: { type: 'spki', format: 'pem' },
+        });
+        const keysPath = path.join(tmpDir, 'coinbase-test-keys.json');
+        fs.writeFileSync(keysPath, JSON.stringify({ name: 'organizations/test/apiKeys/test-key', privateKey }));
+        const originalFetch = global.fetch;
+        const calls = [];
+        global.fetch = async (url, options) => {
+          const parsed = new URL(url);
+          calls.push(parsed);
+          assert.equal(options.method, 'GET', 'recovery must not submit a replacement buy');
+          assert.equal(parsed.pathname, '/api/v3/brokerage/orders/historical/batch');
+          assert.equal(parsed.searchParams.get('product_ids'), PAIR);
+          const body = page(parsed, calls);
+          return { ok: true, status: 200, json: async () => body };
+        };
+        try {
+          await run(createCoinbaseAdapter(keysPath, { sleep: async () => {} }), calls);
+        } finally {
+          global.fetch = originalFetch;
+        }
+      };
+
+      it('cold-recovers an older accepted Coinbase order beyond 100 newer orders without losing ownership (#1731)', async () => {
+        const { adapter: placedAdapter } = createExchange();
+        const crashed = await crashAfterAcceptance(placedAdapter);
+        const intent = crashed.recoveryIntent;
+        const cursor = 'older/+?=& orders';
+        await withCoinbaseHistory((url) => {
+          if (!url.searchParams.has('cursor')) return {
+            orders: Array.from({ length: 100 }, (_, i) => ({ client_order_id: `newer-${i}` })),
+            has_next: true, cursor,
+          };
+          assert.equal(url.searchParams.get('cursor'), cursor);
+          return { has_next: false, orders: [{
+            order_id: 'recovery-1', client_order_id: intent.clientOrderId, product_id: PAIR,
+            side: 'BUY', status: 'OPEN', filled_size: '0.001',
+            filled_value: '95', average_filled_price: '95000', completion_percentage: '33.33',
+          }] };
+        }, async (adapter, calls) => {
+          const swept = await createImporter({ adapter }).recoverPendingRecoveryIntents();
+          assert.deepEqual(swept.map(({ adopted, orderId }) => ({ adopted, orderId })),
+            [{ adopted: true, orderId: 'recovery-1' }]);
+          store = reloadStore();
+          const recovered = store.getById(crashed.id);
+          assert.equal(recovered.status, STATUS.BUY_PENDING);
+          assert.equal(recovered.buyOrderId, 'recovery-1');
+          assert.equal(recovered.buyPrice, intent.price);
+          assert.equal(recovered.buySize, intent.size);
+          assert.equal(recovered.recoveryIntent, null, 'ownership and intent conversion survive a fresh disk load');
+          assert.deepEqual(await createImporter({ adapter }).recoverPendingRecoveryIntents(), []);
+          assert.equal(calls.length, 2, 'a second cold sweep does not look up or replace the adopted buy');
+          assert.equal(placedAdapter.calls.placeLimitBuy.length, 1);
+        });
+      });
+
+      const incompleteHistories = [
+        ['network failure', () => { throw new Error('socket disconnected'); }],
+        ['repeated cursor', () => ({ orders: [], has_next: true, cursor: 'next' })],
+        ['missing cursor', () => ({ orders: [], has_next: true })],
+        ['malformed page', () => ({ has_next: false })],
+        ['64-page exhaustion', (_url, calls) => ({ orders: [], has_next: true, cursor: `next-${calls.length}` })],
+      ];
+      for (const [name, laterPage] of incompleteHistories) {
+        it(`retains a cold recovery intent through Coinbase ${name} (#1731)`, async () => {
+          const { adapter: placedAdapter } = createExchange();
+          const crashed = await crashAfterAcceptance(placedAdapter);
+          const intent = { ...crashed.recoveryIntent };
+          await withCoinbaseHistory((url, calls) => !url.searchParams.has('cursor')
+            ? { orders: [], has_next: true, cursor: 'next' }
+            : laterPage(url, calls), async (adapter) => {
+            for (let attempt = 0; attempt < 2; attempt++) {
+              const swept = await createImporter({ adapter }).recoverPendingRecoveryIntents();
+              assert.equal(swept[0].blocked, true);
+              assert.equal(swept[0].released, undefined);
+              store = reloadStore();
+              const blocked = store.getById(crashed.id);
+              assert.equal(blocked.buyOrderId, null);
+              assert.deepEqual(blocked.recoveryIntent, intent, 'a partial scan cannot erase durable ownership');
+              assert.match(blocked.lastCheck.error, /lookup inconclusive/);
+            }
+            assert.equal(placedAdapter.calls.placeLimitBuy.length, 1);
+          });
+        });
+      }
 
       it('adopts a thrown placement whose order actually landed instead of re-placing it', async () => {
         const { adapter, book } = createExchange();
