@@ -28,7 +28,7 @@ const NEBULA_FRAG = /* glsl */`
     vec2 uv = gl_PointCoord - vec2(0.5);
     float d = length(uv);
     if (d > 0.5) discard;
-    float a = smoothstep(0.5, 0.05, d) * 0.5;
+    float a = (1.0 - smoothstep(0.05, 0.5, d)) * 0.5;
     gl_FragColor = vec4(vColor, a);
   }
 `
