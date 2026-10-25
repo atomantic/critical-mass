@@ -16,6 +16,40 @@ const config = { productId: 'BTC-USD', regime: { enabled: false, ladderMaxAthDro
 const stubSave = (status, body) => vi.stubGlobal('fetch', vi.fn(async (url, options = {}) => options.method ? response(status, body) : response(200, { presets: {} })))
 
 describe('config save response handling', () => {
+  it('keeps labelled header switches and the regime explanation through dirty, pending and reset states', async () => {
+    let finishToggle
+    vi.stubGlobal('fetch', vi.fn((url, options = {}) => options.method === 'PATCH'
+      ? new Promise(resolve => { finishToggle = () => resolve(response(200, {})) })
+      : Promise.resolve(response(200, { presets: {} }))))
+    const onSave = vi.fn()
+    const view = render(<ConfigEditor config={{ ...config, dryRun: false }} strategy="regime" onSave={onSave} />)
+    const enabled = screen.getByRole('switch', { name: 'Enabled' })
+    const dryRun = screen.getByRole('switch', { name: 'Dry Run' })
+    const hint = 'Shows the fund as Ready in the fund list. Does not start or stop trading; use Start / Stop in the fund header.'
+    expect(document.getElementById(enabled.getAttribute('aria-describedby')).textContent).toBe(hint)
+
+    fireEvent.change(screen.getByLabelText('Product ID'), { target: { value: 'ETH-USD' } })
+    expect(screen.getByText('Unsaved changes')).toBeTruthy()
+    fireEvent.click(dryRun)
+    expect(enabled.disabled).toBe(true)
+    expect(dryRun.disabled).toBe(true)
+    expect(screen.getByRole('button', { name: 'Reset', exact: true }).disabled).toBe(true)
+    expect(screen.getByText(hint)).toBeTruthy()
+    expect(dryRun.getAttribute('aria-checked')).toBe('true')
+    await act(async () => finishToggle())
+
+    expect(enabled.disabled).toBe(false)
+    expect(dryRun.disabled).toBe(false)
+    expect(onSave).toHaveBeenCalledTimes(1)
+    expect(screen.getByLabelText('Product ID').value).toBe('ETH-USD')
+    // The parent refreshes the saved snapshot after a confirmed toggle.
+    view.rerender(<ConfigEditor config={{ ...config, dryRun: true }} strategy="regime" onSave={onSave} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Reset', exact: true }))
+    expect(screen.getByLabelText('Product ID').value).toBe('BTC-USD')
+    expect(screen.queryByText('Unsaved changes')).toBeNull()
+    expect(dryRun.getAttribute('aria-checked')).toBe('true')
+  })
+
   it.each([
     ['regime', 'Saved settings are applied to the running engine immediately. A Dry Run change takes effect after the engine restarts.'],
     ['dca', 'Changes take effect on the next run. The bot will not make additional trades this interval if it has already run.'],
