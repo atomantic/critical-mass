@@ -263,7 +263,7 @@ const REGIME_DEFAULTS = {
   longTermLookbackDays: 365,           // History depth for percentile/drawdown/z-score
   longTermUpdateIntervalMs: 3600000,   // Refresh cadence for long-term candle store (1h)
   aggressivenessSuggestionHours: 6,   // Stable divergence before an advisory (hours)
-  autoAggressivenessEnabled: false,    // Phase 3: actually modulate sizing from the score
+  autoAggressivenessEnabled: false,    // Phase 3: modulate reactive-entry sizing from the score (ladder entries unaffected)
   autoAggressivenessMinMult: 0.5,      // Size multiplier at depression score 0 (initial narrow range)
   autoAggressivenessMaxMult: 1.5,      // Size multiplier at depression score 1, before the capital governor
   autoAggressivenessGovernorStart: 0.4, // Deployed fraction of maxUsdcDeployed where the boost starts fading
