@@ -126,12 +126,12 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
   const [expandedPresets, setExpandedPresets] = useState(new Set())
   const prevExchangeRef = useRef(exchange)
   const prevStrategyRef = useRef(strategy)
-  // Count of in-flight configuration writes. Full-form saves AND both
+  // Count of in-flight configuration operations, including restart. Saves and both
   // top-level toggle auto-saves share this one ref so the write paths can
   // never overlap — a slow full save can no longer be raced by a toggle
   // PATCH (or vice versa), which previously let Save submit a PUT containing
   // an unconfirmed optimistic toggle value (#455). It is checked synchronously
-  // at the top of handleSave/handleToggleDryRun/handleToggleEnabled, so a
+  // at the top of every save, toggle and restart handler, so a
   // rapid double-click can't slip a second write in before React commits the
   // disabled controls. It also still guards the background-refresh sync
   // effect below: the summary poll refreshes initialConfig every ~30s, and
@@ -169,10 +169,10 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
   // navigation without any stored flag to go stale. dryRun only takes effect at
   // engine construction (the engine captures it once and picks its live-vs-paper
   // executor), so a config/engine mismatch is exactly the restart trigger.
-  const restartNeeded = isRegime && engineRunning === true && typeof engineDryRun === 'boolean' && config?.dryRun !== engineDryRun
+  const restartNeeded = isRegime && engineRunning === true && typeof engineDryRun === 'boolean' && baselineRef.current?.dryRun !== engineDryRun
 
   // Sync with initialConfig when not dirty (e.g., server-side refresh). Skip
-  // while any configuration write (full save or toggle auto-save) is in
+  // while a save, toggle or restart operation is in
   // flight so a background poll can't clobber the optimistic/pending value
   // before the write resolves.
   useEffect(() => {
@@ -361,8 +361,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
         adoptToggle(result.config)
         dismissRestartWarning()
         notify('success', `${label} saved`)
-        // restartNeeded is derived from engine vs saved state — the optimistic
-        // config update plus onSave's refetch drive the banner; nothing to set.
+        // The acknowledged baseline and onSave's refetch drive the banner.
         onSave?.()
       } else if (result.persisted === true) {
         // A toggle acknowledges only its own field. Updating both copies keeps
@@ -387,38 +386,46 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
   // and never re-derives it on a config update. start refuses if already
   // running, so stop first; an engine that is already stopped just starts fresh.
   const handleRestartEngine = async () => {
+    if (pendingWriteRef.current > 0) return
+    pendingWriteRef.current += 1
     setRestarting(true)
-    const stop = await apiPost(`/api/${exchange}/regime/stop${pairQuery}`, undefined, { allowEmpty: true })
-    if (!stop.ok) {
-      const stopErr = stop.data || {}
-      const alreadyStopped = typeof stopErr.error === 'string' && stopErr.error.includes('not running')
-      if (!alreadyStopped) {
-        // Starting now would only answer "already running" and hide why the
-        // stop failed, while the engine keeps trading in its previous mode.
-        const reason = stop.status
-          ? (stopErr.error || `HTTP ${stop.status}`)
-          : 'the server is unreachable'
-        notify('error', `Could not stop the engine to apply the change (${reason}). It may still be running with its previous Dry Run setting — retry the restart.`)
-        onRestart?.()
-        setRestarting(false)
-        return
+    const intendedDryRun = baselineRef.current?.dryRun
+    try {
+      const stop = await apiPost(`/api/${exchange}/regime/stop${pairQuery}`, undefined, { allowEmpty: true })
+      if (!stop.ok) {
+        const stopErr = stop.data || {}
+        const alreadyStopped = typeof stopErr.error === 'string' && stopErr.error.includes('not running')
+        if (!alreadyStopped) {
+          // Never start after an unconfirmed stop: the old engine may still trade.
+          const reason = stop.status
+            ? (stopErr.error || `HTTP ${stop.status}`)
+            : 'the server is unreachable'
+          notify('error', `Could not stop the engine to apply the change (${reason}). It may still be running with its previous Dry Run setting — retry the restart.`)
+          onRestart?.()
+          return
+        }
       }
+      const start = await apiPost(`/api/${exchange}/regime/start${pairQuery}`, undefined, { allowEmpty: true })
+      if (start.ok) {
+        const refreshed = await apiGet(`/api/${exchange}/regime/status${pairQuery}`)
+        const status = refreshed.data?.status
+        if (refreshed.ok && status?.isRunning === true && typeof intendedDryRun === 'boolean' && status.isDryRun === intendedDryRun) {
+          dismissRestartWarning()
+          notify('success', 'Engine restarted — change applied')
+        } else {
+          warnRestartNeeded('Restart requested, but the running engine could not be confirmed with the saved Dry Run setting. Refresh engine status before trading or retrying.')
+        }
+        onSave?.()
+        onRestart?.()
+      } else {
+        const reason = start.data?.error || (start.status ? `HTTP ${start.status}` : 'the server is unreachable')
+        notify('error', `Engine stopped but did not start again (${reason}) — start it manually from the dashboard.`)
+        onRestart?.()
+      }
+    } finally {
+      pendingWriteRef.current -= 1
+      setRestarting(false)
     }
-    const start = await apiPost(`/api/${exchange}/regime/start${pairQuery}`, undefined, { allowEmpty: true })
-    if (start.ok) {
-      dismissRestartWarning()
-      notify('success', 'Engine restarted — change applied')
-      onSave?.()
-      onRestart?.() // refresh engine status so the derived restart banner clears
-    } else {
-      // Stop succeeded, so the engine is now STOPPED rather than running its
-      // old mode. Say so explicitly — "failed to restart" alone would imply
-      // nothing changed.
-      const reason = start.data?.error || (start.status ? `HTTP ${start.status}` : 'the server is unreachable')
-      notify('error', `Engine stopped but did not start again (${reason}) — start it manually from the dashboard.`)
-      onRestart?.() // refresh engine status to reflect the stop
-    }
-    setRestarting(false)
   }
 
   const handleToggleDryRun = () => {
@@ -461,12 +468,12 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
     }
   }
 
-  // Render-state mirror of pendingWriteRef: true while a full-form save OR a
-  // top-level toggle autosave is in flight. Drives the disabled state of every
+  // Render-state mirror of pendingWriteRef: true while a save, toggle or
+  // restart is in flight. Drives the disabled state of every
   // fund-config control (inputs, selects, both toggles, Save, Reset) so the
   // two write paths can't be interleaved from the UI, while global preset
   // editing (savingPresets/presetsDirty) stays on its own, independent gate.
-  const locked = saving || toggleBusy
+  const locked = saving || toggleBusy || restarting
 
   const CONSOLIDATE_INTERVAL_OPTIONS = [
     { value: 'never', label: 'Off' },
@@ -564,7 +571,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
               size="xs"
               className="font-medium whitespace-nowrap"
               onClick={handleRestartEngine}
-              disabled={restarting}
+              disabled={locked}
             >
               {restarting ? 'Restarting…' : 'Restart Engine'}
             </Button>

@@ -53,6 +53,7 @@ All notable changes to this project will be documented in this file.
 - **[issue-1728] AI provider responses are limited to 20 MiB before parsing** — Oversized run and model responses are cancelled and reported as failures, releasing run capacity and preserving stored models.
 
 ### Fixed
+- **[issue-1747] Configuration writes and engine restarts are serialized** — Restart waits for acknowledged saves, configuration controls stay locked through Stop/Start and status confirmation, and an unconfirmed live/paper mode produces a warning instead of application success.
 - **[issue-1700] Preset drafts stay intact while saving** — the aggressiveness preset editor now locks its parameters and Reset during an in-flight save, keeps its write gate independent from fund configuration, and retains a dirty draft after a rejected write.
 - [issue-1739] Preserve keyboard focus when selecting or refreshing funds, closing Add Fund, and navigating mobile sections.
 - **[issue-1697] Regime actions keep current engine status** — late action replies refresh the current status without reviving stale running panels, and failed refreshes keep the last valid state with Retry.

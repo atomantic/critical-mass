@@ -48,8 +48,8 @@ describe('ConfigEditor shared write gate (issue #455)', () => {
   it('handleToggleDryRun and handleToggleEnabled both refuse to start while any write is pending', () => {
     const guardCount = (configEditorSource.match(/if \(pendingWriteRef\.current > 0\) return/g) || []).length
     // handleSave + handleToggleDryRun + handleToggleEnabled: three independent
-    // entry points, one shared gate.
-    assert.equal(guardCount, 3)
+    // entry points plus restart, one shared gate.
+    assert.equal(guardCount, 4)
     assert.match(
       configEditorSource,
       /const handleToggleDryRun = \(\) => \{\s*if \(pendingWriteRef\.current > 0\) return/,
