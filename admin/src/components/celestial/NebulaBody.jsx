@@ -10,6 +10,29 @@ const POINTS_PER_LAYER = 800
 const CORE_POINTS = 300
 const TOTAL = CLOUD_LAYERS * POINTS_PER_LAYER + CORE_POINTS
 
+// Soft circular particles for volumetric gas cloud — avoids harsh square pixel sparkles
+const NEBULA_VERT = /* glsl */`
+  attribute vec3 color;
+  varying vec3 vColor;
+  void main() {
+    vColor = color;
+    vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+    gl_PointSize = clamp(26.0 / -mvPosition.z, 2.0, 16.0);
+    gl_Position = projectionMatrix * mvPosition;
+  }
+`
+
+const NEBULA_FRAG = /* glsl */`
+  varying vec3 vColor;
+  void main() {
+    vec2 uv = gl_PointCoord - vec2(0.5);
+    float d = length(uv);
+    if (d > 0.5) discard;
+    float a = (1.0 - smoothstep(0.05, 0.5, d)) * 0.5;
+    gl_FragColor = vec4(vColor, a);
+  }
+`
+
 const buildNebulaGeometry = (size) => {
   const positions = new Float32Array(TOTAL * 3)
   const colors = new Float32Array(TOTAL * 3)
@@ -94,8 +117,8 @@ const NebulaBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed, baseCurr
       </mesh>
 
       <mesh>
-        <sphereGeometry args={[size * 0.2, 16, 16]} />
-        <meshBasicMaterial color="#CFFAFE" />
+        <sphereGeometry args={[size * 0.16, 16, 16]} />
+        <meshBasicMaterial color="#CFFAFE" transparent opacity={0.65} />
       </mesh>
 
       {/* Core glow + ellipsoid gas envelopes — fresnel so density reads at the limbs */}
@@ -112,7 +135,13 @@ const NebulaBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed, baseCurr
           <bufferAttribute attach="attributes-position" count={TOTAL} array={positions} itemSize={3} />
           <bufferAttribute attach="attributes-color" count={TOTAL} array={colors} itemSize={3} />
         </bufferGeometry>
-        <pointsMaterial vertexColors size={0.1} sizeAttenuation transparent opacity={0.58} blending={THREE.AdditiveBlending} depthWrite={false} />
+        <shaderMaterial
+          vertexShader={NEBULA_VERT}
+          fragmentShader={NEBULA_FRAG}
+          transparent
+          depthWrite={false}
+          blending={THREE.AdditiveBlending}
+        />
       </points>
 
       {showTooltip && <CelestialTooltip body={body} position={[0, size + 0.8, 0]} maxUsdcDeployed={maxUsdcDeployed} baseCurrency={baseCurrency} />}

@@ -19,7 +19,7 @@ const GALAXY_VERT = /* glsl */`
   void main() {
     vColor = color;
     vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-    gl_PointSize = size * (110.0 / -mvPosition.z);
+    gl_PointSize = clamp(size * (45.0 / -mvPosition.z), 1.5, 14.0);
     gl_Position = projectionMatrix * mvPosition;
   }
 `

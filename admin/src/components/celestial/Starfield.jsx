@@ -26,7 +26,9 @@ const Starfield = ({ radius = 100, depth = 50, count = 5000, factor = 4, saturat
       positions[i * 3] = r * Math.sin(phi) * Math.cos(theta)
       positions[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta)
       positions[i * 3 + 2] = r * Math.cos(phi)
-      color.setHSL(rand(), saturation, 0.9)
+      // Natural stellar magnitude distribution: mostly dim to medium stars, occasional bright ones
+      const lightness = 0.4 + rand() * rand() * 0.45
+      color.setHSL(rand(), saturation, lightness)
       colors.set([color.r, color.g, color.b], i * 3)
     }
     return { positions, colors }
@@ -38,7 +40,7 @@ const Starfield = ({ radius = 100, depth = 50, count = 5000, factor = 4, saturat
         <bufferAttribute attach="attributes-position" args={[positions, 3]} />
         <bufferAttribute attach="attributes-color" args={[colors, 3]} />
       </bufferGeometry>
-      <pointsMaterial size={factor * 0.1} sizeAttenuation vertexColors transparent depthWrite={false} fog={false} />
+      <pointsMaterial size={factor * 0.08} sizeAttenuation vertexColors transparent depthWrite={false} fog={false} />
     </points>
   )
 }

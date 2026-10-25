@@ -92,7 +92,7 @@ const CelestialScene = ({ bodies = [], buyOrders = [], maxUsdcDeployed, baseCurr
       ))}
 
       {/* Bloom post-processing */}
-      <BloomEffect threshold={0.26} strength={0.85} radius={0.62} />
+      <BloomEffect threshold={0.75} strength={0.25} radius={0.45} smoothWidth={0.18} />
     </>
   )
 }
