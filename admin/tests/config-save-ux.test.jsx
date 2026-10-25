@@ -1,5 +1,5 @@
 import React from 'react'
-import { cleanup, fireEvent, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react'
 import { renderWithToasts as render } from './renderWithToasts'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import ConfigEditor from '../src/components/ConfigEditor'
@@ -158,6 +158,7 @@ describe('dry-run restart', () => {
   const stubLifecycle = (stop, start) => vi.stubGlobal('fetch', vi.fn(async (url) => {
     if (url.includes('/regime/stop')) return stop
     if (url.includes('/regime/start')) return start
+    if (url.includes('/regime/status')) return response(200, { status: { isRunning: true, isDryRun: true } })
     return response(200, { presets: {} })
   }))
   const renderPendingRestart = () => {
@@ -170,6 +171,7 @@ describe('dry-run restart', () => {
   const STALE = /Restart the engine to apply it/
   // PUT /config answers per `save`; the lifecycle endpoints always succeed.
   const stubSaveThenRestart = (save) => vi.stubGlobal('fetch', vi.fn(async (url, options = {}) => {
+    if (url.includes('/regime/status')) return response(200, { status: { isRunning: true, isDryRun: true } })
     if (url.includes('/regime/')) return response(200, { success: true })
     if (options.method === 'PUT') return save()
     return response(200, { presets: {} })
@@ -224,5 +226,99 @@ describe('dry-run restart', () => {
     stubLifecycle(response(200, { success: true }), response(503, { success: false, error: 'Engine unavailable: IPC request timeout' }))
     renderPendingRestart()
     await screen.findByText('Engine stopped but did not start again (Engine unavailable: IPC request timeout) — start it manually from the dashboard.')
+  })
+})
+
+
+describe('configuration and restart serialization (issue #1747)', () => {
+  const deferred = () => {
+    let resolve
+    const promise = new Promise(done => { resolve = done })
+    return { promise, resolve }
+  }
+  const initial = { ...config, dryRun: true }
+  const renderMismatch = () => render(<ConfigEditor config={initial} strategy="regime" exchange="gemini" pair="BTC-USD" engineRunning engineDryRun={false} />)
+  const lifecycleCalls = () => fetch.mock.calls.filter(([url]) => /regime\/(stop|start)/.test(url))
+  const writeCalls = () => fetch.mock.calls.filter(([, o]) => ['PUT', 'PATCH'].includes(o?.method))
+
+  it.each(['Dry Run', 'Enabled', 'full save'])('blocks restart throughout a pending %s write', async action => {
+    const write = deferred()
+    vi.stubGlobal('fetch', vi.fn(async (url, options = {}) => {
+      if (['PUT', 'PATCH'].includes(options.method)) return write.promise
+      return response(200, { presets: {} })
+    }))
+    renderMismatch()
+    const restart = screen.getByRole('button', { name: 'Restart Engine' })
+    const control = action === 'full save' ? screen.getByRole('button', { name: 'Save Configuration' }) : screen.getByRole('switch', { name: action })
+    act(() => {
+      control.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      restart.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(restart.disabled).toBe(true)
+    expect(lifecycleCalls()).toHaveLength(0)
+    expect(writeCalls()).toHaveLength(1)
+    await act(async () => write.resolve(response(200, {})))
+    if (action === 'Dry Run') expect(screen.queryByRole('button', { name: 'Restart Engine' })).toBeNull()
+    else expect(restart.disabled).toBe(false)
+  })
+
+  it('keeps unacknowledged and failed Dry Run changes out of the restart banner', async () => {
+    let write = deferred()
+    vi.stubGlobal('fetch', vi.fn(async (url, options = {}) => options.method === 'PATCH' ? write.promise : response(200, { presets: {} })))
+    render(<ConfigEditor config={{ ...config, dryRun: false }} strategy="regime" engineRunning engineDryRun={false} />)
+    fireEvent.click(screen.getByRole('switch', { name: 'Dry Run' }))
+    expect(screen.queryByRole('button', { name: 'Restart Engine' })).toBeNull()
+    await act(async () => write.resolve(response(400, { error: 'Save rejected' })))
+    expect(screen.queryByRole('button', { name: 'Restart Engine' })).toBeNull()
+    write = deferred()
+    fireEvent.click(screen.getByRole('switch', { name: 'Dry Run' }))
+    expect(screen.queryByRole('button', { name: 'Restart Engine' })).toBeNull()
+    await act(async () => write.resolve(response(200, { config: { ...config, dryRun: true } })))
+    expect(screen.getByRole('button', { name: 'Restart Engine' })).toBeTruthy()
+  })
+
+  it('allows one Stop/Start and excludes same-turn writes until refreshed status confirms the saved mode', async () => {
+    const stop = deferred(), start = deferred(), status = deferred()
+    vi.stubGlobal('fetch', vi.fn(async url => {
+      if (url.includes('/regime/stop')) return stop.promise
+      if (url.includes('/regime/start')) return start.promise
+      if (url.includes('/regime/status')) return status.promise
+      return response(200, { presets: {} })
+    }))
+    renderMismatch()
+    const restart = screen.getByRole('button', { name: 'Restart Engine' })
+    const save = screen.getByRole('button', { name: 'Save Configuration' })
+    const dryRun = screen.getByRole('switch', { name: 'Dry Run' })
+    const enabled = screen.getByRole('switch', { name: 'Enabled' })
+    act(() => {
+      for (const button of [restart, restart, save, dryRun, enabled]) button.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(lifecycleCalls().map(([url]) => url)).toEqual(['/api/gemini/regime/stop?pair=BTC-USD'])
+    expect(writeCalls()).toHaveLength(0)
+    for (const button of [restart, save, dryRun, enabled]) expect(button.disabled).toBe(true)
+    await act(async () => stop.resolve(response(200, { success: true })))
+    expect(lifecycleCalls().map(([url]) => url)).toEqual(['/api/gemini/regime/stop?pair=BTC-USD', '/api/gemini/regime/start?pair=BTC-USD'])
+    await act(async () => start.resolve(response(200, { success: true })))
+    expect(screen.queryByText('Engine restarted — change applied')).toBeNull()
+    expect(save.disabled).toBe(true)
+    expect(fetch.mock.calls.some(([url]) => url === '/api/gemini/regime/status?pair=BTC-USD')).toBe(true)
+    await act(async () => status.resolve(response(200, { status: { isRunning: true, isDryRun: true } })))
+    expect(screen.getByText('Engine restarted — change applied')).toBeTruthy()
+    expect(save.disabled).toBe(false)
+    expect(writeCalls()).toHaveLength(0)
+  })
+
+  it.each([
+    [200, { status: { isRunning: true, isDryRun: false } }],
+    [200, { status: { isRunning: false, isDryRun: true } }],
+    [200, { status: { isRunning: true } }],
+    [503, { error: 'unavailable' }],
+  ])('warns instead of claiming application success for unconfirmed status %j %j', async (code, body) => {
+    vi.stubGlobal('fetch', vi.fn(async url => url.includes('/regime/status') ? response(code, body) : response(200, { success: true, presets: {} })))
+    renderMismatch()
+    fireEvent.click(screen.getByRole('button', { name: 'Restart Engine' }))
+    await screen.findByText(/Restart requested, but the running engine could not be confirmed/)
+    expect(screen.queryByText('Engine restarted — change applied')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Restart Engine' }).disabled).toBe(false)
   })
 })
