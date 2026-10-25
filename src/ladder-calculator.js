@@ -17,6 +17,38 @@ const { roundAsset, roundPrice, roundUSDC } = require('./volatility-utils');
 const { getFibonacciMultiplier } = require('./fibonacci-utils');
 
 /**
+ * Size baseline rungs in price order, counting earlier commitments as deployed
+ * for the governor. Boosts consume budget sooner; reductions leave cash free.
+ * Disabled/unready/stale signals return the original ladder unchanged.
+ * @param {LadderResult} ladder
+ * @param {{budget: number, allocatedCapital: number, maxUsdcDeployed: number,
+ *   minSize: number, getAutoSizeMult?: (ratio: number) => {active: boolean, multiplier: number}}} options
+ * @returns {LadderResult}
+ */
+const applyAutoLadderSizing = (ladder, options) => {
+  const { budget, allocatedCapital, maxUsdcDeployed, minSize, getAutoSizeMult } = options;
+  if (!getAutoSizeMult || ladder.levels.length === 0) return ladder;
+  const deployedRatio = (committed) => maxUsdcDeployed > 0
+    ? (allocatedCapital + committed) / maxUsdcDeployed : 1;
+  const first = getAutoSizeMult(deployedRatio(0));
+  if (!first.active) return ladder;
+
+  // Work in cents so rounding cannot overcommit a fractional-cent balance.
+  const budgetCents = Math.max(0, Math.floor(Math.min(budget, maxUsdcDeployed - allocatedCapital) * 100));
+  let committedCents = 0;
+  const levels = [];
+  for (const [i, level] of ladder.levels.entries()) {
+    const auto = i === 0 ? first : getAutoSizeMult(deployedRatio(committedCents / 100));
+    const sizeCents = Math.min(budgetCents - committedCents, Math.round(level.sizeUsdc * auto.multiplier * 100));
+    if (sizeCents <= 0 || sizeCents / 100 < minSize) continue;
+    const sizeUsdc = sizeCents / 100;
+    levels.push({ ...level, index: levels.length, sizeUsdc, assetQty: roundAsset(sizeUsdc / level.price) });
+    committedCents += sizeCents;
+  }
+  return { ...ladder, levels, totalBudget: committedCents / 100 };
+};
+
+/**
  * @typedef {import('./types').RegimeStrategyConfig} RegimeStrategyConfig
  */
 
@@ -354,4 +386,5 @@ const createLadderCalculator = (exchange, config) => {
 
 module.exports = {
   createLadderCalculator,
+  applyAutoLadderSizing,
 };
