@@ -91,7 +91,7 @@ const SingleBodyScene = ({ body }) => {
 
       {renderBody(bodyProps)}
 
-      <BloomEffect threshold={0.3} strength={isParticle ? 1.0 : 0.6} radius={0.5} />
+      <BloomEffect threshold={0.78} strength={0.22} radius={0.4} smoothWidth={0.18} />
     </>
   )
 }

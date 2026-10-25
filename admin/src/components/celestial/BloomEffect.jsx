@@ -11,7 +11,7 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
  * (replaces @react-three/postprocessing). Rendering at useFrame priority 1
  * takes over fiber's default render, so it works with frameloop="demand" too.
  */
-const BloomEffect = ({ threshold, strength, radius }) => {
+const BloomEffect = ({ threshold = 0.7, strength = 0.35, radius = 0.5, smoothWidth = 0.2 }) => {
   const gl = useThree((s) => s.gl)
   const scene = useThree((s) => s.scene)
   const camera = useThree((s) => s.camera)
@@ -23,6 +23,9 @@ const BloomEffect = ({ threshold, strength, radius }) => {
   useEffect(() => {
     const composer = new EffectComposer(gl)
     const bloom = new UnrealBloomPass(new Vector2(1, 1), strength, radius, threshold)
+    if (bloom.highPassUniforms?.smoothWidth) {
+      bloom.highPassUniforms.smoothWidth.value = smoothWidth
+    }
     composer.addPass(new RenderPass(scene, camera))
     composer.addPass(bloom)
     composer.addPass(new OutputPass())
@@ -39,8 +42,11 @@ const BloomEffect = ({ threshold, strength, radius }) => {
     parts.bloom.threshold = threshold
     parts.bloom.strength = strength
     parts.bloom.radius = radius
+    if (parts.bloom.highPassUniforms?.smoothWidth) {
+      parts.bloom.highPassUniforms.smoothWidth.value = smoothWidth
+    }
     invalidate()
-  }, [parts, threshold, strength, radius, invalidate])
+  }, [parts, threshold, strength, radius, smoothWidth, invalidate])
 
   useEffect(() => {
     if (!parts) return
