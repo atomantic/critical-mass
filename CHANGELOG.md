@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- **[issue-1678] Auto-aggressiveness can size entries from the long-term depression score** — with `autoAggressivenessEnabled` on (off by default), each entry is scaled 0.5x–1.5x by how depressed the asset is versus its trailing year, and the boost fades out as deployed capital approaches the fund's budget so the bot can't max-buy into a death spiral. The range and the fade points are configurable; sizing is unchanged while the setting is off.
+
 - **[issue-1750] Configuration controls fit small phones** — the heading, full Enabled explanation and Dry Run switch wrap within the card, and dirty Save/Reset actions wrap without shrinking switch touch targets.
 
 - **[issue-1742] Holdback guidance reflects profit allocation** — regime configuration and reference docs explain the tier-adjusted share of gross TP profit retained as asset, with a qualified sizing example instead of a whole-position split. Trading behavior is unchanged.

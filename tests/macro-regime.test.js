@@ -666,3 +666,14 @@ describe('createMacroRegime: getState isolation', () => {
     assert.equal(state2.emas.h21, 100, 'mutating returned state should not affect internal state');
   });
 });
+
+describe('getAutoSizeMult (auto-aggressiveness Phase 3)', () => {
+  it('is neutral when autoAggressivenessEnabled is off or the score is not ready', () => {
+    const regime = createMacroRegime('test', defaultConfig(), createMockAdapter(), 'BTC-USDC');
+    const r = regime.getAutoSizeMult(0);
+    assert.equal(r.active, false);
+    assert.equal(r.multiplier, 1);
+    const on = createMacroRegime('test', { ...defaultConfig(), autoAggressivenessEnabled: true }, createMockAdapter(), 'BTC-USDC');
+    assert.equal(on.getAutoSizeMult(0).active, false);
+  });
+});

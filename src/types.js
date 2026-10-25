@@ -717,6 +717,10 @@
  * @property {number} aggressivenessSuggestionHours - Stable divergence before advisory (default: 6 hours)
  * @property {number} longTermUpdateIntervalMs - Regime setting (default: 3600000)
  * @property {boolean} autoAggressivenessEnabled - Regime setting (default: false)
+ * @property {number} autoAggressivenessMinMult - Auto size multiplier at score 0 (default: 0.5)
+ * @property {number} autoAggressivenessMaxMult - Auto size multiplier at score 1 (default: 1.5)
+ * @property {number} autoAggressivenessGovernorStart - Deployed fraction where the boost starts fading (default: 0.4)
+ * @property {number} autoAggressivenessGovernorEnd - Deployed fraction where the boost is removed (default: 0.9)
  */
 
 /**
