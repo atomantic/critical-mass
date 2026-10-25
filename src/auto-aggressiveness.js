@@ -58,7 +58,8 @@ const computeAutoSizeMultiplier = (params) => {
   const ratio = Number.isFinite(deployedRatio) ? Math.max(0, deployedRatio) : 1;
   const governor = capitalGovernor(ratio, start, end);
   const governed = raw > 1 ? 1 + (raw - 1) * governor : raw;
-  const multiplier = clamp(governed, minMult, maxMult);
+  // The governor may remove the whole boost, so the floor never exceeds neutral even when minMult > 1.
+  const multiplier = clamp(governed, Math.min(minMult, 1), maxMult);
 
   return { active: true, multiplier, raw, governor, deployedRatio: ratio, score };
 };

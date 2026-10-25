@@ -47,6 +47,10 @@ describe('computeAutoSizeMultiplier', () => {
     near(computeAutoSizeMultiplier({ score: 0, ready: true, deployedRatio: 1 }).multiplier, 0.5);
   });
 
+  it('lets the governor remove the whole boost even when minMult exceeds 1', () => {
+    near(computeAutoSizeMultiplier({ score: 0.5, ready: true, deployedRatio: 1, minMult: 1.2, maxMult: 1.8 }).multiplier, 1);
+  });
+
   it('respects widened and narrowed ranges', () => {
     near(computeAutoSizeMultiplier({ score: 1, ready: true, deployedRatio: 0, maxMult: 2 }).multiplier, 2);
     near(computeAutoSizeMultiplier({ score: 1, ready: true, deployedRatio: 0, maxMult: 1.2 }).multiplier, 1.2);
