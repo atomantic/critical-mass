@@ -515,7 +515,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
       {/* Sticky action bar for fund configuration save/reset */}
       <div className="sticky top-0 z-10 bg-gray-800 border-b border-gray-700 p-4 mb-4">
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
             <Button
               variant={isDirty ? 'primary' : 'primary-muted'}
               className="font-medium"
@@ -542,17 +542,19 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
       </div>
 
       <div className="bg-gray-800 rounded-lg p-4">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-semibold">Bot Configuration</h2>
-          <div className="flex items-center gap-3">
-            <ToggleSwitch
-              label="Enabled"
-              checked={Boolean(isRegime ? regimeConfig.enabled : config.enabled)}
-              onChange={handleToggleEnabled}
-              disabled={locked}
-              colorOn="bg-green-500"
-              hint={isRegime ? 'Shows the fund as Ready in the fund list. Does not start or stop trading; use Start / Stop in the fund header.' : undefined}
-            />
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-4">
+          <h2 className="shrink-0 text-lg font-semibold">Bot Configuration</h2>
+          <div className="flex flex-wrap items-start gap-3 w-full min-w-0 md:w-auto md:max-w-lg">
+            <div className="min-w-0 flex-1 basis-48">
+              <ToggleSwitch
+                label="Enabled"
+                checked={Boolean(isRegime ? regimeConfig.enabled : config.enabled)}
+                onChange={handleToggleEnabled}
+                disabled={locked}
+                colorOn="bg-green-500"
+                hint={isRegime ? 'Shows the fund as Ready in the fund list. Does not start or stop trading; use Start / Stop in the fund header.' : undefined}
+              />
+            </div>
             <ToggleSwitch
               label="Dry Run"
               checked={Boolean(config.dryRun)}
