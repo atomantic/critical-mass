@@ -51,6 +51,10 @@ describe('computeAutoSizeMultiplier', () => {
     near(computeAutoSizeMultiplier({ score: 0.5, ready: true, deployedRatio: 1, minMult: 1.2, maxMult: 1.8 }).multiplier, 1);
   });
 
+  it('honors governor intervals narrower than 0.01', () => {
+    near(computeAutoSizeMultiplier({ score: 1, ready: true, deployedRatio: 0.9, governorStart: 0.895, governorEnd: 0.9 }).multiplier, 1);
+  });
+
   it('respects widened and narrowed ranges', () => {
     near(computeAutoSizeMultiplier({ score: 1, ready: true, deployedRatio: 0, maxMult: 2 }).multiplier, 2);
     near(computeAutoSizeMultiplier({ score: 1, ready: true, deployedRatio: 0, maxMult: 1.2 }).multiplier, 1.2);
@@ -67,6 +71,14 @@ describe('computeAutoSizeMultiplier', () => {
 });
 
 describe('config validation', () => {
+  it('validates a lone changed bound against the fund\'s current partner', () => {
+    const { validateAndSanitizeRegimeConfig } = require('../src/config-validator');
+    const current = { autoAggressivenessGovernorStart: 0.4, autoAggressivenessGovernorEnd: 0.9, autoAggressivenessMinMult: 0.5, autoAggressivenessMaxMult: 1.5 };
+    assert.equal(validateAndSanitizeRegimeConfig({ autoAggressivenessGovernorStart: 1 }, current).valid, false);
+    assert.equal(validateAndSanitizeRegimeConfig({ autoAggressivenessMaxMult: 0.3 }, current).valid, false);
+    assert.equal(validateAndSanitizeRegimeConfig({ autoAggressivenessGovernorStart: 0.5 }, current).valid, true);
+  });
+
   it('rejects inverted ranges and governor bounds', () => {
     const errs = validateRegimeConfig({
       autoAggressivenessMinMult: 1.5, autoAggressivenessMaxMult: 0.5,

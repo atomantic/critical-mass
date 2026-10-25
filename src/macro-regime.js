@@ -17,6 +17,9 @@ const { calculateEMA, clamp } = require('./volatility-utils');
 const { createLongTermCandleStore } = require('./long-term-candle-store');
 const { computeDepressionScore } = require('./depression-score');
 const { computeAutoSizeMultiplier } = require('./auto-aggressiveness');
+
+/** Newest daily candle older than this (ms) disables auto sizing: 3 days tolerates weekends and one missed refresh. */
+const LONG_TERM_MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000;
 const { createContextLogger } = require('./logger');
 const { getAggressivenessPresets } = require('./config-utils');
 const { tradeEvents } = require('./trade-events');
@@ -431,6 +434,16 @@ const createMacroRegime = (exchange, config, adapter, productId) => {
   };
 
   /**
+   * The cached long-term score only drives sizing while its newest daily candle is recent;
+   * a failing history refresh must not leave an old score sizing real orders indefinitely.
+   * @returns {boolean}
+   */
+  const isLongTermFresh = () => {
+    const newest = longTermStore?.getStats().newest;
+    return typeof newest === 'number' && Date.now() - newest <= LONG_TERM_MAX_AGE_MS;
+  };
+
+  /**
    * Auto-aggressiveness size multiplier (Phase 3). Neutral unless enabled, the
    * depression score is ready, and the macro data is fresh.
    * @param {number} deployedRatio - deployed capital / total capital (0..1)
@@ -438,7 +451,7 @@ const createMacroRegime = (exchange, config, adapter, productId) => {
   const getAutoSizeMult = (deployedRatio) => computeAutoSizeMultiplier({
     score: longTermBias?.score ?? 0,
     ready: config.autoAggressivenessEnabled === true && config.longTermBiasEnabled !== false
-      && longTermBias?.ready === true && !isStale(),
+      && longTermBias?.ready === true && !isStale() && isLongTermFresh(),
     deployedRatio,
     minMult: config.autoAggressivenessMinMult,
     maxMult: config.autoAggressivenessMaxMult,
