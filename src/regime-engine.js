@@ -5318,7 +5318,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     const macroMult = macroRegime ? macroRegime.getMultipliers() : { sizeMult: 1.0, tpMult: 1.0, offsetMult: 1.0 };
     const minSize = config.minOrderSizeUsdc || exchangeConfig.minOrderSize || 1;
     const remainingBudget = roundUSDC(Math.max(0, config.maxUsdcDeployed - positionState.totalCostBasis));
-    sizing.sizeUsdc = sizeEntry({ sizing, macroMult, minSize, remainingBudget });
+    // Auto-aggressiveness (Phase 3): depression-score multiplier damped by the capital governor
+    const deployedRatio = config.maxUsdcDeployed > 0 ? positionState.totalCostBasis / config.maxUsdcDeployed : 1;
+    const autoMult = macroRegime?.getAutoSizeMult ? macroRegime.getAutoSizeMult(deployedRatio) : { active: false, multiplier: 1 };
+    const entryMult = { ...macroMult, sizeMult: macroMult.sizeMult * autoMult.multiplier };
+    sizing.sizeUsdc = sizeEntry({ sizing, macroMult: entryMult, minSize, remainingBudget });
+    // A boost must never push a buy past the remaining budget
+    if (autoMult.active && remainingBudget >= minSize) sizing.sizeUsdc = Math.min(sizing.sizeUsdc, remainingBudget);
 
     // Check risk caps
     const assetQty = positionSizer.calculateBTCQuantity(sizing.sizeUsdc, marketState.bid);
@@ -5443,12 +5449,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       }
 
       const macroLabel = macroRegime ? ` macro=${macroRegime.getMode()}(×${macroMult.sizeMult})` : '';
-      logger.info(`📝 [${exchange}] Entry placed: regime=${regime}${macroLabel} buys=${positionState.cycleBuys} size=$${sizing.sizeUsdc} price=${fmtPrice(result.price)} trigger=${triggerType} momentum=${momentumDirection} offset=${effectiveOffsetBps}bps`);
+      const autoLabel = autoMult.active ? ` auto=×${autoMult.multiplier.toFixed(2)}(gov ${autoMult.governor.toFixed(2)})` : '';
+      logger.info(`📝 [${exchange}] Entry placed: regime=${regime}${macroLabel}${autoLabel} buys=${positionState.cycleBuys} size=$${sizing.sizeUsdc} price=${fmtPrice(result.price)} trigger=${triggerType} momentum=${momentumDirection} offset=${effectiveOffsetBps}bps`);
 
       tradeEvents.emitTradeEvent('entry_placed', exchange, `$${sizing.sizeUsdc} @ ${fmtPrice(result.price)}`, {
         regime,
         macroMode: macroRegime ? macroRegime.getMode() : null,
         macroSizeMult: macroMult.sizeMult,
+        autoSizeMult: autoMult.multiplier,
         step: positionState.cycleBuys,
         sizeUsdc: sizing.sizeUsdc,
         price: result.price,

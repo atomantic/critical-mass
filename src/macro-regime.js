@@ -16,6 +16,7 @@
 const { calculateEMA, clamp } = require('./volatility-utils');
 const { createLongTermCandleStore } = require('./long-term-candle-store');
 const { computeDepressionScore } = require('./depression-score');
+const { computeAutoSizeMultiplier } = require('./auto-aggressiveness');
 const { createContextLogger } = require('./logger');
 const { getAggressivenessPresets } = require('./config-utils');
 const { tradeEvents } = require('./trade-events');
@@ -430,6 +431,22 @@ const createMacroRegime = (exchange, config, adapter, productId) => {
   };
 
   /**
+   * Auto-aggressiveness size multiplier (Phase 3). Neutral unless enabled, the
+   * depression score is ready, and the macro data is fresh.
+   * @param {number} deployedRatio - deployed capital / total capital (0..1)
+   */
+  const getAutoSizeMult = (deployedRatio) => computeAutoSizeMultiplier({
+    score: longTermBias?.score ?? 0,
+    ready: config.autoAggressivenessEnabled === true && config.longTermBiasEnabled !== false
+      && longTermBias?.ready === true && !isStale(),
+    deployedRatio,
+    minMult: config.autoAggressivenessMinMult,
+    maxMult: config.autoAggressivenessMaxMult,
+    governorStart: config.autoAggressivenessGovernorStart,
+    governorEnd: config.autoAggressivenessGovernorEnd,
+  });
+
+  /**
    * Get full state for dashboard/persistence
    * @returns {MacroRegimeState}
    */
@@ -538,6 +555,7 @@ const createMacroRegime = (exchange, config, adapter, productId) => {
     update,
     getMode,
     getMultipliers,
+    getAutoSizeMult,
     getState,
     restoreState,
     updateConfig,

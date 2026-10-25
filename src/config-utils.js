@@ -264,6 +264,10 @@ const REGIME_DEFAULTS = {
   longTermUpdateIntervalMs: 3600000,   // Refresh cadence for long-term candle store (1h)
   aggressivenessSuggestionHours: 6,   // Stable divergence before an advisory (hours)
   autoAggressivenessEnabled: false,    // Phase 3: actually modulate sizing from the score
+  autoAggressivenessMinMult: 0.5,      // Size multiplier at depression score 0 (initial narrow range)
+  autoAggressivenessMaxMult: 1.5,      // Size multiplier at depression score 1, before the capital governor
+  autoAggressivenessGovernorStart: 0.4, // Deployed fraction of maxUsdcDeployed where the boost starts fading
+  autoAggressivenessGovernorEnd: 0.9,  // Deployed fraction at which the boost is fully removed
 
   // Entry Mode
   entryMode: 'reactive',              // 'reactive' | 'ladder'

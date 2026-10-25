@@ -31,11 +31,12 @@ Goal: extend the bot's lookback beyond the current ~20-day macro window so it ca
 - Timing uses server observations, so the browser need not stay open. Flapping, missing observations, custom sizing, operator config changes and engine restarts reset the dwell period. Alerts occur on the first macro refresh after the threshold; dashboard toasts are deduplicated for the browser session. Enabling Telegram after an advisory has already fired waits for the next sustained suggestion.
 - All alerts are advisory only; sizing changes still require the operator's Apply action.
 
-## Phase 3 — Auto (gated on Phase 2 confidence)
+## Phase 3 — Auto (shipped, off by default)
 
-Tracked in [#1678](https://github.com/atomantic/critical-mass/issues/1678).
+Tracked in [#1678](https://github.com/atomantic/critical-mass/issues/1678). Gated on Phase 2 confidence: leave `autoAggressivenessEnabled` off until the advisories agree with what you would pick manually.
 
-- `autoAggressivenessEnabled: true` — bot multiplies sizing/scales by the depression-score curve
-- **Capital governor (mandatory before flipping on):** dampen aggression as a function of `(deployed capital) / (total capital)` so the bot can't max-buy into a death spiral
-- Initial deployment: cap auto-multiplier range narrowly (0.5x–1.5x of moderate baseline), widen as trust grows
-- **Open question:** market-backdrop co-signal (BTC/ETH percentile) to distinguish broad-market lows from idiosyncratic decline. Cheap to add, valuable signal — defer unless Phase 1 shows the per-asset signal is too noisy.
+- `autoAggressivenessEnabled: true` — each entry's size is multiplied by a smooth curve over the depression score (`src/auto-aggressiveness.js`), on top of the macro-regime multiplier. No preset switching, so no whiplash at thresholds. Neutral (×1.0) while the score is not ready or macro data is stale.
+- **Curve:** linear from `autoAggressivenessMinMult` (score 0, default **0.5**) to `autoAggressivenessMaxMult` (score 1, default **1.5**). Initial range is deliberately narrow; widen only as trust grows.
+- **Capital governor (mandatory):** `deployed = totalCostBasis / maxUsdcDeployed`. The boost above ×1.0 fades linearly from full strength at `autoAggressivenessGovernorStart` (default **0.4**) to zero at `autoAggressivenessGovernorEnd` (default **0.9**), so the bot can't max-buy into a death spiral. The governor only removes boost; a below-neutral multiplier is never shrunk further by it. The boosted size is also capped at the remaining budget.
+- Each placed entry logs `auto=×<mult>(gov <g>)` and emits `autoSizeMult` on the `entry_placed` event.
+- **Decided — deferred:** the market-backdrop co-signal (BTC/ETH percentile) is NOT part of Phase 3. Ship with the per-asset score, the capital governor and the narrow multiplier range; revisit only if Phase 1/2 data shows the per-asset signal is too noisy.

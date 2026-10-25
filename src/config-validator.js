@@ -106,6 +106,10 @@ const REGIME_FIELD_RULES = {
   longTermLookbackDays: { type: 'number' },
   longTermUpdateIntervalMs: { type: 'number' },
   autoAggressivenessEnabled: { type: 'boolean' },
+  autoAggressivenessMinMult: { type: 'number' },
+  autoAggressivenessMaxMult: { type: 'number' },
+  autoAggressivenessGovernorStart: { type: 'number' },
+  autoAggressivenessGovernorEnd: { type: 'number' },
   aggressivenessSuggestionHours: { type: 'number' },
   entryMode: { type: 'string', enum: ['reactive', 'ladder'] },
   ladderMaxAthDropPct: { type: 'number' },
@@ -292,6 +296,25 @@ const validateRegimeConfig = (config) => {
     if (config[field] !== undefined && (config[field] < 0.1 || config[field] > 3.0)) {
       errors.push(`${field} must be between 0.1 and 3.0`);
     }
+  }
+
+  for (const field of ['autoAggressivenessMinMult', 'autoAggressivenessMaxMult']) {
+    if (config[field] !== undefined && (config[field] < 0.1 || config[field] > 3.0)) {
+      errors.push(`${field} must be between 0.1 and 3.0`);
+    }
+  }
+  if (config.autoAggressivenessMinMult !== undefined && config.autoAggressivenessMaxMult !== undefined
+    && config.autoAggressivenessMinMult > config.autoAggressivenessMaxMult) {
+    errors.push('autoAggressivenessMinMult must not exceed autoAggressivenessMaxMult');
+  }
+  for (const field of ['autoAggressivenessGovernorStart', 'autoAggressivenessGovernorEnd']) {
+    if (config[field] !== undefined && (config[field] < 0 || config[field] > 1)) {
+      errors.push(`${field} must be between 0 and 1`);
+    }
+  }
+  if (config.autoAggressivenessGovernorStart !== undefined && config.autoAggressivenessGovernorEnd !== undefined
+    && config.autoAggressivenessGovernorStart >= config.autoAggressivenessGovernorEnd) {
+    errors.push('autoAggressivenessGovernorStart must be less than autoAggressivenessGovernorEnd');
   }
 
   // Risk Caps validation
