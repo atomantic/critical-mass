@@ -52,7 +52,7 @@ const computeAutoSizeMultiplier = (params) => {
   const minMult = params.minMult ?? DEFAULT_MIN_MULT;
   const maxMult = Math.max(minMult, params.maxMult ?? DEFAULT_MAX_MULT);
   const start = params.governorStart ?? DEFAULT_GOVERNOR_START;
-  const end = Math.max(start + 0.01, params.governorEnd ?? DEFAULT_GOVERNOR_END);
+  const end = params.governorEnd ?? DEFAULT_GOVERNOR_END;
 
   const raw = minMult + clamp(score, 0, 1) * (maxMult - minMult);
   const ratio = Number.isFinite(deployedRatio) ? Math.max(0, deployedRatio) : 1;

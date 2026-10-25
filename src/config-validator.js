@@ -373,6 +373,10 @@ const REGIME_CROSS_FIELD_PARTNERS = {
   macroDeclineThreshold: ['macroAccumulationThreshold'],
   macroAccumulationThreshold: ['macroDeclineThreshold', 'macroMarkupThreshold'],
   macroMarkupThreshold: ['macroAccumulationThreshold'],
+  autoAggressivenessMinMult: ['autoAggressivenessMaxMult'],
+  autoAggressivenessMaxMult: ['autoAggressivenessMinMult'],
+  autoAggressivenessGovernorStart: ['autoAggressivenessGovernorEnd'],
+  autoAggressivenessGovernorEnd: ['autoAggressivenessGovernorStart'],
 };
 
 /**
