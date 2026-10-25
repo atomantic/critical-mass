@@ -1,7 +1,7 @@
 // @ts-check
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
-const { createLadderCalculator } = require('../src/ladder-calculator');
+const { createLadderCalculator, applyAutoLadderSizing } = require('../src/ladder-calculator');
 
 // Helpers
 const defaultConfig = () => ({
@@ -461,5 +461,83 @@ describe('getSummary', () => {
     const ladder = { lowerBoundPct: 0, levels: [] };
     const summary = lc.getSummary(ladder);
     assert.ok(summary.includes('0 levels'));
+  });
+});
+
+
+// The governor must count planned resting rungs, not only already-filled buys.
+describe('auto-aggressiveness ladder allocation (#1783)', () => {
+  const { computeAutoSizeMultiplier } = require('../src/auto-aggressiveness');
+  const baseline = (sizes) => ({
+    lowerBound: 50, lowerBoundPct: 50, athDistance: 0,
+    totalBudget: sizes.reduce((a, b) => a + b, 0),
+    levels: sizes.map((sizeUsdc, index) => ({ index, price: 100 - index * 10,
+      sizeUsdc, assetQty: sizeUsdc / (100 - index * 10), distancePct: index * 10 })),
+  });
+  const size = (ladder, overrides = {}) => applyAutoLadderSizing(ladder, {
+    budget: ladder.totalBudget, allocatedCapital: 0, maxUsdcDeployed: 1000, minSize: 5,
+    getAutoSizeMult: (deployedRatio) => computeAutoSizeMultiplier({ score: 1, ready: true, deployedRatio }),
+    ...overrides,
+  });
+
+  it('fades later boosts using earlier commitments and truncates at the cap', () => {
+    const ladder = baseline([200, 200, 200, 200, 200]);
+    const result = size(ladder);
+    assert.deepEqual(result.levels.map(l => l.sizeUsdc), [300, 300, 260, 140]);
+    assert.equal(result.totalBudget, 1000);
+    assert.deepEqual(ladder.levels.map(l => l.sizeUsdc), [200, 200, 200, 200, 200]);
+    assert.deepEqual(result.levels.map(l => l.price), [100, 90, 80, 70]);
+    for (const l of result.levels) assert.ok(Math.abs(l.assetQty - l.sizeUsdc / l.price) <= 1e-8);
+  });
+
+  it('leaves cash free at low scores even after the governor end', () => {
+    const result = size(baseline([40, 60]), { allocatedCapital: 900,
+      getAutoSizeMult: deployedRatio => computeAutoSizeMultiplier({ score: 0, ready: true, deployedRatio }) });
+    assert.deepEqual(result.levels.map(l => l.sizeUsdc), [20, 30]);
+    assert.equal(result.totalBudget, 50);
+  });
+
+  it('removes the entire boost once held capital is at governor end', () => {
+    const result = size(baseline([40, 60]), { allocatedCapital: 900 });
+    assert.deepEqual(result.levels.map(l => l.sizeUsdc), [40, 60]);
+  });
+
+  it('omits sub-minimum reductions and capped tails without topping up', () => {
+    assert.deepEqual(size(baseline([8, 8]), { getAutoSizeMult: () => ({ active: true, multiplier: 0.5 }) }).levels, []);
+    const result = size(baseline([100, 100]), { budget: 154, minSize: 5 });
+    assert.deepEqual(result.levels.map(l => l.sizeUsdc), [150]);
+    assert.equal(result.totalBudget, 150);
+  });
+
+  it('caps against both the quote balance and held/unbooked capital, in cents', () => {
+    const ladder = baseline([200, 200, 200]);
+    assert.equal(size(ladder, { budget: 350.009 }).totalBudget, 350);
+    assert.equal(size(ladder, { allocatedCapital: 650, budget: 600 }).totalBudget, 350);
+    assert.equal(size(ladder, { allocatedCapital: 1000 }).totalBudget, 0);
+  });
+
+  it('preserves the original ladder exactly without an active signal', () => {
+    const ladder = baseline([200, 200]);
+    assert.equal(size(ladder, { getAutoSizeMult: undefined }), ladder);
+    assert.equal(size(ladder, { getAutoSizeMult: () => ({ active: false, multiplier: 1 }) }), ladder);
+    const empty = baseline([]);
+    assert.equal(size(empty), empty);
+  });
+
+  it('bounds every generated allocation under narrow and wide configured ranges', () => {
+    for (const score of [0, 0.5, 1]) {
+      for (const allocatedCapital of [0, 400, 650, 900, 999]) {
+        for (const maxMult of [1.2, 1.5, 3]) {
+          const result = size(baseline([200, 200, 200, 200, 200]), {
+            allocatedCapital, budget: 777.777,
+            getAutoSizeMult: deployedRatio => computeAutoSizeMultiplier({ score, ready: true, deployedRatio, maxMult }),
+          });
+          const total = result.levels.reduce((sum, l) => sum + l.sizeUsdc, 0);
+          assert.ok(total <= Math.min(777.777, 1000 - allocatedCapital) + 1e-9);
+          assert.ok(Math.abs(total - result.totalBudget) < 1e-9);
+          assert.ok(result.levels.every(l => l.sizeUsdc >= 5 && Number.isFinite(l.assetQty)));
+        }
+      }
+    }
   });
 });

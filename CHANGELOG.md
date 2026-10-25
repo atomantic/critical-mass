@@ -4,7 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-- **[issue-1678] Auto-aggressiveness can size entries from the long-term depression score** — with `autoAggressivenessEnabled` on (off by default), each entry is scaled 0.5x–1.5x by how depressed the asset is versus its trailing year, and the boost fades out as deployed capital approaches the fund's budget so the bot can't max-buy into a death spiral. The range and the fade points are configurable; sizing is unchanged while the setting is off, and ladder-mode entries are not scaled yet.
+- **[issue-1783] Auto-aggressiveness sizes ladder entries** — previews, automatic ladders (including auto-switch) and rebuilds scale rungs in price order, counting earlier commitments toward the capital governor and respecting available capital. Reductions reserve cash; boosts consume the ladder budget sooner. Disabled or stale signals preserve baseline sizing.
+
+- **[issue-1678] Auto-aggressiveness can size entries from the long-term depression score** — with `autoAggressivenessEnabled` on (off by default), each entry is scaled 0.5x–1.5x by how depressed the asset is versus its trailing year, and the boost fades out as deployed capital approaches the fund's budget so the bot can't max-buy into a death spiral. The range and the fade points are configurable; sizing is unchanged while the setting is off.
 
 - **[issue-1750] Configuration controls fit small phones** — the heading, full Enabled explanation and Dry Run switch wrap within the card, and dirty Save/Reset actions wrap without shrinking switch touch targets.
 

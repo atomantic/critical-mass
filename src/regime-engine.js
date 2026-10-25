@@ -41,7 +41,7 @@ const { createRecoveryModule } = require('./recovery');
 const { createTpOptimizer } = require('./tp-optimizer');
 const { createSizeOptimizer } = require('./size-optimizer');
 const { validateSizingFields } = require('./regime-sizing-contract');
-const { createLadderCalculator } = require('./ladder-calculator');
+const { createLadderCalculator, applyAutoLadderSizing } = require('./ladder-calculator');
 const { applyMarketMetrics, clamp, computeAdaptiveStaleMs, roundAsset, roundUSDC, roundPrice } = require('./volatility-utils');
 const { createMacroRegime } = require('./macro-regime');
 const { calculateApyMetrics: _calculateApyMetrics, initializeApyTracking: _initializeApyTracking } = require('./apy-calculator');
@@ -528,8 +528,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   const ladderCalculator = createLadderCalculator(exchange, config);
   // Single source of truth for ladder market inputs: placement, preview and re-ladder
   // must feed the calculator identically (#851 gates placement on the preview).
-  const buildLadderFromMarket = (marketState, budget, priceIncrement) =>
-    ladderCalculator.buildLadder(marketState.lastPrice, budget, {
+  const buildLadderFromMarket = (marketState, budget, priceIncrement, allocatedCapital = getAllocatedCapital()) => {
+    const ladder = ladderCalculator.buildLadder(marketState.lastPrice, budget, {
       atr: marketState.atr1m,
       volBaseline: marketState.volBaseline,
       realizedVol: marketState.realizedVol,
@@ -537,6 +537,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       ath: marketState.ath || 0,
       priceIncrement,
     });
+    return applyAutoLadderSizing(ladder, {
+      budget,
+      allocatedCapital,
+      maxUsdcDeployed: config.maxUsdcDeployed,
+      minSize: config.minOrderSizeUsdc || exchangeConfig.minOrderSize || 5,
+      getAutoSizeMult: macroRegime?.getAutoSizeMult ? (ratio) => macroRegime.getAutoSizeMult(ratio) : undefined,
+    });
+  };
 
   // Create Macro Regime detector (multi-timeframe EMA overlay)
   const macroRegime = config.macroEnabled
@@ -5175,7 +5183,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // whole placement and a sweep requested meanwhile runs after it.
     await engineLocks.withEntryLock(() => engineLocks.withLadderLock(async () => {
       // Calculate remaining budget, capped at actual available balance
-      let remainingBudget = config.maxUsdcDeployed - positionState.totalCostBasis;
+      let remainingBudget = config.maxUsdcDeployed - getAllocatedCapital();
       const quoteCurrency = getQuoteCurrency(productId);
       const quoteBalance = await lookupOrNull('getAccountBalance', quoteCurrency, adapter.getAccountBalance(quoteCurrency));
       if (!quoteBalance) {
@@ -7047,7 +7055,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       return { success: false, message: `Exchange ${quoteCurrency} balance (${balanceStr}) below min order ($${config.baseSizeUsdc || 50}). Budget shows $${budgetRemaining} remaining but exchange only has ${balanceStr} ${quoteCurrency}.` };
     }
 
-    const ladder = buildLadderFromMarket(marketState, remainingBudget, priceIncrement);
+    const ladder = buildLadderFromMarket(marketState, remainingBudget, priceIncrement, allocatedCapital);
 
     return {
       success: true,
@@ -7231,7 +7239,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     }
 
     // Build new ladder
-    const ladder = buildLadderFromMarket(marketState, remainingBudget, priceIncrement);
+    const ladder = buildLadderFromMarket(marketState, remainingBudget, priceIncrement, postCancelAllocated);
 
     if (ladder.levels.length === 0) {
       return { success: false, message: 'Ladder build produced 0 levels — price may be at or below floor' };
