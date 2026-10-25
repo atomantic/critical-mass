@@ -4,7 +4,7 @@
   "private": true,
   "description": "Locked process manager for the container runtime",
   "dependencies": {
-    "pm2": "7.0.4"
+    "pm2": "7.1.0"
   },
   "overrides": {
     "js-yaml": "4.3.2",
