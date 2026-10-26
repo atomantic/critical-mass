@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 - **[issue-1796] Health sweeps preserve control capacity** — concurrent health requests share one sweep and probe each exchange’s funds sequentially, so five or more healthy funds remain healthy while stop and maintenance commands retain IPC capacity.
+- **[issue-1800] Crypto.com live fills preserve signed execution fees** — live ingestion and reconciliation share fee normalization for quote-denominated charges, rebates, explicit zero and legacy fee records. Historical zero-fee ledger rows remain an operator reconciliation concern.
 
 - **[issue-1783] Auto-aggressiveness sizes ladder entries** — previews, automatic ladders (including auto-switch) and rebuilds scale rungs in price order, counting earlier commitments toward the capital governor and respecting available capital. Reductions reserve cash; boosts consume the ladder budget sooner. Disabled or stale signals preserve baseline sizing.
 

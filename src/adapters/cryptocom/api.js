@@ -54,6 +54,17 @@ const safeParseBigInt = (data) => {
 };
 
 /**
+ * Quote-denominated execution fee: `fees` uses the exchange's cash-flow sign
+ * (charges negative, rebates positive); legacy `fee` already uses cost sign.
+ * An explicit zero in `fees` must take precedence over the legacy field.
+ * @param {Object} trade
+ * @returns {number}
+ */
+const normalizeTradeFee = (trade) => trade.fees !== undefined
+  ? -parseFloat(trade.fees || 0)
+  : parseFloat(trade.fee || 0);
+
+/**
  * Create a Crypto.com adapter instance
  * @param {string|null} [keysPath] - Path to keys file (defaults to data/cryptocom-keys.json)
  * @returns {ExchangeAdapter} Crypto.com adapter with all required methods
@@ -929,7 +940,7 @@ const createCryptocomAdapter = (keysPath = null) => {
     return matching.map(trade => {
       const price = parseFloat(trade.traded_price || trade.price || 0);
       const size = parseFloat(trade.traded_quantity || trade.quantity || 0);
-      const feeAmount = parseFloat(trade.fee || 0);
+      const feeAmount = normalizeTradeFee(trade);
 
       return buildFill({
         tradeId: trade.trade_id?.toString(),
@@ -1018,9 +1029,7 @@ const createCryptocomAdapter = (keysPath = null) => {
       seenTrades.add(tradeId);
       const price = parseFloat(raw.traded_price || raw.price || 0);
       const size = parseFloat(raw.traded_quantity || raw.quantity || 0);
-      const fee = raw.fees !== undefined
-        ? -parseFloat(raw.fees || 0)
-        : parseFloat(raw.fee || 0);
+      const fee = normalizeTradeFee(raw);
       return [{
         tradeId,
         orderId: String(raw.order_id || ''),
