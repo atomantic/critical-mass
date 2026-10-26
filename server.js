@@ -56,7 +56,7 @@ const { createUpDownService } = require('./src/updown/updown-service');
 const { createCandleCache } = require('./src/candle-cache');
 const { createSentinelService } = require('./src/sentinel/sentinel-service');
 const { getSentinelConfig, updateSentinelConfig } = require('./src/config-utils');
-const { buildRuntimeHealth } = require('./src/runtime-health');
+const { createRuntimeHealthMonitor } = require('./src/runtime-health');
 const { createOperatorAuth } = require('./src/operator-auth');
 const { resolveListenHosts, createCorsMiddleware, createSecurityHeadersMiddleware, bindGatewayListeners, watchTailscaleListeners } = require('./src/gateway-listen');
 const { registerProcessGuards } = require('./src/process-guard');
@@ -387,14 +387,16 @@ require('./src/routes/legacy-routes')(routes, sharedDeps);
 
 // ============ Health Aggregation ============
 
+const runtimeHealthMonitor = createRuntimeHealthMonitor({
+  exchangeIPCMap,
+  getConfiguredFunds,
+  getEnabledFunds,
+  getUpDownStatus: () => updownService.getStatus(),
+  getSentinelStatus: () => sentinelService.getStatus(),
+});
+
 routes.get('/api/health', asyncRoute(async (req, res) => {
-  const { status, engines, funds } = await buildRuntimeHealth({
-    exchangeIPCMap,
-    getConfiguredFunds,
-    getEnabledFunds,
-    getUpDownStatus: () => updownService.getStatus(),
-    getSentinelStatus: () => sentinelService.getStatus(),
-  });
+  const { status, engines, funds } = await runtimeHealthMonitor.getHealth();
 
   res.json({
     status,

@@ -1,7 +1,7 @@
 // @ts-check
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
-const { buildRuntimeHealth, interpretFundReply } = require('../src/runtime-health');
+const { buildRuntimeHealth, createRuntimeHealthMonitor, interpretFundReply } = require('../src/runtime-health');
 const { createFundStartSupervisor } = require('../src/fund-start-supervisor');
 
 const envelope = (mode, extra = {}, running = true) => ({
@@ -225,4 +225,123 @@ describe('buildRuntimeHealth', () => {
     assert.equal(h.engines.updown.status, 'stopped');
     assert.equal(h.status, 'ok');
   });
+});
+
+const { deferred, until, startEngineIpc } = require('./helpers/ipc-command-harness');
+const { createIPCClient } = require('../src/ipc/ipc-client');
+const { IPC_CHANNELS } = require('../src/ipc/ipc-protocol');
+
+const monitorDeps = (exchangeIPCMap, getConfiguredFunds, extra = {}) => ({
+  exchangeIPCMap,
+  getConfiguredFunds,
+  getEnabledFunds: getConfiguredFunds,
+  getUpDownStatus: () => ({ running: true, priceFresh: true }),
+  getSentinelStatus: () => ({ running: true, feedState: 'healthy' }),
+  timeoutMs: 1000,
+  ...extra,
+});
+
+describe('gateway runtime health monitor', () => {
+  it('shares a sweep, snapshots fund configuration, and refreshes after completion', async () => {
+    const hold = deferred();
+    const configured = [{ exchange: 'coinbase', pair: 'BTC-USDC' }, { exchange: 'coinbase', pair: 'ETH-USDC' }];
+    let active = 0;
+    let peak = 0;
+    const ipc = makeIPC(async () => {
+      peak = Math.max(peak, ++active);
+      await hold.promise;
+      active--;
+      return envelope('ACTIVE');
+    });
+    const monitor = createRuntimeHealthMonitor(monitorDeps({ coinbase: ipc }, () => configured));
+    const first = monitor.getHealth();
+    const concurrent = monitor.getHealth();
+    assert.equal(first, concurrent, 'overlapping callers join the exact sweep promise');
+    await until(() => ipc.calls.length === 1);
+    configured[1].pair = 'SOL-USDC';
+    configured.push({ exchange: 'coinbase', pair: 'LTC-USDC' });
+    hold.resolve();
+    const result = await first;
+    assert.deepEqual(Object.keys(result.funds.coinbase), ['BTC-USDC', 'ETH-USDC']);
+    assert.equal(peak, 1);
+    assert.equal(ipc.calls.length, 2);
+    assert.equal(result, await concurrent);
+    const next = await monitor.getHealth();
+    assert.deepEqual(Object.keys(next.funds.coinbase), ['BTC-USDC', 'SOL-USDC', 'LTC-USDC']);
+    assert.equal(ipc.calls.length, 5, 'a completed sweep is not a cached result');
+  });
+
+  it('keeps different exchanges parallel and waits for all probes before releasing a failed sweep', async () => {
+    const hold = deferred();
+    let fail = true;
+    const coinbase = makeIPC(() => envelope('ACTIVE'));
+    coinbase.isConnected = () => { if (fail) throw new Error('connection lookup failed'); return true; };
+    const gemini = makeIPC(async () => { await hold.promise; return envelope('ACTIVE'); });
+    const configured = [{ exchange: 'coinbase', pair: 'BTC-USDC' }, { exchange: 'gemini', pair: 'BTC-USD' }];
+    const monitor = createRuntimeHealthMonitor(monitorDeps({ coinbase, gemini }, () => configured));
+    const first = monitor.getHealth();
+    const rejection = assert.rejects(first, /connection lookup failed/);
+    await until(() => gemini.calls.length === 1);
+    assert.equal(monitor.getHealth(), first, "failed exchange cannot release another engine's pending sweep");
+    hold.resolve();
+    await rejection;
+    fail = false;
+    const healthy = await monitor.getHealth();
+    assert.equal(healthy.status, 'ok');
+    assert.equal(gemini.calls.length, 2);
+  });
+
+  it('probes different exchanges concurrently', async () => {
+    const hold = deferred();
+    const coinbase = makeIPC(async () => { await hold.promise; return envelope('ACTIVE'); });
+    const gemini = makeIPC(async () => { await hold.promise; return envelope('ACTIVE'); });
+    const configured = [{ exchange: 'coinbase', pair: 'BTC-USDC' }, { exchange: 'gemini', pair: 'BTC-USD' }];
+    const monitor = createRuntimeHealthMonitor(monitorDeps({ coinbase, gemini }, () => configured));
+    const sweep = monitor.getHealth();
+    await until(() => coinbase.calls.length === 1 && gemini.calls.length === 1);
+    hold.resolve();
+    assert.equal((await sweep).status, 'ok');
+  });
+
+  for (const count of [5, 8]) {
+    it(`reports ${count} healthy funds through production IPC while leaving stop capacity available`, async (t) => {
+      const hold = deferred();
+      t.after(() => hold.resolve());
+      let probes = 0;
+      let active = 0;
+      let peak = 0;
+      const engine = await startEngineIpc((server) => {
+        server.onRequest(IPC_CHANNELS.REGIME_STATUS, async () => {
+          probes++;
+          peak = Math.max(peak, ++active);
+          try { await hold.promise; return envelope('ACTIVE'); }
+          finally { active--; }
+        });
+        server.onRequest(IPC_CHANNELS.REGIME_STOP, () => ({ success: true, stopped: true }));
+      });
+      t.after(() => engine.server.stop());
+      const ipc = createIPCClient(engine.url, 'health-test');
+      t.after(() => ipc.disconnect());
+      ipc.connect();
+      await until(() => ipc.isConnected(), 'health IPC connected');
+      const configured = Array.from({ length: count }, (_, i) => ({ exchange: 'coinbase', pair: `ASSET${i}-USDC` }));
+      const monitor = createRuntimeHealthMonitor(monitorDeps({ coinbase: ipc }, () => configured));
+      const sweeps = Array.from({ length: 12 }, () => monitor.getHealth());
+      await until(() => probes === 1, 'first held health probe');
+      assert.deepEqual(await ipc.request(IPC_CHANNELS.REGIME_STOP, {}, 'coinbase', configured[0].pair, 1000),
+        { success: true, stopped: true });
+      assert.equal(probes, 1, 'health callers have only one outstanding engine probe');
+      hold.resolve();
+      const results = await Promise.all(sweeps);
+      assert.equal(probes, count, 'each fund probed once despite overlapping health requests');
+      assert.equal(peak, 1);
+      for (const result of results) {
+        assert.equal(result.status, 'ok');
+        assert.equal(Object.keys(result.funds.coinbase).length, count);
+        assert.ok(Object.values(result.funds.coinbase).every((fund) => fund.status === 'ok'));
+      }
+      assert.equal((await monitor.getHealth()).status, 'ok');
+      assert.equal(probes, count * 2, 'next request performs a fresh production IPC sweep');
+    });
+  }
 });

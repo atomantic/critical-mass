@@ -149,7 +149,7 @@ const buildRuntimeHealth = async ({
   exchangeIPCMap, getConfiguredFunds, getEnabledFunds, getUpDownStatus, getSentinelStatus,
   timeoutMs = DEFAULT_PROBE_TIMEOUT_MS,
 }) => {
-  const configured = getConfiguredFunds();
+  const configured = getConfiguredFunds().map(({ exchange, pair }) => ({ exchange, pair }));
   const enabledKeys = new Set(getEnabledFunds().map((f) => `${f.exchange}/${f.pair}`));
   const engines = {};
   /** @type {Record<string, Record<string, object>>} */
@@ -159,7 +159,7 @@ const buildRuntimeHealth = async ({
   /** statuses of every service that is relevant to readiness */
   const relevant = [];
 
-  await Promise.all(Object.entries(exchangeIPCMap).map(async ([name, ipc]) => {
+  const exchangeSweeps = await Promise.allSettled(Object.entries(exchangeIPCMap).map(async ([name, ipc]) => {
     const exchangeFunds = configured.filter((f) => f.exchange === name);
     if (exchangeFunds.length === 0) {
       engines[name] = { status: 'unconfigured', connected: ipc.isConnected(), isRunning: false, mode: null, uptime: null, required: false };
@@ -173,7 +173,12 @@ const buildRuntimeHealth = async ({
         exchange: name, pair, status: 'unreachable', mode: null, reason: 'engine IPC not connected', isRunning: false, uptime: null,
       }));
     } else {
-      results = await Promise.all(exchangeFunds.map(({ pair }) => probeFund(ipc, name, pair, timeoutMs)));
+      // Status shares the bounded control lane with stop/maintenance commands.
+      // One probe per engine leaves those commands capacity even with many funds.
+      results = [];
+      for (const { pair } of exchangeFunds) {
+        results.push(await probeFund(ipc, name, pair, timeoutMs));
+      }
     }
 
     funds[name] = {};
@@ -209,6 +214,10 @@ const buildRuntimeHealth = async ({
     }
   }));
 
+  // Do not release a failed sweep while another exchange still owns a probe.
+  const failedSweep = exchangeSweeps.find((result) => result.status === 'rejected');
+  if (failedSweep) throw failedSweep.reason;
+
   engines.updown = summarizeUpDown(getUpDownStatus());
   if (engines.updown.status === 'degraded') failures.push('updown');
   engines.sentinel = summarizeSentinel(getSentinelStatus());
@@ -222,9 +231,28 @@ const buildRuntimeHealth = async ({
   return { status, engines, funds };
 };
 
+/**
+ * One gateway-owned monitor shares only the current sweep, never cached health.
+ * A subsequent request snapshots current configuration and probes afresh.
+ * @param {Parameters<typeof buildRuntimeHealth>[0]} deps
+ */
+const createRuntimeHealthMonitor = (deps) => {
+  let inFlight = null;
+  const getHealth = () => {
+    if (!inFlight) {
+      inFlight = Promise.resolve().then(() => buildRuntimeHealth(deps)).finally(() => {
+        inFlight = null;
+      });
+    }
+    return inFlight;
+  };
+  return { getHealth };
+};
+
 module.exports = {
   DEFAULT_PROBE_TIMEOUT_MS,
   interpretFundReply,
   probeFund,
   buildRuntimeHealth,
+  createRuntimeHealthMonitor,
 };
