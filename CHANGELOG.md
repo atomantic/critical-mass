@@ -12,6 +12,7 @@ All notable changes to this project will be documented in this file.
 
 - **[issue-1750] Configuration controls fit small phones** — the heading, full Enabled explanation and Dry Run switch wrap within the card, and dirty Save/Reset actions wrap without shrinking switch touch targets.
 
+- **[issue-1797] Regime configuration cards are separate components** — twelve rendering-only cards and shared form controls leave draft, save/toggle/restart ownership and the independent preset gate in ConfigEditor; zero defaults, conditional fields and input identity stay unchanged.
 - **[issue-1742] Holdback guidance reflects profit allocation** — regime configuration and reference docs explain the tier-adjusted share of gross TP profit retained as asset, with a qualified sizing example instead of a whole-position split. Trading behavior is unchanged.
 
 - **[issue-1751] Tablet action buttons keep touch-sized targets** — shared buttons and touch-target helpers retain a 44px minimum for coarse pointers at every width; compact desktop sizing applies only to fine pointers at md and above, preserving always-touch and inline actions.

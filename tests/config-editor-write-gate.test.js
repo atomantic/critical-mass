@@ -148,98 +148,101 @@ describe('ConfigEditor shared write gate (issue #455)', () => {
   })
 })
 
+const regimeCardsSource = fs.readFileSync(path.join(__dirname, '..', 'admin/src/components/config/RegimeConfigCards.jsx'), 'utf8')
+const formControlsSource = fs.readFileSync(path.join(__dirname, '..', 'admin/src/components/config/ConfigFormControls.jsx'), 'utf8')
+
 describe('ConfigEditor zero-valued fields (issue #868)', () => {
   it('displays zero cautionScale using nullish coalescing (??), not logical OR', () => {
     assert.match(
-      configEditorSource,
+      regimeCardsSource,
       /regimeConfig\.cautionScale \?\? 0\.5/,
     )
     // Ensure the old pattern is not present
     assert.doesNotMatch(
-      configEditorSource,
+      regimeCardsSource,
       /regimeConfig\.cautionScale \|\| 0\.5/,
     )
   })
 
   it('displays zero trendScale using nullish coalescing (??), not logical OR', () => {
     assert.match(
-      configEditorSource,
+      regimeCardsSource,
       /regimeConfig\.trendScale \?\? 0\.0/,
     )
     // Ensure the old pattern is not present
     assert.doesNotMatch(
-      configEditorSource,
+      regimeCardsSource,
       /regimeConfig\.trendScale \|\| 0\.0/,
     )
   })
 
   it('displays zero drawdownResetHours using nullish coalescing (??), not logical OR', () => {
     assert.match(
-      configEditorSource,
+      regimeCardsSource,
       /regimeConfig\.drawdownResetHours \?\? 72/,
     )
     // Ensure the old pattern is not present
     assert.doesNotMatch(
-      configEditorSource,
+      regimeCardsSource,
       /regimeConfig\.drawdownResetHours \|\| 72/,
     )
   })
 
   it('displays zero cycleResetHours using nullish coalescing (??), not logical OR', () => {
     assert.match(
-      configEditorSource,
+      regimeCardsSource,
       /regimeConfig\.cycleResetHours \?\? 72/,
     )
     // Ensure the old pattern is not present
     assert.doesNotMatch(
-      configEditorSource,
+      regimeCardsSource,
       /regimeConfig\.cycleResetHours \|\| 72/,
     )
   })
 
   it('displays zero entryOffsetBps using nullish coalescing (??), not logical OR', () => {
     assert.match(
-      configEditorSource,
+      regimeCardsSource,
       /regimeConfig\.entryOffsetBps \?\? 10/,
     )
     // Ensure the old pattern is not present
     assert.doesNotMatch(
-      configEditorSource,
+      regimeCardsSource,
       /regimeConfig\.entryOffsetBps \|\| 10/,
     )
   })
 
   it('displays zero entryOffsetUpBps using nullish coalescing (??), not logical OR', () => {
     assert.match(
-      configEditorSource,
+      regimeCardsSource,
       /regimeConfig\.entryOffsetUpBps \?\? 5/,
     )
     // Ensure the old pattern is not present
     assert.doesNotMatch(
-      configEditorSource,
+      regimeCardsSource,
       /regimeConfig\.entryOffsetUpBps \|\| 5/,
     )
   })
 
   it('displays zero entryOffsetDownBps using nullish coalescing (??), not logical OR', () => {
     assert.match(
-      configEditorSource,
+      regimeCardsSource,
       /regimeConfig\.entryOffsetDownBps \?\? 15/,
     )
     // Ensure the old pattern is not present
     assert.doesNotMatch(
-      configEditorSource,
+      regimeCardsSource,
       /regimeConfig\.entryOffsetDownBps \|\| 15/,
     )
   })
 
   it('uses nullish coalescing for scaling summary display', () => {
     assert.match(
-      configEditorSource,
+      regimeCardsSource,
       /CAUTION=\{regimeConfig\.cautionScale \?\? 0\.5\}x/,
     )
     assert.match(
-      configEditorSource,
+      regimeCardsSource,
       /TREND=\{regimeConfig\.trendScale \?\? 0\.0\}x/,
     )
   })
@@ -249,7 +252,7 @@ describe('ConfigEditor zero-valued fields (issue #868)', () => {
     // even when the field is cleared and re-entered. Verify that the
     // handleNumberChange doesn't commit 0 on clear (line 34) but does on
     // valid parse, preserving the semantics.
-    assert.match(configEditorSource, /if \(raw\.trim\(\) === ''\) return/)
-    assert.match(configEditorSource, /if \(Number\.isFinite\(n\)\) onChange\(n\)/)
+    assert.match(formControlsSource, /if \(raw\.trim\(\) === ''\) return/)
+    assert.match(formControlsSource, /if \(Number\.isFinite\(n\)\) onChange\(n\)/)
   })
 })
