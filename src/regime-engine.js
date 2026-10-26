@@ -64,6 +64,7 @@ const { fmtCurrency: fmtPrice, ENTRY_NOT_ADMITTED, isFilledStatus, isCancelledSt
 const { createContextLogger } = require('./logger');
 const { DEFAULT_MAX_USDC_DEPLOYED } = require('./fund-defaults');
 const { createEngineLocks, FILL_DRAIN_MS } = require('./engine-locks');
+const { classifyResetSupersession, selectCarryForwardBuys } = require('./regime-cycle-reset');
 const { createTtlStore } = require('./ttl-store');
 const { buildPartialFillData, makeFillDedupKey, resolveEntryBudget, isInsufficientFundsMessage, sizeEntry, entryOffsetBps, isBuyAlreadyCommitted, isUnsettledBuyRow, collectBuyBookingBatch, measureUnbookedOrderQty, boundRecoveredBuyRows, isFullTpExecution, pruneStaleTpCancelMarkers, isStrandedDustBody, snapshotBody, shouldSkipBuyRecommit } = require('./regime-pure-helpers');
 const { restorePersistedCycleId, repairHistoricalFillAnnotations, planBodyGrowthFromRecoveredBuyRows } = require('./regime-fill-annotations');
@@ -5880,7 +5881,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    *   - Treat buys owned by currently open bodies as post-close fills when
    *   paying an owed reset. Operator resets do not represent a completed
    *   trading cycle for optimizer accounting.
-   * @returns {Promise<{turnedOver: boolean, duplicateClose?: boolean}>}
+   * @returns {Promise<import('./regime-cycle-reset').CycleResetResult>}
    */
   const resetCycle = async ({ preserveOpenBodyBuys = false, resetKind = 'close' } = {}) => {
     const turnoverKind = resetKind === 'operator' ? 'operator' : 'close';
@@ -5889,7 +5890,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // ladder the in-flight rebuild just placed. Snapshot the closing cycle
     // before queueing so they are carried too. An owed reset can also mark
     // buys owned by currently open bodies as post-close fills.
-    let queuedFrom = null;
+    let resetContext = null;
     if (engineLocks.isLadderBusy() || preserveOpenBodyBuys) {
       const cycleId = fillLedger.getCurrentCycleId();
       const cycleFills = cycleFillsFor(cycleId);
@@ -5898,13 +5899,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           .filter(fill => fill.side === 'buy' && isBuyAlreadyCommitted(positionState.celestialBodies, fill.orderId))
           .map(fill => fill.tradeId))
         : new Set();
-      queuedFrom = {
-        cycleId,
-        generation: cycleResetGeneration,
-        tradeIds: new Set(cycleFills.filter(fill => !openBodyBuyTradeIds.has(fill.tradeId)).map(fill => fill.tradeId)),
+      resetContext = {
+        requestedCycleId: cycleId,
+        baselineTurnoverGeneration: cycleResetGeneration,
+        resetCause: turnoverKind,
+        baselineTradeIds: new Set(cycleFills.filter(fill => !openBodyBuyTradeIds.has(fill.tradeId)).map(fill => fill.tradeId)),
       };
     }
-    return engineLocks.withLadderLock(() => resetCycleLocked(queuedFrom, turnoverKind), {
+    return engineLocks.withLadderLock(() => resetCycleLocked(resetContext, turnoverKind), {
       onTimeout: 'proceed',
       label: 'Cycle reset',
       exchange,
@@ -5933,40 +5935,35 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     : fillLedger.getAllFills().filter(f => f.cycleId == null));
 
   /**
-   * @param {{cycleId: string|null, generation: number, tradeIds: Set<string>}|null} queuedFrom -
-   *   the baseline rows when this reset queued or preserves open-body buys
-   * @param {'close'|'operator'} [resetKind='close'] - What caused the
-   *   turnover, for distinguishing operator boundaries from TP closes.
-   * @returns {Promise<{turnedOver: boolean, duplicateClose?: boolean}>}
+   * @param {import('./regime-cycle-reset').CycleResetContext|null} queuedContext -
+   *   baseline captured before waiting; null means capture at lock entry
+   * @param {'close'|'operator'} [resetKind='close']
+   * @returns {Promise<import('./regime-cycle-reset').CycleResetResult>}
    */
-  const resetCycleLocked = async (queuedFrom, resetKind = 'close') => {
-    // The closing cycle's rows as they stand BEFORE the ladder sweep below —
-    // the only await in this function. A buy row that shows up in the closing
-    // cycle after the sweep landed while it ran: a rung that partially filled
-    // before its cancel took is booked synchronously by cancelAllLadderOrders
-    // (#674), and a concurrent WS/poll fill can land in the same window. The
-    // closing TP never consumed such a buy, so it opens the NEW cycle (#711).
-    // A reset that queued for the ladder lock uses its pre-queue snapshot
-    // instead (#766).
+  const resetCycleLocked = async (queuedContext, resetKind = 'close') => {
+    // Capture before the only await (ladder cancellation). Null is a real
+    // first-cycle identity; generation, not a recalculatable ID, detects turnover.
     const closingCycleId = fillLedger.getCurrentCycleId();
-    const targetCycleId = queuedFrom ? queuedFrom.cycleId : closingCycleId;
-    // A reset with a captured baseline is stale if another reset already
-    // closed the cycle it was asked to close (for example, two TP closes
-    // during one rebuild). Running it anyway would close the NEW cycle under
-    // a body still open in it, splitting that body's buy from its sell. The
-    // returned duplicateClose bit distinguishes that case from an operator
-    // boundary that happened to win the race.
-    if (queuedFrom && queuedFrom.generation !== cycleResetGeneration) {
+    const resetContext = queuedContext || {
+      requestedCycleId: closingCycleId,
+      baselineTurnoverGeneration: cycleResetGeneration,
+      baselineTradeIds: null,
+      resetCause: resetKind,
+    };
+    const queuedSupersession = classifyResetSupersession(resetContext, {
+      turnoverGeneration: cycleResetGeneration,
+      closeGenerationByCycleId: closeResetGenerationByCycleId,
+    });
+    if (queuedSupersession) {
       logger.info(`🔄 [${exchange}] Queued cycle reset skipped — the cycle it was asked to close was already closed while it waited (now ${closingCycleId})`);
       positionState.pendingCycleResetFor = null;
-      return {
-        turnedOver: false,
-        duplicateClose: (closeResetGenerationByCycleId.get(targetCycleId) ?? -1) > queuedFrom.generation,
-      };
+      return queuedSupersession;
     }
     const closingCycleFills = () => cycleFillsFor(closingCycleId);
-    let preSweepTradeIds = queuedFrom ? queuedFrom.tradeIds : null;
-    const generationAtEntry = cycleResetGeneration;
+    let preSweepTradeIds = resetContext.baselineTradeIds;
+    // A timed-out lock permits overlap: compare again after cancellation using
+    // the generation at entry, while retaining the originally requested cycle.
+    const sweepContext = { ...resetContext, baselineTurnoverGeneration: cycleResetGeneration };
 
     // Cancel remaining ladder orders - check both positionState and executor tracking
     const executorLadderOrders = orderExecutor.getPendingLadderOrders ? orderExecutor.getPendingLadderOrders() : [];
@@ -5977,12 +5974,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       if (cancelled > 0) logger.info(`🧹 [${exchange}] Cancelled ${cancelled} unfilled ladder orders${partialFills > 0 ? ` (${partialFills} partially filled during the cancel and were booked)` : ''}`);
       // Two resets that both timed out on the ladder lock can overlap here;
       // only the first to finish its sweep turns the cycle over (#766).
-      if (cycleResetGeneration !== generationAtEntry) {
+      const sweepSupersession = classifyResetSupersession(sweepContext, {
+        turnoverGeneration: cycleResetGeneration,
+        closeGenerationByCycleId: closeResetGenerationByCycleId,
+      });
+      if (sweepSupersession) {
         logger.info(`🔄 [${exchange}] Cycle reset skipped after its sweep — a concurrent reset already turned the cycle over`);
-        return {
-          turnedOver: false,
-          duplicateClose: (closeResetGenerationByCycleId.get(targetCycleId) ?? -1) > generationAtEntry,
-        };
+        return sweepSupersession;
       }
     }
 
@@ -6028,19 +6026,27 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // with that sell in the closing cycle rather than splitting the pair. A
     // TP only placed (sellOrderId is stamped at placement) does not count, and
     // neither does a partial sale: a body that still owns the buy is open.
-    const closedBySale = (f) => f.sellOrderId
-      && fillLedger.getRecordedSizeForOrder(f.sellOrderId) > 0
-      && !isBuyAlreadyCommitted(bodies, f.orderId);
-    const sweepBuys = preSweepTradeIds
-      ? closingCycleFills().filter(f => f.side === 'buy' && !preSweepTradeIds.has(f.tradeId) && !closedBySale(f))
+    const windowBuys = preSweepTradeIds
+      ? closingCycleFills().filter(f => f.side === 'buy' && !preSweepTradeIds.has(f.tradeId))
       : [];
+    // Snapshot sale evidence and body ownership synchronously at the same point
+    // as the original carry decision; a placed TP alone is not a booked sale.
+    const soldOrderIds = new Set();
+    const openBuyOrderIds = new Set();
+    for (const fill of windowBuys) {
+      if (fill.sellOrderId && fillLedger.getRecordedSizeForOrder(fill.sellOrderId) > 0) {
+        soldOrderIds.add(fill.sellOrderId);
+        if (isBuyAlreadyCommitted(bodies, fill.orderId)) openBuyOrderIds.add(fill.orderId);
+      }
+    }
+    const sweepBuys = selectCarryForwardBuys({ windowBuys, soldOrderIds, openBuyOrderIds });
 
     // Persist the boundary in regime-state.json with the other operator-owned
     // position state. The fill ledger remains the fallback for legacy state
     // files that predate this marker.
     positionState.activeCycleId = fillLedger.startNewCycle();
     cycleResetGeneration++;
-    if (resetKind === 'close') closeResetGenerationByCycleId.set(closingCycleId, cycleResetGeneration);
+    if (resetContext.resetCause === 'close') closeResetGenerationByCycleId.set(closingCycleId, cycleResetGeneration);
     // Any completed turnover pays off a body TP close's owed reset (#766).
     positionState.pendingCycleResetFor = null;
     // Persist WHEN the cycle began too: it is the boundary recalculateCycles
@@ -6076,7 +6082,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // stale/duplicate queued resets returned above without announcing.
     tradeEvents.cycleReset(exchange, positionState.cyclesCompleted, positionState.realizedPnL || 0, {
       ...fundEventData,
-      resetKind,
+      resetKind: resetContext.resetCause,
       closedCycleId: closingCycleId,
       cycleId: positionState.activeCycleId,
     });
