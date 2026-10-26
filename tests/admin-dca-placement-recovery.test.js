@@ -78,6 +78,8 @@ function view(name, fetchImpl, extra = {}) {
     '../utils/countdown.mjs': { formatCountdown: ms => String(ms) },
     './ToggleSwitch': () => null,
     './StatCard': () => null,
+    // Valuation is characterized at the real Dashboard DOM boundary.
+    './dca/DcaHoldingsSummary': () => null,
     './ActivityFeed': () => null,
     './FailedSellPlacements': () => null,
     './DcaPlacementRecovery': Panel,
