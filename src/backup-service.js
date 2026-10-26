@@ -30,6 +30,18 @@ const { LOCK_FILENAME: LEGACY_MIGRATION_LOCK } = require('./legacy-namespace-mig
 // UpDown scorecard maintenance lock (relative to data/). A backup taken while a
 // backfill holds it would carry a lock no live process owns into the restore.
 const SCORECARD_MAINTENANCE_LOCK = path.join('updown', 'scorecard', '.maintenance-lock');
+
+// Process ownership is not trading data. Match only the lock component at
+// <exchange>/<pair>/, leaving the durable placement-intents.json untouched.
+const PLACEMENT_INTENT_LOCK_NAMES = [
+  'placement-intents.json.lock',
+  'placement-intents.json.lock.new-*',
+  'placement-intents.json.lock.reclaim',
+];
+const isPlacementIntentOwnershipPath = (rel) => {
+  const [, , name] = rel.split(path.sep);
+  return /^placement-intents\.json\.lock(?:\.new-[^/]+|\.reclaim)?$/.test(name || '');
+};
 const {
   buildConfigSnapshot,
   reconstructConfigOverride,
@@ -595,12 +607,19 @@ const createBackup = async ({ includePriceCache = false, paths: pathOverrides } 
     excludes.push('*/*-price-cache*.json');
   }
 
-  const excludeArgs = excludes.flatMap(pattern => ['-x', pattern]);
+  // Preserve the old exclusions' cross-directory wildcard behavior, while
+  // -ws lets the ownership patterns pin their first two path components.
+  const ownershipExcludes = PLACEMENT_INTENT_LOCK_NAMES.flatMap((name) => [
+    `*/*/${name}`, `*/*/${name}/**`,
+  ]);
+  const excludeArgs = [...excludes.map((pattern) => pattern.replace(/\*/g, '**')), ...ownershipExcludes]
+    .flatMap((pattern) => ['-x', pattern]);
 
   // Create zip from data directory
   const result = await spawnAsync('zip', [
     '-r',               // Recursive
     '-q',               // Quiet
+    '-ws',              // A single wildcard cannot cross path components
     zipPath,
     '.',                // Current directory (data/)
     ...excludeArgs,
@@ -1613,6 +1632,7 @@ const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null
       // Skip the backups directory, root credential files, key files and the
       // archive's own metadata.
       skip: (name, isRoot, rel) => name === 'backups'
+        || isPlacementIntentOwnershipPath(rel)
         || rel.startsWith(SCORECARD_MAINTENANCE_LOCK)
         || (isRoot && (name === CONFIG_LOCK_DIR || name.startsWith(`${BASE_SNAPSHOT_FILENAME}.`)))
         || name.endsWith('-keys.json')
