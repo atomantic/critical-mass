@@ -56,8 +56,11 @@ function view(name, props = {}, notificationConfig = {}) {
   const render = () => { index = 0; const tree = component(props); mounted = true; return tree }
   return { render, requests, async mount() { render(); effects.forEach(effect => effect()); await flush(); return render() } }
 }
-const nodes = tree => Array.isArray(tree) ? tree.flatMap(nodes) : React.isValidElement(tree) ? [tree, ...nodes(tree.props.children)] : []
-const text = tree => Array.isArray(tree) ? tree.map(text).join('') : React.isValidElement(tree) ? text(tree.props.children) : typeof tree === 'string' ? tree : ''
+// Cards contain no hooks; expand their component boundary while preserving the
+// FormInput nodes whose public change callbacks this fixture exercises.
+const children = tree => typeof tree.type === 'function' && /Card$/.test(tree.type.name) && tree.type.name !== 'SectionCard' ? tree.type(tree.props) : tree.props.children
+const nodes = tree => Array.isArray(tree) ? tree.flatMap(nodes) : React.isValidElement(tree) ? [tree, ...nodes(children(tree))] : []
+const text = tree => Array.isArray(tree) ? tree.map(text).join('') : React.isValidElement(tree) ? text(children(tree)) : typeof tree === 'string' ? tree : ''
 const button = (tree, label) => {
   const found = nodes(tree).find(node => node.type === 'button' && text(node) === label)
   assert.ok(found, `expected button ${label}`)
