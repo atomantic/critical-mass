@@ -12,6 +12,7 @@ const React = adminRequire('react')
 const { renderToStaticMarkup } = adminRequire('react-dom/server')
 let Dashboard
 let CostBasisDCA
+let DcaHoldingsSummary
 let StatCard
 let ToggleSwitch
 let formatCountdown
@@ -38,6 +39,10 @@ before(async () => {
       '../utils/intervals.mjs': { getIntervalMs: () => 86400000 },
       '../utils/countdown.mjs': { formatCountdown },
       './StatCard': StatCard,
+      '../StatCard': StatCard,
+      './dca/DcaHoldingsSummary': DcaHoldingsSummary,
+      '../../utils/pnlFormat.mjs': { signedPrefix: n => (n >= 0 ? '+' : '') },
+      '../charts/chartUtils': { formatCurrency: n => `$${n.toFixed(2)}`, formatPrice: String, formatAsset: String },
       './ToggleSwitch': ToggleSwitch,
       './ActivityFeed': () => null,
       './FailedSellPlacements': () => null,
@@ -64,6 +69,7 @@ before(async () => {
   ;({ formatCountdown } = await import('../admin/src/utils/countdown.mjs'))
   StatCard = await compile('StatCard')
   ToggleSwitch = await compile('ToggleSwitch')
+  DcaHoldingsSummary = await compile('dca/DcaHoldingsSummary')
   Dashboard = await compile('Dashboard')
   CostBasisDCA = await compile('CostBasisDCA')
 })
