@@ -131,6 +131,99 @@ afterEach(() => {
   for (const dir of roots.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
+describe('placement-intent ownership portability (#1793)', () => {
+  const fundPath = path.join('coinbase', 'ETH-USDC');
+  const ownershipNames = [
+    'placement-intents.json.lock',
+    'placement-intents.json.lock.new-123-fixture',
+    'placement-intents.json.lock.reclaim',
+  ];
+  const unresolved = { id: 'unresolved-source-order', status: 'unresolved', clientOrderId: 'pending-client-order' };
+  const seedSource = () => {
+    const source = makeInstall('source', SOURCE_BASE);
+    writeJson(path.join(source.dataDir, fundPath, 'placement-intents.json'), { version: 1, intents: [unresolved] });
+    for (const name of ownershipNames) {
+      if (name.endsWith('.reclaim')) fs.mkdirSync(path.join(source.dataDir, fundPath, name), { recursive: true });
+      else writeJson(path.join(source.dataDir, fundPath, name, 'owner.json'), { host: 'foreign-fixture-host', pid: 123, token: name });
+    }
+    // Similar names and the same basename outside the fund slot are data,
+    // not a placement-intent owner. Do not use a substring/prefix exclusion.
+    for (const rel of [
+      path.join(fundPath, 'placement-intents.json.lock.notes'),
+      path.join(fundPath, 'placement-intents.json.lock.reclaim-notes'),
+      path.join(fundPath, 'notes', 'placement-intents.json.lock'),
+      path.join('placement-intents.json.lock'),
+    ]) writeJson(path.join(source.dataDir, rel, 'keep.json'), { keep: true });
+    return source;
+  };
+  const readIntentsAt = (dest, callback) => require('../src/migration').withFundDataDirOverride(
+    'coinbase', 'ETH-USDC', path.join(dest.dataDir, fundPath), callback,
+  );
+
+  it('omits only fund ownership artifacts while preserving unresolved intent data', async () => {
+    const source = seedSource();
+    const created = await createBackup({ paths: source.paths });
+    assert.equal(created.success, true, created.error);
+    const listing = spawnSync('unzip', ['-Z1', path.join(source.dataDir, 'backups', created.filename)], { encoding: 'utf8' });
+    assert.equal(listing.status, 0);
+    const entries = listing.stdout.trim().split('\n');
+    for (const name of ownershipNames) {
+      assert.equal(entries.some((entry) => entry === `${fundPath}/${name}/` || entry.startsWith(`${fundPath}/${name}/`)), false, name);
+    }
+    assert.ok(entries.includes(`${fundPath}/placement-intents.json`));
+    assert.ok(entries.includes(`${fundPath}/placement-intents.json.lock.notes/keep.json`));
+    assert.ok(entries.includes(`${fundPath}/placement-intents.json.lock.reclaim-notes/keep.json`));
+    assert.ok(entries.includes(`${fundPath}/notes/placement-intents.json.lock/keep.json`));
+    assert.ok(entries.includes('placement-intents.json.lock/keep.json'));
+    const dest = makeInstall('dest', DEST_BASE);
+    transferArchive(source, dest, created.filename);
+    assert.equal(restoreBackup(created.filename, { paths: dest.paths, acceptFundRemoval: true }).success, true);
+    const storage = require('../src/placement-intent-storage');
+    readIntentsAt(dest, () => {
+      assert.deepEqual(storage.loadPlacementIntents('coinbase', 'ETH-USDC'), [unresolved]);
+      storage.recordPlacementIntent({ exchange: 'coinbase', pair: 'ETH-USDC', side: 'buy' });
+      assert.deepEqual(storage.getBlockingPlacementIntents('coinbase', 'ETH-USDC'), [unresolved]);
+      assert.equal(storage.loadPlacementIntents('coinbase', 'ETH-USDC').length, 2);
+    });
+  });
+
+  it('filters ownership from older archives and leaves destination owners intact', async () => {
+    const source = seedSource();
+    const created = await createBackup({ paths: source.paths });
+    assert.equal(created.success, true, created.error);
+    // Reinsert the exact directories (including entries with no owner file) as
+    // an older full backup would have captured them.
+    const archive = path.join(source.dataDir, 'backups', created.filename);
+    const appended = spawnSync('zip', ['-q', '-r', archive, ...ownershipNames.map((name) => path.join(fundPath, name))], { cwd: source.dataDir });
+    assert.equal(appended.status, 0, appended.stderr.toString());
+    for (const hasDestinationOwner of [false, true]) {
+      const dest = makeInstall(`dest-${hasDestinationOwner}`, DEST_BASE);
+      const ownerFile = path.join(dest.dataDir, fundPath, ownershipNames[0], 'owner.json');
+      const destinationOwner = { host: 'destination-fixture-host', pid: 456, token: 'keep-live-owner' };
+      if (hasDestinationOwner) {
+        for (const name of ownershipNames) writeJson(path.join(dest.dataDir, fundPath, name, 'owner.json'), destinationOwner);
+      }
+      transferArchive(source, dest, created.filename);
+      const restored = restoreBackup(created.filename, { paths: dest.paths, acceptFundRemoval: true });
+      assert.equal(restored.success, true, restored.error);
+      for (const name of ownershipNames) {
+        const ownerDir = path.join(dest.dataDir, fundPath, name);
+        assert.equal(fs.existsSync(ownerDir), hasDestinationOwner, name);
+        if (hasDestinationOwner) assert.deepEqual(JSON.parse(fs.readFileSync(path.join(ownerDir, 'owner.json'), 'utf8')), destinationOwner);
+      }
+      assert.equal(fs.existsSync(path.dirname(ownerFile)), hasDestinationOwner);
+      if (hasDestinationOwner) assert.deepEqual(JSON.parse(fs.readFileSync(ownerFile, 'utf8')), destinationOwner);
+      else readIntentsAt(dest, () => {
+        const storage = require('../src/placement-intent-storage');
+        storage.recordPlacementIntent({ exchange: 'coinbase', pair: 'ETH-USDC', side: 'buy' });
+        assert.deepEqual(storage.getBlockingPlacementIntents('coinbase', 'ETH-USDC'), [unresolved]);
+      });
+      assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dest.dataDir, fundPath, 'placement-intents.json.lock.notes', 'keep.json'), 'utf8')), { keep: true });
+      assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dest.dataDir, fundPath, 'notes', 'placement-intents.json.lock', 'keep.json'), 'utf8')), { keep: true });
+    }
+  });
+});
+
 describe('backup config portability — manifest round-trip (#430)', () => {
   it('excludes secret base snapshots and restores a destination baseline without changing reconstructed config', async () => {
     const { BASE_SNAPSHOT_FILENAME, CONFIG_LOCK_DIR, reconcileBaseConfig } = require('../src/config-base-drift');

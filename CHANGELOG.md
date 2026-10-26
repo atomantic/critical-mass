@@ -58,6 +58,7 @@ All notable changes to this project will be documented in this file.
 
 ### Security
 - **[issue-1590] Dockerfile base images are pinned by digest** — both `FROM node:26-alpine` stages now reference `node:26-alpine@sha256:40cd011b…797`, so a republished tag can no longer change the production image (which holds the exchange keys) without a diff. Dependabot's existing `docker` ecosystem entry proposes digest bumps.
+- **[issue-1793] Portable backups omit placement-intent ownership locks** — new archives and restores of older archives exclude per-fund lock, staged-owner and reclaim directories while retaining unresolved placement intents and existing destination ownership.
 - **[issue-1726] Interrupted credential writes stay out of backups and restores** — archives and restores now skip temporary siblings of provider, operator-auth, bootstrap and IPC secret files, including leftovers from a process crash.
 - **[issue-1728] AI provider responses are limited to 20 MiB before parsing** — Oversized run and model responses are cancelled and reported as failures, releasing run capacity and preserving stored models.
 
