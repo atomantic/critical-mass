@@ -91,6 +91,7 @@ All notable changes to this project will be documented in this file.
 - **[issue-1703] Only complete fund snapshots consume retention slots** — shared validation rejects malformed manifests and missing, unreadable or unsafe state files before listing, restore or publication, preserving healthy recovery points and invalid directories for diagnosis.
 - **[issue-1693] Restore recovery is serialized across startup processes** — simultaneous engine and gateway starts wait for one recovery owner, preserving resumed runtime writes after a crash; busy ownership blocks startup for supervisor retry.
 - **[issue-1727] Hostile feed descriptions no longer stall the gateway** — RSS and Atom description normalization scans markup in linear time with a bounded 500-character output, preserving literal unmatched brackets and existing text semantics.
+- **[issue-1800] Crypto.com live fills preserve signed execution fees** — live ingestion and reconciliation share fee normalization for quote-denominated charges, rebates, explicit zero and legacy fee records. Historical zero-fee ledger rows remain an operator reconciliation concern.
 - **[issue-1730] Malformed order acknowledgements retain duplicate-placement protection** — Coinbase, Gemini and Crypto.com reconcile decoded replies without an identified order or explicit rejection, preserving unresolved intents until accepted orders are owned.
 
 - **[issue-1736] The browser performance audit enrolls with its disposable bootstrap credential and serves aggregate reads from schema-validated temporary fund ledgers.**
