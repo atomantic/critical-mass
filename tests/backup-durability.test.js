@@ -8,6 +8,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { createBackup, createFundStateBackup, listFundStateBackups, restoreBackup } = require('../src/backup-service');
+const { ledgerOf, fixturePayload } = require('./helpers/ledger-fixture');
 
 let root, paths, backupsDir, fundBackupsDir;
 const stateFiles = ['fill-ledger.json', 'regime-state.json', 'closed-trades.json', 'state.json', 'dry-run-state.json'];
@@ -20,7 +21,7 @@ beforeEach(() => {
   fs.writeFileSync(paths.baseConfigFile, JSON.stringify({ exchanges: { coinbase: { pairs: { 'BTC-USDC': { productId: 'BTC-USDC' } } } } }));
   const fundDir = path.join(paths.dataDir, 'coinbase', 'BTC-USDC');
   fs.mkdirSync(fundDir, { recursive: true });
-  for (const file of stateFiles) fs.writeFileSync(path.join(fundDir, file), JSON.stringify({ marker: file }));
+  for (const file of stateFiles) fs.writeFileSync(path.join(fundDir, file), JSON.stringify(fixturePayload(file, { marker: file })));
 });
 
 afterEach(() => {
@@ -127,7 +128,7 @@ describe('durable fund-state snapshot publication before retention', () => {
       assert.deepEqual(listFundStateBackups({ paths }).map((backup) => backup.snapshotId), [previous.snapshotId]);
       assert.deepEqual(fs.readdirSync(backupsDir), ['fund-state']);
       for (const file of stateFiles) {
-        assert.deepEqual(JSON.parse(fs.readFileSync(path.join(fundBackupsDir, previous.snapshotId, 'coinbase', 'BTC-USDC', file), 'utf8')), { marker: file });
+        assert.deepEqual(JSON.parse(fs.readFileSync(path.join(fundBackupsDir, previous.snapshotId, 'coinbase', 'BTC-USDC', file), 'utf8')), fixturePayload(file, { marker: file }));
       }
     });
   }
