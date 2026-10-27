@@ -382,6 +382,42 @@ const createManualTradeStore = (exchange, pair) => {
   };
 
   /**
+   * Why a paired import of (buyOrderId, sellOrderId) would take an order
+   * another manual record already owns, or null when it may proceed (issue
+   * #1802). A paired import is a whole-order ownership claim: either leg
+   * already held by a different record — a completed pair, a buy-first body
+   * import, or a sell-first recovery (including any of its recovery attempts)
+   * — is a conflict, never a re-link. The exact pair is allowed when it is a
+   * retry (COMPLETED/DISMISSED) or the supported promotion of a matching
+   * sell-first recovery whose only recovery order is this buy and that has no
+   * unconfirmed placement in flight. Dismissed records the operator discarded
+   * own nothing here; the ledger's own links still guard their orders.
+   * @param {string} buyOrderId
+   * @param {string} sellOrderId
+   * @returns {string|null}
+   */
+  const findPairConflict = (buyOrderId, sellOrderId) => {
+    for (const t of trades.values()) {
+      if (t.buyOrderId === buyOrderId && t.sellOrderId === sellOrderId) {
+        if (t.status === STATUS.COMPLETED || t.status === STATUS.DISMISSED) continue;
+        if (t.recoveryIntent) {
+          return `Manual trade ${t.id} has an unconfirmed recovery buy (client order id ${t.recoveryIntent.clientOrderId}); resolve it before importing this pair`;
+        }
+        const otherAttempt = (t.recoveryAttempts || []).find((a) => a.orderId !== buyOrderId);
+        if (otherAttempt) {
+          return `Manual trade ${t.id} also recovers sell ${sellOrderId} with buy ${otherAttempt.orderId}; a paired import cannot replace a multi-order recovery`;
+        }
+        continue;
+      }
+      if (t.status === STATUS.DISMISSED) continue;
+      const ownsBuy = t.buyOrderId === buyOrderId || (t.recoveryAttempts || []).some((a) => a.orderId === buyOrderId);
+      if (ownsBuy) return `Buy order ${buyOrderId} already belongs to manual trade ${t.id} (${t.tradeType}, sell ${t.sellOrderId || 'none'})`;
+      if (t.sellOrderId === sellOrderId) return `Sell order ${sellOrderId} already belongs to manual trade ${t.id} (${t.tradeType}, buy ${t.buyOrderId || 'none'})`;
+    }
+    return null;
+  };
+
+  /**
    * Add a paired trade (both buy and sell already filled)
    * @param {Object} buyData
    * @param {Object} sellData
@@ -389,6 +425,11 @@ const createManualTradeStore = (exchange, pair) => {
    * @returns {ManualTrade}
    */
   const addPairedTrade = (buyData, sellData, note) => {
+    // Last line of defense (issue #1802): importPair checks this before any
+    // ledger write, so reaching it with a conflict is a caller bug.
+    const conflict = findPairConflict(buyData.buyOrderId, sellData.sellOrderId);
+    if (conflict) throw new Error(conflict);
+
     // Idempotent by (buyOrderId, sellOrderId) — a retry returns the existing
     // record instead of creating a second paired-trade row for the same fills
     // (issue #691; mirrors addManualBuy/addManualSell's per-order idempotency).
@@ -872,6 +913,7 @@ const createManualTradeStore = (exchange, pair) => {
     addManualSell,
     addManualBuy,
     addPairedTrade,
+    findPairConflict,
     recordRecoveryIntent,
     releaseRecoveryIntent,
     recordRecoveryBuy,

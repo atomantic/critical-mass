@@ -1306,6 +1306,69 @@ const createManualTradeImporter = ({
   const importPair = async ({ buyOrderId, sellOrderId, note } = {}) => {
     if (!buyOrderId || !sellOrderId) return fail('Both buyOrderId and sellOrderId are required');
 
+    // A paired import claims both whole orders (issue #1802), so it holds both
+    // legs' locks: the buy's (shared with importBuy and body recovery) and the
+    // sell's (shared with importSell and every recovery operation). Every
+    // pair takes buy before sell and no other path nests them, so two
+    // overlapping pairs can never wait on each other in a cycle.
+    return store.withBuyLock(buyOrderId, () =>
+      store.withSellLock(sellOrderId, () => importPairLocked({ buyOrderId, sellOrderId, note })));
+  };
+
+  /**
+   * Why pairing these two orders would take one that engine bookkeeping or
+   * another manual record already owns, or null when the pair may proceed
+   * (issue #1802). Pairing re-links the buy's ledger rows to this sell, so a
+   * buy already linked to a different sell, owned by a celestial body or
+   * consumed by another sale, and a sell the engine already booked against a
+   * body or that already closes another buy, must be refused — re-linking
+   * would destroy the original accounting link and double-represent the
+   * order in completed trades. The exact pair's own earlier links are a
+   * retry, not a conflict.
+   * @returns {string|null}
+   */
+  const findPairOwnershipConflict = (buyOrderId, sellOrderId) => {
+    const stored = store.findPairConflict(buyOrderId, sellOrderId);
+    if (stored) return stored;
+
+    for (const row of fillLedger.getFillsForOrder(buyOrderId)) {
+      if (row.bodyId || row.isBodyOwned) {
+        return `Buy order ${buyOrderId} is owned by celestial body ${row.bodyId || '(unknown)'}; it cannot be paired with sell ${sellOrderId}`;
+      }
+      if (row.sellOrderId && row.sellOrderId !== sellOrderId) {
+        return `Buy order ${buyOrderId} is already linked to sell ${row.sellOrderId}; it cannot be paired with sell ${sellOrderId}`;
+      }
+      const consumer = Object.keys(row.consumedBy || {}).find((key) => key !== sellOrderId);
+      if (consumer) return `Buy order ${buyOrderId} was already consumed by sale ${consumer}; it cannot be paired with sell ${sellOrderId}`;
+    }
+    for (const row of fillLedger.getFillsForOrder(sellOrderId)) {
+      if (row.bodyId || row.isBodyOwned || row.bodyBooked || row.bodyPnl != null || row.satellitePnl != null) {
+        return `Sell order ${sellOrderId} was already booked by the engine${row.bodyId ? ` against body ${row.bodyId}` : ''}; it cannot be paired with buy ${buyOrderId}`;
+      }
+    }
+    const otherBuy = fillLedger.getAllFills().find((row) => row.side === 'buy' && row.orderId !== buyOrderId
+      && (row.sellOrderId === sellOrderId || Number(row.consumedBy?.[sellOrderId]) > 0));
+    if (otherBuy) return `Sell order ${sellOrderId} already closes buy ${otherBuy.orderId}; it cannot be paired with buy ${buyOrderId}`;
+
+    // A body the engine (or an earlier buy-first import) persisted can own
+    // either leg before any ledger row says so. Unreadable state cannot prove
+    // the orders free, so it fails closed.
+    let bodies;
+    try {
+      bodies = loadFundRegimeState(exchange, pair).position?.celestialBodies || [];
+    } catch (err) {
+      return `Cannot verify body ownership of buy ${buyOrderId} / sell ${sellOrderId}: ${err.message}`;
+    }
+    const owner = bodies.find((body) => bodyOwnsOrder(body, null, buyOrderId) || body.tpOrderId === sellOrderId);
+    if (owner) return `Celestial body ${owner.id} already owns ${owner.tpOrderId === sellOrderId ? `sell ${sellOrderId}` : `buy ${buyOrderId}`}; the pair was not imported`;
+    return null;
+  };
+
+  const importPairLocked = async ({ buyOrderId, sellOrderId, note }) => {
+    // Refuse a known conflict before asking the exchange for anything.
+    const early = findPairOwnershipConflict(buyOrderId, sellOrderId);
+    if (early) return fail(early);
+
     // Fetch BOTH legs before ingesting EITHER. Ingesting the buy first left
     // unpaired buy rows in the live ledger whenever the sell fetch failed,
     // inflating heldOpenBuyCostBasis for a position that was already closed.
@@ -1316,6 +1379,11 @@ const createManualTradeImporter = ({
 
     const invalidLeg = validateAdapterFills(buy.fills, buyOrderId, 'buy') || validateAdapterFills(sell.fills, sellOrderId, 'sell');
     if (invalidLeg) return fail(invalidLeg);
+    // Recheck after the awaits, synchronously with the writes below: paths
+    // that hold neither leg's lock (the engine's own fills, a recovery under
+    // another sell's lock) may have claimed an order while the fetches ran.
+    const conflict = findPairOwnershipConflict(buyOrderId, sellOrderId);
+    if (conflict) return fail(conflict);
     const buyTotals = ingestAdapterFills(fillLedger, buy.fills, buyOrderId, 'buy');
     const sellTotals = ingestAdapterFills(fillLedger, sell.fills, sellOrderId, 'sell');
 
