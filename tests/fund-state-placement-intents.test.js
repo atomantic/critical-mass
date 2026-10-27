@@ -10,6 +10,7 @@ const os = require('os');
 const path = require('path');
 
 const migration = require('../src/migration');
+const { ledgerOf } = require('./helpers/ledger-fixture');
 const stateTracker = require('../src/state-tracker');
 const { placeWithUnknownReconcile } = require('../src/order-manager');
 const {
@@ -40,7 +41,7 @@ beforeEach(() => {
   fundDir = path.join(dataDir, EXCHANGE, PAIR);
   mock.method(migration, 'getExchangeDataDir', (exchange) => path.join(dataDir, exchange));
   writeJson(paths.baseConfigFile, { exchanges: { [EXCHANGE]: { pairs: { [PAIR]: { productId: PAIR, enabled: true } } } } });
-  writeJson(path.join(fundDir, 'fill-ledger.json'), [{ id: 'fill-1' }]);
+  writeJson(path.join(fundDir, 'fill-ledger.json'), ledgerOf('fill-1'));
 });
 
 afterEach(() => {
@@ -182,7 +183,7 @@ describe('fund-state snapshots preserve placement intents (#1810)', () => {
       const restored = restoreFundStateBackup(backup.snapshotId, EXCHANGE, PAIR, { paths, acceptMissingPlacementIntents: true });
       assert.equal(restored.success, true, JSON.stringify(restored));
       assert.match(restored.warnings?.[0] ?? '', /NOT recovered/);
-      assert.deepEqual(readJson(path.join(fundDir, 'fill-ledger.json')), [{ id: 'fill-1' }]);
+      assert.deepEqual(readJson(path.join(fundDir, 'fill-ledger.json')), ledgerOf('fill-1'));
       assert.deepEqual(stateTracker.getBlockingPlacementIntents(EXCHANGE, PAIR).map((i) => i.id), [intent.id]);
     });
   });
@@ -208,12 +209,12 @@ describe('fund-state snapshots preserve placement intents (#1810)', () => {
   it('rolls intents and accounting back together when the restore fails midway', async () => {
     const original = await leaveUnresolvedIntent();
     const backup = snapshot();
-    writeJson(path.join(fundDir, 'fill-ledger.json'), ['live-newer']);
+    writeJson(path.join(fundDir, 'fill-ledger.json'), ledgerOf('live-newer'));
     writeJson(path.join(fundDir, 'regime-state.json'), { live: true });
     stateTracker.resolvePlacementIntent(EXCHANGE, PAIR, original.id);
     const liveBefore = Object.fromEntries(fs.readdirSync(fundDir).map((name) => [name, fs.readFileSync(path.join(fundDir, name), 'utf8')]));
     const otherFund = path.join(dataDir, EXCHANGE, 'ETH-USDC');
-    writeJson(path.join(otherFund, 'fill-ledger.json'), ['other']);
+    writeJson(path.join(otherFund, 'fill-ledger.json'), ledgerOf('other'));
 
     // Fail the last staged replacement, after the intents file has already been swapped in.
     const rename = fs.renameSync;
@@ -228,6 +229,6 @@ describe('fund-state snapshots preserve placement intents (#1810)', () => {
     assert.equal(result.success, false, JSON.stringify(result));
     assert.deepEqual(Object.fromEntries(fs.readdirSync(fundDir).map((name) => [name, fs.readFileSync(path.join(fundDir, name), 'utf8')])), liveBefore);
     assert.deepEqual(stateTracker.loadPlacementIntents(EXCHANGE, PAIR), []);
-    assert.deepEqual(readJson(path.join(otherFund, 'fill-ledger.json')), ['other']);
+    assert.deepEqual(readJson(path.join(otherFund, 'fill-ledger.json')), ledgerOf('other'));
   });
 });
