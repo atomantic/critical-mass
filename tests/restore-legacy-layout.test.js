@@ -23,7 +23,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const { createBackup, restoreBackup, inspectBackup } = require('../src/backup-service');
+const { createBackup, restoreBackup, inspectBackup, checkRestorePreconditions } = require('../src/backup-service');
+const { migrateLegacyNamespace } = require('../src/legacy-namespace-migration');
 const { normalizeExchangeTreeToPairs } = require('../src/migration');
 const { JOURNAL_FILENAME } = require('../src/restore-apply');
 
@@ -276,6 +277,236 @@ describe('restoreBackup translates a pre-multi-pair archive (issue #541)', () =>
     assert.equal(read(path.join(fundDir, 'state.json')), '{"generation":"live"}');
     assert.equal(read(path.join(fundDir, 'fill-ledger.json')), 'live-ledger');
     assert.equal(fs.existsSync(path.join(dest.dataDir, JOURNAL_FILENAME)), false);
+  });
+});
+
+/** Strip the manifest to reproduce a pre-v2.24.1 archive. */
+const stripManifest = (source, filename) => {
+  require('child_process').spawnSync('zip', ['-q', '-d', path.join(source.dataDir, 'backups', filename), 'backup-manifest.json']);
+};
+
+describe('restoreBackup translates the pre-exchange-namespace root layout (issue #1795)', () => {
+  // Fresh backups exclude price caches, so pre-existing legacy archives that carry
+  // them are reproduced by appending the entry to the finished zip.
+  const legacyRootArchive = async (files, sourceConfig = configWith({ coinbase: 'BTC-USDC' }), extras = {}) => {
+    const { source, filename } = await makeLegacyLayoutArchive(sourceConfig, files);
+    stripManifest(source, filename);
+    const staging = path.join(root, `extras-${roots.length}-${filename}`);
+    for (const [name, text] of Object.entries(extras)) {
+      write(path.join(staging, name), text);
+      require('child_process').spawnSync('zip', ['-q', '-g', path.join(source.dataDir, 'backups', filename), name], { cwd: staging });
+    }
+    return { source, filename };
+  };
+
+  it('replaces the current per-fund state and leaves no root artifact to block startup', async () => {
+    const { source, filename } = await legacyRootArchive({
+      'state.json': '{"pending":"old-order"}',
+      'transactions.tsv': 'old-tx\n',
+    }, undefined, { 'btc-price-cache-1h.json': 'prices' });
+    const dest = makeInstall('dest', configWith({ coinbase: 'BTC-USDC' }));
+    const fundDir = path.join(dest.dataDir, 'coinbase', 'BTC-USDC');
+    write(path.join(fundDir, 'state.json'), '{"pending":"current-order"}');
+    write(path.join(fundDir, 'transactions.tsv'), 'current-tx\n');
+    transferArchive(source, dest, filename);
+
+    const result = restoreBackup(filename, { paths: dest.paths, acceptLegacyWithoutBase: true, logger: silentLogger });
+    assert.equal(result.success, true, result.error);
+
+    assert.equal(read(path.join(fundDir, 'state.json')), '{"pending":"old-order"}');
+    assert.equal(read(path.join(fundDir, 'transactions.tsv')), 'old-tx\n');
+    // Not per-fund: price caches live at exchange level.
+    assert.equal(read(path.join(dest.dataDir, 'coinbase', 'btc-price-cache-1h.json')), 'prices');
+    for (const name of ['state.json', 'transactions.tsv', 'btc-price-cache-1h.json']) {
+      assert.equal(fs.existsSync(path.join(dest.dataDir, name)), false, `${name} stranded at the data root`);
+    }
+    // The next startup finds nothing to migrate or refuse.
+    const migrated = migrateLegacyNamespace({ dataDir: dest.dataDir, pairDir: fundDir });
+    assert.equal(migrated.status, 'none');
+    assert.deepEqual(fs.readdirSync(dest.dataDir).filter((n) => n.startsWith('.restore-')), []);
+  });
+
+  it('restores onto a destination that has no current state for the fund yet', async () => {
+    const { source, filename } = await legacyRootArchive({ 'state.json': '{"pending":"old-order"}' });
+    const dest = makeInstall('dest', configWith({ coinbase: 'BTC-USDC' }));
+    transferArchive(source, dest, filename);
+
+    const result = restoreBackup(filename, { paths: dest.paths, acceptLegacyWithoutBase: true, logger: silentLogger });
+    assert.equal(result.success, true, result.error);
+    assert.equal(read(path.join(dest.dataDir, 'coinbase', 'BTC-USDC', 'state.json')), '{"pending":"old-order"}');
+  });
+
+  it('takes the pair from the supplied source configuration over the destination default', async () => {
+    const { source, filename } = await legacyRootArchive({ 'state.json': '{"fund":"ETH-USDC"}' });
+    const dest = makeInstall('dest', configWith({ coinbase: 'BTC-USDC' }));
+    write(path.join(dest.dataDir, 'coinbase', 'BTC-USDC', 'state.json'), '{"fund":"BTC-USDC"}');
+    transferArchive(source, dest, filename);
+
+    const result = restoreBackup(filename, {
+      paths: dest.paths,
+      legacyBaseConfig: configWith({ coinbase: 'ETH-USDC' }),
+      acceptFundRemoval: true,
+      logger: silentLogger,
+    });
+    assert.equal(result.success, true, result.error);
+    assert.equal(read(path.join(dest.dataDir, 'coinbase', 'ETH-USDC', 'state.json')), '{"fund":"ETH-USDC"}');
+    assert.equal(fs.existsSync(path.join(dest.dataDir, 'state.json')), false);
+  });
+
+  it('fails before any destination write when no coinbase fund can be resolved', async () => {
+    const { source, filename } = await legacyRootArchive({ 'state.json': '{"pending":"old-order"}' });
+    const dest = makeInstall('dest', configWith({ kraken: 'BTC-USD' }));
+    write(path.join(dest.dataDir, 'kraken', 'BTC-USD', 'state.json'), '{"current":true}');
+    transferArchive(source, dest, filename);
+
+    const options = { paths: dest.paths, acceptLegacyWithoutBase: true };
+    const preflight = await checkRestorePreconditions(filename, options);
+    assert.equal(preflight.ok, false);
+    assert.equal(preflight.code, 'legacy-layout-unresolvable-pair');
+
+    const result = restoreBackup(filename, { ...options, logger: silentLogger });
+    assert.equal(result.success, false);
+    assert.equal(result.code, 'legacy-layout-unresolvable-pair');
+    assert.match(String(result.error), /coinbase/);
+    assert.equal(read(path.join(dest.dataDir, 'kraken', 'BTC-USD', 'state.json')), '{"current":true}');
+    assert.equal(fs.existsSync(path.join(dest.dataDir, 'state.json')), false);
+    assert.equal(fs.existsSync(path.join(dest.dataDir, JOURNAL_FILENAME)), false);
+    assert.deepEqual(fs.readdirSync(dest.dataDir).filter((n) => n.startsWith('.restore-')), []);
+  });
+
+  it('refuses differing generations inside the archive without touching the destination', async () => {
+    const { source, filename } = await legacyRootArchive({
+      'state.json': '{"generation":"root"}',
+      'coinbase/BTC-USDC/state.json': '{"generation":"pair"}',
+    });
+    const dest = makeInstall('dest', configWith({ coinbase: 'BTC-USDC' }));
+    const fundDir = path.join(dest.dataDir, 'coinbase', 'BTC-USDC');
+    write(path.join(fundDir, 'state.json'), '{"generation":"live"}');
+    transferArchive(source, dest, filename);
+
+    const options = { paths: dest.paths, acceptLegacyWithoutBase: true };
+    const preflight = await checkRestorePreconditions(filename, options);
+    assert.equal(preflight.ok, false);
+    assert.equal(preflight.code, 'legacy-layout-ambiguous-generations');
+
+    const result = restoreBackup(filename, { ...options, logger: silentLogger });
+    assert.equal(result.success, false);
+    assert.equal(result.code, 'legacy-layout-ambiguous-generations');
+    assert.equal(read(path.join(fundDir, 'state.json')), '{"generation":"live"}');
+    assert.equal(fs.existsSync(path.join(dest.dataDir, 'state.json')), false);
+    assert.equal(fs.existsSync(path.join(dest.dataDir, JOURNAL_FILENAME)), false);
+    assert.deepEqual(fs.readdirSync(dest.dataDir).filter((n) => n.startsWith('.restore-')), []);
+  });
+
+  it('refuses a root artifact that differs from an exchange-level copy in the archive', async () => {
+    const { source, filename } = await legacyRootArchive({
+      'state.json': '{"generation":"root"}',
+      'coinbase/state.json': '{"generation":"exchange"}',
+    });
+    const dest = makeInstall('dest', configWith({ coinbase: 'BTC-USDC' }));
+    transferArchive(source, dest, filename);
+
+    const result = restoreBackup(filename, { paths: dest.paths, acceptLegacyWithoutBase: true, logger: silentLogger });
+    assert.equal(result.success, false);
+    assert.equal(result.code, 'legacy-layout-ambiguous-generations');
+  });
+
+  it('reconciles a root artifact identical to the archive copy of the same generation', async () => {
+    const { source, filename } = await legacyRootArchive({
+      'state.json': '{"generation":"same"}',
+      'coinbase/BTC-USDC/state.json': '{"generation":"same"}',
+    });
+    const dest = makeInstall('dest', configWith({ coinbase: 'BTC-USDC' }));
+    write(path.join(dest.dataDir, 'coinbase', 'BTC-USDC', 'state.json'), '{"generation":"live"}');
+    transferArchive(source, dest, filename);
+
+    const result = restoreBackup(filename, { paths: dest.paths, acceptLegacyWithoutBase: true, logger: silentLogger });
+    assert.equal(result.success, true, result.error);
+    assert.equal(read(path.join(dest.dataDir, 'coinbase', 'BTC-USDC', 'state.json')), '{"generation":"same"}');
+    assert.equal(fs.existsSync(path.join(dest.dataDir, 'state.json')), false);
+  });
+
+  it('rolls every translated destination back when the application fails mid-apply', async () => {
+    const { source, filename } = await legacyRootArchive({
+      'state.json': '{"pending":"old-order"}',
+      'transactions.tsv': 'old-tx\n',
+    });
+    const dest = makeInstall('dest', configWith({ coinbase: 'BTC-USDC' }));
+    const fundDir = path.join(dest.dataDir, 'coinbase', 'BTC-USDC');
+    write(path.join(fundDir, 'state.json'), '{"pending":"live"}');
+    write(path.join(fundDir, 'transactions.tsv'), 'live-tx\n');
+    transferArchive(source, dest, filename);
+
+    const realRenameSync = fs.renameSync;
+    const target = path.join(fundDir, 'transactions.tsv');
+    let attempts = 0;
+    mock.method(fs, 'renameSync', (from, to) => {
+      if (String(to) === target && ++attempts === 1) throw new Error('ENOSPC: injected');
+      return realRenameSync(from, to);
+    });
+
+    const result = restoreBackup(filename, { paths: dest.paths, acceptLegacyWithoutBase: true, logger: silentLogger });
+    assert.equal(result.success, false);
+    assert.equal(result.rolledBack, true);
+    assert.equal(read(path.join(fundDir, 'state.json')), '{"pending":"live"}');
+    assert.equal(read(path.join(fundDir, 'transactions.tsv')), 'live-tx\n');
+    assert.equal(fs.existsSync(path.join(dest.dataDir, 'state.json')), false);
+    assert.equal(fs.existsSync(path.join(dest.dataDir, JOURNAL_FILENAME)), false);
+  });
+
+  it('inspection reports the translation the restore performs', async () => {
+    const { source, filename } = await legacyRootArchive({
+      'state.json': '{"pending":"old-order"}',
+    }, undefined, { 'btc-price-cache-1h.json': 'prices' });
+    const dest = makeInstall('dest', configWith({ coinbase: 'BTC-USDC' }));
+    transferArchive(source, dest, filename);
+
+    const report = inspectBackup(filename, { paths: dest.paths });
+    assert.equal(report.legacyLayout, true);
+    assert.deepEqual(report.rootTranslation, {
+      exchange: 'coinbase',
+      pair: 'BTC-USDC',
+      files: [
+        { name: 'state.json', target: 'coinbase/BTC-USDC/state.json' },
+        { name: 'btc-price-cache-1h.json', target: 'coinbase/btc-price-cache-1h.json' },
+      ],
+    });
+    assert.deepEqual(report.layoutConflicts, []);
+    assert.deepEqual(report.unresolvableLayoutExchanges, []);
+
+    const result = restoreBackup(filename, { paths: dest.paths, acceptLegacyWithoutBase: true, logger: silentLogger });
+    assert.equal(result.success, true, result.error);
+    for (const { name, target } of report.rootTranslation.files) {
+      assert.equal(fs.existsSync(path.join(dest.dataDir, target)), true, `${target} missing`);
+      assert.equal(fs.existsSync(path.join(dest.dataDir, name)), false);
+    }
+  });
+
+  it('inspection reports an unresolvable root fund and in-archive conflicts', async () => {
+    const unresolvable = await legacyRootArchive({ 'state.json': '{}' });
+    const destOther = makeInstall('dest-other', configWith({ kraken: 'BTC-USD' }));
+    transferArchive(unresolvable.source, destOther, unresolvable.filename);
+    const report = inspectBackup(unresolvable.filename, { paths: destOther.paths });
+    assert.equal(report.legacyLayout, true);
+    assert.equal(report.rootTranslation, null);
+    assert.deepEqual(report.unresolvableLayoutExchanges, ['coinbase']);
+
+    const conflicting = await legacyRootArchive({ 'state.json': 'a', 'coinbase/BTC-USDC/state.json': 'b' });
+    const dest = makeInstall('dest', configWith({ coinbase: 'BTC-USDC' }));
+    transferArchive(conflicting.source, dest, conflicting.filename);
+    const conflictReport = inspectBackup(conflicting.filename, { paths: dest.paths });
+    assert.deepEqual(conflictReport.layoutConflicts, [{ artifact: 'state.json', existing: 'coinbase/BTC-USDC/state.json' }]);
+  });
+
+  it('reports no root translation for a current-layout archive', async () => {
+    const { source, filename } = await makeLegacyLayoutArchive(configWith({ coinbase: 'BTC-USDC' }), {
+      'coinbase/BTC-USDC/state.json': '{}',
+    });
+    const dest = makeInstall('dest', configWith({ coinbase: 'BTC-USDC' }));
+    transferArchive(source, dest, filename);
+    const report = inspectBackup(filename, { paths: dest.paths });
+    assert.equal(report.rootTranslation, null);
+    assert.deepEqual(report.layoutConflicts, []);
   });
 });
 
