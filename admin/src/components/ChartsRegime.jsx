@@ -79,6 +79,8 @@ function ChartsRegime({ exchange = 'coinbase', pair, fillDebounceMs = 1500 }) {
   const fetchData = useCallback(async () => {
     const session = readState.current
     if (!session?.active || session.inFlight) return
+    const priorMarker = session.hasSnapshot ? session.loadedMarker : null
+    const startSocketMarker = deriveFillMarker(socketStatusRef.current)
     session.inFlight = true
     const controller = new AbortController()
     session.controller = controller
@@ -103,9 +105,10 @@ function ChartsRegime({ exchange = 'coinbase', pair, fillDebounceMs = 1500 }) {
       const [statusData, configData, fillsData] = results.slice(0, 3).map(result => result.value)
       const candlesResult = results[3]
       const cacheResult = results[4]
-      const loadedMarker = deriveFillMarker(statusData.status)
+      const statusMarker = deriveFillMarker(statusData.status)
+      const currentSocketMarker = deriveFillMarker(socketStatusRef.current)
+
       session.hasSnapshot = true
-      session.loadedMarker = loadedMarker
       setLocalStatus(statusData.status)
       setConfig(configData.config)
       setFillAggregates(fillsData)
@@ -113,12 +116,18 @@ function ChartsRegime({ exchange = 'coinbase', pair, fillDebounceMs = 1500 }) {
       setStale(false)
       readSucceeded = true
 
-      // If live socket status has a newer marker than the snapshot we just loaded, retain it as requested.
-      const liveSocketMarker = deriveFillMarker(socketStatusRef.current)
-      if (session.requestedMarker === loadedMarker) {
-        session.requestedMarker = null
-      } else if (!session.requestedMarker && liveSocketMarker && liveSocketMarker !== loadedMarker) {
-        session.requestedMarker = liveSocketMarker
+      // If a fill marker was observed via socket during the page read, retain it as requested.
+      if (currentSocketMarker && currentSocketMarker !== startSocketMarker) {
+        session.requestedMarker = currentSocketMarker
+      }
+
+      if (session.requestedMarker) {
+        // A fill arrived while the page read was pending. Fills aggregates in this snapshot
+        // may have been read before the fill, so do not acknowledge the requested marker.
+        // Retain the prior loaded marker so settling issues a trailing fills read.
+        session.loadedMarker = priorMarker || ''
+      } else {
+        session.loadedMarker = statusMarker
       }
 
       const unavailable = candlesResult.status === 'rejected' || cacheResult.status === 'rejected'
