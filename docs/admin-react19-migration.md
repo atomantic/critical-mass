@@ -1,9 +1,14 @@
 # React 19 admin rendering
 
-The admin app uses React/React DOM/types 19, React Three Fiber 9, Drei 10
-and React Three Postprocessing 3. These majors must be upgraded together to
-preserve renderer peer compatibility. The existing icon package remains
-compatible and does not need a major upgrade for this migration.
+The admin app uses React and React DOM 19, React Three Fiber 9, and Three.js.
+Check their renderer peer compatibility when upgrading; `admin/package.json`
+and its lockfile are the source of truth for installed versions.
+
+Drei, React Three Postprocessing, and the runtime icon package have been removed.
+The celestial renderer uses local `OrbitControlsLite`, `Html`, and `Starfield`
+components. `BloomEffect` wraps Three.js's own `EffectComposer` and
+`UnrealBloomPass` addons; icons live in `admin/src/components/icons/` with their
+upstream license. Maintain these local owners when changing rendering behavior.
 
 Charts have no third-party charting dependency. `admin/src/lib/chart-math.js`
 owns the scales, nice ticks, local-time ticks, monotone-x paths, bins and

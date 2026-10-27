@@ -1,0 +1,1 @@
+- **Correct simulation and renderer guidance** — clarify that Backtest and Parameter Optimizer simulate Simple DCA rather than adaptive regime entries, and update the React 19 maintenance guide to name installed dependencies and local renderer/icon owners.

@@ -4,6 +4,12 @@ Backtest and optimizer routes are read-only simulations, but they still fetch
 market data and execute CPU-intensive calculations. The gateway validates them
 at the HTTP boundary; the admin UI is not the authority for those limits.
 
+Both tools simulate Simple DCA through `src/backtest-engine.js`, even when the
+selected fund uses the regime strategy. They do not replay regime detection,
+reactive entry bids, ladder placement, or adaptive entry timeouts. Use a dry-run
+regime fund to observe those behaviors; historical DCA results do not validate
+regime performance.
+
 - `GET /api/:exchange/backtest/prices` accepts only supported interval types and
   the bounded history each current UI preset supports (from seven days at one
   minute through four years of daily candles).
