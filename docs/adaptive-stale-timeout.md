@@ -113,7 +113,18 @@ re-applied.
 
 ## Example (BTC-USDC, `maximum`, ATR ≈ 6 bps)
 
-| Situation | offset | old timeout | adaptive timeout | fill prob (old → new) |
-|---|---|---|---|---|
-| neutral / up momentum | 6 bps | 120s | ~4min | 41% → ~52% |
-| momentum down (×1.2 macro) | 18 bps | 120s (60s in TREND) | 10min (capped) | 6–8% → ~25% |
+With the current shipped preset, the floor is 60 seconds and the cap is
+20 minutes (`maxIntervalMs: 1200000`). At a price of $100,000 and 1-minute
+ATR of $60 (6 bps), the formula gives:
+
+| Situation | offset used for bid | adaptive timeout |
+|---|---|---|
+| neutral, no macro adjustment | 5 bps | 166.667 s |
+| up momentum, no macro adjustment | 3 bps | 60 s (floor) |
+| down momentum, no macro adjustment | 8 bps | 426.667 s |
+| down momentum with ×1.2 macro offset | 9.6 bps | 614.4 s |
+
+These are timeout calculations, not fill-probability predictions. The measured
+probabilities above describe the historical sample and its offsets, not a
+guarantee for the current preset. Custom or previously saved fund settings can
+produce different windows.

@@ -187,10 +187,18 @@ Each exchange can run either the fixed DCA strategy or the adaptive regime strat
     }
   },
   "global": {
+    "simpleDcaEnabled": true,
     "schedulerInterval": 30000
   }
 }
 ```
+
+Simple DCA is disabled by default. The example explicitly opts in with
+`global.simpleDcaEnabled: true`; an exchange's `enabled: true` alone does not
+enable scheduled DCA trades or the DCA trade API/CLI. Keep the global switch
+false for a regime-only installation. Review every enabled DCA fund's budget
+and `dryRun` setting before enabling it; the switch applies across exchanges.
+Restart the gateway after editing the base configuration.
 
 ### Configuration Options
 
@@ -346,7 +354,7 @@ maintenance obligations and criteria for revisiting it.
 - **Stale data protection** - Pauses if market data feed goes stale
 - **Duplicate prevention** - Only runs once per interval (DCA mode)
 - **Dry-run mode** - Test configuration without real trades
-- **Post-only orders** - Ensures sell orders are maker orders for lower fees
+- **Order execution** - Simple DCA sells and regime entries use post-only limits. Regime body take-profit sells allow taker execution, and legacy regime take-profit sells can retry without post-only after a maker rejection; maker fees are not guaranteed for those exits.
 - **Auto-sync** - Detects filled sell orders and updates fund balance
 - **Fee accounting** - Accurate cost basis including fees and rebates
 - **Automatic backups** - Periodic state backups with configurable retention
