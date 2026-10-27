@@ -340,17 +340,7 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
     bucketMs, maxBuckets, candleTf, indicatorTf,
   }
 
-  const minConfiguredBucketMs = useMemo(() => {
-    let minMs = bucketMs
-    if (views) {
-      for (const v of Object.values(views)) {
-        if (v?.bucketMs && v.bucketMs < minMs) minMs = v.bucketMs
-      }
-    }
-    return minMs
-  }, [bucketMs, views])
-
-  const sourceCandleMs = Math.min(BAR_INTERVALS[candleTf]?.intervalMs || bucketMs, minConfiguredBucketMs, bucketMs)
+  const sourceCandleMs = BAR_INTERVALS[candleTf]?.intervalMs || bucketMs
 
   // Signal annotations ref (updated from outside via options)
   const signalAnnotationsRef = useRef(options.signalAnnotations || null)
@@ -427,17 +417,27 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
       } else {
         resetBucketIndicators(bucket)
       }
-      bucket.open = group[0].open
-      bucket.high = Math.max(...group.map(c => c.high))
-      bucket.low = Math.min(...group.map(c => c.low))
-      bucket.price = group[group.length - 1].close
-      bucket.volume = group.reduce((sum, c) => sum + (c.volume || 0), 0)
-      bucket.hasLiveTicks = group.some(c => c.hasLiveTicks)
+      // Only reconcile historical source candles into display buckets when temporal coverage permits (bucketMs >= sourceCandleMs)
+      // When bucketMs < sourceCandleMs, finer live observations already in map must be preserved
+      if (bucketMs < sourceCandleMs && bucket.hasLiveTicks) {
+        // Keep finer live OHLC intact
+      } else {
+        bucket.open = group[0].open
+        bucket.high = Math.max(...group.map(c => c.high))
+        bucket.low = Math.min(...group.map(c => c.low))
+        bucket.price = group[group.length - 1].close
+        bucket.volume = group.reduce((sum, c) => sum + (c.volume || 0), 0)
+        bucket.hasLiveTicks = group.some(c => c.hasLiveTicks)
+      }
     }
 
     // Prune stale display buckets when aggregation grouping changes
-    for (const key of map.keys()) {
+    for (const [key, bucket] of map.entries()) {
       if (!bucketSourceGroups.has(key)) {
+        // When bucketMs < sourceCandleMs, finer live display buckets are not in bucketSourceGroups; preserve them!
+        if (bucketMs < sourceCandleMs && bucket.hasLiveTicks) {
+          continue
+        }
         map.delete(key)
       }
     }
@@ -490,7 +490,7 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
     applyHeikinAshi(map, sortedBucketKeys)
 
     lastBucketKeyRef.current = sortedBucketKeys.length ? sortedBucketKeys[sortedBucketKeys.length - 1] : null
-  }, [bucketMs, applyHeikinAshi])
+  }, [bucketMs, sourceCandleMs, applyHeikinAshi])
 
   /**
    * Merge fetched historical candles into the canonical source sequence,

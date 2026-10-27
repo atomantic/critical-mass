@@ -839,10 +839,32 @@ describe('useCandleData display limit and live candle preservation', () => {
     const customViews = {
       '30s_view': { bucketMs: 30_000, maxBuckets: 60, candleTf: '1m', indicatorTf: '1m' },
     }
-    const historical = [
-      { timestamp: 0, open: 100, high: 105, low: 95, close: 100, volume: 10 },
-    ]
-    vi.stubGlobal('fetch', makeFetchMock({ '1m': historical }))
+    let fetchCount = 0
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      fetchCount++
+      if (fetchCount === 1) {
+        return {
+          ok: true, status: 200,
+          headers: new Headers({ 'content-type': 'application/json' }),
+          json: async () => ({
+            success: true,
+            candles: {
+              '1m': [{ timestamp: 0, open: 100, high: 105, low: 95, close: 100, volume: 10 }],
+            },
+          }),
+        }
+      }
+      return {
+        ok: true, status: 200,
+        headers: new Headers({ 'content-type': 'application/json' }),
+        json: async () => ({
+          success: true,
+          candles: {
+            '1m': [{ timestamp: 0, open: 100, high: 120, low: 95, close: 120, volume: 20 }],
+          },
+        }),
+      }
+    }))
 
     let props = {
       exchange: 'coinbase',
@@ -872,6 +894,17 @@ describe('useCandleData display limit and live candle preservation', () => {
     expect(bucket0.price).toBe(110)
     expect(bucket30k).toBeTruthy()
     expect(bucket30k.price).toBe(120)
+
+    // Trigger refresh at t=40_000 while 1m candle is still unfinished (40_000 < 60_000)
+    props = { ...props, tickPrice: null, tickTimestamp: null }; rerender()
+    act(() => {
+      result.current.retry()
+    })
+    await vi.waitFor(() => expect(fetchCount).toBe(2))
+
+    // The refresh cannot overwrite bucket 0's live close (110) with the full 1m candle's close (120)
+    const bucket0AfterRefresh = result.current.chartData.find(c => c.time === 0)
+    expect(bucket0AfterRefresh.price).toBe(110)
 
     // Tick 3 at t=50_000 (updates bucket 30_000 close)
     props = { ...props, tickPrice: 125, tickTimestamp: 50_000 }; rerender()
