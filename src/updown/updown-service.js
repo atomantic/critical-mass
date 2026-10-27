@@ -12,6 +12,7 @@ const { createSignalEngine, scoreToSignalDynamic, resolveNoTradeZoneType, applyU
 const { clampScoreToExistingType, preventTickCreatedSignal, alignJournalType } = require('./signal-stability');
 const { createScorecard } = require('./scorecard');
 const { createPerpBook } = require('./perp-book');
+const { UPDOWN_STATE_FORMAT_VERSION } = require('../persisted-payload-validation');
 const { PERP_CONTRACT_SIZE_BTC, calculatePerpPnl } = require('./perp-contract');
 const { resolveAction, labelHistoryActions } = require('./signal-actions');
 const { createContextLogger } = require('../logger');
@@ -31,7 +32,7 @@ const STATE_FILE = 'updown-state.json';
  * field, so the next upgrade would rescale P&L a second time). A missing stamp
  * means a pre-versioning file (revision 0).
  */
-const STATE_FORMAT_VERSION = 1;
+const STATE_FORMAT_VERSION = UPDOWN_STATE_FORMAT_VERSION;
 const SIGNAL_INTERVAL_MS = 5_000;
 const TICK_THROTTLE_MS = 1_000;
 const PRICE_STALE_MS = 30_000;

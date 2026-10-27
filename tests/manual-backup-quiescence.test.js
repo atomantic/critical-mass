@@ -10,6 +10,7 @@ const { performBackup } = require('../src/backup-coordinator');
 const { trackPendingWrite, drainPendingWrites, getPendingWrites } = require('../src/pending-writes');
 const maintenance = require('../src/restore-maintenance');
 const backup = require('../src/backup-service');
+const { ledgerOf, fixturePayload } = require('./helpers/ledger-fixture');
 
 const logger = { info() {}, warn() {}, error() {} };
 const deferred = () => {
@@ -33,7 +34,7 @@ const setup = (t, { disconnected = false, resumeFails = false, createFails = fal
   const operations = [];
   let copies = 0;
   let prunes = 0;
-  const write = (file, generation) => fs.writeFileSync(path.join(fundDir, file), JSON.stringify({ generation }));
+  const write = (file, generation) => fs.writeFileSync(path.join(fundDir, file), JSON.stringify(fixturePayload(file, { generation })));
   const service = (name, running) => ({
     getStatus: () => ({ running }),
     stop: async () => { events.push(`stop:${name}`); },
@@ -143,7 +144,7 @@ describe('manual backups use the server writer-quiescence gate', () => {
       w.write('regime-state.json', 3);
       assert.equal(backup.restoreBackup(res.body.filename, { paths: w.paths }).success, true);
       for (const file of ['fill-ledger.json', 'regime-state.json']) {
-        assert.deepEqual(JSON.parse(fs.readFileSync(path.join(w.fundDir, file), 'utf8')), { generation: 2 });
+        assert.deepEqual(JSON.parse(fs.readFileSync(path.join(w.fundDir, file), 'utf8')), fixturePayload(file, { generation: 2 }));
       }
       assert.equal(maintenance.isMaintenanceActive(), false);
     });
