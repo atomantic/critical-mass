@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- **[issue-1812] Celestial previews frame the whole system** — the fund overview and regime dashboard previews derive their camera distance, controls range, far plane and fog from the hierarchy's worst-case orbital reach (shared `orbitLayout.js` radii, `cameraFit.js` frustum fit) instead of a fixed `[0, 8, 12]` camera, so valid five-tier systems no longer lose their outer bodies. Refits on body or viewport changes only, leaving manual orbit/zoom, the motion toggle and the Systems showcase camera untouched; the browser smoke projects the real scene's meshes through the live camera.
+
 - **[issue-1815] Gateway shutdown drains accepted background jobs** — AI prompt runs and optimizer runs register their full terminal work (run output and metadata; optimizer cache publication and completion/failure event) with the gateway drain via `trackBackgroundWork`, independent of the initiating socket, so a normal SIGTERM no longer discards jobs that would finish within the existing 30-second grace. HTTP acknowledgements, concurrency limits and the nonzero deadline exit are unchanged.
 
 - **[issue-1794] Buy retry eligibility names bookable rows** — the live guard and recovery comments describe unfinished bounded booking batches directly, preserving the numeric helper export and existing booking behavior.
