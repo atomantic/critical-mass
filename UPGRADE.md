@@ -67,14 +67,18 @@ do not treat an hourly snapshot as a complete placement-safe recovery point.
 See [issue #1810](https://github.com/atomantic/critical-mass/issues/1810).
 
 An interrupted DCA import is another recovery boundary. A pending
-`.dca-import-journal.json` can replay newer accounting over an older restore, or
-block the next fund start when the restored bytes differ. Hourly snapshots can
-also capture a partially published import without its journal. Until
-[issue #1809](https://github.com/atomantic/critical-mass/issues/1809) is resolved,
-finish ordinary import recovery before taking a recovery snapshot or applying
-either kind of restore to an affected fund. Preserve the journal and accounting
+`.dca-import-journal.json` would replay newer accounting over an older restore, or
+block the next fund start when the restored bytes differ, and a snapshot taken
+under it would capture a partially published import without its journal. So
+hourly snapshots refuse (`dca-import-pending`) while any configured fund has a
+pending import, publishing and pruning nothing; hourly and full restores refuse
+before stopping any engine when a fund they would restore has one; and a full
+archive carrying a journal refuses (`archive-dca-import-pending`). Funds the
+restore does not touch are not checked. Finish ordinary import recovery — start
+the fund or retry the import — then retry. Preserve the journal and accounting
 files; deleting the journal to bypass recovery is not a repair. Verify uncertain
-recovery on an isolated copy before using it on a live fund.
+recovery on an isolated copy before using it on a live fund
+([issue #1809](https://github.com/atomantic/critical-mass/issues/1809)).
 
 ---
 

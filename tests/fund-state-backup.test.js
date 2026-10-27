@@ -279,6 +279,101 @@ describe('complete snapshot validation (#1703)', () => {
   });
 });
 
+// #1809 — a pending DCA import journal makes a fund's accounting a possibly
+// mixed generation, and its recovery pass would roll the import forward over a
+// restored one. Snapshots and restores of that fund refuse, leaving every byte.
+describe('pending DCA imports block fund-state snapshots and restores (#1809)', () => {
+  const { JOURNAL_FILENAME } = require('../src/dca-conversion-transaction');
+
+  const makeFixture = (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-dca-pending-snapshot-'));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const paths = { dataDir: path.join(root, 'data'), baseConfigFile: path.join(root, 'config.json') };
+    writeJson(paths.baseConfigFile, { exchanges: { coinbase: { pairs: { 'BTC-USDC': {}, 'ETH-USDC': {} } } } });
+    const live = (pair) => path.join(paths.dataDir, 'coinbase', pair);
+    for (const pair of ['BTC-USDC', 'ETH-USDC']) {
+      writeJson(path.join(live(pair), 'fill-ledger.json'), ledgerOf(`${pair}-saved`));
+      writeJson(path.join(live(pair), 'regime-state.json'), { position: { totalAsset: 0 } });
+      writeJson(path.join(live(pair), 'state.json'), { orders: [{ status: 'pending' }] });
+    }
+    const older = createFundStateBackup({ paths, now: new Date('2026-10-01'), maxBackups: 1 });
+    assert.equal(older.success, true, older.error);
+    /** Every file under the data directory, by relative path. */
+    const tree = () => {
+      const out = {};
+      const walk = (dir) => {
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          const full = path.join(dir, entry.name);
+          if (entry.isDirectory()) walk(full);
+          else out[path.relative(paths.dataDir, full)] = fs.readFileSync(full, 'utf8');
+        }
+      };
+      walk(paths.dataDir);
+      return out;
+    };
+    const pendImport = (pair) => {
+      // A publishing journal over a regime position that already moved.
+      writeJson(path.join(live(pair), 'regime-state.json'), { position: { totalAsset: 1 } });
+      writeJson(path.join(live(pair), JOURNAL_FILENAME), { version: 1, status: 'publishing', entries: [] });
+    };
+    return { paths, live, older, tree, pendImport };
+  };
+
+  it('refuses a snapshot without publishing or pruning a recovery point', (t) => {
+    const { paths, older, tree, pendImport } = makeFixture(t);
+    pendImport('ETH-USDC');
+    const before = tree();
+    const result = createFundStateBackup({ paths, now: new Date('2026-10-02'), maxBackups: 1 });
+    assert.equal(result.success, false);
+    assert.equal(result.code, 'dca-import-pending');
+    assert.match(result.error, /coinbase\/ETH-USDC has an interrupted DCA import/);
+    assert.match(result.error, /No fund-state snapshot was published or pruned/);
+    assert.deepEqual(tree(), before, 'no snapshot, stage directory or pruning');
+    assert.deepEqual(listFundStateBackups({ paths }).map((s) => s.snapshotId), [older.snapshotId]);
+  });
+
+  it('refuses an import that starts while files are being copied', (t) => {
+    const { paths, older, live } = makeFixture(t);
+    const copy = fs.copyFileSync;
+    t.mock.method(fs, 'copyFileSync', (source, target) => {
+      copy(source, target);
+      if (source === path.join(live('BTC-USDC'), 'fill-ledger.json')) {
+        writeJson(path.join(live('BTC-USDC'), JOURNAL_FILENAME), { version: 1, status: 'staging', entries: [] });
+      }
+    });
+    const result = createFundStateBackup({ paths, now: new Date('2026-10-02'), maxBackups: 1 });
+    assert.equal(result.code, 'dca-import-pending');
+    assert.deepEqual(listFundStateBackups({ paths }).map((s) => s.snapshotId), [older.snapshotId]);
+    assert.equal(fs.readdirSync(path.join(paths.dataDir, 'backups')).some((n) => n.startsWith('.fund-state-stage-')), false);
+  });
+
+  it('refuses the affected fund\'s restore in preflight and apply, byte-identically', (t) => {
+    const { paths, older, tree, pendImport } = makeFixture(t);
+    pendImport('BTC-USDC');
+    const before = tree();
+    const preflight = checkFundStateRestorePreconditions(older.snapshotId, 'coinbase', 'BTC-USDC', { paths });
+    assert.equal(preflight.ok, false);
+    assert.equal(preflight.code, 'dca-import-pending');
+    const restored = restoreFundStateBackup(older.snapshotId, 'coinbase', 'BTC-USDC', { paths });
+    assert.equal(restored.success, false);
+    assert.equal(restored.code, 'dca-import-pending');
+    assert.equal(restored.error, preflight.error, 'same refusal as the preflight');
+    assert.deepEqual(tree(), before, 'journal, ledger, regime and DCA state untouched');
+  });
+
+  it('does not let an unrelated fund\'s pending import block a restore elsewhere', (t) => {
+    const { paths, older, live, pendImport } = makeFixture(t);
+    pendImport('ETH-USDC');
+    const journal = fs.readFileSync(path.join(live('ETH-USDC'), JOURNAL_FILENAME), 'utf8');
+    writeJson(path.join(live('BTC-USDC'), 'fill-ledger.json'), ledgerOf('newer'));
+    assert.deepEqual(checkFundStateRestorePreconditions(older.snapshotId, 'coinbase', 'BTC-USDC', { paths }), { ok: true });
+    const restored = restoreFundStateBackup(older.snapshotId, 'coinbase', 'BTC-USDC', { paths });
+    assert.equal(restored.success, true, JSON.stringify(restored));
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(live('BTC-USDC'), 'fill-ledger.json'), 'utf8')), ledgerOf('BTC-USDC-saved'));
+    assert.equal(fs.readFileSync(path.join(live('ETH-USDC'), JOURNAL_FILENAME), 'utf8'), journal);
+  });
+});
+
 describe('hourly snapshot publication validates accounting payloads (#1811)', () => {
   it('does not publish an incompatible snapshot or prune usable recovery points', (t) => {
     const fixture = makeRecoveryFixture(t);

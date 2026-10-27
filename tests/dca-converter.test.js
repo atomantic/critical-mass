@@ -752,6 +752,52 @@ describe('dca-converter fund routing (issue #414)', () => {
       assert.deepEqual(snapshot(), before);
     });
 
+    // #1809 — restoring a snapshot under a retained publishing journal let the
+    // next fund start roll the superseded import forward over the restore.
+    it('a publishing journal blocks snapshots and restores until recovery; then the older snapshot stays restored (#1809)', () => {
+      const backup = require('../src/backup-service');
+      seedIssueFund();
+      const baseConfigFile = path.join(tmpDir, 'base-config.json');
+      fs.writeFileSync(baseConfigFile, JSON.stringify({ exchanges: { [EXCHANGE]: { pairs: { [DEFAULT_PAIR]: {} } } } }));
+      const paths = { dataDir: tmpDir, baseConfigFile };
+      const preImport = backup.createFundStateBackup({ paths, now: new Date('2026-10-01T00:00:00.000Z'), maxBackups: 1 });
+      assert.equal(preImport.success, true, preImport.error);
+      const original = snapshot();
+
+      // Persistent publication failure through the real conversion.
+      const restore = failPublishOf('state.json');
+      try {
+        assert.throws(() => converter.mergeToRegime(EXCHANGE, DEFAULT_PAIR), /interrupted while publishing/);
+      } finally {
+        restore();
+      }
+      const withJournal = () => ({ ...snapshot(), journal: fs.readFileSync(journalPath(), 'utf8') });
+      const mixed = withJournal();
+      assert.equal(JSON.parse(mixed.journal).status, 'publishing');
+      assert.notEqual(mixed['regime-state.json'], original['regime-state.json'], 'the position was published');
+      assert.equal(mixed['state.json'], original['state.json'], 'the source consumption was not');
+
+      const refused = backup.createFundStateBackup({ paths, now: new Date('2026-10-02T00:00:00.000Z'), maxBackups: 1 });
+      assert.equal(refused.success, false);
+      assert.equal(refused.code, 'dca-import-pending');
+      assert.deepEqual(backup.listFundStateBackups({ paths }).map((s) => s.snapshotId), [preImport.snapshotId], 'nothing published or pruned');
+
+      const preflight = backup.checkFundStateRestorePreconditions(preImport.snapshotId, EXCHANGE, DEFAULT_PAIR, { paths });
+      assert.equal(preflight.code, 'dca-import-pending');
+      assert.equal(backup.restoreFundStateBackup(preImport.snapshotId, EXCHANGE, DEFAULT_PAIR, { paths }).code, 'dca-import-pending');
+      assert.deepEqual(withJournal(), mixed, 'journal and accounting byte-identical');
+
+      // Ordinary recovery completes the import; the older snapshot now restores
+      // and a later fund start has nothing to replay over it.
+      assert.equal(txn.recoverDcaImport(EXCHANGE, DEFAULT_PAIR).action, 'rolled-forward');
+      assertSingleImport();
+      const restored = backup.restoreFundStateBackup(preImport.snapshotId, EXCHANGE, DEFAULT_PAIR, { paths });
+      assert.equal(restored.success, true, JSON.stringify(restored));
+      assert.deepEqual(snapshot(), original);
+      assert.deepEqual(txn.recoverDcaImport(EXCHANGE, DEFAULT_PAIR), { recovered: false });
+      assert.deepEqual(snapshot(), original, 'the superseded import is not replayed');
+    });
+
     for (const file of FILES) {
       it(`an interruption publishing ${file} leaves a recoverable journal; recovery + retry yield one import`, () => {
         seedIssueFund();
