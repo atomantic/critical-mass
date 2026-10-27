@@ -28,7 +28,7 @@ const { syncFundOrders, runIntervalCycle, resumePendingBuy, executeConsolidation
 const { shouldAutoResumeRegime, readBooleanFlag } = require('../shared-utils');
 const { validateConfigUpdate, validateAndSanitizeRegimeConfig, EXCHANGE_CONFIG_SCHEMA } = require('../config-validator');
 const { prepareConfigUpdate, persistConfigUpdate } = require('./config-update');
-const { resolvePairParam, createIPCResolver, asyncRoute, tradeResultStatusCode, parsePaging, pagedEnvelope } = require('./route-utils');
+const { resolvePairParam, createIPCResolver, asyncRoute, tradeResultStatusCode, parsePaging, pagedEnvelope, isDcaBusy, sendDcaBusyResponse } = require('./route-utils');
 
 /**
  * Tag a rejected promise's error with an HTTP status before rethrowing, so
@@ -50,6 +50,7 @@ const RETRY_FAILED_SELL_STATUS = Object.freeze({
   not_failed: 409,
   placement_unresolved: 409,
   sell_rejected: 502,
+  'dca-busy': 503,
 });
 
 /**
@@ -492,7 +493,11 @@ module.exports = (app, deps) => {
       return res.status(400).json({ success: false, error: 'Simple DCA is disabled. Use Regime engine.' });
     }
 
-    const { filledOrders } = await syncFundOrders(exchange, pair);
+    const syncResult = await syncFundOrders(exchange, pair);
+    if (isDcaBusy(syncResult)) {
+      return sendDcaBusyResponse(res, syncResult);
+    }
+    const { filledOrders } = syncResult;
 
     res.json({
       success: true,
@@ -516,6 +521,9 @@ module.exports = (app, deps) => {
     exchangeLogger(exchange, pair, '/api/:exchange/trade').info(`ℹ️ [${exchange}/${pair}] Manual trade triggered via API`, { action: 'manual-trade' });
 
     const result = await runIntervalCycle(exchange, pair);
+    if (isDcaBusy(result)) {
+      return sendDcaBusyResponse(res, result);
+    }
     res.status(tradeResultStatusCode(result)).json({ exchange, pair, ...result, triggeredAt: new Date().toISOString(), trigger: 'manual' });
   }));
 
@@ -533,6 +541,9 @@ module.exports = (app, deps) => {
       return res.status(400).json({ success: false, error: 'A pending buy order id is required (at most 200 characters).' });
     }
     const result = await resumePendingBuy(exchange, pair, orderId);
+    if (isDcaBusy(result)) {
+      return sendDcaBusyResponse(res, result);
+    }
     const status = result.status === 'buy_fill_pending' ? 202 : result.success ? 200 : 409;
     res.status(status).json({ exchange, pair, ...result });
   }));
@@ -578,6 +589,9 @@ module.exports = (app, deps) => {
     }
 
     const result = await executeConsolidation(exchange, pair, orderIds);
+    if (isDcaBusy(result)) {
+      return sendDcaBusyResponse(res, result);
+    }
     res.json({
       exchange,
       pair,
@@ -635,6 +649,9 @@ module.exports = (app, deps) => {
     });
 
     const result = await retryFailedSell(exchange, pair, buyOrderId);
+    if (isDcaBusy(result)) {
+      return sendDcaBusyResponse(res, result);
+    }
     res.status(result.success ? 200 : (RETRY_FAILED_SELL_STATUS[result.code] ?? 400)).json({ exchange, ...result });
   }));
 

@@ -5,9 +5,10 @@ import BlackHole from './BlackHole'
 import GalaxyBody from './GalaxyBody'
 import NebulaBody from './NebulaBody'
 import {
-  getDynamicOrbitRadius, getHierarchicalRadius, getHierarchicalSpeed,
+  getHierarchicalRadius, getHierarchicalSpeed,
   TIER_COLORS, RING_OPACITY,
 } from './celestialConstants'
+import { splitOrbitChain, getSiblingOrbitRadius } from './orbitLayout'
 
 /**
  * Orbital path ring rendered relative to a parent body
@@ -71,29 +72,13 @@ const OrbitingGroup = ({ radius, speed, angleOffset = 0, children }) => {
 const HierarchicalOrbit = ({ bodies, depth = 0, activeBodyId, onBodyHover, parentOrbitRadius, maxUsdcDeployed, baseCurrency = 'BTC', angleOffset = 0 }) => {
   if (bodies.length === 0) return null
 
-  const [current, ...rest] = bodies
+  const { current, siblings, descendants } = splitOrbitChain(bodies)
   // Use parent-computed dynamic radius if provided, otherwise fall back to depth-based
   const radius = parentOrbitRadius ?? getHierarchicalRadius(depth)
   const speed = getHierarchicalSpeed(depth)
 
-  // Separate rest into siblings (same tier as first child) and deeper descendants
-  const siblings = []
-  const descendants = []
-  if (rest.length > 0) {
-    const siblingTier = rest[0].tier
-    for (const body of rest) {
-      if (body.tier === siblingTier) {
-        siblings.push(body)
-      } else {
-        descendants.push(body)
-      }
-    }
-  }
-
   // Shared orbit radius for siblings (use max to prevent any overlap)
-  const childOrbitRadius = siblings.length > 0
-    ? Math.max(...siblings.map(s => getDynamicOrbitRadius(depth + 1, current, s, maxUsdcDeployed)))
-    : 0
+  const childOrbitRadius = getSiblingOrbitRadius(depth, current, siblings, maxUsdcDeployed)
 
   const bodyProps = { body: current, showTooltip: activeBodyId === current.id, onHover: onBodyHover, maxUsdcDeployed, baseCurrency }
   const bodyElement = current.tier === 'black_hole' ? (
