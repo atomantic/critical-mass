@@ -340,9 +340,8 @@ maintenance obligations and criteria for revisiting it.
 - **Max price threshold** - Skips buys above `maxBuyPrice`
 - **Capital limits** - `maxUsdcDeployed` and `maxAssetExposure` caps
 - **Drawdown protection** - Pauses trading if drawdown exceeds threshold
-- **Flash crash detection** - Detects extreme price moves and cancels entries
-- **Spread monitoring** - Pauses if bid-ask spread is too wide
-- **Depth checks** - Requires minimum order book depth
+- **Flash crash detection** - Detects extreme price moves; when `cancelEntriesOnFlash` is enabled, cancels resting reactive entries
+- **Spread monitoring** - Pauses new reactive entries if bid-ask spread is too wide
 - **Rate limit tracking** - Backs off when approaching exchange limits
 - **Stale data protection** - Pauses if market data feed goes stale
 - **Duplicate prevention** - Only runs once per interval (DCA mode)
@@ -351,6 +350,12 @@ maintenance obligations and criteria for revisiting it.
 - **Auto-sync** - Detects filled sell orders and updates fund balance
 - **Fee accounting** - Accurate cost basis including fees and rebates
 - **Automatic backups** - Periodic state backups with configurable retention
+
+Depth-based entry protection is unavailable in this build: the engine does not
+supply order book depth to the guard. Stored `minDepthUsdc` and `depthPauseMs`
+values do not provide that protection. Ladder mode deliberately bypasses the
+spread and flash entry guards and leaves resting ladder rungs in place; health,
+drawdown, and capital checks still apply to new ladders.
 
 ## Exchange Setup
 
@@ -388,4 +393,4 @@ maintenance obligations and criteria for revisiting it.
 
 ## License
 
-[ISC](LICENSE)
+[MIT](LICENSE)
