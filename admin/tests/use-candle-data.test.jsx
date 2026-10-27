@@ -762,4 +762,75 @@ describe('useCandleData display limit and live candle preservation', () => {
     const bucket60k = result.current.chartData.find(c => c.time === 60_000)
     expect(bucket60k.price).toBe(125)
   })
+
+  it('does not overwrite finalized historical close when display dependencies change without new tick', async () => {
+    let fetchCount = 0
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      fetchCount++
+      if (fetchCount === 1) {
+        return {
+          ok: true, status: 200,
+          headers: new Headers({ 'content-type': 'application/json' }),
+          json: async () => ({
+            success: true,
+            candles: {
+              '1m': [{ timestamp: 0, open: 100, high: 105, low: 95, close: 100, volume: 10 }],
+            },
+          }),
+        }
+      }
+      return {
+        ok: true, status: 200,
+        headers: new Headers({ 'content-type': 'application/json' }),
+        json: async () => ({
+          success: true,
+          candles: {
+            '1m': [
+              { timestamp: 0, open: 100, high: 105, low: 95, close: 100, volume: 10 },
+              // Finalized candle for t=60_000 closed at 118
+              { timestamp: 60_000, open: 100, high: 120, low: 95, close: 118, volume: 20 },
+            ],
+          },
+        }),
+      }
+    }))
+
+    let props = {
+      exchange: 'coinbase',
+      tickPrice: null,
+      tickTimestamp: null,
+      options: { defaultInterval: '1m', maxBucketsOverride: 10 },
+    }
+
+    const { result, rerender } = renderHook(() =>
+      useCandleData(props.exchange, props.tickPrice, props.tickTimestamp, props.options)
+    )
+
+    await vi.waitFor(() => expect(result.current.chartData.length).toBe(1))
+
+    // Deliver live tick for candle t=60_000 with price 115
+    props = { ...props, tickPrice: 115, tickTimestamp: 60_000 }; rerender()
+
+    // Move to next bucket (t=120_000) so candle t=60_000 is completed
+    props = { ...props, tickPrice: 130, tickTimestamp: 120_000 }; rerender()
+
+    // Stop live ticks, trigger refresh
+    props = { ...props, tickPrice: null, tickTimestamp: null }; rerender()
+    act(() => {
+      result.current.retry()
+    })
+
+    // The newer finalized historical close (118) updates completed candle t=60_000
+    await vi.waitFor(() => {
+      const bucket60k = result.current.chartData.find(c => c.time === 60_000)
+      expect(bucket60k.price).toBe(118)
+    })
+
+    // Now, change display limit without any new tick observation arriving
+    props = { ...props, options: { ...props.options, maxBucketsOverride: 20 } }; rerender()
+
+    // Changing display limit must NOT replay any previous tick onto candle t=60_000
+    const bucket60kAfter = result.current.chartData.find(c => c.time === 60_000)
+    expect(bucket60kAfter.price).toBe(118)
+  })
 })

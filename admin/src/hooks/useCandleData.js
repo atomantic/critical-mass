@@ -327,6 +327,7 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
   const fetchSeqRef = useRef(0)
   const lastTickTimeRef = useRef(null)
   const lastTickWallClockRef = useRef(null)
+  const lastProcessedTickRef = useRef({ price: null, timestamp: null, seriesKey: null })
 
   const getNow = useCallback(() => {
     if (lastTickTimeRef.current != null && lastTickWallClockRef.current != null) {
@@ -580,6 +581,7 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
       setChartData([])
       lastTickTimeRef.current = null
       lastTickWallClockRef.current = null
+      lastProcessedTickRef.current = { price: null, timestamp: null, seriesKey: null }
     }
 
     retryRef.current = false
@@ -634,6 +636,15 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
   // Process live ticks into source candles and buckets (ref mutation only — no re-render per tick)
   useEffect(() => {
     if (tickPrice == null) return
+
+    // Avoid updating canonical source candles when only display dependencies change without a new tick observation
+    const isNewTick = lastProcessedTickRef.current.price !== tickPrice ||
+                      lastProcessedTickRef.current.timestamp !== tickTimestamp ||
+                      lastProcessedTickRef.current.seriesKey !== seriesKey
+
+    if (!isNewTick) return
+    lastProcessedTickRef.current = { price: tickPrice, timestamp: tickTimestamp, seriesKey }
+
     const now = tickTimestamp != null ? Number(tickTimestamp) : Date.now()
     lastTickTimeRef.current = now
     lastTickWallClockRef.current = Date.now()
@@ -711,7 +722,7 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
       syncChart()
     }
     lastBucketKeyRef.current = bKey
-  }, [tickPrice, tickTimestamp, sourceCandleMs, bucketMs, legacyMode, syncChart, updateFromSourceCandles, views, candleTf])
+  }, [tickPrice, tickTimestamp, sourceCandleMs, bucketMs, legacyMode, syncChart, updateFromSourceCandles, views, candleTf, seriesKey])
 
   useEffect(() => () => labelCacheRef.current.clear(), [])
 
