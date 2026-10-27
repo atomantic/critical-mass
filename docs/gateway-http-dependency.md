@@ -41,11 +41,12 @@ advisories, and testing the HTTP boundary when upgrading Express.
 Accepting the framework is not an exemption from security fixes or updates.
 
 HTTP framework ownership and realtime transport ownership are separate choices.
-The current engine/exchange WebSocket work already uses Node's built-in client
-and the owned IPC server; Socket.IO still serves dashboard events. Neither that
-completed WebSocket work nor a future Socket.IO change requires an Express
-rewrite. Evaluate each remaining dependency against its own consumers before
-coupling migrations.
+Engine IPC and dashboard events both use the owned WebSocket server; process
+and browser clients use their native `WebSocket` implementations. The dashboard
+transport lives in `src/realtime-bus.js` and `admin/src/lib/realtime.js`, with its
+wire contract documented in [PM2 architecture](pm2-architecture.md#admin-realtime-bus-srcrealtime-busjs).
+That transport ownership does not require an Express rewrite. Evaluate each
+remaining dependency against its own consumers before coupling migrations.
 
 ## When to revisit
 

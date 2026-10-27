@@ -148,14 +148,25 @@ pm2 stop critical-mass-coinbase critical-mass-gemini critical-mass-cryptocom cri
 git pull                                                 # 3. pull this version
 npm ci && npm --prefix admin ci && npm run build         # 4. install both locked dependency sets, rebuild the admin UI
 pm2 start ecosystem.config.cjs --only critical-mass-coinbase,critical-mass-gemini,critical-mass-cryptocom   # 5. engines first
-pm2 logs critical-mass-coinbase                          # 6. confirm "Pair migration complete" (check each engine you run)
+pm2 logs critical-mass-coinbase --lines 50 --nostream    # 6. inspect startup/migration errors (repeat for each engine you run)
 pm2 start ecosystem.config.cjs --only critical-mass      # 7. then the gateway
 pm2 start ecosystem.config.cjs --only critical-mass-ui   # 8. development UI only, if you use it
 ```
 
 For every native upgrade, refresh both projects from their committed lockfiles, even when only the root version changes. The production UI build needs the admin project's build dependencies.
 
-Order matters. The gateway drains its admitted commands before it disconnects from the engines (up to 30 seconds; its PM2 `kill_timeout` is 35 seconds), so it must be fully stopped **before** any engine stops. Stopping the whole ecosystem at once, or `pm2 restart all`, cannot provide that ordering: PM2 applies multi-process actions concurrently, so an engine can go away while the gateway still has a command waiting on it, and that command returns HTTP 503 (`IPC connection closed`). `pm2 restart all` also touches unrelated applications sharing your PM2 daemon. Always name the Critical Mass processes as above. Engines start before the gateway so they have finished initialization and migration when the gateway begins sending them requests. Keep any supervisor stop grace longer than the gateway's 35 seconds; see [docs/pm2-architecture.md](docs/pm2-architecture.md) for the drain and deadline details.
+Order matters. The gateway drains its admitted commands before it disconnects from the engines (up to 30 seconds; its PM2 `kill_timeout` is 35 seconds), so it must be fully stopped **before** any engine stops. Stopping the whole ecosystem at once, or `pm2 restart all`, cannot provide that ordering: PM2 applies multi-process actions concurrently, so an engine can go away while the gateway still has a command waiting on it, and that command returns HTTP 503 (`IPC connection closed`). `pm2 restart all` also touches unrelated applications sharing your PM2 daemon. Always name the Critical Mass processes as above. Keep any supervisor stop grace longer than the gateway's 35 seconds; see [docs/pm2-architecture.md](docs/pm2-architecture.md) for the drain and deadline details.
+
+Starting engines first does not prove fund readiness. PM2's `online` status can
+precede migration, and `Pair migration complete` is logged only when files were
+moved; an already-migrated install need not emit it. Engines finish synchronous
+recovery and migration before admitting IPC commands, but individual funds
+auto-resume asynchronously. After starting the gateway, sign in and inspect each
+expected running fund in the dashboard or authenticated `GET /api/health`:
+`funds.<exchange>.<pair>.startup` exposes `starting`, `retrying`, or `blocked`
+starts, including the error and next retry time. Resolve those states before
+issuing fund mutations. Intentionally stopped or disabled funds need not become
+running. See [Gateway health](docs/pm2-architecture.md#gateway-health-get-apihealth).
 
 If you only run some exchanges, list only those engine names. The process names and `--only` selectors come from `ecosystem.config.cjs`.
 
@@ -220,12 +231,16 @@ An archive already in the per-fund layout restores exactly as it does today.
 - **API**: all existing routes work unchanged for default-pair access.
 - **PM2**: still one process per exchange. Multiple funds share the same engine process and the same API key set.
 
-### Out of scope for this release
+### Fund tooling and current limits
 
 - API key isolation per fund (all funds on an exchange share the exchange's API key).
 - A UI for moving capital between funds.
-- Pair-aware variants of the backtest, optimizer, charts, and keys pages — these still target the exchange's default fund. They'll be updated in a follow-up.
-- The transactions page and its API route (`GET /api/:exchange/transactions`) are pair-aware: pass `?pair=` to target a non-default fund, matching every other per-fund route.
+
+Backtest, optimizer, charts, and transactions now follow the selected fund. Their
+per-fund API routes accept `?pair=` for a non-default fund; the optimizer also
+keeps caches and progress events scoped to that fund. API keys remain shared by
+every fund on the exchange: changing or deleting keys from any fund's API Keys
+page affects the whole exchange.
 
 ---
 
@@ -249,6 +264,17 @@ Restoring such an archive onto a fresh clone recovered the state files of, say, 
 ### Restoring an OLD archive (taken before this release)
 
 Old archives have no manifest, so they cannot be made portable on their own. Restore refuses them by default rather than silently letting the destination's defaults win. You have two options:
+
+**Oldest flat-layout archives need separate recovery.** The options below cover
+exchange-level (`coinbase/state.json`) and current per-fund layouts. Archives
+with accounting files directly at the data root (for example `state.json` or
+`transactions.tsv`) are not translated by restore. On an already-migrated
+destination, restore can report success while leaving the current fund unchanged
+and creating a namespace conflict that prevents the next startup. Do not apply
+that layout to a live installation; preserve the archive and verify recovery on
+an isolated copy until [issue #1795](https://github.com/atomantic/critical-mass/issues/1795)
+is resolved. Supplying `legacyBaseConfig` or accepting data-only restore does not
+fix this layout limitation.
 
 1. **Recommended — supply the source machine's base config.** Copy the *source* install's root `config.json` and pass it to the restore API as `legacyBaseConfig`:
 
