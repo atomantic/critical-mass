@@ -26,15 +26,19 @@ const DEFAULT_RUN_LIST_LIMIT = 50;
 
 /**
  * @param {import('express').Express} app
- * @param {{ DATA_DIR: string }} sharedDeps
- * @param {{ allowedOrigins?: Set<string>, fetchImpl?: typeof fetch, maxConcurrentRuns?: number }} [options] - injectable for tests
+ * @param {{ DATA_DIR: string, trackBackgroundWork?: (work: Promise<any>|any) => any, track?: (work: Promise<any>|any) => any }} sharedDeps
+ * @param {{ allowedOrigins?: Set<string>, fetchImpl?: typeof fetch, maxConcurrentRuns?: number, trackBackgroundWork?: (work: Promise<any>|any) => any, track?: (work: Promise<any>|any) => any }} [options] - injectable for tests
  */
-module.exports = (app, { DATA_DIR }, { allowedOrigins = parseAllowedOrigins(), fetchImpl, maxConcurrentRuns = 3 } = {}) => {
+module.exports = (app, sharedDeps, options = {}) => {
+  const { DATA_DIR } = sharedDeps;
+  const trackBackgroundWork = sharedDeps.trackBackgroundWork || sharedDeps.track || options.trackBackgroundWork || options.track || ((work) => work);
+  const { allowedOrigins = parseAllowedOrigins(), fetchImpl, maxConcurrentRuns = 3 } = options;
   const providers = createProviderStore({ dataDir: DATA_DIR, allowedOrigins, fetchImpl });
   const runs = createRunRecorder({
     dataDir: DATA_DIR,
     providers,
     maxConcurrentRuns,
+    trackBackgroundWork,
     onRunCompleted: (metadata) => {
       aiRoutesLogger.info(`ℹ️ [${ts()}] 🤖 AI run completed: ${metadata.providerName}/${metadata.model} (${(metadata.duration / 1000).toFixed(1)}s)`, {
         action: 'run-completed',
@@ -117,7 +121,9 @@ module.exports = (app, { DATA_DIR }, { allowedOrigins = parseAllowedOrigins(), f
   });
 
   app.post('/api/runs', (req, res) => {
-    res.status(202).json(runs.start(req.body || {}));
+    const started = runs.start(req.body || {});
+    if (started?.done) trackBackgroundWork(started.done);
+    res.status(202).json(started);
   });
 
   app.delete('/api/runs', (req, res) => {

@@ -2,15 +2,20 @@ const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const vm = require('node:vm');
 const http = require('node:http');
 const express = require('express');
 const { createGatewayShutdown, closeGatewayListeners, SHUTDOWN_TIMEOUT_MS } = require('../src/gateway-shutdown');
+const mountAiRoutes = require('../src/routes/ai-routes');
+const mountBacktestRoutes = require('../src/routes/backtest-routes');
 
 const deferred = () => {
   let resolve;
-  const promise = new Promise((done) => { resolve = done; });
-  return { promise, resolve };
+  let reject;
+  const promise = new Promise((done, fail) => { resolve = done; reject = fail; });
+  return { promise, resolve, reject };
 };
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 const makeGateway = (overrides = {}) => {
@@ -217,5 +222,393 @@ describe('gateway shutdown owns admitted work', () => {
     const config = require('../ecosystem.config.cjs');
     const gateway = config.apps.find((app) => app.name === 'critical-mass');
     assert.ok(gateway.kill_timeout > SHUTDOWN_TIMEOUT_MS);
+  });
+});
+
+describe('gateway shutdown tracks accepted background jobs (issue #1815)', () => {
+  it('holds shutdown until in-flight accepted AI run finishes within grace, persisting output and metadata before exit:0', async () => {
+    const aiCompletion = deferred();
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-shutdown-'));
+    const { gateway, calls } = makeGateway();
+    const app = express();
+    app.use(gateway.middleware);
+    app.use(express.json());
+
+    mountAiRoutes(app, {
+      DATA_DIR: dataDir,
+      trackBackgroundWork: gateway.track,
+    }, {
+      allowedOrigins: new Set(['http://127.0.0.1:9999']),
+      fetchImpl: async (url) => {
+        const urlStr = String(url);
+        if (urlStr.includes('/models')) return new Response(JSON.stringify({ data: [{ id: 'm1' }] }), { status: 200 });
+        await aiCompletion.promise;
+        return new Response('data: {"choices":[{"delta":{"content":"AI completed successfully"}}]}\n\ndata: [DONE]\n\n', {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+        });
+      },
+    });
+
+    const server = http.createServer(app);
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = server.address().port;
+
+    const providerFile = path.join(dataDir, 'providers.json');
+    fs.writeFileSync(providerFile, JSON.stringify({
+      providers: {
+        testprov: {
+          id: 'testprov',
+          name: 'Test Provider',
+          type: 'api',
+          endpoint: 'http://127.0.0.1:9999/v1',
+          apiKey: 'key',
+          models: ['m1'],
+          defaultModel: 'm1',
+          enabled: true,
+        },
+      },
+      activeId: 'testprov',
+    }));
+
+    let responseStatus;
+    let responseBody = '';
+    const req = http.request({
+      host: '127.0.0.1',
+      port,
+      path: '/api/runs',
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    }, (res) => {
+      responseStatus = res.statusCode;
+      res.on('data', (c) => { responseBody += c; });
+    });
+    req.write(JSON.stringify({ providerId: 'testprov', prompt: 'test prompt' }));
+    req.end();
+
+    while (responseStatus === undefined) await settle();
+    assert.equal(responseStatus, 202);
+    const runInfo = JSON.parse(responseBody);
+    assert.equal(runInfo.status, 'started');
+    const runId = runInfo.runId;
+
+    // Disconnect client socket
+    req.destroy();
+    await settle();
+
+    // Trigger shutdown
+    const shutdownPromise = gateway.shutdown('SIGTERM');
+    await settle();
+
+    // Verify drain is waiting for the AI job
+    assert.ok(!calls.includes('exit:0'), 'must not exit while AI run is in flight');
+    assert.ok(!calls.includes('listeners'), 'must not close listeners while AI run is in flight');
+
+    // Repeated signal shares the same shutdown promise
+    assert.equal(gateway.shutdown('SIGINT'), shutdownPromise);
+
+    // New request during drain is refused with 503
+    const rejectedReq = await fetch(`http://127.0.0.1:${port}/api/runs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ providerId: 'testprov', prompt: 'during drain' }),
+    });
+    assert.equal(rejectedReq.status, 503);
+
+    // Release the AI completion
+    aiCompletion.resolve();
+    assert.equal(await shutdownPromise, 0);
+
+    // Verify orderly exit
+    assert.equal(calls.at(-1), 'exit:0');
+    assert.ok(calls.includes('listeners'));
+
+    // Verify output and metadata are durable on disk
+    const outContent = fs.readFileSync(path.join(dataDir, 'runs', runId, 'output.txt'), 'utf8');
+    assert.equal(outContent, 'AI completed successfully');
+    const meta = JSON.parse(fs.readFileSync(path.join(dataDir, 'runs', runId, 'metadata.json'), 'utf8'));
+    assert.equal(meta.success, true);
+    assert.equal(meta.exitCode, 0);
+    assert.ok(meta.endTime !== null);
+    assert.ok(meta.duration >= 0);
+
+    await new Promise((resolve) => server.close(resolve));
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it('AI run failure settles the tracked owner, persists failure record, and lets shutdown complete with exit:0', async () => {
+    const aiCompletion = deferred();
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-fail-shutdown-'));
+    const { gateway, calls } = makeGateway();
+    const app = express();
+    app.use(gateway.middleware);
+    app.use(express.json());
+
+    mountAiRoutes(app, {
+      DATA_DIR: dataDir,
+      trackBackgroundWork: gateway.track,
+    }, {
+      allowedOrigins: new Set(['http://127.0.0.1:9999']),
+      fetchImpl: async (url) => {
+        const urlStr = String(url);
+        if (urlStr.includes('/models')) return { ok: true, status: 200, json: async () => ({ data: [{ id: 'm1' }] }) };
+        await aiCompletion.promise;
+        throw new Error('synthetic provider connection failure');
+      },
+    });
+
+    const server = http.createServer(app);
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = server.address().port;
+
+    const providerFile = path.join(dataDir, 'providers.json');
+    fs.writeFileSync(providerFile, JSON.stringify({
+      providers: {
+        testprov: {
+          id: 'testprov',
+          name: 'Test Provider',
+          type: 'api',
+          endpoint: 'http://127.0.0.1:9999/v1',
+          apiKey: 'key',
+          models: ['m1'],
+          defaultModel: 'm1',
+          enabled: true,
+        },
+      },
+      activeId: 'testprov',
+    }));
+
+    let responseStatus;
+    let responseBody = '';
+    const req = http.request({
+      host: '127.0.0.1',
+      port,
+      path: '/api/runs',
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    }, (res) => {
+      responseStatus = res.statusCode;
+      res.on('data', (c) => { responseBody += c; });
+    });
+    req.write(JSON.stringify({ providerId: 'testprov', prompt: 'test prompt' }));
+    req.end();
+
+    while (responseStatus === undefined) await settle();
+    assert.equal(responseStatus, 202);
+    const runInfo = JSON.parse(responseBody);
+    const runId = runInfo.runId;
+
+    req.destroy();
+    await settle();
+
+    const shutdownPromise = gateway.shutdown('SIGTERM');
+    await settle();
+
+    assert.ok(!calls.includes('exit:0'));
+    aiCompletion.resolve();
+    assert.equal(await shutdownPromise, 0);
+    assert.equal(calls.at(-1), 'exit:0');
+
+    const meta = JSON.parse(fs.readFileSync(path.join(dataDir, 'runs', runId, 'metadata.json'), 'utf8'));
+    assert.equal(meta.success, false);
+    assert.equal(meta.exitCode, 1);
+    assert.match(meta.error, /synthetic provider connection failure/);
+
+    await new Promise((resolve) => server.close(resolve));
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it('holds shutdown until in-flight accepted optimizer job finishes within grace, publishing cache and events before exit:0', async () => {
+    const optimizerCompletion = deferred();
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opt-shutdown-'));
+    const { gateway, calls } = makeGateway();
+    const app = express();
+    app.use(gateway.middleware);
+    app.use(express.json());
+
+    const events = [];
+    const cacheWrites = [];
+
+    const simulationCoordinator = {
+      start: () => ({
+        accepted: true,
+        promise: optimizerCompletion.promise,
+      }),
+    };
+
+    mountBacktestRoutes(app, {
+      io: {
+        emit: (name, payload) => {
+          events.push({ name, payload, listenersClosed: calls.includes('listeners'), exited: calls.includes('exit:0') });
+        },
+      },
+      readJSON: () => null,
+      writeJSON: (file, data) => {
+        cacheWrites.push({ file, data, listenersClosed: calls.includes('listeners'), exited: calls.includes('exit:0') });
+      },
+      DATA_DIR: dataDir,
+      trackBackgroundWork: gateway.track,
+      simulationCoordinator,
+    });
+
+    const server = http.createServer(app);
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = server.address().port;
+
+    let responseStatus;
+    let responseBody = '';
+    const req = http.request({
+      host: '127.0.0.1',
+      port,
+      path: '/api/coinbase/optimizer/run?pair=BTC-USDC',
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    }, (res) => {
+      responseStatus = res.statusCode;
+      res.on('data', (c) => { responseBody += c; });
+    });
+    req.write(JSON.stringify({
+      productId: 'BTC-USDC',
+      fundSize: 1000,
+      intervals: ['daily'],
+      markups: [2],
+      periods: ['30D'],
+    }));
+    req.end();
+
+    while (responseStatus === undefined) await settle();
+    assert.equal(responseStatus, 200);
+    const body = JSON.parse(responseBody);
+    assert.equal(body.streaming, true);
+
+    req.destroy();
+    await settle();
+
+    const shutdownPromise = gateway.shutdown('SIGTERM');
+    await settle();
+
+    assert.ok(!calls.includes('exit:0'), 'must not exit while optimizer is running');
+    assert.ok(!calls.includes('listeners'), 'must not close listeners while optimizer is running');
+    assert.equal(gateway.shutdown('SIGINT'), shutdownPromise);
+
+    const rejectedReq = await fetch(`http://127.0.0.1:${port}/api/coinbase/optimizer/run?pair=BTC-USDC`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ productId: 'BTC-USDC' }),
+    });
+    assert.equal(rejectedReq.status, 503);
+
+    optimizerCompletion.resolve({
+      productId: 'BTC-USDC',
+      totalCombinations: 1,
+      duration: 50,
+      bestResult: { params: { intervalType: 'daily', sellMarkupPercent: 2 }, metrics: { totalValue: 1200 } },
+      results: [],
+      config: {},
+    });
+
+    assert.equal(await shutdownPromise, 0);
+    assert.equal(calls.at(-1), 'exit:0');
+
+    assert.equal(cacheWrites.length, 1);
+    assert.equal(cacheWrites[0].listenersClosed, false, 'cache write must precede listener closure');
+    assert.equal(cacheWrites[0].exited, false);
+    assert.equal(cacheWrites[0].data.bestResult.metrics.totalValue, 1200);
+
+    const completeEvents = events.filter((e) => e.name === 'optimizer:complete');
+    assert.equal(completeEvents.length, 1);
+    assert.equal(completeEvents[0].listenersClosed, false, 'event emit must precede listener closure');
+    assert.equal(completeEvents[0].exited, false);
+
+    await new Promise((resolve) => server.close(resolve));
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it('optimizer failure settles the tracked owner, emits optimizer:error, and lets shutdown complete with exit:0', async () => {
+    const optimizerCompletion = deferred();
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opt-fail-shutdown-'));
+    const { gateway, calls } = makeGateway();
+    const app = express();
+    app.use(gateway.middleware);
+    app.use(express.json());
+
+    const events = [];
+
+    const simulationCoordinator = {
+      start: () => ({
+        accepted: true,
+        promise: optimizerCompletion.promise,
+      }),
+    };
+
+    mountBacktestRoutes(app, {
+      io: {
+        emit: (name, payload) => {
+          events.push({ name, payload, listenersClosed: calls.includes('listeners'), exited: calls.includes('exit:0') });
+        },
+      },
+      readJSON: () => null,
+      writeJSON: () => {},
+      DATA_DIR: dataDir,
+      trackBackgroundWork: gateway.track,
+      simulationCoordinator,
+    });
+
+    const server = http.createServer(app);
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = server.address().port;
+
+    let responseStatus;
+    const req = http.request({
+      host: '127.0.0.1',
+      port,
+      path: '/api/coinbase/optimizer/run?pair=BTC-USDC',
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    }, (res) => {
+      responseStatus = res.statusCode;
+    });
+    req.write(JSON.stringify({
+      productId: 'BTC-USDC',
+      fundSize: 1000,
+      intervals: ['daily'],
+      markups: [2],
+      periods: ['30D'],
+    }));
+    req.end();
+
+    while (responseStatus === undefined) await settle();
+    assert.equal(responseStatus, 200);
+
+    req.destroy();
+    await settle();
+
+    const shutdownPromise = gateway.shutdown('SIGTERM');
+    await settle();
+
+    assert.ok(!calls.includes('exit:0'));
+
+    optimizerCompletion.reject(new Error('synthetic optimizer engine failure'));
+
+    assert.equal(await shutdownPromise, 0);
+    assert.equal(calls.at(-1), 'exit:0');
+
+    const errorEvents = events.filter((e) => e.name === 'optimizer:error');
+    assert.equal(errorEvents.length, 1);
+    assert.equal(errorEvents[0].payload.error, 'synthetic optimizer engine failure');
+    assert.equal(errorEvents[0].listenersClosed, false);
+
+    await new Promise((resolve) => server.close(resolve));
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it('a hung background job still exits with exit:1 when deadline expires', async () => {
+    const neverEnding = deferred();
+    const { gateway, calls } = makeGateway({ timeoutMs: 25 });
+    gateway.track(neverEnding.promise);
+
+    assert.equal(await gateway.shutdown('SIGTERM'), 1);
+    assert.equal(calls.at(-1), 'exit:1');
+    neverEnding.resolve();
   });
 });

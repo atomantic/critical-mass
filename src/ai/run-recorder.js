@@ -41,9 +41,20 @@ const completionText = (payload) => {
  *   maxConcurrentRuns?: number,
  *   onRunCompleted?: (metadata: any) => void,
  *   onRunFailed?: (metadata: any) => void,
+ *   trackBackgroundWork?: (work: Promise<any>|any) => any,
+ *   track?: (work: Promise<any>|any) => any,
  * }} options
  */
-const createRunRecorder = ({ dataDir, providers, maxConcurrentRuns = 3, onRunCompleted = () => {}, onRunFailed = () => {} }) => {
+const createRunRecorder = ({
+  dataDir,
+  providers,
+  maxConcurrentRuns = 3,
+  onRunCompleted = () => {},
+  onRunFailed = () => {},
+  trackBackgroundWork,
+  track,
+}) => {
+  const registerTrackedWork = trackBackgroundWork || track || ((work) => work);
   const runsPath = path.join(dataDir, 'runs');
   /** @type {Map<string, { controller: AbortController, reason: string | null, done: Promise<void> }>} */
   const active = new Map();
@@ -186,7 +197,10 @@ const createRunRecorder = ({ dataDir, providers, maxConcurrentRuns = 3, onRunCom
       entry.done = execute(runId, provider, effectiveModel, prompt, timeoutMs, entry)
         .catch((err) => onRunFailed({ ...metadata, error: `Run could not be recorded: ${err.message}` }))
         .finally(() => active.delete(runId));
-      return { runId, status: 'started', metadata };
+      registerTrackedWork(entry.done);
+      const result = { runId, status: 'started', metadata };
+      Object.defineProperty(result, 'done', { value: entry.done, enumerable: false, configurable: true, writable: true });
+      return result;
     },
 
     /** Abort an active run and wait until its terminal record is written. */

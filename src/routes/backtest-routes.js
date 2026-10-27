@@ -37,10 +37,11 @@ const backtestLogger = (exchange, pair, route) => createContextLogger({
 
 /**
  * @param {import('express').Express} app
- * @param {{io: Object, readJSON: Function, writeJSON: Function, DATA_DIR: string}} deps
+ * @param {{io: Object, readJSON: Function, writeJSON: Function, DATA_DIR: string, trackBackgroundWork?: Function, track?: Function, simulationCoordinator?: Object}} deps
  */
 module.exports = (app, deps) => {
   const { io, readJSON, writeJSON, DATA_DIR, simulationCoordinator = new SimulationRunCoordinator() } = deps;
+  const trackBackgroundWork = deps.trackBackgroundWork || deps.track || ((work) => work);
 
   // Reads the pair already validated and attached by withConfiguredPair —
   // distinct from route-utils' resolvePairParam, which resolves one from
@@ -235,9 +236,7 @@ module.exports = (app, deps) => {
       combinations,
     });
 
-    res.json({ success: true, streaming: true, runId, requestKey, exchange, pair, message: 'Optimizer started, results will stream via WebSocket' });
-
-    admission.promise
+    const task = admission.promise
       .then(result => {
         logger.info(`ℹ️ [${exchange}] Optimizer complete: ${result.totalCombinations} combinations in ${(result.duration / 1000).toFixed(1)}s`, {
           action: 'optimizer-complete',
@@ -277,5 +276,9 @@ module.exports = (app, deps) => {
         });
         io.emit('optimizer:error', { error: err.message, runId, exchange, pair });
       });
+
+    trackBackgroundWork(task);
+
+    res.json({ success: true, streaming: true, runId, requestKey, exchange, pair, message: 'Optimizer started, results will stream via WebSocket' });
   });
 };
