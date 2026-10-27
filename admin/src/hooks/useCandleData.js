@@ -328,6 +328,7 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
   const lastTickTimeRef = useRef(null)
   const lastTickWallClockRef = useRef(null)
   const lastProcessedTickRef = useRef({ price: null, timestamp: null, seriesKey: null })
+  const liveObservationsMapRef = useRef(new Map())
 
   const getNow = useCallback(() => {
     if (lastTickTimeRef.current != null && lastTickWallClockRef.current != null) {
@@ -392,7 +393,7 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
    */
   const updateFromSourceCandles = useCallback(() => {
     const sourceMap = sourceCandlesMapRef.current
-    if (!sourceMap.size) return
+    if (!sourceMap.size && !liveObservationsMapRef.current.size) return
     const sortedSourceCandles = [...sourceMap.values()].sort((a, b) => a.timestamp - b.timestamp)
     const map = bucketsRef.current
 
@@ -408,7 +409,7 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
       group.push(sc)
     }
 
-    // Populate each display bucket from its group of source candles
+    // 1. Populate display buckets from canonical source candles
     for (const [bKey, group] of bucketSourceGroups.entries()) {
       let bucket = map.get(bKey)
       if (!bucket) {
@@ -417,27 +418,43 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
       } else {
         resetBucketIndicators(bucket)
       }
-      // Only reconcile historical source candles into display buckets when temporal coverage permits (bucketMs >= sourceCandleMs)
-      // When bucketMs < sourceCandleMs, finer live observations already in map must be preserved
-      if (bucketMs < sourceCandleMs && bucket.hasLiveTicks) {
-        // Keep finer live OHLC intact
-      } else {
-        bucket.open = group[0].open
-        bucket.high = Math.max(...group.map(c => c.high))
-        bucket.low = Math.min(...group.map(c => c.low))
-        bucket.price = group[group.length - 1].close
-        bucket.volume = group.reduce((sum, c) => sum + (c.volume || 0), 0)
-        bucket.hasLiveTicks = group.some(c => c.hasLiveTicks)
-      }
+      bucket.open = group[0].open
+      bucket.high = Math.max(...group.map(c => c.high))
+      bucket.low = Math.min(...group.map(c => c.low))
+      bucket.price = group[group.length - 1].close
+      bucket.volume = group.reduce((sum, c) => sum + (c.volume || 0), 0)
+      bucket.hasLiveTicks = group.some(c => c.hasLiveTicks)
     }
 
-    // Prune stale display buckets when aggregation grouping changes
-    for (const [key, bucket] of map.entries()) {
-      if (!bucketSourceGroups.has(key)) {
-        // When bucketMs < sourceCandleMs, finer live display buckets are not in bucketSourceGroups; preserve them!
-        if (bucketMs < sourceCandleMs && bucket.hasLiveTicks) {
-          continue
-        }
+    // 2. Rebuild / overlay finer live observations onto display buckets for the selected width
+    const liveGroups = new Map()
+    const sortedLive = [...liveObservationsMapRef.current.values()].sort((a, b) => a.timestamp - b.timestamp)
+    for (const lo of sortedLive) {
+      const bKey = Math.floor(lo.timestamp / bucketMs) * bucketMs
+      let group = liveGroups.get(bKey)
+      if (!group) {
+        group = []
+        liveGroups.set(bKey, group)
+      }
+      group.push(lo)
+    }
+
+    for (const [bKey, group] of liveGroups.entries()) {
+      let bucket = map.get(bKey)
+      if (!bucket) {
+        bucket = emptyBucket(bKey, group[group.length - 1].close)
+        map.set(bKey, bucket)
+      }
+      if (bucket.open == null) bucket.open = group[0].open
+      bucket.high = bucket.high != null ? Math.max(bucket.high, ...group.map(l => l.high)) : Math.max(...group.map(l => l.high))
+      bucket.low = bucket.low != null ? Math.min(bucket.low, ...group.map(l => l.low)) : Math.min(...group.map(l => l.low))
+      bucket.price = group[group.length - 1].close
+      bucket.hasLiveTicks = true
+    }
+
+    // 3. Prune stale display buckets when aggregation grouping changes
+    for (const key of map.keys()) {
+      if (!bucketSourceGroups.has(key) && !liveGroups.has(key)) {
         map.delete(key)
       }
     }
@@ -550,6 +567,11 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
           existing.close = b.close
           if (isCandleCompleted) {
             existing.hasLiveTicks = false
+            for (const k of liveObservationsMapRef.current.keys()) {
+              if (k >= sourceKey && k < candleEndTime) {
+                liveObservationsMapRef.current.delete(k)
+              }
+            }
           }
         }
       } else {
@@ -592,6 +614,7 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
       lastTickTimeRef.current = null
       lastTickWallClockRef.current = null
       lastProcessedTickRef.current = { price: null, timestamp: null, seriesKey: null }
+      liveObservationsMapRef.current = new Map()
     }
 
     retryRef.current = false
@@ -658,6 +681,30 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
     const now = tickTimestamp != null ? Number(tickTimestamp) : Date.now()
     lastTickTimeRef.current = now
     lastTickWallClockRef.current = Date.now()
+
+    // 1. Record fine-grained live observation
+    const liveKey = Math.floor(now / 1000) * 1000
+    const liveMap = liveObservationsMapRef.current
+    const lo = liveMap.get(liveKey)
+    if (lo) {
+      lo.close = tickPrice
+      if (tickPrice > lo.high) lo.high = tickPrice
+      if (tickPrice < lo.low) lo.low = tickPrice
+    } else {
+      liveMap.set(liveKey, {
+        timestamp: liveKey,
+        open: tickPrice,
+        high: tickPrice,
+        low: tickPrice,
+        close: tickPrice,
+        hasLiveTicks: true,
+      })
+    }
+    if (liveMap.size > 5000) {
+      const sortedKeys = [...liveMap.keys()].sort((a, b) => a - b)
+      for (const k of sortedKeys.slice(0, sortedKeys.length - 5000)) liveMap.delete(k)
+    }
+
     const sourceKey = Math.floor(now / sourceCandleMs) * sourceCandleMs
     const bKey = Math.floor(now / bucketMs) * bucketMs
     const sourceMap = sourceCandlesMapRef.current

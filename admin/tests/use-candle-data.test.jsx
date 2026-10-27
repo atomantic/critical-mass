@@ -835,9 +835,10 @@ describe('useCandleData display limit and live candle preservation', () => {
   })
 
   it('preserves separate display buckets when live ticks cross display boundaries within one source candle', async () => {
-    // Custom view with 30s display buckets over 1m source candles
+    // Custom views with 30s and 1m display buckets over 1m source candles
     const customViews = {
       '30s_view': { bucketMs: 30_000, maxBuckets: 60, candleTf: '1m', indicatorTf: '1m' },
+      '1m_view': { bucketMs: 60_000, maxBuckets: 60, candleTf: '1m', indicatorTf: '1m' },
     }
     let fetchCount = 0
     vi.stubGlobal('fetch', vi.fn(async () => {
@@ -908,6 +909,20 @@ describe('useCandleData display limit and live candle preservation', () => {
 
     // Tick 3 at t=50_000 (updates bucket 30_000 close)
     props = { ...props, tickPrice: 125, tickTimestamp: 50_000 }; rerender()
+
+    // Switch view from 30s_view to 1m_view (aggregates into bucket 0)
+    act(() => {
+      result.current.setView('1m_view')
+    })
+    expect(result.current.chartData.length).toBe(1)
+
+    // Switch back to 30s_view (rebuilds both finer buckets with original OHLC)
+    act(() => {
+      result.current.setView('30s_view')
+    })
+    expect(result.current.chartData.length).toBe(2)
+    expect(result.current.chartData[0].price).toBe(110)
+    expect(result.current.chartData[1].price).toBe(125)
 
     // Tick 4 at t=70_000 (crosses into next 1m window, opening bucket 60_000 and triggering sync)
     props = { ...props, tickPrice: 135, tickTimestamp: 70_000 }; rerender()
