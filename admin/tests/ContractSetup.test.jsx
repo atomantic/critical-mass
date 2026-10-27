@@ -586,7 +586,7 @@ describe('ContractSetup draft revision and server readback transitions', () => {
     expect(screen.getByLabelText(/Target/).value).toBe('200000')
   })
 
-  it('adopts an external restoration of the pre-save value before acknowledgement', async () => {
+  it('rejects multiple stale readbacks of old value after a successful save until acknowledgement', async () => {
     vi.stubGlobal('fetch', vi.fn(async (url) => {
       if (url === '/api/updown/providers') return { ok: true, json: async () => ({ success: true, providers: [] }) }
       if (url === '/api/updown/contract') return { ok: true, json: async () => ({ success: true }) }
@@ -601,14 +601,21 @@ describe('ContractSetup draft revision and server readback transitions', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save Contract' }))
     expect(await screen.findByRole('button', { name: 'Saved' })).toBeTruthy()
 
-    // Another client restores pre-save value 100000 before polling acknowledges 110000
-    // First poll with 100000 drops the potential in-flight pre-save response
+    // First stale readback of pre-save contract 100000 arrives
     rerender(<ContractSetup initialContract={{ ...initial }} />)
     expect(screen.getByLabelText(/Target/).value).toBe('110000')
 
-    // Subsequent poll confirms server genuinely restored 100000 and is adopted on pristine form
+    // Second delayed readback of pre-save contract 100000 arrives — must NOT overwrite saved draft
     rerender(<ContractSetup initialContract={{ ...initial }} />)
-    expect(screen.getByLabelText(/Target/).value).toBe('100000')
+    expect(screen.getByLabelText(/Target/).value).toBe('110000')
+
+    // Authoritative status poll arrives acknowledging saved contract 110000
+    rerender(<ContractSetup initialContract={{ target: 110000, stop: 95000, range: 500, direction: 'up', expiry: '' }} />)
+    expect(screen.getByLabelText(/Target/).value).toBe('110000')
+
+    // Subsequent genuine change on pristine form is adopted
+    rerender(<ContractSetup initialContract={{ target: 200000, stop: 95000, range: 500, direction: 'up', expiry: '' }} />)
+    expect(screen.getByLabelText(/Target/).value).toBe('200000')
   })
 
   it('adopts an external restoration of the pre-save value immediately when revision metadata is present', async () => {

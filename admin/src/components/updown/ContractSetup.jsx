@@ -221,8 +221,7 @@ export default function ContractSetup({ initialContract }) {
         stalePreSaveKeysRef.current.clear()
         awaitingServerAckRef.current = false
       } else if (stalePreSaveKeysRef.current.has(key)) {
-        // Stale pre-save poll by ordering: drop once to allow subsequent restoration
-        stalePreSaveKeysRef.current.delete(key)
+        // Stale pre-save poll: drop repeated deliveries of old values
         return
       } else {
         // Received the saved contract or a superseding update
