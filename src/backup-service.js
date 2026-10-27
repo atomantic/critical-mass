@@ -24,6 +24,7 @@ const { fsyncDir } = require('./fsync-dir');
 const { fsyncFile } = require('./durable-write');
 const { spawnSync, spawn } = require('child_process');
 const { DATA_DIR, BACKUP_DIR } = require('./paths');
+const { validatePersistedPayload, classifyPayloadPath } = require('./persisted-payload-validation');
 const { applyStagedFiles, STAGE_PREFIX, ORIGINALS_PREFIX, JOURNAL_FILENAME, OWNER_PREFIX } = require('./restore-apply');
 const { LOCK_FILENAME: LEGACY_MIGRATION_LOCK } = require('./legacy-namespace-migration');
 
@@ -881,6 +882,48 @@ const archiveEntryFunds = (entries, snapshot, translations) => {
 };
 
 /**
+ * Apply the accounting readers' compatibility rules to files already on disk
+ * (a snapshot or a staging tree), read-only. The caller supplies the paths to
+ * check, relative to `root`.
+ * @param {string} root
+ * @param {Array<string>} relPaths - forward-slash relative paths
+ * @returns {{ok: true} | {ok: false, error: string}}
+ */
+const checkPersistedPayloads = (root, relPaths) => {
+  for (const rel of relPaths) {
+    if (!classifyPayloadPath(rel)) continue;
+    let content;
+    try {
+      content = fs.readFileSync(path.join(root, ...rel.split('/')), 'utf8');
+    } catch (error) {
+      return { ok: false, error: `${rel} is not readable: ${error.message}` };
+    }
+    const checked = validatePersistedPayload(rel, content);
+    if (!checked.ok) return checked;
+  }
+  return { ok: true };
+};
+
+/**
+ * Relative paths of the accounting files in an extracted staging tree: the
+ * data-root files plus `<exchange>/<file>` and `<exchange>/<pair>/<file>`.
+ * @param {string} root
+ * @returns {Array<string>}
+ */
+const listStagedPayloadPaths = (root) => {
+  const found = [];
+  const walk = (dir, segments) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const next = [...segments, entry.name];
+      if (entry.isFile() && classifyPayloadPath(next.join('/'))) found.push(next.join('/'));
+      else if (entry.isDirectory() && next.length < 3 && !(next.length === 1 && NON_EXCHANGE_DIRS.has(entry.name))) walk(path.join(dir, entry.name), next);
+    }
+  };
+  walk(root, []);
+  return found;
+};
+
+/**
  * Validate a complete recovery point without mutating it. Restore stages use
  * the selected fund's manifest in memory so it is never applied as live state.
  * @param {string} snapshotDir
@@ -1150,6 +1193,10 @@ const createFundStateBackup = ({ paths: pathOverrides, now = new Date(), maxBack
     for (const dir of [...snapshotDirs].sort((a, b) => b.length - a.length)) fsyncDir(dir);
     const validated = validateFundStateSnapshot(stageDir, snapshotId);
     if (!validated.ok) throw new Error(validated.error);
+    // Never publish (and so never prune older points in favour of) a snapshot
+    // whose accounting the readers would refuse (#1811).
+    const compatible = checkPersistedPayloads(stageDir, funds.flatMap(({ exchange, pair, files: names }) => names.map((name) => `${exchange}/${pair}/${name}`)));
+    if (!compatible.ok) throw new Error(compatible.error);
     fs.mkdirSync(paths.fundStateBackupsDir, { recursive: true });
     fs.renameSync(stageDir, publishedPath);
     published = true;
@@ -1203,6 +1250,8 @@ const resolveFundStateSnapshot = (snapshotId, exchange, pair, paths) => {
   if (!fund) {
     return { ok: false, error: `Snapshot does not contain state for ${exchange}/${pair}` };
   }
+  const compatible = checkPersistedPayloads(snapshotDir, fund.files.map((name) => `${exchange}/${pair}/${name}`));
+  if (!compatible.ok) return { ok: false, error: `Fund-state snapshot is not restorable: ${compatible.error}. No files were changed.` };
   return { ok: true, snapshotDir, files: fund.files, manifest: parsed.manifest };
 };
 
@@ -1260,6 +1309,9 @@ const restoreFundStateBackup = (snapshotId, exchange, pair, { paths: pathOverrid
       funds: [{ exchange, pair, files: resolved.files }],
     });
     if (!validated.ok) throw new Error(validated.error);
+    // The source may have changed since preflight: re-check what will be applied.
+    const compatible = checkPersistedPayloads(stageDir, resolved.files.map((name) => `${exchange}/${pair}/${name}`));
+    if (!compatible.ok) throw new Error(compatible.error);
     absent = planAbsentFundState(stageDir, [{ exchange, pair }]);
   } catch (error) {
     fs.rmSync(stageDir, { recursive: true, force: true });
@@ -1581,6 +1633,18 @@ const checkRestorePreconditions = async (filename, { paths: pathOverrides, legac
   }
   const pending = fundsWithPendingDcaImport(paths.dataDir, archiveEntryFunds(entries, snapshot, layout.translations));
   if (pending.length > 0) return { ok: false, ...pendingDcaImportRefusal(pending, 'No files were changed.') };
+
+  // Business-format compatibility of the accounting payloads (#1811): the
+  // archive is intact, but the readers must be able to cold-start from it.
+  for (const entry of entries) {
+    if (entry.endsWith('/') || !classifyPayloadPath(entry)) continue;
+    const read = await spawnAsync('unzip', ['-p', zipPath, entry]);
+    if (read.error || read.status !== 0) {
+      return { ok: false, code: 'archive-corrupt', error: `Unable to read ${entry} from the archive. No files were changed.` };
+    }
+    const checked = validatePersistedPayload(entry, read.stdout);
+    if (!checked.ok) return { ok: false, code: 'payload-incompatible', error: `Archive accounting is not readable by this build: ${checked.error}. No files were changed.` };
+  }
   return { ok: true };
 };
 
@@ -1735,6 +1799,11 @@ const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null
       const refusal = pendingDcaImportRefusal(pending, 'No files were changed.');
       return abort(refusal.error, refusal.code);
     }
+
+    // Re-check the extracted generation immediately before the destination is
+    // touched (#1811): this covers archives that changed after preflight.
+    const compatible = checkPersistedPayloads(tempDir, listStagedPayloadPaths(tempDir));
+    if (!compatible.ok) return abort(`Archive accounting is not readable by this build: ${compatible.error}. No files were changed.`, 'payload-incompatible');
 
     // From here applyStagedFiles owns the staging directory: it removes it on a
     // refusal or rollback, or leaves it for the rollback journal to recover.

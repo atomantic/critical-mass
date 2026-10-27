@@ -36,6 +36,7 @@ const {
   STATUS,
 } = require('../src/restore-apply');
 const { createBackup, restoreBackup } = require('../src/backup-service');
+const { ledgerOf } = require('./helpers/ledger-fixture');
 
 const silentLogger = { info: () => {}, warn: () => {}, error: () => {} };
 
@@ -922,7 +923,7 @@ describe('backup-service — restore failure leaves the install coherent (#431)'
     }));
     write(path.join(install.dataDir, 'config.json'), '{}');
     write(stateFile(), JSON.stringify({ generation: 'archive', realizedPnL: 11 }));
-    write(ledgerFile(), JSON.stringify({ generation: 'archive', fills: [1, 2] }));
+    write(ledgerFile(), JSON.stringify(ledgerOf('archive-1', 'archive-2')));
 
     const created = await createBackup({ paths: install });
     assert.equal(created.success, true, created.error);
@@ -930,7 +931,7 @@ describe('backup-service — restore failure leaves the install coherent (#431)'
 
     // The install moves on: both files are now a generation newer than the archive.
     write(stateFile(), JSON.stringify({ generation: 'current', realizedPnL: 42 }));
-    write(ledgerFile(), JSON.stringify({ generation: 'current', fills: [1, 2, 3] }));
+    write(ledgerFile(), JSON.stringify(ledgerOf('current-1', 'current-2', 'current-3')));
   });
 
   afterEach(() => {
@@ -942,7 +943,7 @@ describe('backup-service — restore failure leaves the install coherent (#431)'
     const result = restoreBackup(filename, { paths: install });
     assert.equal(result.success, true, result.error);
     assert.equal(JSON.parse(read(stateFile())).generation, 'archive');
-    assert.equal(JSON.parse(read(ledgerFile())).generation, 'archive');
+    assert.equal(JSON.parse(read(ledgerFile()))[0].tradeId, 'archive-1');
     assert.deepEqual(fs.readdirSync(install.dataDir).filter((n) => n.startsWith('.restore-')), []);
   });
 
@@ -955,7 +956,7 @@ describe('backup-service — restore failure leaves the install coherent (#431)'
     assert.equal(result.code, 'restore-apply-failed');
     assert.equal(result.rolledBack, true);
     assert.equal(JSON.parse(read(stateFile())).generation, 'current', 'state must not be left on the archive generation');
-    assert.equal(JSON.parse(read(ledgerFile())).generation, 'current');
+    assert.equal(JSON.parse(read(ledgerFile()))[0].tradeId, 'current-1');
     assert.equal(JSON.parse(read(stateFile())).realizedPnL, 42);
     assert.deepEqual(fs.readdirSync(install.dataDir).filter((n) => n.startsWith('.restore-')), [], 'no artifacts leak after a clean rollback');
   });

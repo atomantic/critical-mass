@@ -22,14 +22,17 @@ const { spawnSync } = require('child_process');
 
 const { performRestore } = require('../src/restore-coordinator');
 const maintenance = require('../src/restore-maintenance');
+const { ledgerOf } = require('./helpers/ledger-fixture');
 const {
   createBackup,
   createFundStateBackup,
   restoreBackup,
   checkRestorePreconditions,
   checkFundStateRestorePreconditions,
+  restoreFundStateBackup,
   MANIFEST_FILENAME,
 } = require('../src/backup-service');
+
 
 const silentLogger = { info: () => {}, warn: () => {}, error: () => {} };
 
@@ -331,7 +334,7 @@ describe('checkRestorePreconditions mirrors the applier refusals without extract
     const { JOURNAL_FILENAME } = require('../src/dca-conversion-transaction');
     const fundDir = (install) => path.join(install.dataDir, 'coinbase', 'ETH-USDC');
     const seedAccounting = (install) => {
-      writeJson(path.join(fundDir(install), 'fill-ledger.json'), [{ id: 'saved' }]);
+      writeJson(path.join(fundDir(install), 'fill-ledger.json'), ledgerOf('saved'));
       writeJson(path.join(fundDir(install), 'regime-state.json'), { position: { totalAsset: 0 } });
       writeJson(path.join(fundDir(install), 'state.json'), { orders: [{ status: 'pending' }] });
     };
@@ -439,6 +442,109 @@ describe('checkRestorePreconditions mirrors the applier refusals without extract
     });
   });
 
+  it('refuses archive accounting the readers would reject, before stop-all and without touching the destination (#1811)', async () => {
+    const incompatible = {
+      'a non-array ledger': { ledger: { fills: [] }, reason: /not an array/ },
+      'a newer ledger format': { ledger: ledgerOf('t1').map((row) => ({ ...row, formatVersion: 2 })), reason: /newer build/ },
+      'a malformed ledger row': { ledger: [{ tradeId: 't1' }], reason: /invalid entry/ },
+    };
+    for (const [name, { ledger, reason }] of Object.entries(incompatible)) {
+      const source = makeInstall(`source-${name}`, BASE);
+      writeJson(path.join(source.dataDir, 'coinbase', 'ETH-USDC', 'fill-ledger.json'), ledger);
+      const created = await createBackup({ paths: source.paths });
+      assert.equal(created.success, true, created.error);
+      const dest = makeInstall(`dest-${name}`, BASE);
+      const destLedger = path.join(dest.dataDir, 'coinbase', 'ETH-USDC', 'fill-ledger.json');
+      writeJson(destLedger, ledgerOf('working'));
+      transfer(source, dest, created.filename);
+      const before = fs.readFileSync(destLedger, 'utf8');
+      const dirBefore = listDir(dest.dataDir);
+
+      const check = await checkRestorePreconditions(created.filename, { paths: dest.paths });
+      assert.equal(check.ok, false, name);
+      assert.equal(check.code, 'payload-incompatible');
+      assert.match(check.error, reason);
+      const calls = [];
+      const { status, body } = await performRestore({
+        filename: created.filename,
+        exchangeIPCMap: { coinbase: recordingIPC('coinbase', ['ETH-USDC'], calls) },
+        configuredExchanges: ['coinbase'],
+        preflight: () => checkRestorePreconditions(created.filename, { paths: dest.paths }),
+        restore: () => assert.fail('applier must not run'),
+        logger: silentLogger,
+      });
+      assert.equal(status, 400);
+      assert.equal(body.code, 'payload-incompatible');
+      assert.deepEqual(calls, [], 'no engine maintenance or stop-all');
+      // The applier repeats the check for a source that changed after preflight.
+      const applied = restoreBackup(created.filename, { paths: dest.paths });
+      assert.equal(applied.success, false);
+      assert.equal(applied.code, 'payload-incompatible');
+      assert.equal(fs.readFileSync(destLedger, 'utf8'), before, 'working ledger preserved');
+      assert.deepEqual(listDir(dest.dataDir), dirBefore, 'no staging or recovery generation left behind');
+    }
+  });
+
+  it('refuses invalid JSON and a non-object state file in an archive (#1811)', async () => {
+    const source = makeInstall('source', BASE);
+    fs.mkdirSync(path.join(source.dataDir, 'coinbase', 'ETH-USDC'), { recursive: true });
+    fs.writeFileSync(path.join(source.dataDir, 'coinbase', 'ETH-USDC', 'fill-ledger.json'), '{not json');
+    const created = await createBackup({ paths: source.paths });
+    const dest = makeInstall('dest', BASE);
+    transfer(source, dest, created.filename);
+    const jsonCheck = await checkRestorePreconditions(created.filename, { paths: dest.paths });
+    assert.equal(jsonCheck.code, 'payload-incompatible');
+    assert.match(jsonCheck.error, /corrupted or unreadable/);
+
+    writeJson(path.join(source.dataDir, 'coinbase', 'ETH-USDC', 'fill-ledger.json'), ledgerOf('t1'));
+    writeJson(path.join(source.dataDir, 'coinbase', 'ETH-USDC', 'regime-state.json'), [1]);
+    const second = await createBackup({ paths: source.paths });
+    transfer(source, dest, second.filename);
+    const stateCheck = await checkRestorePreconditions(second.filename, { paths: dest.paths });
+    assert.equal(stateCheck.code, 'payload-incompatible');
+    assert.match(stateCheck.error, /regime-state.json did not parse to an object/);
+  });
+
+  it('still restores unversioned legacy ledgers and fee-only rows, leaving the bytes unchanged (#1811)', async () => {
+    const source = makeInstall('source', BASE);
+    const legacyRows = [{ tradeId: 'old-1', side: 'sell', size: 2, price: 50, quoteAmount: 100, fee: 0.4, timestamp: 5 }];
+    writeJson(path.join(source.dataDir, 'coinbase', 'ETH-USDC', 'fill-ledger.json'), legacyRows);
+    writeJson(path.join(source.dataDir, 'coinbase', 'ETH-USDC', 'state.json'), { legacy: true });
+    const created = await createBackup({ paths: source.paths });
+    const dest = makeInstall('dest', BASE);
+    transfer(source, dest, created.filename);
+    assert.deepEqual(await checkRestorePreconditions(created.filename, { paths: dest.paths }), { ok: true });
+    const restored = restoreBackup(created.filename, { paths: dest.paths });
+    assert.equal(restored.success, true, restored.error);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dest.dataDir, 'coinbase', 'ETH-USDC', 'fill-ledger.json'), 'utf8')), legacyRows);
+  });
+
+  it('refuses an incompatible hourly snapshot before stop-all and preserves the live ledger (#1811)', async () => {
+    const install = makeInstall('dest', BASE);
+    const liveLedger = path.join(install.dataDir, 'coinbase', 'ETH-USDC', 'fill-ledger.json');
+    writeJson(liveLedger, ledgerOf('working'));
+    const created = createFundStateBackup({ paths: install.paths });
+    assert.equal(created.success, true, created.error);
+    writeJson(path.join(install.dataDir, 'backups', 'fund-state', created.snapshotId, 'coinbase', 'ETH-USDC', 'fill-ledger.json'), { fills: [] });
+    const before = fs.readFileSync(liveLedger, 'utf8');
+    const calls = [];
+    const { status, body } = await performRestore({
+      filename: created.snapshotId,
+      exchangeIPCMap: { coinbase: recordingIPC('coinbase', ['ETH-USDC'], calls) },
+      configuredExchanges: ['coinbase'],
+      preflight: () => checkFundStateRestorePreconditions(created.snapshotId, 'coinbase', 'ETH-USDC', { paths: install.paths }),
+      restore: () => assert.fail('incompatible snapshots must not reach restore'),
+      logger: silentLogger,
+    });
+    assert.equal(status, 400);
+    assert.match(body.error, /not an array/);
+    assert.deepEqual(calls, []);
+    assert.equal(fs.readFileSync(liveLedger, 'utf8'), before);
+    const direct = restoreFundStateBackup(created.snapshotId, 'coinbase', 'ETH-USDC', { paths: install.paths });
+    assert.equal(direct.success, false);
+    assert.equal(fs.readFileSync(liveLedger, 'utf8'), before);
+  });
+
   it('checks a fund-state snapshot without staging it', () => {
     const install = makeInstall('dest', BASE);
     const missing = checkFundStateRestorePreconditions('20260101T000000Z', 'coinbase', 'ETH-USDC', { paths: install.paths });
@@ -448,7 +554,7 @@ describe('checkRestorePreconditions mirrors the applier refusals without extract
 
   it('refuses an incomplete hourly snapshot before maintenance or stop-all (#1703)', async () => {
     const install = makeInstall('dest', BASE);
-    writeJson(path.join(install.dataDir, 'coinbase', 'ETH-USDC', 'fill-ledger.json'), { fills: ['synthetic'] });
+    writeJson(path.join(install.dataDir, 'coinbase', 'ETH-USDC', 'fill-ledger.json'), ledgerOf('synthetic'));
     const created = createFundStateBackup({ paths: install.paths });
     assert.equal(created.success, true, created.error);
     fs.unlinkSync(path.join(install.dataDir, 'backups', 'fund-state', created.snapshotId, 'coinbase', 'ETH-USDC', 'fill-ledger.json'));
