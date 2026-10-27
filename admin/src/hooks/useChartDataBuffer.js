@@ -1,17 +1,108 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 
 // Maximum data retention (1 hour in milliseconds) - matches server-side buffer and timeline display
-const MAX_RETENTION_MS = 60 * 60 * 1000
+export const MAX_RETENTION_MS = 60 * 60 * 1000
 
 // Minimum interval between data points (to prevent over-sampling)
-const MIN_SAMPLE_INTERVAL_MS = 1000
+export const MIN_SAMPLE_INTERVAL_MS = 1000
 
 // Hard cap on array length as safety net (1 hour at 1 sample/sec = 3600, add buffer)
-const MAX_POINTS = 4000
+export const MAX_POINTS = 4000
 
 // Flush accumulated ref data to React state at this interval (ms).
 // Keeps render frequency independent of WebSocket tick rate.
-const FLUSH_INTERVAL_MS = 5000
+export const FLUSH_INTERVAL_MS = 5000
+
+function toValidTimestamp(val) {
+  if (typeof val === 'number') return Number.isFinite(val) ? val : null
+  if (typeof val === 'string' && val.trim() !== '') {
+    const num = Number(val)
+    return Number.isFinite(num) ? num : null
+  }
+  return null
+}
+
+/**
+ * Merges cached time-series data with live accumulated ref data.
+ * - Filters out data older than cutoff
+ * - Live data wins on equal timestamps
+ * - Sorts in ascending timestamp order
+ * - Capped at maxPoints
+ */
+export function mergeTimeSeries(cached, live, cutoff, maxPoints = MAX_POINTS) {
+  const map = new Map()
+
+  if (Array.isArray(cached)) {
+    for (const item of cached) {
+      const ts = toValidTimestamp(item?.timestamp)
+      if (ts !== null && ts > cutoff) {
+        map.set(ts, item)
+      }
+    }
+  }
+
+  if (Array.isArray(live)) {
+    for (const item of live) {
+      const ts = toValidTimestamp(item?.timestamp)
+      if (ts !== null && ts > cutoff) {
+        map.set(ts, item)
+      }
+    }
+  }
+
+  const merged = Array.from(map.values())
+  merged.sort((a, b) => a.timestamp - b.timestamp)
+
+  if (merged.length > maxPoints) {
+    return merged.slice(-maxPoints)
+  }
+  return merged
+}
+
+/**
+ * Merges cached regime transitions with live accumulated transitions.
+ * - Filters out transitions older than cutoff
+ * - Live transitions win on equal timestamps
+ * - Sorts in ascending timestamp order
+ * - Preserves chronological boundary changes while avoiding duplicate adjacent modes
+ * - Capped at maxPoints
+ */
+export function mergeRegimeHistory(cached, live, cutoff, maxPoints = MAX_POINTS) {
+  const map = new Map()
+
+  if (Array.isArray(cached)) {
+    for (const item of cached) {
+      const ts = toValidTimestamp(item?.timestamp)
+      if (ts !== null && ts > cutoff && item?.mode) {
+        map.set(ts, item)
+      }
+    }
+  }
+
+  if (Array.isArray(live)) {
+    for (const item of live) {
+      const ts = toValidTimestamp(item?.timestamp)
+      if (ts !== null && ts > cutoff && item?.mode) {
+        map.set(ts, item)
+      }
+    }
+  }
+
+  const sorted = Array.from(map.values())
+  sorted.sort((a, b) => a.timestamp - b.timestamp)
+
+  const deduplicated = []
+  for (const entry of sorted) {
+    if (deduplicated.length === 0 || deduplicated[deduplicated.length - 1].mode !== entry.mode) {
+      deduplicated.push(entry)
+    }
+  }
+
+  if (deduplicated.length > maxPoints) {
+    return deduplicated.slice(-maxPoints)
+  }
+  return deduplicated
+}
 
 /**
  * Hook that accumulates WebSocket data for charting.
@@ -145,16 +236,10 @@ export function useChartDataBuffer(status) {
     const now = Date.now()
     const cutoff = now - MAX_RETENTION_MS
 
-    // Load cache into refs
-    if (cachedData.priceHistory?.length > 0) {
-      priceRef.current = cachedData.priceHistory.filter(p => p.timestamp > cutoff)
-    }
-    if (cachedData.atrHistory?.length > 0) {
-      atrRef.current = cachedData.atrHistory.filter(a => a.timestamp > cutoff)
-    }
-    if (cachedData.regimeHistory?.length > 0) {
-      regimeRef.current = cachedData.regimeHistory.filter(r => r.timestamp > cutoff)
-    }
+    // Merge cache with existing live refs in timestamp order, live data winning on equal timestamps
+    priceRef.current = mergeTimeSeries(cachedData.priceHistory, priceRef.current, cutoff)
+    atrRef.current = mergeTimeSeries(cachedData.atrHistory, atrRef.current, cutoff)
+    regimeRef.current = mergeRegimeHistory(cachedData.regimeHistory, regimeRef.current, cutoff)
 
     // Flush to state immediately so charts render
     setPriceHistory([...priceRef.current])
