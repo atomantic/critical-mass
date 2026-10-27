@@ -478,4 +478,93 @@ describe('useCandleData display limit and live candle preservation', () => {
       expect(bucket60kAfter.price).toBe(118)
     })
   })
+
+  it('scales source retention by display-to-source interval ratio to support 300 aggregated buckets', async () => {
+    // 1500 1m candles -> 300 5m buckets
+    const candles1m = []
+    for (let i = 0; i < 1500; i++) {
+      candles1m.push({
+        timestamp: i * 60_000,
+        open: 100 + (i % 10),
+        high: 110 + (i % 10),
+        low: 90 + (i % 10),
+        close: 105 + (i % 10),
+        volume: 5,
+      })
+    }
+    vi.stubGlobal('fetch', makeFetchMock({ '1m': candles1m }))
+
+    const { result } = renderHook(() =>
+      useCandleData('coinbase', null, null, {
+        views: {
+          '5m_view': { bucketMs: 300_000, maxBuckets: 300, candleTf: '1m', indicatorTf: '1m' },
+        },
+        defaultView: '5m_view',
+      })
+    )
+
+    await vi.waitFor(() => expect(result.current.isLoading).toBe(false))
+
+    // All 300 5m buckets should be retained and displayed (1500 1m candles / 5 = 300 buckets)
+    expect(result.current.chartData.length).toBe(300)
+    expect(result.current.chartData[0].time).toBe(0)
+    expect(result.current.chartData[299].time).toBe(299 * 300_000)
+  })
+
+  it('resets indicator fields when recomputation produces null values upon switching views', async () => {
+    // 30 1m candles
+    const candles1m = []
+    for (let i = 0; i < 30; i++) {
+      candles1m.push({
+        timestamp: i * 60_000,
+        open: 100 + i,
+        high: 105 + i,
+        low: 95 + i,
+        close: 102 + i,
+        volume: 10,
+      })
+    }
+    vi.stubGlobal('fetch', makeFetchMock({ '1m': candles1m }))
+
+    let props = {
+      exchange: 'coinbase',
+      tickPrice: null,
+      tickTimestamp: null,
+      options: {
+        views: {
+          '1m_view': { bucketMs: 60_000, maxBuckets: 30, candleTf: '1m', indicatorTf: '1m' },
+          '15m_view': { bucketMs: 900_000, maxBuckets: 10, candleTf: '1m', indicatorTf: '1m' },
+        },
+        defaultView: '1m_view',
+      },
+    }
+
+    const { result } = renderHook(() =>
+      useCandleData(props.exchange, props.tickPrice, props.tickTimestamp, props.options)
+    )
+
+    await vi.waitFor(() => expect(result.current.chartData.length).toBe(30))
+
+    // Candle index 25 in 1m view has enough lookback for Bollinger bands (lookback 20)
+    const candle25 = result.current.chartData.find(c => c.time === 25 * 60_000)
+    expect(candle25.bollingerUpper).not.toBeNull()
+
+    // First candle (t=0) has null bollinger bands due to insufficient lookback
+    const candle0 = result.current.chartData.find(c => c.time === 0)
+    expect(candle0.bollingerUpper).toBeNull()
+
+    // Switch view to 15m_view (t=0..900_000 and t=900_000..1800_000)
+    act(() => {
+      result.current.setView('15m_view')
+    })
+
+    // Now switch back to 1m_view
+    act(() => {
+      result.current.setView('1m_view')
+    })
+
+    // Verify first bucket (t=0) still has null bollingerUpper, not polluted by reused bucket state
+    const candle0After = result.current.chartData.find(c => c.time === 0)
+    expect(candle0After.bollingerUpper).toBeNull()
+  })
 })

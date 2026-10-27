@@ -134,6 +134,28 @@ const emptyBucket = (time, price) => ({
   signalChange: null,
 })
 
+const resetBucketIndicators = (bucket) => {
+  bucket.haOpen = null
+  bucket.haHigh = null
+  bucket.haLow = null
+  bucket.haClose = null
+  bucket.bollingerUpper = null
+  bucket.bollingerMiddle = null
+  bucket.bollingerLower = null
+  bucket.vwap = null
+  bucket.rsi = null
+  bucket.stochK = null
+  bucket.stochD = null
+  bucket.macdLine = null
+  bucket.macdSignal = null
+  bucket.macdHistogram = null
+  bucket.atomokuConv = null
+  bucket.atomokuBase = null
+  bucket.atomokuLead1 = null
+  bucket.atomokuLead2 = null
+  bucket.atomokuLagging = null
+}
+
 /**
  * Shared hook for candle data management.
  * Fetches from /api/candles/:exchange, accumulates live ticks into buckets,
@@ -344,6 +366,8 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
       if (!bucket) {
         bucket = emptyBucket(bKey, group[group.length - 1].close)
         map.set(bKey, bucket)
+      } else {
+        resetBucketIndicators(bucket)
       }
       bucket.open = group[0].open
       bucket.high = Math.max(...group.map(c => c.high))
@@ -468,8 +492,11 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
       }
     }
 
-    // Bounded retention policy for source candles
-    const limit = Math.max(1000, (maxBucketsRef.current || 60) * 2)
+    // Bounded retention policy for source candles scaled by display-to-source interval ratio and indicator history
+    const aggregationRatio = Math.max(1, Math.ceil(bucketMs / (sourceCandleMs || bucketMs)))
+    const displayBuckets = maxBucketsRef.current || 60
+    const indicatorLookback = 100 * aggregationRatio
+    const limit = Math.max(1000, Math.ceil((displayBuckets * aggregationRatio + indicatorLookback) * 1.5))
     if (sourceMap.size > limit) {
       const sortedKeys = [...sourceMap.keys()].sort((a, b) => a - b)
       const toDelete = sortedKeys.slice(0, sortedKeys.length - limit)
@@ -478,7 +505,7 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
 
     // Project onto display buckets and compute indicators
     updateFromSourceCandles()
-  }, [sourceCandleMs, updateFromSourceCandles])
+  }, [bucketMs, sourceCandleMs, updateFromSourceCandles])
 
   const syncChartRef = useRef(syncChart)
   syncChartRef.current = syncChart
