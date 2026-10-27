@@ -193,7 +193,7 @@ function BackupRestore() {
     setFundStateRestoring(true)
     let blocked = null
     try {
-      const result = await apiPost(`/api/backups/fund-state/${encodeURIComponent(snapshotId)}/${encodeURIComponent(exchange)}/${encodeURIComponent(pair)}/restore`, { force, acceptMissingPlacementIntents: fundStateIntentsAcknowledged })
+      const result = await apiPost(`/api/backups/fund-state/${encodeURIComponent(snapshotId)}/${encodeURIComponent(exchange)}/${encodeURIComponent(pair)}/restore`, { force, ...(fundStateIntentsAcknowledged ? { acceptMissingPlacementIntents: true } : {}) })
       const data = result.data || {}
       if (result.ok && data.success) {
         notify(
