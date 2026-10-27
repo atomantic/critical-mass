@@ -392,30 +392,52 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
     if (!candles?.length) return
     const map = bucketsRef.current
 
+    // Aggregate historical candles by bucket key (sum volume, first open, last close, min/max extrema)
+    const histBuckets = new Map()
     for (const c of candles) {
       const ts = c.timestamp != null ? c.timestamp : (c.time < 1e11 ? c.time * 1000 : c.time)
       const bKey = Math.floor(ts / bucketMs) * bucketMs
+      const vol = c.volume || 0
+      const existingHist = histBuckets.get(bKey)
+      if (existingHist) {
+        if (c.high > existingHist.high) existingHist.high = c.high
+        if (c.low < existingHist.low) existingHist.low = c.low
+        existingHist.close = c.close
+        existingHist.volume += vol
+      } else {
+        histBuckets.set(bKey, {
+          time: bKey,
+          open: c.open,
+          high: c.high,
+          low: c.low,
+          close: c.close,
+          volume: vol,
+        })
+      }
+    }
+
+    // Merge aggregated historical buckets with accumulated live observations
+    for (const [bKey, h] of histBuckets.entries()) {
       const existing = map.get(bKey)
       if (existing) {
-        if (c.high > existing.high) existing.high = c.high
-        if (c.low < existing.low) existing.low = c.low
-        if (!existing.hasHistoricalOpen && c.open != null) {
-          existing.open = c.open
+        if (h.high > existing.high) existing.high = h.high
+        if (h.low < existing.low) existing.low = h.low
+        if (!existing.hasHistoricalOpen && h.open != null) {
+          existing.open = h.open
           existing.hasHistoricalOpen = true
         }
-        if (existing.volume == null && c.volume != null) {
-          existing.volume = c.volume
-        }
+        // Replace historical volume on refresh to avoid double counting
+        existing.volume = h.volume
         if (!existing.hasLiveTicks) {
-          existing.price = c.close
+          existing.price = h.close
         }
       } else {
-        const b = emptyBucket(bKey, c.close)
-        b.open = c.open
-        b.high = c.high
-        b.low = c.low
-        b.price = c.close
-        b.volume = c.volume || 0
+        const b = emptyBucket(bKey, h.close)
+        b.open = h.open
+        b.high = h.high
+        b.low = h.low
+        b.price = h.close
+        b.volume = h.volume
         b.hasHistoricalOpen = true
         map.set(bKey, b)
       }

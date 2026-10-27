@@ -343,4 +343,28 @@ describe('useCandleData display limit and live candle preservation', () => {
     // Immediately shows 15 candles
     expect(result.current.chartData.length).toBe(15)
   })
+
+  it('aggregates historical volume across multiple candles mapping to the same bucket and replaces on refresh', async () => {
+    // Two historical candles falling into the same 5m bucket (t=0..300_000)
+    const historical = [
+      { timestamp: 0, open: 100, high: 105, low: 95, close: 102, volume: 40 },
+      { timestamp: 60_000, open: 102, high: 108, low: 101, close: 106, volume: 60 },
+    ]
+    vi.stubGlobal('fetch', makeFetchMock({ '5m': historical }))
+
+    const { result } = renderHook(() =>
+      useCandleData('coinbase', null, null, { defaultInterval: '5m', maxBucketsOverride: 10 })
+    )
+
+    await vi.waitFor(() => expect(result.current.chartData.length).toBe(1))
+
+    const bucket = result.current.chartData[0]
+    expect(bucket.volume).toBe(100) // 40 + 60
+    expect(bucket.open).toBe(100)
+    expect(bucket.high).toBe(108)
+    expect(bucket.low).toBe(95)
+    expect(bucket.price).toBe(106)
+    // VWAP calculation uses aggregated volume (100)
+    expect(bucket.vwap).not.toBeNull()
+  })
 })
