@@ -38,6 +38,23 @@ const routeErrorLogger = createContextLogger({ module: 'server' });
 const errorMiddleware = (err, req, res, next) => {
   if (res.headersSent) return next(err);
 
+  if (err?.code === 'dca-busy') {
+    const retryAfter = err?.retryAfter ?? 1;
+    res.set('Retry-After', String(retryAfter));
+    routeErrorLogger.warn(`⚠️ [503] ${req.method} ${req.originalUrl} → DCA queue full`, {
+      action: 'dca-busy',
+      method: req.method,
+      url: req.originalUrl,
+      code: 'dca-busy',
+    });
+    return res.status(503).json({
+      success: false,
+      code: 'dca-busy',
+      error: err.message || 'DCA engine queue is full; retry after outstanding operations complete',
+      retryAfter: Number(retryAfter) || 1,
+    });
+  }
+
   const status = isHttpStatus(err?.status)
     ? err.status
     : isHttpStatus(err?.statusCode)

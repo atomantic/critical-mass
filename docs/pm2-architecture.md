@@ -54,6 +54,15 @@ bound pending replies; engine slots remain owned until the actual handler
 settles, even after timeout, disconnect or shutdown. Internal fills do not use
 request slots, and engine lock/reentrancy rules are unchanged.
 
+Gateway DCA operations admit at most **8 outstanding operations per fund**
+(including running and queued operations) and **32 across the gateway**. Cycles,
+recovery, sell retries, status checks, sync and consolidation share this bound.
+Excess operations are refused immediately before pending-write registration or
+lock chaining with a typed failure mapped to `{ success: false, code: "dca-busy", statusCode: 503 }`
+and `Retry-After: 1`. Accepted operations preserve per-fund FIFO ordering and
+maintenance drain ownership, and scheduled retries remain eligible within their
+interval.
+
 Each engine bounds queued output to **8 MiB per IPC peer**, including the next
 UTF-8 message and its WebSocket frame header. Events, held-event replay, replies
 and refusals share the bound. A peer that would exceed it is terminated immediately

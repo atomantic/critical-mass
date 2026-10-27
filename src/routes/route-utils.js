@@ -168,17 +168,59 @@ const sendIpcFailure = (res, result) => {
  * `req`/`res`, still observe completion before making assertions.
  * @param {(req: import('express').Request, res: import('express').Response, next: Function) => unknown} handler
  */
-const asyncRoute = (handler) => (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next);
+/**
+ * Whether an error or result is a typed DCA admission refusal (issue #1814).
+ * @param {unknown} value
+ * @returns {boolean}
+ */
+const isDcaBusy = (value) => Boolean(
+  value && typeof value === 'object' && ('code' in value || 'name' in value) &&
+    (/** @type {any} */ (value).code === 'dca-busy' || /** @type {any} */ (value).name === 'DcaBusyError')
+);
+
+/**
+ * Send a 503 response for a DCA admission refusal carrying Retry-After (issue #1814).
+ * @param {import('express').Response} res
+ * @param {any} failure
+ */
+const sendDcaBusyResponse = (res, failure) => {
+  const retryAfter = failure?.retryAfter ?? 1;
+  if (typeof res.set === 'function') {
+    res.set('Retry-After', String(retryAfter));
+  } else if (typeof res.setHeader === 'function') {
+    res.setHeader('Retry-After', String(retryAfter));
+  }
+  return res.status(503).json({
+    success: false,
+    code: 'dca-busy',
+    error: failure?.message || failure?.error || 'DCA engine queue is full; retry after outstanding operations complete',
+    retryAfter: Number(retryAfter) || 1,
+  });
+};
+
+const asyncRoute = (handler) => (req, res, next) =>
+  Promise.resolve()
+    .then(() => handler(req, res, next))
+    .catch((err) => {
+      if (isDcaBusy(err)) {
+        return sendDcaBusyResponse(res, err);
+      }
+      return next(err);
+    });
 
 /**
  * HTTP status for a manual DCA trade result. An accepted buy whose fill is
  * still being recovered answers 202 Accepted (the exchange took the order; a
  * retry resumes it and will not buy again), distinct from a definitive
- * rejection, which propagates as an error (issue #963). Everything else is 200.
- * @param {{status?: string}} result - runIntervalCycle result
+ * rejection, which propagates as an error (issue #963). Capacity refusals
+ * map to 503 (issue #1814). Everything else is 200.
+ * @param {{status?: string, code?: string}} result - runIntervalCycle result
  * @returns {number} HTTP status code
  */
-const tradeResultStatusCode = (result) => (result?.status === 'buy_fill_pending' ? 202 : 200);
+const tradeResultStatusCode = (result) => {
+  if (result?.code === 'dca-busy') return 503;
+  return result?.status === 'buy_fill_pending' ? 202 : 200;
+};
 
 const MAX_PAGE_LIMIT = 500;
 
@@ -211,4 +253,4 @@ const pagedEnvelope = (all, paging, alias) => {
   return { success: true, items, ...(alias && { [alias]: items }), total: all.length, limit: paging.limit, offset: paging.offset };
 };
 
-module.exports = { parsePaging, pagedEnvelope, MAX_PAGE_LIMIT, resolvePairParam, getIPC, getSafeIPC, createIPCResolver, engineError, ipcFailureKind, ipcFailureResponse, sendIpcFailure, withConfiguredPair, asyncRoute, tradeResultStatusCode };
+module.exports = { parsePaging, pagedEnvelope, MAX_PAGE_LIMIT, resolvePairParam, getIPC, getSafeIPC, createIPCResolver, engineError, ipcFailureKind, ipcFailureResponse, sendIpcFailure, withConfiguredPair, asyncRoute, tradeResultStatusCode, isDcaBusy, sendDcaBusyResponse };

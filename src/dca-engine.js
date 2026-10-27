@@ -1472,10 +1472,43 @@ const retryFailedSell = async (exchange, pair, buyOrderId) => {
  */
 const withFund = (result, pair) => result.then((value) => ({ ...value, pair: pair ?? null }));
 
+const MAX_FUND_OPERATIONS = 8;
+const MAX_GATEWAY_OPERATIONS = 32;
+
+/** @type {Map<string, number>} */
+const fundOperationCounts = new Map();
+let gatewayOperationCount = 0;
+
+class DcaBusyError extends Error {
+  constructor(message = 'DCA queue capacity reached; retry after outstanding operations complete', details = {}) {
+    super(message);
+    this.name = 'DcaBusyError';
+    this.code = 'dca-busy';
+    this.status = 503;
+    this.statusCode = 503;
+    this.retryAfter = 1;
+    this.headers = { 'Retry-After': '1' };
+    this.success = false;
+    this.error = message;
+    if (details.exchange) this.exchange = details.exchange;
+    if (details.pair) this.pair = details.pair;
+    if (details.fund) this.fund = details.fund;
+  }
+}
+
+const isDcaBusy = (value) => Boolean(
+  value && (value.code === 'dca-busy' || value.name === 'DcaBusyError')
+);
+
 /**
  * Wrap a mutating entry point: resolve its fund once, register it with the
  * restore drain (issue #429) and serialize it with the fund's other
  * state-writing operations (issue #1035).
+ *
+ * Admitted work is bounded to at most MAX_FUND_OPERATIONS per fund and
+ * MAX_GATEWAY_OPERATIONS across the gateway (issue #1814). Excess operations
+ * are rejected immediately with a typed dca-busy failure before registering
+ * as pending writes or chaining onto fund locks.
  * @template T
  * @param {string} label - Pending-write label prefix
  * @param {string} exchange - Exchange name
@@ -1486,7 +1519,40 @@ const withFund = (result, pair) => result.then((value) => ({ ...value, pair: pai
 const runFundWrite = (label, exchange, pair, run) => {
   const fund = resolveFundPairOrUndefined(exchange, pair);
   const key = fundKey(exchange, fund);
-  return withFund(trackPendingWrite(`${label}:${key}`, () => withFundLock(key, () => run(fund))), fund);
+
+  const currentFundOps = fundOperationCounts.get(key) || 0;
+  if (currentFundOps >= MAX_FUND_OPERATIONS || gatewayOperationCount >= MAX_GATEWAY_OPERATIONS) {
+    return Promise.reject(new DcaBusyError(
+      `DCA operation capacity reached for fund ${key} (${currentFundOps}/${MAX_FUND_OPERATIONS}) or gateway (${gatewayOperationCount}/${MAX_GATEWAY_OPERATIONS}); retry later`,
+      { exchange, pair, fund }
+    ));
+  }
+
+  gatewayOperationCount++;
+  fundOperationCounts.set(key, currentFundOps + 1);
+
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    gatewayOperationCount = Math.max(0, gatewayOperationCount - 1);
+    const count = (fundOperationCounts.get(key) || 1) - 1;
+    if (count <= 0) {
+      fundOperationCounts.delete(key);
+    } else {
+      fundOperationCounts.set(key, count);
+    }
+  };
+
+  try {
+    return withFund(
+      trackPendingWrite(`${label}:${key}`, () => withFundLock(key, () => run(fund))),
+      fund
+    ).finally(release);
+  } catch (syncErr) {
+    release();
+    throw syncErr;
+  }
 };
 
 // The mutating entry points are exported wrapped so a backup restore can join
@@ -1519,4 +1585,18 @@ module.exports = {
   loadConfig,
   executeConsolidation: (exchange = 'coinbase', pair, orderIds = null) =>
     runFundWrite('dca-consolidation', exchange, pair, (fund) => executeConsolidation(exchange, fund, orderIds)),
+  DcaBusyError,
+  isDcaBusy,
+  MAX_FUND_OPERATIONS,
+  MAX_GATEWAY_OPERATIONS,
+  _test: {
+    getOperationCounts: () => ({
+      gateway: gatewayOperationCount,
+      funds: new Map(fundOperationCounts),
+    }),
+    resetOperationCounts: () => {
+      gatewayOperationCount = 0;
+      fundOperationCounts.clear();
+    },
+  },
 };
