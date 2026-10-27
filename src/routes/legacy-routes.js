@@ -10,7 +10,7 @@ const { syncFundOrders, runIntervalCycle } = require('../dca-engine');
 const { createContextLogger, getLogFile } = require('../logger');
 const { validateConfigUpdate, EXCHANGE_CONFIG_SCHEMA } = require('../config-validator');
 const { prepareConfigUpdate, persistConfigUpdate } = require('./config-update');
-const { asyncRoute, getSafeIPC, tradeResultStatusCode, parsePaging, pagedEnvelope } = require('./route-utils');
+const { asyncRoute, getSafeIPC, tradeResultStatusCode, parsePaging, pagedEnvelope, isDcaBusy, sendDcaBusyResponse } = require('./route-utils');
 const { readBooleanFlag } = require('../shared-utils');
 const { buildFundStatus } = require('../fund-status');
 const { buildActiveFundSummary } = require('../fund-summary');
@@ -174,7 +174,11 @@ module.exports = (app, deps) => {
       return res.status(400).json({ success: false, error: 'Simple DCA is disabled. Use Regime engine.' });
     }
     const pair = legacyPair();
-    const { filledOrders } = await syncFundOrders('coinbase', pair);
+    const syncResult = await syncFundOrders('coinbase', pair);
+    if (isDcaBusy(syncResult)) {
+      return sendDcaBusyResponse(res, syncResult);
+    }
+    const { filledOrders } = syncResult;
     res.json({ success: true, filledOrders: filledOrders.length, lastSyncTime: new Date().toISOString() });
   }));
 
@@ -188,6 +192,9 @@ module.exports = (app, deps) => {
     }
     legacyLogger('/api/trade').info('ℹ️ Manual trade triggered via API', { action: 'manual-trade' });
     const result = await runIntervalCycle('coinbase', legacyPair());
+    if (isDcaBusy(result)) {
+      return sendDcaBusyResponse(res, result);
+    }
     res.status(tradeResultStatusCode(result)).json({ ...result, triggeredAt: new Date().toISOString(), trigger: 'manual' });
   }));
 
