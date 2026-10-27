@@ -55,6 +55,7 @@ const {
 } = require('./config-utils');
 const { isPerFundFile, normalizeExchangeTreeToPairs } = require('./migration');
 const { serializeFundState } = require('./dry-run-state');
+const { JOURNAL_FILENAME: DCA_IMPORT_JOURNAL_FILENAME } = require('./dca-conversion-transaction');
 
 const BACKUPS_DIR = BACKUP_DIR;
 
@@ -800,6 +801,86 @@ const restoredArchiveFunds = (stageDir, snapshot) => {
 };
 
 /**
+ * Funds whose directory under `dataDir` still holds an interrupted DCA import
+ * journal (#1809). Its accounting files may be a partially published
+ * generation, and the next recovery pass rolls the journal's target bytes
+ * forward over any file still matching the recorded originals — so a snapshot
+ * of that fund is not a recovery point, and a restore under it is either
+ * replayed or stranded. Resolved against `dataDir` rather than through
+ * hasPendingDcaImport (which uses the live DATA_DIR) so it sees exactly the
+ * directories this backup or restore touches.
+ * @param {string} dataDir
+ * @param {Array<{exchange: string, pair: string}>} funds
+ * @returns {Array<{exchange: string, pair: string}>}
+ */
+const fundsWithPendingDcaImport = (dataDir, funds) => funds.filter(({ exchange, pair }) =>
+  fs.existsSync(path.join(dataDir, exchange, pair, DCA_IMPORT_JOURNAL_FILENAME)));
+
+/**
+ * Refusal for a pending import. The journal and every accounting byte are left
+ * untouched: recovery, not the backup service, decides that import's outcome.
+ * @param {Array<{exchange: string, pair: string}>} funds
+ * @param {string} consequence - What was not done
+ * @returns {{code: string, error: string}}
+ */
+const pendingDcaImportRefusal = (funds, consequence) => ({
+  code: 'dca-import-pending',
+  error: `${funds.map(({ exchange, pair }) => `${exchange}/${pair}`).join(', ')} ${funds.length === 1 ? 'has' : 'have'} an interrupted DCA import awaiting recovery (${DCA_IMPORT_JOURNAL_FILENAME}). `
+    + 'Finish import recovery first — start the fund or retry the import so the journal is completed and removed — then try again. '
+    + consequence,
+});
+
+/**
+ * Archive-relative paths (any depth) that are DCA import journals. An archive
+ * carrying one was taken mid-import: restoring it would reinstate the journal,
+ * and recovery would then replay that import over the restored state.
+ * @param {string[]} relPaths - `/`-separated paths
+ * @returns {string[]}
+ */
+const dcaImportJournalPaths = (relPaths) => relPaths.filter((rel) => rel.split('/').pop() === DCA_IMPORT_JOURNAL_FILENAME);
+
+/** @param {string[]} journals */
+const archivedDcaImportRefusal = (journals) => ({
+  code: 'archive-dca-import-pending',
+  error: `This archive was taken while a DCA import was unresolved (${journals.join(', ')}), so its accounting files may be a partially published generation. `
+    + 'Restore an archive taken after that import\'s recovery completed. No files were changed.',
+});
+
+/**
+ * Every regular file below `root`, as `/`-separated relative paths, without
+ * following symlinks.
+ * @param {string} root
+ * @param {string} [prefix]
+ * @returns {string[]}
+ */
+const listTreeFiles = (root, prefix = '') => fs.readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
+  const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+  if (entry.isDirectory()) return listTreeFiles(path.join(root, entry.name), rel);
+  return entry.isFile() ? [rel] : [];
+});
+
+/**
+ * The funds a full restore of `entries` would write or reset, decided from the
+ * archive listing alone: `restoredArchiveFunds` over the extracted tree, with
+ * every legacy exchange-level translation counted (a superset, so the
+ * pre-flight never admits a restore the applier would refuse).
+ * @param {string[]} entries
+ * @param {Object|null} snapshot
+ * @param {Array<{exchange: string, pair: string}>} translations
+ * @returns {Array<{exchange: string, pair: string}>}
+ */
+const archiveEntryFunds = (entries, snapshot, translations) => {
+  const funds = new Map(configuredFundIdentities(snapshot).map((fund) => [`${fund.exchange}/${fund.pair}`, fund]));
+  for (const entry of entries) {
+    const [exchange, pair, name, ...rest] = entry.split('/');
+    if (rest.length > 0 || !name || NON_EXCHANGE_DIRS.has(exchange) || exchange.startsWith('.') || pair.startsWith('.')) continue;
+    if (FUND_STATE_SNAPSHOT_FILENAMES.includes(name)) funds.set(`${exchange}/${pair}`, { exchange, pair });
+  }
+  for (const { exchange, pair } of translations) funds.set(`${exchange}/${pair}`, { exchange, pair });
+  return [...funds.values()];
+};
+
+/**
  * Validate a complete recovery point without mutating it. Restore stages use
  * the selected fund's manifest in memory so it is never applied as live state.
  * @param {string} snapshotDir
@@ -1007,6 +1088,13 @@ const createFundStateBackup = ({ paths: pathOverrides, now = new Date(), maxBack
   const unsafe = identities.find(({ exchange, pair }) => !isSafeFundStateSegment(exchange) || !isSafeFundStateSegment(pair));
   if (unsafe) return { success: false, error: `Cannot snapshot unsafe fund path ${unsafe.exchange}/${unsafe.pair}` };
 
+  // A fund mid-import would be captured as a mixed generation without the
+  // journal that completes it (#1809): refuse, publishing and pruning nothing.
+  const snapshotRefusal = (pending) => ({ success: false,
+    ...pendingDcaImportRefusal(pending, 'No fund-state snapshot was published or pruned.') });
+  const pendingBefore = fundsWithPendingDcaImport(paths.dataDir, identities);
+  if (pendingBefore.length > 0) return snapshotRefusal(pendingBefore);
+
   ensureBackupsDir(paths.backupsDir);
   const createdAt = now.toISOString();
   let snapshotId = `fund-state-${now.getTime()}`;
@@ -1037,6 +1125,13 @@ const createFundStateBackup = ({ paths: pathOverrides, now = new Date(), maxBack
         files++;
       }
       if (copied.length > 0) funds.push({ exchange, pair, files: copied });
+    }
+
+    // An import that began while the files were being copied.
+    const pendingAfter = fundsWithPendingDcaImport(paths.dataDir, identities);
+    if (pendingAfter.length > 0) {
+      fs.rmSync(stageDir, { recursive: true, force: true });
+      return snapshotRefusal(pendingAfter);
     }
 
     if (files === 0) {
@@ -1121,8 +1216,11 @@ const resolveFundStateSnapshot = (snapshotId, exchange, pair, paths) => {
  * @returns {{ok: true} | {ok: false, error: string}}
  */
 const checkFundStateRestorePreconditions = (snapshotId, exchange, pair, { paths: pathOverrides } = {}) => {
-  const resolved = resolveFundStateSnapshot(snapshotId, exchange, pair, resolvePaths(pathOverrides));
-  return resolved.ok ? { ok: true } : { ok: false, error: resolved.error };
+  const paths = resolvePaths(pathOverrides);
+  const resolved = resolveFundStateSnapshot(snapshotId, exchange, pair, paths);
+  if (!resolved.ok) return { ok: false, error: resolved.error };
+  const pending = fundsWithPendingDcaImport(paths.dataDir, [{ exchange, pair }]);
+  return pending.length > 0 ? { ok: false, ...pendingDcaImportRefusal(pending, 'No files were changed.') } : { ok: true };
 };
 
 /**
@@ -1139,6 +1237,10 @@ const restoreFundStateBackup = (snapshotId, exchange, pair, { paths: pathOverrid
   const resolved = resolveFundStateSnapshot(snapshotId, exchange, pair, paths);
   if (!resolved.ok) return { success: false, error: resolved.error };
   const { snapshotDir } = resolved;
+  // Repeated here: the restore would otherwise leave the destination's journal
+  // to roll its import forward over the restored generation (#1809).
+  const pending = fundsWithPendingDcaImport(paths.dataDir, [{ exchange, pair }]);
+  if (pending.length > 0) return { success: false, ...pendingDcaImportRefusal(pending, 'No files were changed.') };
 
   const stageDir = fs.mkdtempSync(path.join(paths.dataDir, STAGE_PREFIX));
   let absent;
@@ -1447,6 +1549,8 @@ const checkRestorePreconditions = async (filename, { paths: pathOverrides, legac
   const listingFailure = checkTailFailure(listing, 'Unable to read archive entries');
   if (listingFailure) return { ok: false, code: 'archive-corrupt', error: `${listingFailure.error}. No files were changed.` };
   const entries = listing.stdout.toString().split('\n').map((line) => line.trim()).filter(Boolean);
+  const archivedJournals = dcaImportJournalPaths(entries);
+  if (archivedJournals.length > 0) return { ok: false, ...archivedDcaImportRefusal(archivedJournals) };
 
   const legacy = !entries.includes(MANIFEST_FILENAME);
   const readEntry = async (name) => (entries.includes(name) ? spawnAsync('unzip', ['-p', zipPath, name]) : null);
@@ -1475,6 +1579,8 @@ const checkRestorePreconditions = async (filename, { paths: pathOverrides, legac
   if (layout.unresolvable.length > 0) {
     return { ok: false, code: 'legacy-layout-unresolvable-pair', error: unresolvableLayoutError(layout.unresolvable) };
   }
+  const pending = fundsWithPendingDcaImport(paths.dataDir, archiveEntryFunds(entries, snapshot, layout.translations));
+  if (pending.length > 0) return { ok: false, ...pendingDcaImportRefusal(pending, 'No files were changed.') };
   return { ok: true };
 };
 
@@ -1548,6 +1654,12 @@ const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null
     }
   };
   try {
+    const archivedJournals = dcaImportJournalPaths(listTreeFiles(tempDir));
+    if (archivedJournals.length > 0) {
+      const refusal = archivedDcaImportRefusal(archivedJournals);
+      return abort(refusal.error, refusal.code);
+    }
+
     // ---- Decide the configuration outcome before mutating the destination ----
     const manifestPath = path.join(tempDir, MANIFEST_FILENAME);
     const legacy = !fs.existsSync(manifestPath);
@@ -1615,6 +1727,15 @@ const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null
       });
     }
 
+    // A restored fund's pending import would roll forward over (or strand) the
+    // restored generation; its journal is not ours to discard (#1809).
+    const restoredFunds = restoredArchiveFunds(tempDir, snapshot);
+    const pending = fundsWithPendingDcaImport(paths.dataDir, restoredFunds);
+    if (pending.length > 0) {
+      const refusal = pendingDcaImportRefusal(pending, 'No files were changed.');
+      return abort(refusal.error, refusal.code);
+    }
+
     // From here applyStagedFiles owns the staging directory: it removes it on a
     // refusal or rollback, or leaves it for the rollback journal to recover.
     handedOff = true;
@@ -1628,7 +1749,7 @@ const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null
       stageDir: tempDir,
       filename,
       logger,
-      absent: planAbsentFundState(tempDir, restoredArchiveFunds(tempDir, snapshot)),
+      absent: planAbsentFundState(tempDir, restoredFunds),
       // Skip the backups directory, root credential files, key files and the
       // archive's own metadata.
       skip: (name, isRoot, rel) => name === 'backups'

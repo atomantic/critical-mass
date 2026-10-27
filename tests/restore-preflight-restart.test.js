@@ -324,6 +324,121 @@ describe('checkRestorePreconditions mirrors the applier refusals without extract
     assert.deepEqual(await checkRestorePreconditions(created.filename, { paths: dest.paths }), { ok: true });
   });
 
+  // #1809 — a destination fund's interrupted DCA import would roll forward
+  // over (or strand) the restored generation; an archive carrying a journal
+  // was taken mid-import. Both refuse before maintenance or stop-all.
+  describe('pending DCA imports (#1809)', () => {
+    const { JOURNAL_FILENAME } = require('../src/dca-conversion-transaction');
+    const fundDir = (install) => path.join(install.dataDir, 'coinbase', 'ETH-USDC');
+    const seedAccounting = (install) => {
+      writeJson(path.join(fundDir(install), 'fill-ledger.json'), [{ id: 'saved' }]);
+      writeJson(path.join(fundDir(install), 'regime-state.json'), { position: { totalAsset: 0 } });
+      writeJson(path.join(fundDir(install), 'state.json'), { orders: [{ status: 'pending' }] });
+    };
+    const pendImport = (install) => {
+      writeJson(path.join(fundDir(install), 'regime-state.json'), { position: { totalAsset: 1 } });
+      writeJson(path.join(fundDir(install), JOURNAL_FILENAME), { version: 1, status: 'publishing', entries: [] });
+    };
+    /** Every file under the data directory, by relative path. */
+    const tree = (dataDir) => {
+      const out = {};
+      const walk = (dir) => {
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          const full = path.join(dir, entry.name);
+          if (entry.isDirectory()) walk(full);
+          else out[path.relative(dataDir, full)] = fs.readFileSync(full, 'utf8');
+        }
+      };
+      walk(dataDir);
+      return out;
+    };
+    const restoreWith = async (filename, preflight) => {
+      const calls = [];
+      const result = await performRestore({
+        filename,
+        exchangeIPCMap: { coinbase: recordingIPC('coinbase', ['ETH-USDC'], calls) },
+        configuredExchanges: ['coinbase'],
+        preflight,
+        restore: () => assert.fail('applier must not run'),
+        logger: silentLogger,
+      });
+      return { ...result, calls };
+    };
+
+    it('refuses hourly and full restores onto a fund with a publishing import journal', async () => {
+      const install = makeInstall('dest', BASE);
+      seedAccounting(install);
+      const snapshot = createFundStateBackup({ paths: install.paths });
+      assert.equal(snapshot.success, true, snapshot.error);
+      const archive = await createBackup({ paths: install.paths });
+      assert.equal(archive.success, true, archive.error);
+      pendImport(install);
+      const before = tree(install.dataDir);
+
+      const hourly = await restoreWith(snapshot.snapshotId,
+        () => checkFundStateRestorePreconditions(snapshot.snapshotId, 'coinbase', 'ETH-USDC', { paths: install.paths }));
+      assert.equal(hourly.status, 400);
+      assert.equal(hourly.body.code, 'dca-import-pending');
+      assert.match(hourly.body.error, /coinbase\/ETH-USDC has an interrupted DCA import.*Finish import recovery first/);
+      assert.deepEqual(hourly.calls, [], 'no maintenance window or stop-all');
+
+      const check = await checkRestorePreconditions(archive.filename, { paths: install.paths });
+      assert.equal(check.ok, false);
+      assert.equal(check.code, 'dca-import-pending');
+      const applied = restoreBackup(archive.filename, { paths: install.paths });
+      assert.equal(applied.success, false);
+      assert.equal(applied.code, 'dca-import-pending');
+      assert.equal(applied.error, check.error, 'same refusal text as the applier');
+      const full = await restoreWith(archive.filename, () => checkRestorePreconditions(archive.filename, { paths: install.paths }));
+      assert.equal(full.status, 400);
+      assert.equal(full.body.code, 'dca-import-pending');
+      assert.deepEqual(full.calls, []);
+
+      assert.deepEqual(tree(install.dataDir), before, 'journal and accounting byte-identical, no staging left');
+      assert.equal(maintenance.isMaintenanceActive(), false);
+    });
+
+    it('refuses an archive that carries an unresolved import journal', async () => {
+      const source = makeInstall('source', BASE);
+      seedAccounting(source);
+      pendImport(source);
+      const created = await createBackup({ paths: source.paths });
+      assert.equal(created.success, true, created.error);
+      const dest = makeInstall('dest', BASE);
+      seedAccounting(dest);
+      transfer(source, dest, created.filename);
+      const before = tree(dest.dataDir);
+
+      const check = await checkRestorePreconditions(created.filename, { paths: dest.paths });
+      assert.equal(check.ok, false);
+      assert.equal(check.code, 'archive-dca-import-pending');
+      assert.match(check.error, new RegExp(`coinbase/ETH-USDC/${JOURNAL_FILENAME.replace(/\./g, '\\.')}`));
+      assert.match(check.error, /taken after that import's recovery completed\. No files were changed\./);
+      const applied = restoreBackup(created.filename, { paths: dest.paths });
+      assert.equal(applied.code, 'archive-dca-import-pending');
+      assert.equal(applied.error, check.error);
+      const full = await restoreWith(created.filename, () => checkRestorePreconditions(created.filename, { paths: dest.paths }));
+      assert.equal(full.body.code, 'archive-dca-import-pending');
+      assert.deepEqual(full.calls, []);
+      assert.deepEqual(tree(dest.dataDir), before);
+    });
+
+    it('ignores a pending import in a fund the archive does not restore', async () => {
+      const source = makeInstall('source', BASE);
+      seedAccounting(source);
+      const created = await createBackup({ paths: source.paths });
+      assert.equal(created.success, true, created.error);
+      const dest = makeInstall('dest', {
+        exchanges: { coinbase: { pairs: { ...BASE.exchanges.coinbase.pairs, ...DEST_BASE.exchanges.coinbase.pairs } } },
+        global: {},
+      });
+      transfer(source, dest, created.filename);
+      writeJson(path.join(dest.dataDir, 'coinbase', 'BTC-USDC', JOURNAL_FILENAME), { version: 1, status: 'publishing', entries: [] });
+      // Restoring removes BTC-USDC from the configuration but writes none of its files.
+      assert.deepEqual(await checkRestorePreconditions(created.filename, { paths: dest.paths, acceptFundRemoval: true }), { ok: true });
+    });
+  });
+
   it('checks a fund-state snapshot without staging it', () => {
     const install = makeInstall('dest', BASE);
     const missing = checkFundStateRestorePreconditions('20260101T000000Z', 'coinbase', 'ETH-USDC', { paths: install.paths });
