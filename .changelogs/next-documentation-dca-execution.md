@@ -1,0 +1,1 @@
+- **Correct DCA setup and execution expectations** — show the required global Simple DCA opt-in, distinguish post-only entries/DCA sells from regime exits that allow taker fills, and calculate adaptive entry timeouts using the current maximum preset.
