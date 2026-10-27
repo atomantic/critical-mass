@@ -210,28 +210,26 @@ export default function ContractSetup({ initialContract }) {
       return
     }
 
-    // If we are awaiting status acknowledgement of our save, handle stale pre-save polls vs subsequent updates
-    if (awaitingServerAckRef.current) {
-      if (rev != null && confirmedRevRef.current != null) {
-        if (rev <= confirmedRevRef.current) {
-          // Stale pre-save response by revision metadata: drop it
-          return
-        }
-        // Newer revision from server (external update or acknowledgement)
-        stalePreSaveKeysRef.current.clear()
-        awaitingServerAckRef.current = false
-      } else if (stalePreSaveKeysRef.current.has(key)) {
-        // Stale pre-save poll: drop repeated deliveries of old values
+    // Check revision freshness: an older or equal revision to our confirmed pre-save state is stale
+    if (rev != null && confirmedRevRef.current != null) {
+      if (rev <= confirmedRevRef.current) {
+        // Stale pre-save response by authoritative revision: drop it
         return
-      } else {
-        // Received the saved contract or a superseding update
-        stalePreSaveKeysRef.current.clear()
-        awaitingServerAckRef.current = false
       }
+      // Authoritative newer revision from server
+      awaitingServerAckRef.current = false
+      stalePreSaveKeysRef.current.clear()
+    } else if (stalePreSaveKeysRef.current.has(key)) {
+      // Stale pre-save poll: drop older in-flight responses even if delivered after acknowledgement
+      return
+    } else if (awaitingServerAckRef.current) {
+      // Received the saved contract or a superseding update
+      awaitingServerAckRef.current = false
     }
 
     if (prevContractRef.current === key) return
     prevContractRef.current = key
+    stalePreSaveKeysRef.current.clear()
     if (rev != null) {
       confirmedRevRef.current = rev
     }

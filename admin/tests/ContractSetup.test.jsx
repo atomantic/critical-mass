@@ -639,4 +639,32 @@ describe('ContractSetup draft revision and server readback transitions', () => {
     // Immediately adopted on the pristine form because version 2 > version 1
     expect(screen.getByLabelText(/Target/).value).toBe('100000')
   })
+
+  it('rejects a delayed pre-save readback delivered after the saved value is acknowledged', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
+      if (url === '/api/updown/providers') return { ok: true, json: async () => ({ success: true, providers: [] }) }
+      if (url === '/api/updown/contract') return { ok: true, json: async () => ({ success: true }) }
+      throw new Error(`unexpected ${url}`)
+    }))
+
+    const initial = { target: 100000, stop: 95000, range: 500, direction: 'up', expiry: '' }
+    const { rerender } = render(<ContractSetup initialContract={initial} />)
+
+    // User saves target 110000 over 100000
+    fireEvent.change(screen.getByLabelText(/Target/), { target: { value: '110000' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save Contract' }))
+    expect(await screen.findByRole('button', { name: 'Saved' })).toBeTruthy()
+
+    // 1. Deliver the saved value (acknowledgement)
+    rerender(<ContractSetup initialContract={{ target: 110000, stop: 95000, range: 500, direction: 'up', expiry: '' }} />)
+    expect(screen.getByLabelText(/Target/).value).toBe('110000')
+
+    // 2. Deliver a delayed pre-save poll containing 100000 — must NOT overwrite the saved draft
+    rerender(<ContractSetup initialContract={{ ...initial }} />)
+    expect(screen.getByLabelText(/Target/).value).toBe('110000')
+
+    // 3. Genuine new contract from server (200000) is adopted on pristine form
+    rerender(<ContractSetup initialContract={{ target: 200000, stop: 95000, range: 500, direction: 'up', expiry: '' }} />)
+    expect(screen.getByLabelText(/Target/).value).toBe('200000')
+  })
 })
