@@ -494,13 +494,20 @@ describe('useCandleData display limit and live candle preservation', () => {
     }
     vi.stubGlobal('fetch', makeFetchMock({ '1m': candles1m }))
 
-    const { result } = renderHook(() =>
-      useCandleData('coinbase', null, null, {
+    let props = {
+      exchange: 'coinbase',
+      tickPrice: null,
+      tickTimestamp: null,
+      options: {
         views: {
           '5m_view': { bucketMs: 300_000, maxBuckets: 300, candleTf: '1m', indicatorTf: '1m' },
         },
         defaultView: '5m_view',
-      })
+      },
+    }
+
+    const { result, rerender } = renderHook(() =>
+      useCandleData(props.exchange, props.tickPrice, props.tickTimestamp, props.options)
     )
 
     await vi.waitFor(() => expect(result.current.isLoading).toBe(false))
@@ -509,6 +516,16 @@ describe('useCandleData display limit and live candle preservation', () => {
     expect(result.current.chartData.length).toBe(300)
     expect(result.current.chartData[0].time).toBe(0)
     expect(result.current.chartData[299].time).toBe(299 * 300_000)
+
+    // Deliver live ticks into current and subsequent buckets
+    const lastTime = 1500 * 60_000
+    props = { ...props, tickPrice: 150, tickTimestamp: lastTime }; rerender()
+    // Live tick in a new 5m bucket (triggering live tick pruning, bucket transition, projection & sync)
+    props = { ...props, tickPrice: 155, tickTimestamp: lastTime + 300_000 }; rerender()
+
+    // Verify all 300 display buckets remain intact without dropping ~100 buckets
+    expect(result.current.chartData.length).toBe(300)
+    expect(result.current.chartData[result.current.chartData.length - 1].price).toBe(155)
   })
 
   it('resets indicator fields when recomputation produces null values upon switching views', async () => {

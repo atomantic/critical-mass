@@ -157,6 +157,27 @@ const resetBucketIndicators = (bucket) => {
 }
 
 /**
+ * Prune source candles and display buckets using ratio-scaled retention limit.
+ */
+const pruneRetention = (sourceMap, displayMap, bucketMs, sourceCandleMs, maxBuckets) => {
+  const aggregationRatio = Math.max(1, Math.ceil(bucketMs / (sourceCandleMs || bucketMs)))
+  const displayBuckets = maxBuckets || 60
+  const indicatorLookback = 100 * aggregationRatio
+  const sourceLimit = Math.max(1000, Math.ceil((displayBuckets * aggregationRatio + indicatorLookback) * 1.5))
+  if (sourceMap && sourceMap.size > sourceLimit) {
+    const sortedKeys = [...sourceMap.keys()].sort((a, b) => a - b)
+    const toDelete = sortedKeys.slice(0, sortedKeys.length - sourceLimit)
+    for (const k of toDelete) sourceMap.delete(k)
+  }
+  const displayLimit = Math.max(1000, Math.ceil((displayBuckets + 100) * 1.5))
+  if (displayMap && displayMap.size > displayLimit) {
+    const sortedKeys = [...displayMap.keys()].sort((a, b) => a - b)
+    const toDelete = sortedKeys.slice(0, sortedKeys.length - displayLimit)
+    for (const k of toDelete) displayMap.delete(k)
+  }
+}
+
+/**
  * Shared hook for candle data management.
  * Fetches from /api/candles/:exchange, accumulates live ticks into buckets,
  * syncs to React state on a 5s interval.
@@ -493,15 +514,7 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
     }
 
     // Bounded retention policy for source candles scaled by display-to-source interval ratio and indicator history
-    const aggregationRatio = Math.max(1, Math.ceil(bucketMs / (sourceCandleMs || bucketMs)))
-    const displayBuckets = maxBucketsRef.current || 60
-    const indicatorLookback = 100 * aggregationRatio
-    const limit = Math.max(1000, Math.ceil((displayBuckets * aggregationRatio + indicatorLookback) * 1.5))
-    if (sourceMap.size > limit) {
-      const sortedKeys = [...sourceMap.keys()].sort((a, b) => a - b)
-      const toDelete = sortedKeys.slice(0, sortedKeys.length - limit)
-      for (const k of toDelete) sourceMap.delete(k)
-    }
+    pruneRetention(sourceMap, null, bucketMs, sourceCandleMs, maxBucketsRef.current)
 
     // Project onto display buckets and compute indicators
     updateFromSourceCandles()
@@ -643,16 +656,8 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
       }
     }
 
-    // Bounded retention policy
-    const limit = Math.max(1000, (maxBucketsRef.current || 60) * 2)
-    if (sourceMap.size > limit) {
-      const sortedKeys = [...sourceMap.keys()].sort((a, b) => a - b)
-      for (const k of sortedKeys.slice(0, sortedKeys.length - limit)) sourceMap.delete(k)
-    }
-    if (map.size > limit) {
-      const sortedKeys = [...map.keys()].sort((a, b) => a - b)
-      for (const k of sortedKeys.slice(0, sortedKeys.length - limit)) map.delete(k)
-    }
+    // Bounded retention policy scaled by display-to-source interval ratio
+    pruneRetention(sourceMap, map, bucketMs, sourceCandleMs, maxBucketsRef.current)
 
     // Immediate sync when a new bucket opens
     if (lastBucketKeyRef.current != null && lastBucketKeyRef.current !== bKey) {
