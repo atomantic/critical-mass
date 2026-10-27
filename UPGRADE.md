@@ -13,8 +13,9 @@ Node 22 line. Container users should use an image with Node.js 22.12.0 or newer.
 
 ## Restores Reproduce Missing Fund Accounting State (Unreleased)
 
-Hourly fund snapshots and full archives now restore each included fund's complete
-accounting generation. If a snapshot predates a file, restore removes the newer
+Hourly fund snapshots and full archives now reproduce the presence or absence of
+the accounting files listed below for each included fund. If a snapshot predates
+a file, restore removes the newer
 `closed-trades.json`, `manual-trades.json`, `pending-corrective-buys.json`,
 `fill-ledger.json`, `regime-state.json`, or `state.json`. Missing closed trades and
 an explicit empty trade list therefore both produce zero later trades and P&L.
@@ -33,6 +34,28 @@ or interrupted startup recovery restores previous bytes and permissions. New
 journals use version 2; this build still recovers existing version 1 journals.
 Finish recovery with this build before switching back to an older build that does
 not understand version 2 journals.
+
+### Recovery limits to check before restoring
+
+These file replacements do not rewind orders or fills at the exchange. Hourly
+snapshots contain only the seven accounting files listed above; they omit
+`placement-intents.json`, which records order submissions with an unresolved
+outcome. After loss of a fund directory, an hourly restore cannot recover those
+placement blockers. Full archives preserve that file, but neither recovery path
+establishes the current exchange outcome. Preserve available intent records and
+reconcile unresolved submissions against the exchange before resuming trading;
+do not treat an hourly snapshot as a complete placement-safe recovery point.
+See [issue #1810](https://github.com/atomantic/critical-mass/issues/1810).
+
+An interrupted DCA import is another recovery boundary. A pending
+`.dca-import-journal.json` can replay newer accounting over an older restore, or
+block the next fund start when the restored bytes differ. Hourly snapshots can
+also capture a partially published import without its journal. Until
+[issue #1809](https://github.com/atomantic/critical-mass/issues/1809) is resolved,
+finish ordinary import recovery before taking a recovery snapshot or applying
+either kind of restore to an affected fund. Preserve the journal and accounting
+files; deleting the journal to bypass recovery is not a repair. Verify uncertain
+recovery on an isolated copy before using it on a live fund.
 
 ---
 
@@ -118,7 +141,7 @@ data/<exchange>/<pair>/dry-run-state.json
 ```
 
 - **Survives upgrades**: it lives on the mounted data volume, so `docker compose down && docker compose up` (or an Umbrel container recreate) keeps it.
-- **Included in backups and restores**: `createBackup` archives the whole data directory, so the file is captured and a restore reproduces the fund's simulated position.
+- **Included in backups and restores**: `createBackup` captures the per-fund simulation file, and restore replaces its bytes. Resuming the simulation still follows the age check below.
 - **Atomic and per-fund**: every write is a temp-file + rename through `atomicWriteSync`, and each engine process only ever writes the funds it owns — no cross-process merge, no lost updates, and a torn write can no longer take every fund's state down at once.
 
 ### The one-time import
@@ -127,11 +150,22 @@ The first time a dry-run fund reads its state after the upgrade:
 
 1. If `data/<exchange>/<pair>/dry-run-state.json` already exists, it is used and nothing is imported.
 2. Otherwise, if a legacy root `dry-run-state.json` exists, that fund's slot is copied out of it into the new location. Both key forms the old writer produced are recognized — the composite `exchange::pair` and the bare `exchange` used by pre-multi-pair installs.
-3. The legacy root file is **never modified or deleted**. It stays exactly where it is as your fallback copy, the same way `keys.json` is left in place after the keys migration. Delete it yourself once you're satisfied the funds came across.
+3. The legacy root dry-run file is **never modified or deleted**. It stays exactly where it is as your fallback copy. Key migration is different: it copies legacy `keys.json` to `data/coinbase-keys.json` and renames the root file to `keys.json.migrated` so a deleted key cannot be re-imported on restart. Protect that renamed file as a credential. Delete the legacy dry-run file yourself once you're satisfied the funds came across.
 
 The import is idempotent: it only runs when a fund has no file of its own, so it can never overwrite state an engine has already written, and resetting a dry-run fund does not resurrect its pre-upgrade state from the legacy file.
 
 If the legacy file is unreadable or carries an unexpected version, it is left untouched and the affected funds simply start fresh — the same behavior as before, minus the data loss.
+
+### Simulation age limit
+
+On startup, the dry-run loader rejects a simulation whose `savedAt` is more than
+seven days old, or has no usable timestamp, and starts a fresh simulation. This
+also applies to files recovered from a full archive, an hourly snapshot, or the
+legacy root import. Restore preserves `savedAt`; it does not refresh the simulation's
+age. The loader leaves the rejected bytes on disk, but subsequent simulation saves
+can replace them. Preserve the recovery point before starting the fund if you need
+to inspect an older simulation; restoring its file is not a promise that it will
+resume. See `src/dry-run-state.js` and `src/regime-state-persistence.js`.
 
 ---
 
