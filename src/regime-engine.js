@@ -66,7 +66,7 @@ const { DEFAULT_MAX_USDC_DEPLOYED } = require('./fund-defaults');
 const { createEngineLocks, FILL_DRAIN_MS } = require('./engine-locks');
 const { classifyResetSupersession, selectCarryForwardBuys } = require('./regime-cycle-reset');
 const { createTtlStore } = require('./ttl-store');
-const { buildPartialFillData, makeFillDedupKey, resolveEntryBudget, isInsufficientFundsMessage, sizeEntry, entryOffsetBps, isBuyAlreadyCommitted, isUnsettledBuyRow, collectBuyBookingBatch, measureUnbookedOrderQty, boundRecoveredBuyRows, isFullTpExecution, pruneStaleTpCancelMarkers, isStrandedDustBody, snapshotBody, shouldSkipBuyRecommit } = require('./regime-pure-helpers');
+const { buildPartialFillData, makeFillDedupKey, resolveEntryBudget, isInsufficientFundsMessage, sizeEntry, entryOffsetBps, isBuyAlreadyCommitted, isUnsettledBuyRow, collectBuyBookingBatch, measureUnbookedOrderQty, boundRecoveredBuyRows, isFullTpExecution, pruneStaleTpCancelMarkers, isStrandedDustBody, snapshotBody, shouldSkipOwnedBuyRecommit, shouldSkipBuyRecommit } = require('./regime-pure-helpers');
 const { restorePersistedCycleId, repairHistoricalFillAnnotations, planBodyGrowthFromRecoveredBuyRows } = require('./regime-fill-annotations');
 const { classifyTpFill, planBodyTpBooking, planPartialBodyRemainder, collectBodyLinkedBuyOrderIds, buildBodyTpClosedTrade, isMergedSnapshotClosed, planLiveMergedDeduction, planClosedSnapshotDetach, buildMergedSnapshotSellBooking, isSellBookedAsBody, isOwnLegacyCoreTp, untrackedSellRejectReason, planCoreTpClose, collectCoreCycleBuyOrderIds, buildCoreTpClosedTrade, planTerminalFillGap, buildSyntheticGapFill } = require('./regime-sell-booking');
 const { LIVE_STATE_SAVE_INTERVAL_MS, DRY_RUN_STATE_SAVE_INTERVAL_MS, FILL_RETRY_DELAY_MS, PLACEMENT_RETRY_DELAY_MS } = require('./timing-constants');
@@ -2137,7 +2137,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // TERMINAL rescan then failed (ledgerTotal=the earlier partial only,
     // gap=the newly-filled remainder) — issue #679 follow-up: previously a
     // failed terminal rescan fell back to
-    // the stale ledger-only total, and shouldSkipBuyRecommit (below) then
+    // the stale ledger-only total, and shouldSkipOwnedBuyRecommit (below) then
     // retired the order as "already owned, nothing new" without ever
     // booking the remainder — the exchange's larger filledSize never
     // reached the position model.
@@ -2207,7 +2207,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // aggregating previously BOOKED rows too would double-count what
       // they contributed when first booked. (The buy branch still adds
       // rows that were never booked — collectBuyBookingBatch, #1021.) Also count it in
-      // ingestedFills — gates shouldSkipBuyRecommit below, so an order a
+      // ingestedFills — feeds the bounded booking batch below, so an order a
       // body already owns is not treated as "nothing new" when this gap
       // fill is exactly the new thing.
       const result = fillLedger.ingestFill(syntheticFill, orderPlacedAt);
@@ -3364,7 +3364,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // empty result here also guarantees ledgerTotalForOrder was 0 —
     // i.e. this orderId owns no body yet, so bailing out cannot strand an
     // advancing partial or duplicate an already-committed buy (that case
-    // is instead handled by shouldSkipBuyRecommit below, which only runs
+    // is instead handled by shouldSkipOwnedBuyRecommit below, which only runs
     // once fillsToAggregate/summary are known non-degenerate).
     if (fillsToAggregate.length === 0) {
       if (isTerminalFill) {
@@ -3458,17 +3458,17 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // poll re-runs this branch and would double-count: a second cycleBuys and a
     // duplicate body for the same buyOrderId (→ duplicate TP).
     //
-    // CRITICAL: gate on ingestedFills.length === 0. A retry brings NO new
-    // fills (ingestFill is idempotent by tradeId, so the re-fetch dedups and
-    // fillsToAggregate falls back to the full getFillsForOrder set) — that is
-    // the only case we must skip. An ADVANCING PARTIAL buy fill, by contrast,
-    // brings new trade rows (ingestedFills.length > 0) and MUST process even
-    // though a body already owns the orderId — otherwise the later tranche is
-    // dropped from the body / TP sizing and computeRealizedFromCyclePairs
-    // (which aggregates buys by orderId) under-reports its cost. Without this
-    // gate the orderId-only guard would swallow every advancing partial.
-    if (shouldSkipBuyRecommit(hasBookableBuyFills ? 1 : 0, positionState.celestialBodies, fillData.orderId)) {
-      logger.info(`⏭️ [${exchange}] Buy ${fillData.orderId} already owned by a body and no new fills ingested — skipping re-commit (retry after partial failure); reconcile will repair any missing TP`);
+    // Gate on the bounded bookable batch, not new ingestion: persisted
+    // unsettled rows can still need booking after a duplicate-only delivery.
+    // collectBuyBookingBatch/boundRecoveredBuyRows exclude already-booked or
+    // consumed quantities. Advancing and recovered tranches must process even
+    // when a body owns the order, or its quantity / TP sizing loses the tranche.
+    if (shouldSkipOwnedBuyRecommit({
+      hasBookableRows: hasBookableBuyFills,
+      bodies: positionState.celestialBodies,
+      orderId: fillData.orderId,
+    })) {
+      logger.info(`⏭️ [${exchange}] Buy ${fillData.orderId} already owned by a body and no bookable rows remain — skipping re-commit (retry after partial failure); reconcile will repair any missing TP`);
       // The re-commit is what's redundant, not the bookkeeping. A TERMINAL
       // status can land here when the partial poll already ingested every fill
       // row the exchange had exposed, and returning outright would strand the
@@ -4693,7 +4693,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         // engine-level-retrying (issue #679) this exact order, skip it
         // BEFORE spending a getOrder round trip — let it finish instead
         // of racing a second handleOrderFill call for the same orderId.
-        // shouldSkipBuyRecommit dedups any true overlap that slips past
+        // shouldSkipOwnedBuyRecommit dedups any true overlap that slips past
         // this, but avoiding the race (and the wasted network call) is
         // cheaper than relying on that alone. If it eventually exhausts
         // its retries, both maps clear the key and this sweep catches it
