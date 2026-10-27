@@ -473,7 +473,7 @@ const applyRestoreUnderLock = async ({
     stoppedEngines,
     ...(savedRecoveryPoint ? { recoveryPoint: savedRecoveryPoint } : {}),
     ...(force && unconfirmed.length > 0 ? { forced: true, unconfirmed } : {}),
-    ...(warnings.length > 0 ? { warnings } : {}),
+    ...(warnings.length + (result.warnings?.length ?? 0) > 0 ? { warnings: [...warnings, ...(result.warnings ?? [])] } : {}),
     message: [
       restoredText,
       savedRecoveryPoint ? `The data it replaced is saved as ${savedRecoveryPoint}; restore that backup to undo.` : null,

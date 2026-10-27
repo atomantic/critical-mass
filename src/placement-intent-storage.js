@@ -7,6 +7,7 @@ const os = require('os');
 const { randomUUID } = require('crypto');
 const { resolveFundDataDir } = require('./migration');
 const { atomicWriteSync } = require('./durable-write');
+const { PLACEMENT_INTENTS_FILENAME, parsePlacementIntentsDocument } = require('./placement-intent-document');
 
 // ============================================================================
 // Durable placement intents (issue #472)
@@ -55,13 +56,10 @@ const PROCESS_INSTANCE_ID = randomUUID();
  * @returns {string} Path to the placement intents file
  */
 const getPlacementIntentsFile = (exchange = 'coinbase', pair) =>
-  path.join(resolveFundDataDir(exchange, pair), 'placement-intents.json');
+  path.join(resolveFundDataDir(exchange, pair), PLACEMENT_INTENTS_FILENAME);
 
 /**
  * Read every persisted placement intent for a fund.
- * A corrupt file throws rather than reading as empty: "empty" is the shape that
- * means "nothing outstanding, safe to place", and guessing that from an
- * unreadable file is exactly the double-placement this module exists to prevent.
  * @param {string} [exchange] - Exchange name
  * @param {string} [pair] - Pair name
  * @returns {Array<Object>} Persisted intents (empty when the file does not exist)
@@ -69,18 +67,7 @@ const getPlacementIntentsFile = (exchange = 'coinbase', pair) =>
 const loadPlacementIntents = (exchange = 'coinbase', pair) => {
   const file = getPlacementIntentsFile(exchange, pair);
   if (!fs.existsSync(file)) return [];
-
-  const raw = fs.readFileSync(file, 'utf8');
-  let parsed;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (err) {
-    throw new Error(`placement intent file at ${file} is corrupted or unreadable: ${err.message}. Repair or move the file aside before starting.`);
-  }
-  if (!Array.isArray(parsed?.intents)) {
-    throw new Error(`placement intent file at ${file} did not parse to {intents: []}. Repair or move the file aside before starting.`);
-  }
-  return parsed.intents;
+  return parsePlacementIntentsDocument(fs.readFileSync(file, 'utf8'), file);
 };
 
 /**

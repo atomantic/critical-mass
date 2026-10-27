@@ -62,6 +62,8 @@ function BackupRestore() {
   // flows don't share state.
   const [fundStateBlockedBy, setFundStateBlockedBy] = useState(null)
   const [fundStateForceAcknowledged, setFundStateForceAcknowledged] = useState(false)
+  // Snapshots from before placement intents were captured need an explicit ack.
+  const [fundStateIntentsAcknowledged, setFundStateIntentsAcknowledged] = useState(false)
 
   const pendingSave = useRef(false)
   const dataRequest = useRef(0)
@@ -180,8 +182,9 @@ function BackupRestore() {
     }
   }
 
-  const handleRestoreFundState = (snapshotId, exchange, pair) => {
-    setFundStateRestoreConfirm({ snapshotId, exchange, pair })
+  const handleRestoreFundState = (snapshotId, exchange, pair, placementIntentsCaptured) => {
+    setFundStateIntentsAcknowledged(false)
+    setFundStateRestoreConfirm({ snapshotId, exchange, pair, placementIntentsCaptured })
   }
 
   const handleExecuteFundStateRestore = async ({ force = false } = {}) => {
@@ -190,7 +193,7 @@ function BackupRestore() {
     setFundStateRestoring(true)
     let blocked = null
     try {
-      const result = await apiPost(`/api/backups/fund-state/${encodeURIComponent(snapshotId)}/${encodeURIComponent(exchange)}/${encodeURIComponent(pair)}/restore`, { force })
+      const result = await apiPost(`/api/backups/fund-state/${encodeURIComponent(snapshotId)}/${encodeURIComponent(exchange)}/${encodeURIComponent(pair)}/restore`, { force, ...(fundStateIntentsAcknowledged ? { acceptMissingPlacementIntents: true } : {}) })
       const data = result.data || {}
       if (result.ok && data.success) {
         notify(
@@ -290,6 +293,7 @@ function BackupRestore() {
     setFundStateRestoreConfirm(null)
     setFundStateBlockedBy(null)
     setFundStateForceAcknowledged(false)
+    setFundStateIntentsAcknowledged(false)
   }
 
   const cancelRestore = () => {
@@ -387,6 +391,27 @@ function BackupRestore() {
           <p className="text-gray-400 text-xs mb-4">
             Running engines will be stopped and state files replaced. This action cannot be undone.
           </p>
+          {fundStateRestoreConfirm.placementIntentsCaptured === false && (
+            <div className="bg-yellow-900/40 border border-yellow-700 rounded-lg p-4 mb-4">
+              <p className="text-sm font-semibold text-yellow-200 mb-2">
+                This snapshot predates placement-intent capture.
+              </p>
+              <p className="text-xs text-yellow-200/80 mb-3">
+                An order that was sent but not confirmed when it was taken cannot be recovered, so the
+                restored fund will not know about it. Intents already on this machine are kept. Check
+                the exchange for open or duplicate orders before restarting the fund.
+              </p>
+              <label className="flex items-center gap-2 text-xs text-yellow-200">
+                <input
+                  type="checkbox"
+                  checked={fundStateIntentsAcknowledged}
+                  onChange={e => setFundStateIntentsAcknowledged(e.target.checked)}
+                  className="accent-yellow-500"
+                />
+                I understand unresolved orders will not be restored
+              </label>
+            </div>
+          )}
           {fundStateBlockedBy && (
             <div className="bg-red-900/40 border border-red-700 rounded-lg p-4 mb-4">
               <p className="text-sm font-semibold text-red-200 mb-2">
@@ -428,7 +453,7 @@ function BackupRestore() {
             <Button
               variant="warning"
               onClick={() => handleExecuteFundStateRestore()}
-              disabled={fundStateRestoring}
+              disabled={fundStateRestoring || (fundStateRestoreConfirm.placementIntentsCaptured === false && !fundStateIntentsAcknowledged)}
             >
               {fundStateRestoring ? 'Restoring…' : fundStateBlockedBy ? 'Retry Restore' : 'Restore Fund State'}
             </Button>
@@ -436,7 +461,7 @@ function BackupRestore() {
               <Button
                 variant="destructive"
                 onClick={() => handleExecuteFundStateRestore({ force: true })}
-                disabled={fundStateRestoring || !fundStateForceAcknowledged}
+                disabled={fundStateRestoring || !fundStateForceAcknowledged || (fundStateRestoreConfirm.placementIntentsCaptured === false && !fundStateIntentsAcknowledged)}
               >
                 Force Restore Anyway
               </Button>
@@ -595,7 +620,7 @@ function BackupRestore() {
                         variant="warning"
                         size="compact"
                         className="font-medium"
-                        onClick={() => handleRestoreFundState(snapshot.snapshotId, fund.exchange, fund.pair)}
+                        onClick={() => handleRestoreFundState(snapshot.snapshotId, fund.exchange, fund.pair, snapshot.placementIntentsCaptured)}
                         disabled={restoring || fundStateRestoring}
                       >
                         Restore Fund State
