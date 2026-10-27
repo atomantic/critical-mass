@@ -41,6 +41,8 @@ function ChartsRegime({ exchange = 'coinbase', pair, fillDebounceMs = 1500 }) {
   const fetchFillsRef = useRef(null)
 
   const { connected, status: socketStatus } = useRegimeEvents(exchange, pair)
+  const socketStatusRef = useRef(socketStatus)
+  socketStatusRef.current = socketStatus
 
   // Use socket status when available, fall back to local status
   const status = socketStatus || localStatus
@@ -112,11 +114,11 @@ function ChartsRegime({ exchange = 'coinbase', pair, fillDebounceMs = 1500 }) {
       readSucceeded = true
 
       // If live socket status has a newer marker than the snapshot we just loaded, retain it as requested.
-      const liveSocketMarker = deriveFillMarker(socketStatus)
-      if (liveSocketMarker && liveSocketMarker !== loadedMarker) {
-        session.requestedMarker = liveSocketMarker
-      } else if (session.requestedMarker === loadedMarker) {
+      const liveSocketMarker = deriveFillMarker(socketStatusRef.current)
+      if (session.requestedMarker === loadedMarker) {
         session.requestedMarker = null
+      } else if (!session.requestedMarker && liveSocketMarker && liveSocketMarker !== loadedMarker) {
+        session.requestedMarker = liveSocketMarker
       }
 
       const unavailable = candlesResult.status === 'rejected' || cacheResult.status === 'rejected'

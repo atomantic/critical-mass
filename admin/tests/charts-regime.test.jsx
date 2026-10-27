@@ -624,4 +624,58 @@ describe('live fill marker refreshes', () => {
     expect(fillsCalls).toBe(3)
     expect(screen.getByText('TPs Filled').previousElementSibling.textContent).toBe('3')
   })
+
+  it('does not queue unnecessary trailing fills read when manual refresh runs after socket status has advanced', async () => {
+    let fillsCalls = 0
+    let currentCycles = 1
+    const fetchMock = vi.fn(async url => {
+      if (url.includes('/regime/status')) {
+        return { ok: true, json: async () => ({ status: { isRunning: true, position: { cyclesCompleted: currentCycles, cycleBuys: 2, realizedPnL: 10 * currentCycles } } }) }
+      }
+      if (url.includes('/regime/config')) {
+        return { ok: true, json: async () => ({ config: {} }) }
+      }
+      if (url.includes('/regime/fills/cycles')) {
+        fillsCalls++
+        return { ok: true, json: async () => ({ buyCount: 2, sellCount: currentCycles, pnlPoints: [] }) }
+      }
+      return { ok: true, json: async () => ({ candles: [] }) }
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { rerender } = render(<ChartsRegime exchange="coinbase" pair="BTC-USDC" fillDebounceMs={1500} />)
+    expect(await screen.findByText('Engine Running')).toBeTruthy()
+    expect(fillsCalls).toBe(1)
+
+    vi.useFakeTimers()
+
+    // Socket status advances to Cycles 2, and server fills endpoint reflects it
+    currentCycles = 2
+    fixture.status = {
+      isRunning: true,
+      position: { cyclesCompleted: 2, cycleBuys: 2, realizedPnL: 20 },
+    }
+    rerender(<ChartsRegime exchange="coinbase" pair="BTC-USDC" fillDebounceMs={1500} />)
+
+    // Wait for debounce and fills refetch for Cycles 2
+    await act(async () => {
+      vi.advanceTimersByTime(1500)
+    })
+    expect(fillsCalls).toBe(2)
+    expect(screen.getByText('TPs Filled').previousElementSibling.textContent).toBe('2')
+
+    // Now HTTP status backend also reflects Cycles 2, and user clicks manual Refresh
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+    })
+
+    // Manual refresh runs fetchData (fillsCalls becomes 3)
+    expect(fillsCalls).toBe(3)
+
+    // Advance timers; no redundant trailing fills read should be queued
+    await act(async () => {
+      vi.advanceTimersByTime(3000)
+    })
+    expect(fillsCalls).toBe(3)
+  })
 })
