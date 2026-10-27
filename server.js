@@ -372,7 +372,7 @@ const sentinelService = createSentinelService(io, { readJSON, writeJSON, DATA_DI
 
 // ============ Route Modules ============
 
-const sharedDeps = { io, parseTSV, calculateCostBasis, getNextTradeInfo, readJSON, writeJSON, DATA_DIR, notifier, exchangeIPCMap, rescheduleBackupTimer };
+const sharedDeps = { trackBackgroundWork: gatewayShutdown.track, io, parseTSV, calculateCostBasis, getNextTradeInfo, readJSON, writeJSON, DATA_DIR, notifier, exchangeIPCMap, rescheduleBackupTimer };
 
 require('./src/routes/sentinel-routes')(routes, { ...sharedDeps, sentinelService, getSentinelConfig, updateSentinelConfig });
 require('./src/routes/ai-routes')(routes, sharedDeps);

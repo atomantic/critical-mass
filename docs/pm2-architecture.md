@@ -179,7 +179,12 @@ every later step, the drain and the notifier included, still runs. While a resto
 holds the maintenance lock it owns UpDown and Sentinel (and keeps them stopped after
 an incomplete rollback), so shutdown leaves them alone rather than persisting
 pre-restore memory over restored files. An aborted HTTP client does not cancel the
-handler's ownership.
+handler's ownership. Accepted background jobs that answer early (AI prompt runs from
+`POST /api/runs`, optimizer runs from `POST .../optimizer/run`) register their complete
+terminal work with the drain through `trackBackgroundWork` (`gatewayShutdown.track`, passed
+in the shared route dependencies): the run's output and terminal metadata, or the
+optimizer's cache write and completion/error event, finish before the listeners close.
+The 30-second deadline still applies to a job that never finishes.
 IPC remains connected through that drain. IPC then disconnects, so an engine
 event raised from here on is held by the engine for the next gateway instead of
 reaching a notifier that has stopped listening; queued and already-sending
