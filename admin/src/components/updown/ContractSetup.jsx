@@ -13,16 +13,22 @@ function normalizeContract(c) {
   let expiry = ''
   if (typeof c.expiry === 'number' && c.expiry > 0) {
     expiry = new Date(c.expiry).toISOString()
-  } else {
-    expiry = c.expiry || ''
+  } else if (c.expiry) {
+    const d = new Date(c.expiry)
+    expiry = !isNaN(d.getTime()) ? d.toISOString() : c.expiry.toString()
   }
   const dir = c.direction || ''
   const direction = dir ? dir.charAt(0).toUpperCase() + dir.slice(1).toLowerCase() : 'Up'
+  const parseNumStr = (val) => {
+    if (val == null || val === '') return ''
+    const num = parseFloat(val)
+    return !isNaN(num) ? num.toString() : val.toString()
+  }
   return {
     expiry,
-    target: c.target != null ? c.target.toString() : '',
-    stop: c.stop != null ? c.stop.toString() : '',
-    range: c.range != null ? c.range.toString() : '500',
+    target: parseNumStr(c.target),
+    stop: parseNumStr(c.stop),
+    range: parseNumStr(c.range) || '500',
     direction,
   }
 }
@@ -30,12 +36,14 @@ function normalizeContract(c) {
 function areContractsEqual(a, b) {
   if (!a && !b) return true
   if (!a || !b) return false
+  const na = normalizeContract(a)
+  const nb = normalizeContract(b)
   return (
-    a.expiry === b.expiry &&
-    a.target === b.target &&
-    a.stop === b.stop &&
-    a.range === b.range &&
-    a.direction === b.direction
+    na.expiry === nb.expiry &&
+    na.target === nb.target &&
+    na.stop === nb.stop &&
+    na.range === nb.range &&
+    na.direction === nb.direction
   )
 }
 
@@ -79,6 +87,7 @@ export default function ContractSetup({ initialContract }) {
   const draftRevisionRef = useRef(0)
   const confirmedRevisionRef = useRef(0)
   const prevContractRef = useRef(initialContract ? contractKey(initialContract) : null)
+  const staleKeysRef = useRef(new Set())
   const awaitingServerAckRef = useRef(false)
 
   // One "Saved" timer: an earlier save's timer must not clear a later save's confirmation.
@@ -172,9 +181,7 @@ export default function ContractSetup({ initialContract }) {
 
     // Check if write owns the contract or draft is dirty (not pristine)
     const isWriting = writeLockRef.current
-    const isPristine =
-      draftRevisionRef.current === confirmedRevisionRef.current &&
-      areContractsEqual(draftRef.current, baselineRef.current)
+    const isPristine = areContractsEqual(draftRef.current, baselineRef.current)
 
     if (isWriting || !isPristine) {
       // Do not overwrite user edits or in-flight writes
@@ -183,11 +190,13 @@ export default function ContractSetup({ initialContract }) {
 
     // If we are awaiting status acknowledgement of our save, ignore stale pre-save polls
     if (awaitingServerAckRef.current) {
-      if (key === prevContractRef.current) {
-        // Server status has acknowledged our save
-        awaitingServerAckRef.current = false
+      if (staleKeysRef.current.has(key)) {
+        // Stale pre-save poll: drop it
+        return
       }
-      return
+      // Received the saved contract or a superseding update: clear ack gate
+      staleKeysRef.current.clear()
+      awaitingServerAckRef.current = false
     }
 
     if (prevContractRef.current === key) return
@@ -255,10 +264,14 @@ export default function ContractSetup({ initialContract }) {
     }
 
     // Advance baseline to the submitted/confirmed snapshot
-    baselineRef.current = { ...submittedSnapshot }
+    const nextKey = contractKey(submittedSnapshot)
+    if (prevContractRef.current && prevContractRef.current !== nextKey) {
+      staleKeysRef.current.add(prevContractRef.current)
+      awaitingServerAckRef.current = true
+    }
+    baselineRef.current = normalizeContract(submittedSnapshot)
     confirmedRevisionRef.current = submittedRevision
-    prevContractRef.current = contractKey(submittedSnapshot)
-    awaitingServerAckRef.current = true
+    prevContractRef.current = nextKey
 
     // Show Saved only for the current confirmed draft; if newer edits exist, retain them and present them as unsaved
     const hasNewerEdits =

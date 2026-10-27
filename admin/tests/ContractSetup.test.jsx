@@ -497,4 +497,54 @@ describe('ContractSetup draft revision and server readback transitions', () => {
     expect(screen.getByLabelText(/Stop/).value).toBe('0')
     expect(submittedBody).toEqual(expect.objectContaining({ target: 0, stop: 0, direction: 'down' }))
   })
+
+  it('matches canonical numeric representation between form draft and server readback', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
+      if (url === '/api/updown/providers') return { ok: true, json: async () => ({ success: true, providers: [] }) }
+      if (url === '/api/updown/contract') return { ok: true, json: async () => ({ success: true }) }
+      throw new Error(`unexpected ${url}`)
+    }))
+
+    const initial = { target: 100000, stop: 95000, range: 500, direction: 'up', expiry: '' }
+    const { rerender } = render(<ContractSetup initialContract={initial} />)
+
+    // User inputs decimal notation '110000.0'
+    fireEvent.change(screen.getByLabelText(/Target/), { target: { value: '110000.0' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save Contract' }))
+
+    expect(await screen.findByRole('button', { name: 'Saved' })).toBeTruthy()
+
+    // Status poll delivers integer 110000
+    rerender(<ContractSetup initialContract={{ target: 110000, stop: 95000, range: 500, direction: 'up', expiry: '' }} />)
+
+    // Form value remains intact and ack gate is cleared
+    expect(screen.getByLabelText(/Target/).value).toBe('110000.0')
+
+    // Subsequent genuine change on pristine form is adopted
+    rerender(<ContractSetup initialContract={{ target: 130000, stop: 95000, range: 500, direction: 'up', expiry: '' }} />)
+    expect(screen.getByLabelText(/Target/).value).toBe('130000')
+  })
+
+  it('reconciles superseding server update before polling observes the saved value', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
+      if (url === '/api/updown/providers') return { ok: true, json: async () => ({ success: true, providers: [] }) }
+      if (url === '/api/updown/contract') return { ok: true, json: async () => ({ success: true }) }
+      throw new Error(`unexpected ${url}`)
+    }))
+
+    const initial = { target: 100000, stop: 95000, range: 500, direction: 'up', expiry: '' }
+    const { rerender } = render(<ContractSetup initialContract={initial} />)
+
+    // User saves 110000
+    fireEvent.change(screen.getByLabelText(/Target/), { target: { value: '110000' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save Contract' }))
+
+    expect(await screen.findByRole('button', { name: 'Saved' })).toBeTruthy()
+
+    // Server was updated out-of-band to 150000 without polling ever seeing 110000
+    rerender(<ContractSetup initialContract={{ target: 150000, stop: 95000, range: 500, direction: 'up', expiry: '' }} />)
+
+    // Pristine form adopts superseding update immediately
+    expect(screen.getByLabelText(/Target/).value).toBe('150000')
+  })
 })
