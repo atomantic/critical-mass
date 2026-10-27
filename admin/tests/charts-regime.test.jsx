@@ -580,4 +580,48 @@ describe('live fill marker refreshes', () => {
     })
     expect(fillsCalls).toBe(2)
   })
+
+  it('refreshes fills when pair switches and then receives a live fill even if initial fillMarker was identical', async () => {
+    let fillsCalls = 0
+    const fetchMock = vi.fn(async url => {
+      if (url.includes('/regime/status')) {
+        return { ok: true, json: async () => ({ status: { isRunning: true, position: { cyclesCompleted: 1, cycleBuys: 2, realizedPnL: 10 } } }) }
+      }
+      if (url.includes('/regime/config')) {
+        return { ok: true, json: async () => ({ config: {} }) }
+      }
+      if (url.includes('/regime/fills/cycles')) {
+        fillsCalls++
+        return { ok: true, json: async () => ({ buyCount: 2, sellCount: fillsCalls, pnlPoints: [] }) }
+      }
+      return { ok: true, json: async () => ({ candles: [] }) }
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { rerender } = render(<ChartsRegime exchange="coinbase" pair="BTC-USDC" fillDebounceMs={1500} />)
+    expect(await screen.findByText('Engine Running')).toBeTruthy()
+    expect(fillsCalls).toBe(1)
+
+    // Switch pair to ETH-USDC where initial status has the same marker
+    rerender(<ChartsRegime exchange="coinbase" pair="ETH-USDC" fillDebounceMs={1500} />)
+    expect(await screen.findByText('Engine Running')).toBeTruthy()
+    expect(fillsCalls).toBe(2) // Initial page read for ETH-USDC
+
+    vi.useFakeTimers()
+
+    // Now a live fill occurs on ETH-USDC
+    fixture.status = {
+      isRunning: true,
+      position: { cyclesCompleted: 2, cycleBuys: 2, realizedPnL: 20 },
+    }
+    rerender(<ChartsRegime exchange="coinbase" pair="ETH-USDC" fillDebounceMs={1500} />)
+
+    await act(async () => {
+      vi.advanceTimersByTime(1500)
+    })
+
+    // Fills refresh must fire for the new fill on ETH-USDC
+    expect(fillsCalls).toBe(3)
+    expect(screen.getByText('TPs Filled').previousElementSibling.textContent).toBe('3')
+  })
 })

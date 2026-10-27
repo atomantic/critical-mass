@@ -38,7 +38,6 @@ function ChartsRegime({ exchange = 'coinbase', pair, fillDebounceMs = 1500 }) {
   const [stale, setStale] = useState(false)
   const [historyUnavailable, setHistoryUnavailable] = useState(false)
   const readState = useRef(null)
-  const lastMarkerRef = useRef(null)
   const fetchFillsRef = useRef(null)
 
   const { connected, status: socketStatus } = useRegimeEvents(exchange, pair)
@@ -190,7 +189,6 @@ function ChartsRegime({ exchange = 'coinbase', pair, fillDebounceMs = 1500 }) {
       fillsController: null,
     }
     readState.current = session
-    lastMarkerRef.current = null
     setLocalStatus(null)
     setConfig(null)
     setFillAggregates(null)
@@ -211,14 +209,15 @@ function ChartsRegime({ exchange = 'coinbase', pair, fillDebounceMs = 1500 }) {
   // Refresh fills aggregates when a fill lands in live status (#1390, #1818).
   const fillMarker = deriveFillMarker(status)
   useEffect(() => {
-    if (lastMarkerRef.current === null) {
-      lastMarkerRef.current = fillMarker
+    const session = readState.current
+    if (!session?.active) return
+    if (session.lastMarker === undefined) {
+      session.lastMarker = fillMarker
       return
     }
-    if (lastMarkerRef.current === fillMarker) return
-    lastMarkerRef.current = fillMarker
-    const session = readState.current
-    if (session && fillMarker && fillMarker === session.loadedMarker) return
+    if (session.lastMarker === fillMarker) return
+    session.lastMarker = fillMarker
+    if (fillMarker && fillMarker === session.loadedMarker) return
 
     const t = setTimeout(() => {
       const session = readState.current
@@ -229,7 +228,7 @@ function ChartsRegime({ exchange = 'coinbase', pair, fillDebounceMs = 1500 }) {
       fetchFillsRef.current?.()
     }, fillDebounceMs)
     return () => clearTimeout(t)
-  }, [fillMarker, fillDebounceMs])
+  }, [exchange, pair, fillMarker, fillDebounceMs])
 
   const isRunning = status?.isRunning
   const isDryRun = Boolean(status?.isDryRun || config?.dryRun)
