@@ -125,7 +125,7 @@ const CelestialVisualization = ({ celestial, pendingOrders = [], currentPrice, m
                 gl.domElement.setAttribute('aria-label', canvasLabel)
               }}
             >
-              <CelestialScene bodies={bodies} buyOrders={buyOrders} maxUsdcDeployed={maxUsdcDeployed} baseCurrency={baseCurrency} reducedMotion={motionPaused} />
+              <CelestialScene bodies={bodies} buyOrders={buyOrders} maxUsdcDeployed={maxUsdcDeployed} baseCurrency={baseCurrency} reducedMotion={motionPaused} fitCamera />
             </Canvas>
           </Suspense>
         )}
