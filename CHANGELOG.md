@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- **[issue-1801] Reject incomplete Coinbase order fill pagination before importing trades** — `getOrderFills` validates page responses with shape checks, a visited-cursor set, and a 64-page budget, rejecting with an `incompleteFills` error on repeated cursors, cycles, missing continuations, or malformed pages instead of returning truncated rows to manual trade imports or callers.
+
 - **[issue-1815] Gateway shutdown drains accepted background jobs** — AI prompt runs and optimizer runs register their full terminal work (run output and metadata; optimizer cache publication and completion/failure event) with the gateway drain via `trackBackgroundWork`, independent of the initiating socket, so a normal SIGTERM no longer discards jobs that would finish within the existing 30-second grace. HTTP acknowledgements, concurrency limits and the nonzero deadline exit are unchanged.
 
 - **[issue-1794] Buy retry eligibility names bookable rows** — the live guard and recovery comments describe unfinished bounded booking batches directly, preserving the numeric helper export and existing booking behavior.
