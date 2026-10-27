@@ -833,4 +833,56 @@ describe('useCandleData display limit and live candle preservation', () => {
     const bucket60kAfter = result.current.chartData.find(c => c.time === 60_000)
     expect(bucket60kAfter.price).toBe(118)
   })
+
+  it('preserves separate display buckets when live ticks cross display boundaries within one source candle', async () => {
+    // Custom view with 30s display buckets over 1m source candles
+    const customViews = {
+      '30s_view': { bucketMs: 30_000, maxBuckets: 60, candleTf: '1m', indicatorTf: '1m' },
+    }
+    const historical = [
+      { timestamp: 0, open: 100, high: 105, low: 95, close: 100, volume: 10 },
+    ]
+    vi.stubGlobal('fetch', makeFetchMock({ '1m': historical }))
+
+    let props = {
+      exchange: 'coinbase',
+      tickPrice: null,
+      tickTimestamp: null,
+      options: { views: customViews, defaultView: '30s_view' },
+    }
+
+    const { result, rerender } = renderHook(() =>
+      useCandleData(props.exchange, props.tickPrice, props.tickTimestamp, props.options)
+    )
+
+    await vi.waitFor(() => expect(result.current.chartData.length).toBe(1))
+
+    // Tick 1 at t=10_000 (falls in 30s display bucket 0..30_000, within 1m candle 0..60_000)
+    props = { ...props, tickPrice: 110, tickTimestamp: 10_000 }; rerender()
+
+    // Tick 2 at t=40_000 (crosses 30s display boundary to bucket 30_000..60_000, still within 1m candle 0..60_000)
+    props = { ...props, tickPrice: 120, tickTimestamp: 40_000 }; rerender()
+
+    // Both display buckets must exist: bucket 0 and bucket 30_000
+    // Bucket 30_000 must NOT be collapsed into bucket 0 or deleted during projection
+    expect(result.current.chartData.length).toBe(2)
+    const bucket0 = result.current.chartData.find(c => c.time === 0)
+    const bucket30k = result.current.chartData.find(c => c.time === 30_000)
+    expect(bucket0).toBeTruthy()
+    expect(bucket0.price).toBe(110)
+    expect(bucket30k).toBeTruthy()
+    expect(bucket30k.price).toBe(120)
+
+    // Tick 3 at t=50_000 (updates bucket 30_000 close)
+    props = { ...props, tickPrice: 125, tickTimestamp: 50_000 }; rerender()
+
+    // Tick 4 at t=70_000 (crosses into next 1m window, opening bucket 60_000 and triggering sync)
+    props = { ...props, tickPrice: 135, tickTimestamp: 70_000 }; rerender()
+    expect(result.current.chartData.length).toBe(3)
+    const bucket30kUpdated = result.current.chartData.find(c => c.time === 30_000)
+    expect(bucket30kUpdated.price).toBe(125)
+    const bucket60k = result.current.chartData.find(c => c.time === 60_000)
+    expect(bucket60k).toBeTruthy()
+    expect(bucket60k.price).toBe(135)
+  })
 })

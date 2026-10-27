@@ -340,7 +340,17 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
     bucketMs, maxBuckets, candleTf, indicatorTf,
   }
 
-  const sourceCandleMs = BAR_INTERVALS[candleTf]?.intervalMs || bucketMs
+  const minConfiguredBucketMs = useMemo(() => {
+    let minMs = bucketMs
+    if (views) {
+      for (const v of Object.values(views)) {
+        if (v?.bucketMs && v.bucketMs < minMs) minMs = v.bucketMs
+      }
+    }
+    return minMs
+  }, [bucketMs, views])
+
+  const sourceCandleMs = Math.min(BAR_INTERVALS[candleTf]?.intervalMs || bucketMs, minConfiguredBucketMs, bucketMs)
 
   // Signal annotations ref (updated from outside via options)
   const signalAnnotationsRef = useRef(options.signalAnnotations || null)
