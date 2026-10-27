@@ -53,6 +53,18 @@ function contractKey(c) {
   return `${norm.expiry}-${norm.target}-${norm.stop}-${norm.range}-${norm.direction}`
 }
 
+function getContractRevision(c) {
+  if (!c || typeof c !== 'object') return null
+  for (const prop of ['version', 'revision', 'rev', 'updatedAt', 'timestamp', 'seq']) {
+    const val = c[prop]
+    if (val != null) {
+      const num = Number(val)
+      return !isNaN(num) ? num : val
+    }
+  }
+  return null
+}
+
 export default function ContractSetup({ initialContract }) {
   const providerSelectId = useId()
   const modelSelectId = useId()
@@ -87,7 +99,11 @@ export default function ContractSetup({ initialContract }) {
   const draftRevisionRef = useRef(0)
   const confirmedRevisionRef = useRef(0)
   const prevContractRef = useRef(initialContract ? contractKey(initialContract) : null)
-  const staleKeysRef = useRef(new Set())
+  const lastObservedServerKeyRef = useRef(initialContract ? contractKey(initialContract) : null)
+  const lastObservedServerRevRef = useRef(getContractRevision(initialContract))
+  const confirmedRevRef = useRef(getContractRevision(initialContract))
+  const dirtyObservedKeysRef = useRef(new Set())
+  const stalePreSaveKeysRef = useRef(new Set())
   const awaitingServerAckRef = useRef(false)
 
   // One "Saved" timer: an earlier save's timer must not clear a later save's confirmation.
@@ -178,29 +194,48 @@ export default function ContractSetup({ initialContract }) {
   useEffect(() => {
     if (!initialContract) return
     const key = contractKey(initialContract)
+    const rev = getContractRevision(initialContract)
+    lastObservedServerKeyRef.current = key
+    if (rev != null) {
+      lastObservedServerRevRef.current = rev
+    }
 
     // Check if write owns the contract or draft is dirty (not pristine)
     const isWriting = writeLockRef.current
     const isPristine = areContractsEqual(draftRef.current, baselineRef.current)
 
     if (isWriting || !isPristine) {
-      // Do not overwrite user edits or in-flight writes
+      // Record keys observed while dirty or writing so they can be treated as pre-save
+      dirtyObservedKeysRef.current.add(key)
       return
     }
 
-    // If we are awaiting status acknowledgement of our save, ignore stale pre-save polls
+    // If we are awaiting status acknowledgement of our save, handle stale pre-save polls vs subsequent updates
     if (awaitingServerAckRef.current) {
-      if (staleKeysRef.current.has(key)) {
-        // Stale pre-save poll: drop it
+      if (rev != null && confirmedRevRef.current != null) {
+        if (rev <= confirmedRevRef.current) {
+          // Stale pre-save response by revision metadata: drop it
+          return
+        }
+        // Newer revision from server (external update or acknowledgement)
+        stalePreSaveKeysRef.current.clear()
+        awaitingServerAckRef.current = false
+      } else if (stalePreSaveKeysRef.current.has(key)) {
+        // Stale pre-save poll by ordering: drop once to allow subsequent restoration
+        stalePreSaveKeysRef.current.delete(key)
         return
+      } else {
+        // Received the saved contract or a superseding update
+        stalePreSaveKeysRef.current.clear()
+        awaitingServerAckRef.current = false
       }
-      // Received the saved contract or a superseding update: clear ack gate
-      staleKeysRef.current.clear()
-      awaitingServerAckRef.current = false
     }
 
     if (prevContractRef.current === key) return
     prevContractRef.current = key
+    if (rev != null) {
+      confirmedRevRef.current = rev
+    }
 
     const normalized = normalizeContract(initialContract)
     baselineRef.current = normalized
@@ -265,10 +300,31 @@ export default function ContractSetup({ initialContract }) {
 
     // Advance baseline to the submitted/confirmed snapshot
     const nextKey = contractKey(submittedSnapshot)
+    const nextRev = getContractRevision(submittedSnapshot)
+
+    stalePreSaveKeysRef.current.clear()
     if (prevContractRef.current && prevContractRef.current !== nextKey) {
-      staleKeysRef.current.add(prevContractRef.current)
-      awaitingServerAckRef.current = true
+      stalePreSaveKeysRef.current.add(prevContractRef.current)
     }
+    if (lastObservedServerKeyRef.current && lastObservedServerKeyRef.current !== nextKey) {
+      stalePreSaveKeysRef.current.add(lastObservedServerKeyRef.current)
+    }
+    for (const k of dirtyObservedKeysRef.current) {
+      if (k !== nextKey) {
+        stalePreSaveKeysRef.current.add(k)
+      }
+    }
+    dirtyObservedKeysRef.current.clear()
+
+    const serverRev =
+      getContractRevision(result?.data?.contract) ??
+      getContractRevision(result?.data) ??
+      nextRev ??
+      lastObservedServerRevRef.current
+
+    confirmedRevRef.current = serverRev
+    awaitingServerAckRef.current = stalePreSaveKeysRef.current.size > 0 || (confirmedRevRef.current != null)
+
     baselineRef.current = normalizeContract(submittedSnapshot)
     confirmedRevisionRef.current = submittedRevision
     prevContractRef.current = nextKey

@@ -547,4 +547,89 @@ describe('ContractSetup draft revision and server readback transitions', () => {
     // Pristine form adopts superseding update immediately
     expect(screen.getByLabelText(/Target/).value).toBe('150000')
   })
+
+  it('rejects delayed poll containing intervening server value observed while dirty', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
+      if (url === '/api/updown/providers') return { ok: true, json: async () => ({ success: true, providers: [] }) }
+      if (url === '/api/updown/contract') return { ok: true, json: async () => ({ success: true }) }
+      throw new Error(`unexpected ${url}`)
+    }))
+
+    const initial = { target: 100000, stop: 95000, range: 500, direction: 'up', expiry: '' }
+    const { rerender } = render(<ContractSetup initialContract={initial} />)
+
+    // User edits draft to 110000 (dirty)
+    fireEvent.change(screen.getByLabelText(/Target/), { target: { value: '110000' } })
+
+    // Intervening server poll arrives with contract C (target 120000) while draft is dirty
+    rerender(<ContractSetup initialContract={{ target: 120000, stop: 95000, range: 500, direction: 'up', expiry: '' }} />)
+
+    // Dirty draft remains 110000
+    expect(screen.getByLabelText(/Target/).value).toBe('110000')
+
+    // User saves 110000
+    fireEvent.click(screen.getByRole('button', { name: 'Save Contract' }))
+    expect(await screen.findByRole('button', { name: 'Saved' })).toBeTruthy()
+
+    // Delayed pre-save poll delivering contract C (120000) arrives after save resolves
+    rerender(<ContractSetup initialContract={{ target: 120000, stop: 95000, range: 500, direction: 'up', expiry: '' }} />)
+
+    // Delayed poll with C must NOT overwrite saved 110000
+    expect(screen.getByLabelText(/Target/).value).toBe('110000')
+
+    // Polled status arrives with saved contract B (110000)
+    rerender(<ContractSetup initialContract={{ target: 110000, stop: 95000, range: 500, direction: 'up', expiry: '' }} />)
+    expect(screen.getByLabelText(/Target/).value).toBe('110000')
+
+    // Later genuinely changed contract from another client (target 200000) is adopted on pristine form
+    rerender(<ContractSetup initialContract={{ target: 200000, stop: 95000, range: 500, direction: 'up', expiry: '' }} />)
+    expect(screen.getByLabelText(/Target/).value).toBe('200000')
+  })
+
+  it('adopts an external restoration of the pre-save value before acknowledgement', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
+      if (url === '/api/updown/providers') return { ok: true, json: async () => ({ success: true, providers: [] }) }
+      if (url === '/api/updown/contract') return { ok: true, json: async () => ({ success: true }) }
+      throw new Error(`unexpected ${url}`)
+    }))
+
+    const initial = { target: 100000, stop: 95000, range: 500, direction: 'up', expiry: '' }
+    const { rerender } = render(<ContractSetup initialContract={initial} />)
+
+    // User saves 110000
+    fireEvent.change(screen.getByLabelText(/Target/), { target: { value: '110000' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save Contract' }))
+    expect(await screen.findByRole('button', { name: 'Saved' })).toBeTruthy()
+
+    // Another client restores pre-save value 100000 before polling acknowledges 110000
+    // First poll with 100000 drops the potential in-flight pre-save response
+    rerender(<ContractSetup initialContract={{ ...initial }} />)
+    expect(screen.getByLabelText(/Target/).value).toBe('110000')
+
+    // Subsequent poll confirms server genuinely restored 100000 and is adopted on pristine form
+    rerender(<ContractSetup initialContract={{ ...initial }} />)
+    expect(screen.getByLabelText(/Target/).value).toBe('100000')
+  })
+
+  it('adopts an external restoration of the pre-save value immediately when revision metadata is present', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
+      if (url === '/api/updown/providers') return { ok: true, json: async () => ({ success: true, providers: [] }) }
+      if (url === '/api/updown/contract') return { ok: true, json: async () => ({ success: true }) }
+      throw new Error(`unexpected ${url}`)
+    }))
+
+    const initial = { target: 100000, stop: 95000, range: 500, direction: 'up', expiry: '', version: 1 }
+    const { rerender } = render(<ContractSetup initialContract={initial} />)
+
+    // User saves 110000
+    fireEvent.change(screen.getByLabelText(/Target/), { target: { value: '110000' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save Contract' }))
+    expect(await screen.findByRole('button', { name: 'Saved' })).toBeTruthy()
+
+    // External client restored 100000 with a newer server version (version 2)
+    rerender(<ContractSetup initialContract={{ target: 100000, stop: 95000, range: 500, direction: 'up', expiry: '', version: 2 }} />)
+
+    // Immediately adopted on the pristine form because version 2 > version 1
+    expect(screen.getByLabelText(/Target/).value).toBe('100000')
+  })
 })
