@@ -1,5 +1,5 @@
 import Button from './ui/Button'
-import { useState, useEffect, lazy, Suspense } from 'react'
+import { useState, useEffect, useRef, lazy, Suspense } from 'react'
 import { Link, useNavigate } from '../lib/router'
 import { ExternalLink } from './icons'
 import { useMultiRegimeStatuses } from '../hooks/useTradeEvents'
@@ -11,6 +11,7 @@ import { EXCHANGE_ICONS, EXCHANGE_COLORS } from './exchangeStyles'
 import { REGIME_COLORS, HEALTH_COLORS } from './regime/regimeStyles'
 import { apiGet } from '../utils/apiClient'
 import { pnlColorClass, signedPrefix } from '../utils/pnlFormat.mjs'
+import { mergeRegimeStatus, nextRegimeStatusSeq } from '../utils/regimeStatusSnapshot.mjs'
 
 const CelestialVisualization = lazy(() => import('./celestial/CelestialVisualization'))
 
@@ -32,12 +33,17 @@ const getEngineStatus = (isRunning, isDryRun, lifecycle) => {
 function Overview() {
   const navigate = useNavigate()
   const [exchanges, setExchanges] = useState([])
-  const [statusMap, setStatusMap] = useState({})
+  const [snapshotMap, setSnapshotMap] = useState({})
   const [statusState, setStatusState] = useState({})
   const [exchangesError, setExchangesError] = useState(null)
   const [loading, setLoading] = useState(true)
   const [addFundOpen, setAddFundOpen] = useState(false)
-  const { statuses: wsStatuses, connected } = useMultiRegimeStatuses()
+  const loadOwnerRef = useRef(0)
+  const abortControllerRef = useRef(null)
+  const snapshotMapRef = useRef(snapshotMap)
+  snapshotMapRef.current = snapshotMap
+
+  const { snapshots: wsSnapshots, statuses: wsStatuses, connected } = useMultiRegimeStatuses()
 
   const refreshExchanges = async () => {
     // A failed read leaves the existing exchange list as-is; caller UI isn't gated on this.
@@ -45,17 +51,22 @@ function Overview() {
     if (result.ok) setExchanges(result.data.exchanges || [])
   }
 
-  // Per-fund key used in statusMap. The /api/exchanges response now returns
+  // Per-fund key used in snapshotMap. The /api/exchanges response now returns
   // one entry per (exchange, pair) fund — we use composite keys so two funds
   // on the same exchange (e.g., coinbase BTC-USDC and coinbase ETH-USDC) keep
   // independent status entries.
-  const fundKey = (ex) => `${ex.name}::${ex.pair || ex.productId || 'default'}`
+  const fundKey = (ex) => `${ex.name}::${ex.pair || ex.productId || ex.name || 'default'}`
 
-  // Fetch exchange list and each fund status as one retryable page load.
+  // Fetch exchange list and each fund status as one retryable, fenced page load (#1817).
   const load = async () => {
+    const loadId = ++loadOwnerRef.current
+    abortControllerRef.current?.abort()
+    const controller = new AbortController()
+    abortControllerRef.current = controller
     setLoading(true)
     try {
-      const res = await apiGet('/api/exchanges')
+      const res = await apiGet('/api/exchanges', { signal: controller.signal })
+      if (loadOwnerRef.current !== loadId) return
       if (!res.ok) throw new Error(`Exchange list request failed (HTTP ${res.status})`)
       const exchangeList = res.data.exchanges || []
       setExchanges(exchangeList)
@@ -63,46 +74,126 @@ function Overview() {
 
       const entries = await Promise.all(exchangeList.map(async (ex) => {
         const pairParam = ex.pair || ex.productId || ''
-        const r = await apiGet(`/api/${ex.name}/regime/status?pair=${encodeURIComponent(pairParam)}`)
-        if (!r.ok) return [fundKey(ex), null, 'error']
-        return [fundKey(ex), r.data.status || null, r.data.status ? 'ok' : 'error']
+        const readSeq = nextRegimeStatusSeq()
+        const r = await apiGet(`/api/${ex.name}/regime/status?pair=${encodeURIComponent(pairParam)}`, { signal: controller.signal })
+        if (loadOwnerRef.current !== loadId) return null
+        const key = fundKey(ex)
+        if (!r.ok) return { key, status: null, state: 'error', seq: readSeq }
+        return { key, status: r.data?.status || null, state: r.data?.status ? 'ok' : 'error', seq: readSeq }
       }))
-      setStatusMap(Object.fromEntries(entries.map(([key, status]) => [key, status])))
-      setStatusState(Object.fromEntries(entries.map(([key, , state]) => [key, state])))
+      if (loadOwnerRef.current !== loadId) return
+
+      const validKeys = new Set(exchangeList.map(fundKey))
+
+      setSnapshotMap(prev => {
+        const next = {}
+        // Retain only currently valid funds
+        for (const [key, snap] of Object.entries(prev)) {
+          if (validKeys.has(key)) next[key] = snap
+        }
+        for (const entry of entries) {
+          if (!entry) continue
+          const { key, status, seq, state } = entry
+          const current = next[key]
+          // If a newer snapshot already arrived (e.g. from socket while HTTP was in flight), keep it
+          if (current && current.seq > seq) continue
+          if (state === 'error') {
+            if (!current?.status) {
+              next[key] = { status: null, seq }
+            }
+          } else {
+            const merged = mergeRegimeStatus(current?.status, status)
+            next[key] = { status: merged, seq }
+          }
+        }
+        return next
+      })
+
+      setStatusState(prev => {
+        const next = {}
+        for (const [key, state] of Object.entries(prev)) {
+          if (validKeys.has(key)) next[key] = state
+        }
+        for (const entry of entries) {
+          if (!entry) continue
+          const { key, seq, state } = entry
+          const currentSnap = snapshotMapRef.current[key]
+          if (currentSnap && currentSnap.seq > seq) {
+            if (currentSnap.status) next[key] = 'ok'
+            continue
+          }
+          next[key] = state
+        }
+        return next
+      })
     } catch (error) {
-      setExchangesError(error.message || 'Failed to load exchanges')
+      if (loadOwnerRef.current === loadId) {
+        setExchangesError(error.message || 'Failed to load exchanges')
+      }
     } finally {
-      setLoading(false)
+      if (loadOwnerRef.current === loadId) {
+        setLoading(false)
+      }
     }
   }
 
   useEffect(() => {
     load()
+    return () => {
+      loadOwnerRef.current += 1
+      abortControllerRef.current?.abort()
+    }
   }, [])
 
-  // Merge WebSocket updates into status map. wsStatuses is now keyed by
-  // `${exchange}::${pair}` so each fund updates independently and BTCUSD's
-  // status doesn't leak into ETHUSD on the same exchange.
+  // Merge WebSocket updates into snapshot map. wsSnapshots is keyed by
+  // `${exchange}::${pair}` with monotonic generations so each fund updates
+  // independently and HTTP/socket ordering is strictly arbitrated (#1817).
   useEffect(() => {
-    if (Object.keys(wsStatuses).length === 0) return
-    setStatusMap(prev => {
+    const hasSnapshots = wsSnapshots && Object.keys(wsSnapshots).length > 0
+    const hasStatuses = wsStatuses && Object.keys(wsStatuses).length > 0
+    if (!hasSnapshots && !hasStatuses) return
+
+    setSnapshotMap(prev => {
       const next = { ...prev }
-      for (const [key, status] of Object.entries(wsStatuses)) {
-        if (key in next) next[key] = { ...next[key], ...status }
+      if (hasSnapshots) {
+        for (const [key, snap] of Object.entries(wsSnapshots)) {
+          if (!snap?.status) continue
+          const current = next[key]
+          if (current && current.seq > snap.seq) continue
+          const merged = mergeRegimeStatus(current?.status, snap.status)
+          next[key] = { status: merged, seq: snap.seq }
+        }
+      } else {
+        // Fallback for tests or mocks providing only wsStatuses
+        for (const [key, status] of Object.entries(wsStatuses)) {
+          if (!status) continue
+          const current = next[key]
+          if (current?.status === status) continue
+          const nextSeq = nextRegimeStatusSeq()
+          const merged = mergeRegimeStatus(current?.status, status)
+          next[key] = { status: merged, seq: nextSeq }
+        }
       }
       return next
     })
+
     setStatusState(prev => {
       const next = { ...prev }
-      for (const key of Object.keys(wsStatuses)) if (key in next) next[key] = 'ok'
+      const source = hasSnapshots ? wsSnapshots : wsStatuses
+      for (const [key, val] of Object.entries(source)) {
+        if (hasSnapshots ? val?.status : val) {
+          next[key] = 'ok'
+        }
+      }
       return next
     })
-  }, [wsStatuses])
+  }, [wsSnapshots, wsStatuses])
 
   // Build card data from exchanges + statuses
   const cards = exchanges.map(ex => {
-    const status = statusMap[fundKey(ex)]
-    const statusUnavailable = statusState[fundKey(ex)] === 'error'
+    const key = fundKey(ex)
+    const status = snapshotMap[key]?.status
+    const statusUnavailable = statusState[key] === 'error'
     const pair = ex.pair || ex.productId || 'BTC-USDC'
     const baseCurrency = getBaseCurrency(ex.productId || pair)
     const quoteCurrency = getQuoteCurrency(ex.productId || pair)

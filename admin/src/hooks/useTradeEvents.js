@@ -152,7 +152,8 @@ export function useMultiRegimeStatuses() {
   // status entries per fund. Events without a pair (legacy engines that
   // haven't been restarted yet) are stored under `${exchange}::${exchange}`
   // so the Overview's matching code can still find them by exchange.
-  const [statuses, setStatuses] = useState({})
+  // Each fund tracks its own stamped snapshot with monotonic generations (#1817).
+  const [snapshots, setSnapshots] = useState({})
   const [connected, setConnected] = useState(false)
 
   useEffect(() => {
@@ -162,10 +163,17 @@ export function useMultiRegimeStatuses() {
     const handleDisconnect = () => setConnected(false)
 
     const handleStatusUpdate = (data) => {
-      if (!data.exchange) return
+      if (!data.exchange || !data.status) return
       const pair = data.pair || data.exchange
       const key = `${data.exchange}::${pair}`
-      setStatuses(prev => ({ ...prev, [key]: data.status }))
+      setSnapshots(prev => {
+        const prevSnapshot = prev[key] || EMPTY_SNAPSHOT
+        const mergedStatus = mergeRegimeStatus(prevSnapshot.status, data.status)
+        return {
+          ...prev,
+          [key]: stampRegimeStatus(mergedStatus),
+        }
+      })
     }
 
     socket.on('connect', handleConnect)
@@ -181,7 +189,15 @@ export function useMultiRegimeStatuses() {
     }
   }, [])
 
-  return { statuses, connected }
+  const statuses = useMemo(() => {
+    const map = {}
+    for (const [key, snap] of Object.entries(snapshots)) {
+      map[key] = snap.status
+    }
+    return map
+  }, [snapshots])
+
+  return { snapshots, statuses, connected }
 }
 
 export function useOptimizerEvents() {

@@ -3,8 +3,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import ChartsRegime, { deriveFillMarker } from '../src/components/ChartsRegime'
 
-const fixture = vi.hoisted(() => ({ initializeFromCache: vi.fn(), status: null, connected: false }))
-vi.mock('../src/hooks/useTradeEvents', () => ({ useRegimeEvents: () => ({ connected: fixture.connected, status: fixture.status }) }))
+const fixture = vi.hoisted(() => ({ initializeFromCache: vi.fn(), status: null, statusSeq: null, connected: false }))
+vi.mock('../src/hooks/useTradeEvents', () => ({
+  useRegimeEvents: () => ({
+    connected: fixture.connected,
+    status: fixture.status,
+    statusSeq: fixture.statusSeq ?? undefined,
+  }),
+}))
 vi.mock('../src/hooks/useChartDataBuffer', () => ({ useChartDataBuffer: () => ({ priceHistory: [], atrHistory: [], regimeHistory: [], initializeFromCache: fixture.initializeFromCache }) }))
 vi.mock('../src/components/charts/RegimePriceChart', () => ({ default: () => <div>Price chart</div> }))
 vi.mock('../src/components/charts/VolatilityChart', () => ({ default: () => <div>Volatility chart</div> }))
@@ -22,6 +28,7 @@ afterEach(() => {
   vi.restoreAllMocks()
   vi.useRealTimers()
   fixture.status = null
+  fixture.statusSeq = null
   fixture.connected = false
 })
 
@@ -677,5 +684,88 @@ describe('live fill marker refreshes', () => {
       vi.advanceTimersByTime(3000)
     })
     expect(fillsCalls).toBe(3)
+  })
+})
+
+describe('HTTP and realtime status snapshot arbitration (#1817)', () => {
+  it('accepts a newer HTTP stopped/offline status after an older socket running status', async () => {
+    let currentHttpStatus = { isRunning: true }
+    vi.stubGlobal('fetch', vi.fn(async url => {
+      if (url.includes('/regime/status')) {
+        return { ok: true, json: async () => ({ status: currentHttpStatus }) }
+      }
+      if (url.includes('/regime/config')) return { ok: true, json: async () => ({ config: {} }) }
+      if (url.includes('/regime/fills/cycles')) return { ok: true, json: async () => ({ buyCount: 0, sellCount: 0, pnlPoints: [] }) }
+      return { ok: true, json: async () => ({ candles: [] }) }
+    }))
+
+    // Starts with running socket status
+    fixture.status = { isRunning: true }
+    fixture.statusSeq = 10
+    render(<ChartsRegime exchange="coinbase" pair="BTC-USDC" />)
+    expect(await screen.findByText('Engine Running')).toBeTruthy()
+
+    // Server transitions to stopped; manual Refresh returns the newer stopped status
+    currentHttpStatus = { isRunning: false }
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+    })
+
+    // Newer HTTP status replaces the older socket status
+    expect(await screen.findByText('Engine Stopped')).toBeTruthy()
+  })
+
+  it('keeps a socket event delivered during an HTTP read over that delayed read', async () => {
+    let resolveHttpStatus
+    vi.stubGlobal('fetch', vi.fn(async url => {
+      if (url.includes('/regime/status')) {
+        return new Promise(resolve => {
+          resolveHttpStatus = () => resolve({ ok: true, json: async () => ({ status: { isRunning: true } }) })
+        })
+      }
+      if (url.includes('/regime/config')) return { ok: true, json: async () => ({ config: {} }) }
+      if (url.includes('/regime/fills/cycles')) return { ok: true, json: async () => ({ buyCount: 0, sellCount: 0, pnlPoints: [] }) }
+      return { ok: true, json: async () => ({ candles: [] }) }
+    }))
+
+    fixture.status = null
+    const { rerender } = render(<ChartsRegime exchange="coinbase" pair="BTC-USDC" />)
+
+    // While HTTP read is in flight, socket delivers a stopped status
+    fixture.status = { isRunning: false }
+    rerender(<ChartsRegime exchange="coinbase" pair="BTC-USDC" />)
+
+    // Now older HTTP read resolves with isRunning: true
+    await act(async () => {
+      resolveHttpStatus()
+    })
+
+    // The socket event arrived after HTTP read started, so stopped status wins
+    expect(await screen.findByText('Engine Stopped')).toBeTruthy()
+    expect(screen.queryByText('Engine Running')).toBeNull()
+  })
+
+  it('allows a newer HTTP read to overwrite an older socket event (reverse ordering)', async () => {
+    let currentHttpStatus = { isRunning: false }
+    vi.stubGlobal('fetch', vi.fn(async url => {
+      if (url.includes('/regime/status')) {
+        return { ok: true, json: async () => ({ status: currentHttpStatus }) }
+      }
+      if (url.includes('/regime/config')) return { ok: true, json: async () => ({ config: {} }) }
+      if (url.includes('/regime/fills/cycles')) return { ok: true, json: async () => ({ buyCount: 0, sellCount: 0, pnlPoints: [] }) }
+      return { ok: true, json: async () => ({ candles: [] }) }
+    }))
+
+    fixture.status = { isRunning: false }
+    render(<ChartsRegime exchange="coinbase" pair="BTC-USDC" />)
+    expect(await screen.findByText('Engine Stopped')).toBeTruthy()
+
+    // Server transitions to running, Refresh runs
+    currentHttpStatus = { isRunning: true }
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+    })
+
+    expect(await screen.findByText('Engine Running')).toBeTruthy()
   })
 })

@@ -11,6 +11,7 @@ import { pairQuery as buildPairQuery } from '../utils/api'
 import { deriveRegimeCumulativePnl } from '../utils/regimeFillGroups.mjs'
 import { apiGet } from '../utils/apiClient'
 import { pnlColorClass } from '../utils/pnlFormat.mjs'
+import { EMPTY_SNAPSHOT, nextRegimeStatusSeq } from '../utils/regimeStatusSnapshot.mjs'
 
 export function deriveFillMarker(status) {
   if (!status) return ''
@@ -28,7 +29,7 @@ export function deriveFillMarker(status) {
 
 function ChartsRegime({ exchange = 'coinbase', pair, fillDebounceMs = 1500 }) {
   const pairQuery = buildPairQuery(pair)
-  const [localStatus, setLocalStatus] = useState(null)
+  const [localSnapshot, setLocalSnapshot] = useState(EMPTY_SNAPSHOT)
   const [config, setConfig] = useState(null)
   const [fillAggregates, setFillAggregates] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -40,12 +41,31 @@ function ChartsRegime({ exchange = 'coinbase', pair, fillDebounceMs = 1500 }) {
   const readState = useRef(null)
   const fetchFillsRef = useRef(null)
 
-  const { connected, status: socketStatus } = useRegimeEvents(exchange, pair)
+  const { connected, status: socketStatus, statusSeq: socketSeqProp } = useRegimeEvents(exchange, pair)
+  const prevSocketStatusRef = useRef(socketStatus)
+  const syntheticSocketSeqRef = useRef(0)
+
+  // Use the event's sequence number from useRegimeEvents, or synthesize a monotonic
+  // sequence when status updates (e.g. tests mocking useRegimeEvents without statusSeq).
+  const socketSeq = useMemo(() => {
+    if (socketSeqProp != null) return socketSeqProp
+    if (!socketStatus) return 0
+    if (socketStatus !== prevSocketStatusRef.current) {
+      prevSocketStatusRef.current = socketStatus
+      syntheticSocketSeqRef.current = nextRegimeStatusSeq()
+    }
+    return syntheticSocketSeqRef.current || (syntheticSocketSeqRef.current = nextRegimeStatusSeq())
+  }, [socketSeqProp, socketStatus])
+
   const socketStatusRef = useRef(socketStatus)
   socketStatusRef.current = socketStatus
 
-  // Use socket status when available, fall back to local status
-  const status = socketStatus || localStatus
+  // The newest snapshot wins whichever source it came from, so an HTTP read
+  // after an action or a Retry/Refresh can replace a stale socket snapshot (#1388, #1817).
+  const latest = socketStatus && (!localSnapshot.status || socketSeq > localSnapshot.seq)
+    ? { status: socketStatus, seq: socketSeq }
+    : localSnapshot
+  const status = latest.status
   const statusRef = useRef(status)
   statusRef.current = status
 
@@ -79,6 +99,7 @@ function ChartsRegime({ exchange = 'coinbase', pair, fillDebounceMs = 1500 }) {
   const fetchData = useCallback(async () => {
     const session = readState.current
     if (!session?.active || session.inFlight) return
+    const readSeq = nextRegimeStatusSeq()
     const priorMarker = session.hasSnapshot ? session.loadedMarker : null
     const startSocketMarker = deriveFillMarker(socketStatusRef.current)
     session.inFlight = true
@@ -109,7 +130,7 @@ function ChartsRegime({ exchange = 'coinbase', pair, fillDebounceMs = 1500 }) {
       const currentSocketMarker = deriveFillMarker(socketStatusRef.current)
 
       session.hasSnapshot = true
-      setLocalStatus(statusData.status)
+      setLocalSnapshot({ status: statusData.status, seq: readSeq })
       setConfig(configData.config)
       setFillAggregates(fillsData)
       setError(null)
@@ -200,7 +221,7 @@ function ChartsRegime({ exchange = 'coinbase', pair, fillDebounceMs = 1500 }) {
       fillsController: null,
     }
     readState.current = session
-    setLocalStatus(null)
+    setLocalSnapshot(EMPTY_SNAPSHOT)
     setConfig(null)
     setFillAggregates(null)
     setHistoricalPrices([])
