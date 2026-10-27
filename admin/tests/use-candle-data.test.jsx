@@ -584,4 +584,110 @@ describe('useCandleData display limit and live candle preservation', () => {
     const candle0After = result.current.chartData.find(c => c.time === 0)
     expect(candle0After.bollingerUpper).toBeNull()
   })
+
+  it('preserves live close for unfinished source candles even if refresh occurs after live ticks', async () => {
+    let fetchCount = 0
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      fetchCount++
+      if (fetchCount === 1) {
+        return {
+          ok: true, status: 200,
+          headers: new Headers({ 'content-type': 'application/json' }),
+          json: async () => ({
+            success: true,
+            candles: {
+              '1m': [{ timestamp: 0, open: 100, high: 105, low: 95, close: 100, volume: 10 }],
+            },
+          }),
+        }
+      }
+      return {
+        ok: true, status: 200,
+        headers: new Headers({ 'content-type': 'application/json' }),
+        json: async () => ({
+          success: true,
+          candles: {
+            '1m': [
+              { timestamp: 0, open: 100, high: 105, low: 95, close: 100, volume: 10 },
+              // Stale server snapshot for current unfinished candle at t=60_000
+              { timestamp: 60_000, open: 100, high: 110, low: 95, close: 105, volume: 15 },
+            ],
+          },
+        }),
+      }
+    }))
+
+    let props = {
+      exchange: 'coinbase',
+      tickPrice: null,
+      tickTimestamp: null,
+      options: { defaultInterval: '1m', maxBucketsOverride: 10 },
+    }
+
+    const { result, rerender } = renderHook(() =>
+      useCandleData(props.exchange, props.tickPrice, props.tickTimestamp, props.options)
+    )
+
+    await vi.waitFor(() => expect(result.current.chartData.length).toBe(1))
+
+    // Deliver live tick for candle t=60_000 at t=60_010 (candle is unfinished: 60_010 < 120_000)
+    props = { ...props, tickPrice: 125, tickTimestamp: 60_010 }; rerender()
+
+    const bucketBefore = result.current.chartData.find(c => c.time === 60_000)
+    expect(bucketBefore.price).toBe(125)
+
+    // Trigger refresh while candle is still unfinished (latest tick is at 60_010)
+    props = { ...props, tickPrice: null, tickTimestamp: null }; rerender()
+    act(() => {
+      result.current.retry()
+    })
+
+    await vi.waitFor(() => expect(fetchCount).toBe(2))
+
+    // The unfinished candle must preserve its live tick close (125), not overwritten by stale server close (105)
+    const bucketDuring = result.current.chartData.find(c => c.time === 60_000)
+    expect(bucketDuring.price).toBe(125)
+  })
+
+  it('retains enough source history across views so switching from 1m to aggregated 5m displays all 300 buckets', async () => {
+    // 1500 1m candles
+    const candles1m = []
+    for (let i = 0; i < 1500; i++) {
+      candles1m.push({
+        timestamp: i * 60_000,
+        open: 100 + (i % 10),
+        high: 110 + (i % 10),
+        low: 90 + (i % 10),
+        close: 105 + (i % 10),
+        volume: 5,
+      })
+    }
+    vi.stubGlobal('fetch', makeFetchMock({ '1m': candles1m }))
+
+    const customViews = {
+      '1m_view': { bucketMs: 60_000, maxBuckets: 60, candleTf: '1m', indicatorTf: '1m' },
+      '5m_view': { bucketMs: 300_000, maxBuckets: 300, candleTf: '1m', indicatorTf: '1m' },
+    }
+
+    const { result } = renderHook(() =>
+      useCandleData('coinbase', null, null, {
+        views: customViews,
+        defaultView: '1m_view',
+      })
+    )
+
+    await vi.waitFor(() => expect(result.current.isLoading).toBe(false))
+    // In 1m view, displays 60 buckets
+    expect(result.current.chartData.length).toBe(60)
+
+    // Switch view to 5m_view (needs 1500 source candles)
+    act(() => {
+      result.current.setView('5m_view')
+    })
+
+    // Should retain all 1500 source candles and display all 300 5m buckets without truncation to 200
+    expect(result.current.chartData.length).toBe(300)
+    expect(result.current.chartData[0].time).toBe(0)
+    expect(result.current.chartData[299].time).toBe(299 * 300_000)
+  })
 })
