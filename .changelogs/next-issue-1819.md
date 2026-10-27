@@ -1,0 +1,1 @@
+- **[issue-1819] Preserve live candles when changing chart display limits** — `useCandleData` separates canonical per-exchange/timeframe candle state from display projections, preserving completed live candles, observed extrema, and current bucket close when changing display limits (Auto/100/300) or ranges.

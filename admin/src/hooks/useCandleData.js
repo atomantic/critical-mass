@@ -262,6 +262,7 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
   const lastBucketKeyRef = useRef(null)
   const historicalCandlesRef = useRef(null)
   const lastHARef = useRef(null) // previous bucket's HA values for live tick updates
+  const activeSeriesKeyRef = useRef(null)
 
   const viewConfig = legacyMode ? (views[view] || views[viewKeys[0]]) : {
     bucketMs, maxBuckets, candleTf, indicatorTf,
@@ -309,37 +310,23 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
   }, [legacyMode])
 
   /**
-   * Populate buckets from historical candle data for the current view.
-   * Computes all indicator series client-side from the raw candle array.
+   * Recompute derived indicators and Heikin Ashi from the merged ordered source.
    */
-  const populateFromCandles = useCallback((candles) => {
-    if (!candles?.length) return
-    const map = new Map()
-
-    // Build bucket map from candles
-    for (const c of candles) {
-      const bKey = Math.floor(c.timestamp / bucketMs) * bucketMs
-      const existing = map.get(bKey)
-      if (existing) {
-        if (c.high > existing.high) existing.high = c.high
-        if (c.low < existing.low) existing.low = c.low
-        existing.price = c.close
-      } else {
-        map.set(bKey, emptyBucket(bKey, c.close))
-        const b = map.get(bKey)
-        b.open = c.open
-        b.high = c.high
-        b.low = c.low
-      }
-    }
-
-    // Sort bucket keys for ordered access
+  const updateIndicatorsAndHA = useCallback((map) => {
+    if (!map.size) return
     const sortedKeys = [...map.keys()].sort((a, b) => a - b)
+    const candles = sortedKeys.map(k => {
+      const b = map.get(k)
+      return {
+        timestamp: b.time,
+        open: b.open,
+        high: b.high,
+        low: b.low,
+        close: b.price,
+        volume: b.volume || 0,
+      }
+    })
 
-    // Build candle-index → bucket-key mapping
-    const candleBucketKeys = candles.map(c => Math.floor(c.timestamp / bucketMs) * bucketMs)
-
-    // Compute indicator series from raw candles
     const bollinger = computeBollingerSeries(candles)
     const vwap = computeVWAPSeries(candles)
     const rsi = computeRSISeries(candles)
@@ -347,11 +334,8 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
     const macd = computeMACDSeries(candles)
     const atomoku = computeAtomoku(candles)
 
-    // Attach indicators: for each candle, apply values to its bucket.
-    // When multiple candles map to the same bucket, last candle wins (most recent).
-    for (let i = 0; i < candles.length; i++) {
-      const bKey = candleBucketKeys[i]
-      const bucket = map.get(bKey)
+    for (let i = 0; i < sortedKeys.length; i++) {
+      const bucket = map.get(sortedKeys[i])
       if (!bucket) continue
 
       if (bollinger[i]) {
@@ -375,35 +359,101 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
       if (atomoku.laggingSpan[i] != null) bucket.atomokuLagging = atomoku.laggingSpan[i]
     }
 
-    // Apply displaced lead lines to existing buckets.
-    for (let i = 0; i < candles.length; i++) {
-      const bKey = candleBucketKeys[i]
-      const bucket = map.get(bKey)
+    for (let i = 0; i < sortedKeys.length; i++) {
+      const bucket = map.get(sortedKeys[i])
       if (!bucket) continue
       if (atomoku.leadLine1[i] != null) bucket.atomokuLead1 = atomoku.leadLine1[i]
       if (atomoku.leadLine2[i] != null) bucket.atomokuLead2 = atomoku.leadLine2[i]
     }
 
-    // Compute Heikin Ashi on completed buckets (before pruning)
     applyHeikinAshi(map, sortedKeys)
+  }, [applyHeikinAshi])
 
-    // Prune to maxBuckets
-    if (sortedKeys.length > maxBuckets) {
-      for (const k of sortedKeys.slice(0, sortedKeys.length - maxBuckets)) map.delete(k)
+  const maxBucketsRef = useRef(maxBuckets)
+  maxBucketsRef.current = maxBuckets
+
+  /**
+   * Bounded retention policy for canonical buckets.
+   */
+  const pruneRetention = useCallback((map) => {
+    const limit = Math.max(1000, (maxBucketsRef.current || 60) * 2)
+    if (map.size > limit) {
+      const sortedKeys = [...map.keys()].sort((a, b) => a - b)
+      const toDelete = sortedKeys.slice(0, sortedKeys.length - limit)
+      for (const k of toDelete) map.delete(k)
+    }
+  }, [])
+
+  /**
+   * Merge fetched historical candles with accumulated live observations,
+   * preserving newer live bucket close and observed extrema.
+   */
+  const mergeHistoricalCandles = useCallback((candles) => {
+    if (!candles?.length) return
+    const map = bucketsRef.current
+
+    for (const c of candles) {
+      const ts = c.timestamp != null ? c.timestamp : (c.time < 1e11 ? c.time * 1000 : c.time)
+      const bKey = Math.floor(ts / bucketMs) * bucketMs
+      const existing = map.get(bKey)
+      if (existing) {
+        if (c.high > existing.high) existing.high = c.high
+        if (c.low < existing.low) existing.low = c.low
+        if (!existing.hasHistoricalOpen && c.open != null) {
+          existing.open = c.open
+          existing.hasHistoricalOpen = true
+        }
+        if (existing.volume == null && c.volume != null) {
+          existing.volume = c.volume
+        }
+        if (!existing.hasLiveTicks) {
+          existing.price = c.close
+        }
+      } else {
+        const b = emptyBucket(bKey, c.close)
+        b.open = c.open
+        b.high = c.high
+        b.low = c.low
+        b.price = c.close
+        b.volume = c.volume || 0
+        b.hasHistoricalOpen = true
+        map.set(bKey, b)
+      }
     }
 
-    bucketsRef.current = map
+    pruneRetention(map)
+    updateIndicatorsAndHA(map)
+
     const finalKeys = [...map.keys()].sort((a, b) => a - b)
     lastBucketKeyRef.current = finalKeys.length ? finalKeys[finalKeys.length - 1] : null
-  }, [bucketMs, maxBuckets, applyHeikinAshi])
+  }, [bucketMs, pruneRetention, updateIndicatorsAndHA])
 
-  // Fetch historical candles on mount — only stores data, re-populate effect handles rendering
+  const syncChartRef = useRef(syncChart)
+  syncChartRef.current = syncChart
+  const mergeHistoricalCandlesRef = useRef(mergeHistoricalCandles)
+  mergeHistoricalCandlesRef.current = mergeHistoricalCandles
+
+  const seriesKey = `${exchange}:${candleTf}:${bucketMs}`
+
+  // Fetch historical candles on mount or timeframe/exchange change.
   // Retries once after 5s if the requested candleTf is missing (derived TFs may not be ready yet)
   const retryRef = useRef(false)
   useEffect(() => {
     let cancelled = false
     let retryTimer = null
-    let controller = null
+    let controller = new AbortController()
+
+    // Isolated timeframe/exchange check:
+    if (activeSeriesKeyRef.current !== seriesKey) {
+      activeSeriesKeyRef.current = seriesKey
+      bucketsRef.current = new Map()
+      lastBucketKeyRef.current = null
+      lastHARef.current = null
+      historicalCandlesRef.current = null
+      labelCacheRef.current.clear()
+      setChartData([])
+    }
+
     retryRef.current = false
     setIsLoading(true)
     setError(null)
@@ -420,6 +470,10 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
           historicalCandlesRef.current = data.candles
           // If the requested TF has data or we already retried, done loading
           if (data.candles[candleTf]?.length || retryRef.current) {
+            if (data.candles[candleTf]?.length) {
+              mergeHistoricalCandlesRef.current(data.candles[candleTf])
+              syncChartRef.current()
+            }
             setIsLoading(false)
           } else {
             // Derived TF not seeded yet — retry once after 5s (keep isLoading=true)
@@ -439,22 +493,12 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
       controller.abort()
       if (retryTimer !== null) clearTimeout(retryTimer)
     }
-  }, [exchange, candleTf, retryNonce])
+  }, [exchange, candleTf, bucketMs, retryNonce, seriesKey])
 
-  // Re-populate from cached candles when view/interval/range changes or data arrives (isLoading → false)
+  // Derive projection on display limit / range changes or signal annotations change
   useEffect(() => {
-    bucketsRef.current = new Map()
-    lastBucketKeyRef.current = null
-    lastHARef.current = null
-    const candles = historicalCandlesRef.current
-    if (candles?.[candleTf]?.length) {
-      populateFromCandles(candles[candleTf])
-      syncChart()
-    } else {
-      labelCacheRef.current.clear()
-      setChartData([])
-    }
-  }, [view, interval, timeRange, candleTf, populateFromCandles, syncChart, isLoading])
+    syncChart()
+  }, [maxBuckets, options.signalAnnotations, syncChart])
 
   // Process live ticks into buckets (ref mutation only — no re-render per tick)
   useEffect(() => {
@@ -466,10 +510,13 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
     const b = map.get(bKey)
     if (b) {
       b.price = tickPrice
+      b.hasLiveTicks = true
       if (tickPrice > b.high) b.high = tickPrice
       if (tickPrice < b.low) b.low = tickPrice
     } else {
-      map.set(bKey, emptyBucket(bKey, tickPrice))
+      const nb = emptyBucket(bKey, tickPrice)
+      nb.hasLiveTicks = true
+      map.set(bKey, nb)
     }
 
     // Live HA update for current bucket
@@ -490,9 +537,8 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
       }
     }
 
-    // Prune old buckets
-    const cutoff = now - maxBuckets * bucketMs * 1.1
-    for (const k of map.keys()) { if (k < cutoff) map.delete(k) }
+    // Bounded retention policy
+    pruneRetention(map)
 
     // Immediate sync when a new bucket opens
     if (lastBucketKeyRef.current != null && lastBucketKeyRef.current !== bKey) {
@@ -504,10 +550,11 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
           haClose: prevBucket.haClose,
         }
       }
+      updateIndicatorsAndHA(map)
       syncChart()
     }
     lastBucketKeyRef.current = bKey
-  }, [tickPrice, tickTimestamp, bucketMs, maxBuckets, syncChart, legacyMode])
+  }, [tickPrice, tickTimestamp, bucketMs, legacyMode, syncChart, pruneRetention, updateIndicatorsAndHA])
 
   useEffect(() => () => labelCacheRef.current.clear(), [])
 

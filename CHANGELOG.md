@@ -4,6 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- **[issue-1819] Preserve live candles when changing chart display limits** — `useCandleData` separates canonical per-exchange/timeframe candle state from display projections, preserving completed live candles, observed extrema, and current bucket close when changing display limits (Auto/100/300) or ranges.
 - **[issue-1818] Live fill refreshes coalesce behind pending reads** — ChartsRegime tracks requested markers separately from loaded aggregates, coalescing marker updates during page or fills reads and issuing a trailing fills read when work settles so realized P&L, cycle count and TP count never stay stale.
 
 - **[issue-1796] Health sweeps preserve control capacity** — concurrent health requests share one sweep and probe each exchange’s funds sequentially, so five or more healthy funds remain healthy while stop and maintenance commands retain IPC capacity.
