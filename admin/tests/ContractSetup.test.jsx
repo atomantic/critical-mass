@@ -640,7 +640,26 @@ describe('ContractSetup draft revision and server readback transitions', () => {
     expect(screen.getByLabelText(/Target/).value).toBe('100000')
   })
 
-  it('rejects a delayed pre-save readback delivered after the saved value is acknowledged', async () => {
+  it('advances confirmed revision on unchanged values so older delayed responses are rejected', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
+      if (url === '/api/updown/providers') return { ok: true, json: async () => ({ success: true, providers: [] }) }
+      throw new Error(`unexpected ${url}`)
+    }))
+
+    // Value A / revision 1
+    const { rerender } = render(<ContractSetup initialContract={{ target: 100000, stop: 95000, range: 500, direction: 'up', expiry: '', version: 1 }} />)
+    expect(screen.getByLabelText(/Target/).value).toBe('100000')
+
+    // Value A / revision 3 (unchanged values, higher revision)
+    rerender(<ContractSetup initialContract={{ target: 100000, stop: 95000, range: 500, direction: 'up', expiry: '', version: 3 }} />)
+    expect(screen.getByLabelText(/Target/).value).toBe('100000')
+
+    // Delayed value B / revision 2 arrives — must be rejected because 2 <= 3
+    rerender(<ContractSetup initialContract={{ target: 110000, stop: 95000, range: 500, direction: 'up', expiry: '', version: 2 }} />)
+    expect(screen.getByLabelText(/Target/).value).toBe('100000')
+  })
+
+  it('adopts an external restoration of pre-save value after save is acknowledged', async () => {
     vi.stubGlobal('fetch', vi.fn(async (url) => {
       if (url === '/api/updown/providers') return { ok: true, json: async () => ({ success: true, providers: [] }) }
       if (url === '/api/updown/contract') return { ok: true, json: async () => ({ success: true }) }
@@ -650,21 +669,41 @@ describe('ContractSetup draft revision and server readback transitions', () => {
     const initial = { target: 100000, stop: 95000, range: 500, direction: 'up', expiry: '' }
     const { rerender } = render(<ContractSetup initialContract={initial} />)
 
-    // User saves target 110000 over 100000
+    // User saves 110000 over 100000
     fireEvent.change(screen.getByLabelText(/Target/), { target: { value: '110000' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save Contract' }))
     expect(await screen.findByRole('button', { name: 'Saved' })).toBeTruthy()
 
-    // 1. Deliver the saved value (acknowledgement)
+    // Status poll acknowledges 110000
     rerender(<ContractSetup initialContract={{ target: 110000, stop: 95000, range: 500, direction: 'up', expiry: '' }} />)
     expect(screen.getByLabelText(/Target/).value).toBe('110000')
 
-    // 2. Deliver a delayed pre-save poll containing 100000 — must NOT overwrite the saved draft
-    rerender(<ContractSetup initialContract={{ ...initial }} />)
-    expect(screen.getByLabelText(/Target/).value).toBe('110000')
+    // Later, external client legitimately restores 100000 on server
+    rerender(<ContractSetup initialContract={{ target: 100000, stop: 95000, range: 500, direction: 'up', expiry: '' }} />)
+    expect(screen.getByLabelText(/Target/).value).toBe('100000')
+  })
 
-    // 3. Genuine new contract from server (200000) is adopted on pristine form
-    rerender(<ContractSetup initialContract={{ target: 200000, stop: 95000, range: 500, direction: 'up', expiry: '' }} />)
+  it('preserves stale-response protection across subsequent server updates using revisions', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
+      if (url === '/api/updown/providers') return { ok: true, json: async () => ({ success: true, providers: [] }) }
+      if (url === '/api/updown/contract') return { ok: true, json: async () => ({ success: true }) }
+      throw new Error(`unexpected ${url}`)
+    }))
+
+    // Start with 100000 / revision 1
+    const { rerender } = render(<ContractSetup initialContract={{ target: 100000, stop: 95000, range: 500, direction: 'up', expiry: '', version: 1 }} />)
+
+    // User saves 110000
+    fireEvent.change(screen.getByLabelText(/Target/), { target: { value: '110000' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save Contract' }))
+    expect(await screen.findByRole('button', { name: 'Saved' })).toBeTruthy()
+
+    // Superseding server update 200000 / revision 3 arrives and is adopted on pristine form
+    rerender(<ContractSetup initialContract={{ target: 200000, stop: 95000, range: 500, direction: 'up', expiry: '', version: 3 }} />)
+    expect(screen.getByLabelText(/Target/).value).toBe('200000')
+
+    // Delayed pre-save poll with 100000 / revision 1 arrives — must NOT overwrite pristine form
+    rerender(<ContractSetup initialContract={{ target: 100000, stop: 95000, range: 500, direction: 'up', expiry: '', version: 1 }} />)
     expect(screen.getByLabelText(/Target/).value).toBe('200000')
   })
 })

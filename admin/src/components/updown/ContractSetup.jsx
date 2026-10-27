@@ -211,28 +211,27 @@ export default function ContractSetup({ initialContract }) {
     }
 
     // Check revision freshness: an older or equal revision to our confirmed pre-save state is stale
-    if (rev != null && confirmedRevRef.current != null) {
-      if (rev <= confirmedRevRef.current) {
+    if (rev != null) {
+      if (confirmedRevRef.current != null && rev <= confirmedRevRef.current) {
         // Stale pre-save response by authoritative revision: drop it
         return
       }
-      // Authoritative newer revision from server
+      // Authoritative newer revision from server: advance confirmed revision immediately
+      confirmedRevRef.current = Math.max(confirmedRevRef.current || 0, rev)
       awaitingServerAckRef.current = false
       stalePreSaveKeysRef.current.clear()
-    } else if (stalePreSaveKeysRef.current.has(key)) {
-      // Stale pre-save poll: drop older in-flight responses even if delivered after acknowledgement
-      return
     } else if (awaitingServerAckRef.current) {
+      // Without revision metadata: while awaiting acknowledgement of our save
+      if (stalePreSaveKeysRef.current.has(key)) {
+        // Drop pre-save value while waiting for save acknowledgement
+        return
+      }
       // Received the saved contract or a superseding update
       awaitingServerAckRef.current = false
     }
 
     if (prevContractRef.current === key) return
     prevContractRef.current = key
-    stalePreSaveKeysRef.current.clear()
-    if (rev != null) {
-      confirmedRevRef.current = rev
-    }
 
     const normalized = normalizeContract(initialContract)
     baselineRef.current = normalized
