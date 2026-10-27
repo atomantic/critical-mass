@@ -26,7 +26,12 @@ const { spawnSync, spawn } = require('child_process');
 const { DATA_DIR, BACKUP_DIR } = require('./paths');
 const { validatePersistedPayload, classifyPayloadPath } = require('./persisted-payload-validation');
 const { applyStagedFiles, STAGE_PREFIX, ORIGINALS_PREFIX, JOURNAL_FILENAME, OWNER_PREFIX } = require('./restore-apply');
-const { LOCK_FILENAME: LEGACY_MIGRATION_LOCK } = require('./legacy-namespace-migration');
+const {
+  LOCK_FILENAME: LEGACY_MIGRATION_LOCK,
+  LEGACY_EXCHANGE,
+  isLegacyRootArtifact,
+  discoverLegacyArtifacts,
+} = require('./legacy-namespace-migration');
 
 // UpDown scorecard maintenance lock (relative to data/). A backup taken while a
 // backfill holds it would carry a lock no live process owns into the restore.
@@ -54,7 +59,13 @@ const {
   deepMerge,
   GLOBAL_DEFAULTS,
 } = require('./config-utils');
-const { isPerFundFile, normalizeExchangeTreeToPairs } = require('./migration');
+const {
+  isPerFundFile,
+  normalizeExchangeTreeToPairs,
+  normalizeLegacyRootToNamespace,
+  legacyRootArtifactTarget,
+  legacyRootArtifactCandidates,
+} = require('./migration');
 const { serializeFundState } = require('./dry-run-state');
 const { JOURNAL_FILENAME: DCA_IMPORT_JOURNAL_FILENAME } = require('./dca-conversion-transaction');
 const { PLACEMENT_INTENTS_FILENAME, parsePlacementIntentsDocument, assertPlacementIntentRows } = require('./placement-intent-document');
@@ -94,6 +105,8 @@ const FUND_STATE_CAPTURED_FILENAMES = [...FUND_STATE_SNAPSHOT_FILENAMES, PLACEME
 // slow archive no longer blocks the gateway event loop or its shutdown drain;
 // the sync callers (restore, listing) still block for up to this long.
 const SPAWN_TIMEOUT_MS = 60000;
+// Largest archive entry the root-collision comparison will buffer from `unzip -p`.
+const ROOT_COMPARE_MAX_BYTES = 512 * 1024 * 1024;
 
 /**
  * Promise-wrapped spawn with spawnSync's result shape ({status, error, stdout,
@@ -338,21 +351,46 @@ const defaultPairFromConfig = (config, exchange) => {
 };
 
 /**
+ * The pair an exchange's legacy data belongs to: the archive's own snapshot
+ * wins, the destination's default is the fallback (see `planLayoutTranslation`).
+ * @param {string} exchange
+ * @param {Object|null} snapshot
+ * @param {Object} destinationConfig
+ * @returns {string|null}
+ */
+const resolveLegacyPair = (exchange, snapshot, destinationConfig) =>
+  Object.keys(snapshot?.exchanges?.[exchange]?.pairs || {})[0]
+    ?? defaultPairFromConfig(destinationConfig, exchange);
+
+/**
+ * Pre-namespace artifacts an archive entry listing holds directly at its root.
+ * @param {string[]} entries
+ * @returns {string[]}
+ */
+const collectRootFilesFromEntries = (entries) =>
+  [...new Set(entries.filter((entry) => !entry.includes('/') && isLegacyRootArtifact(entry)))];
+
+/**
  * Decide, without touching a single file, which staged exchange trees are in
- * the pre-multi-pair layout and which pair each would be relocated into.
+ * the pre-multi-pair layout and which pair each would be relocated into, and
+ * where artifacts from the oldest (pre-exchange-namespace) layout — kept
+ * directly at the data root — would land.
  *
  * The archive's own snapshot wins: an archive that carries its configuration
  * knows the pair its data belongs to, and the destination's default may name a
  * different fund entirely. The destination's default is the fallback for the
- * data-only (`acceptLegacyWithoutBase`) path, where no snapshot exists.
+ * data-only (`acceptLegacyWithoutBase`) path, where no snapshot exists. The
+ * historic root namespace is always coinbase, the only exchange that existed.
  *
  * @param {Object} params
  * @param {Map<string, string[]>} params.exchangeFiles - Exchange dir -> file names at its root
+ * @param {string[]} [params.rootFiles] - Pre-namespace artifact names at the data root
  * @param {Object|null} params.snapshot - Archive configuration snapshot, if any
  * @param {Object} params.destinationConfig - Destination's effective configuration
- * @returns {{translations: Array<{exchange: string, pair: string}>, unresolvable: string[]}}
+ * @returns {{translations: Array<{exchange: string, pair: string}>, unresolvable: string[],
+ *   rootTranslation: {exchange: string, pair: string|null, files: Array<{name: string, target: string}>}|null}}
  */
-const planLayoutTranslation = ({ exchangeFiles, snapshot, destinationConfig }) => {
+const planLayoutTranslation = ({ exchangeFiles, rootFiles = [], snapshot, destinationConfig }) => {
   const knownExchanges = new Set([
     ...Object.keys(snapshot?.exchanges || {}),
     ...Object.keys(destinationConfig?.exchanges || {}),
@@ -362,13 +400,63 @@ const planLayoutTranslation = ({ exchangeFiles, snapshot, destinationConfig }) =
 
   for (const [exchange, filenames] of exchangeFiles) {
     if (!isLegacyExchangeLayout(exchange, filenames, knownExchanges)) continue;
-    const pair = Object.keys(snapshot?.exchanges?.[exchange]?.pairs || {})[0]
-      ?? defaultPairFromConfig(destinationConfig, exchange);
+    const pair = resolveLegacyPair(exchange, snapshot, destinationConfig);
     if (pair) translations.push({ exchange, pair });
     else unresolvable.push(exchange);
   }
 
-  return { translations, unresolvable };
+  let rootTranslation = null;
+  if (rootFiles.length > 0) {
+    // Only per-fund artifacts need a fund directory; price caches stay at exchange level.
+    const pair = rootFiles.some(isPerFundFile) ? resolveLegacyPair(LEGACY_EXCHANGE, snapshot, destinationConfig) : null;
+    if (pair || !rootFiles.some(isPerFundFile)) {
+      rootTranslation = {
+        exchange: LEGACY_EXCHANGE,
+        pair,
+        files: rootFiles.map((name) => ({ name, target: legacyRootArtifactTarget(name, pair) })),
+      };
+    } else if (!unresolvable.includes(LEGACY_EXCHANGE)) {
+      unresolvable.push(LEGACY_EXCHANGE);
+    }
+  }
+
+  return { translations, unresolvable, rootTranslation };
+};
+
+/**
+ * Root artifacts that collide with a DIFFERENT generation elsewhere in the same
+ * archive, judged from archive entries alone (nothing is extracted to disk).
+ * `readEntry` returns an entry's bytes, or null when it is unreadable.
+ * @param {Object} params
+ * @param {string[]} params.entries
+ * @param {{pair: string|null, files: Array<{name: string}>}|null} params.rootTranslation
+ * @param {(entry: string) => Buffer|null} params.readEntry
+ * @returns {Array<{artifact: string, existing: string}>}
+ */
+const findRootCollisions = ({ entries, rootTranslation, readEntry }) => {
+  if (!rootTranslation) return [];
+  const present = new Set(entries);
+  const collisions = [];
+  for (const { name } of rootTranslation.files) {
+    const rootBytes = readEntry(name);
+    for (const candidate of legacyRootArtifactCandidates(name, rootTranslation.pair)) {
+      if (!present.has(candidate)) continue;
+      const other = readEntry(candidate);
+      if (!rootBytes || !other || !rootBytes.equals(other)) collisions.push({ artifact: name, existing: candidate });
+    }
+  }
+  return collisions;
+};
+
+/** Archive entries `findRootCollisions` needs the bytes of. */
+const rootCollisionEntries = ({ entries, rootTranslation }) => {
+  if (!rootTranslation) return [];
+  const present = new Set(entries);
+  return rootTranslation.files.flatMap(({ name }) => {
+    const others = legacyRootArtifactCandidates(name, rootTranslation.pair)
+      .filter((rel) => present.has(rel));
+    return others.length > 0 ? [name, ...others] : [];
+  });
 };
 
 /**
@@ -392,17 +480,30 @@ const listArchiveEntries = (zipPath) => {
  * @param {Object|null} params.snapshot - Archive configuration snapshot, if any
  * @param {Object} params.destinationConfig - Destination's effective configuration
  * @returns {{legacyLayout: boolean, layoutTranslations: Array<{exchange: string, pair: string}>,
+ *   rootTranslation: Object|null, layoutConflicts: Array<{artifact: string, existing: string}>,
  *   unresolvableLayoutExchanges: string[]}}
  */
 const describeLayoutTranslation = ({ zipPath, snapshot, destinationConfig }) => {
-  const { translations, unresolvable } = planLayoutTranslation({
-    exchangeFiles: collectExchangeFilesFromEntries(listArchiveEntries(zipPath)),
+  const entries = listArchiveEntries(zipPath);
+  const { translations, unresolvable, rootTranslation } = planLayoutTranslation({
+    exchangeFiles: collectExchangeFilesFromEntries(entries),
+    rootFiles: collectRootFilesFromEntries(entries),
     snapshot,
     destinationConfig,
   });
+  const layoutConflicts = findRootCollisions({
+    entries,
+    rootTranslation,
+    readEntry: (entry) => {
+      const result = spawnSync('unzip', ['-p', zipPath, entry], { timeout: SPAWN_TIMEOUT_MS, maxBuffer: ROOT_COMPARE_MAX_BYTES });
+      return result.error || result.status !== 0 ? null : result.stdout;
+    },
+  });
   return {
-    legacyLayout: translations.length > 0 || unresolvable.length > 0,
+    legacyLayout: translations.length > 0 || unresolvable.length > 0 || rootTranslation !== null,
     layoutTranslations: translations,
+    rootTranslation,
+    layoutConflicts,
     unresolvableLayoutExchanges: unresolvable,
   };
 };
@@ -870,14 +971,15 @@ const listTreeFiles = (root, prefix = '') => fs.readdirSync(root, { withFileType
 /**
  * The funds a full restore of `entries` would write or reset, decided from the
  * archive listing alone: `restoredArchiveFunds` over the extracted tree, with
- * every legacy exchange-level translation counted (a superset, so the
- * pre-flight never admits a restore the applier would refuse).
+ * every legacy exchange-level and root-level translation counted (a superset,
+ * so the pre-flight never admits a restore the applier would refuse).
  * @param {string[]} entries
  * @param {Object|null} snapshot
  * @param {Array<{exchange: string, pair: string}>} translations
+ * @param {{exchange: string, pair: string|null}|null} [rootTranslation]
  * @returns {Array<{exchange: string, pair: string}>}
  */
-const archiveEntryFunds = (entries, snapshot, translations) => {
+const archiveEntryFunds = (entries, snapshot, translations, rootTranslation) => {
   const funds = new Map(configuredFundIdentities(snapshot).map((fund) => [`${fund.exchange}/${fund.pair}`, fund]));
   for (const entry of entries) {
     const [exchange, pair, name, ...rest] = entry.split('/');
@@ -885,6 +987,9 @@ const archiveEntryFunds = (entries, snapshot, translations) => {
     if (FUND_STATE_SNAPSHOT_FILENAMES.includes(name)) funds.set(`${exchange}/${pair}`, { exchange, pair });
   }
   for (const { exchange, pair } of translations) funds.set(`${exchange}/${pair}`, { exchange, pair });
+  if (rootTranslation?.pair) {
+    funds.set(`${rootTranslation.exchange}/${rootTranslation.pair}`, { exchange: rootTranslation.exchange, pair: rootTranslation.pair });
+  }
   return [...funds.values()];
 };
 
@@ -1607,13 +1712,21 @@ const planRestoreConfig = ({ snapshot, destination, acceptFundRemoval }) => {
 };
 
 /**
- * @param {string[]} unresolvable - Exchanges with exchange-level fund files and no known pair
+ * @param {string[]} unresolvable - Exchanges with root- or exchange-level fund files and no known pair
  * @returns {string}
  */
 const unresolvableLayoutError = (unresolvable) =>
-  `This archive predates the multi-pair layout and holds per-fund files at the exchange level for ${unresolvable.join(', ')}, `
+  `This archive predates the multi-pair layout and holds per-fund files at the data root or exchange level for ${unresolvable.join(', ')}, `
   + 'but neither the archive nor this machine names a fund for those exchanges, so there is no directory to restore them into. '
   + 'Configure the fund before restoring. No files were changed.';
+
+/**
+ * @param {Array<{artifact: string, existing: string}>} conflicts
+ * @returns {string}
+ */
+const ambiguousLayoutError = (conflicts) =>
+  `This archive holds two different generations of the same legacy data (${conflicts.map(({ artifact, existing }) => `${artifact} vs ${existing}`).join(', ')}), `
+  + 'and there is no way to tell which one is current. Remove the stale copy from the archive and retry. No files were changed.';
 
 /**
  * Parse JSON read out of an archive entry.
@@ -1690,13 +1803,23 @@ const checkRestorePreconditions = async (filename, { paths: pathOverrides, legac
 
   const layout = planLayoutTranslation({
     exchangeFiles: collectExchangeFilesFromEntries(entries),
+    rootFiles: collectRootFilesFromEntries(entries),
     snapshot,
     destinationConfig: destination.config,
   });
   if (layout.unresolvable.length > 0) {
     return { ok: false, code: 'legacy-layout-unresolvable-pair', error: unresolvableLayoutError(layout.unresolvable) };
   }
-  const pending = fundsWithPendingDcaImport(paths.dataDir, archiveEntryFunds(entries, snapshot, layout.translations));
+  const bytes = new Map();
+  for (const entry of rootCollisionEntries({ entries, rootTranslation: layout.rootTranslation })) {
+    const read = await spawnAsync('unzip', ['-p', zipPath, entry]);
+    bytes.set(entry, read.error || read.status !== 0 ? null : read.stdout);
+  }
+  const conflicts = findRootCollisions({ entries, rootTranslation: layout.rootTranslation, readEntry: (entry) => bytes.get(entry) ?? null });
+  if (conflicts.length > 0) {
+    return { ok: false, code: 'legacy-layout-ambiguous-generations', error: ambiguousLayoutError(conflicts) };
+  }
+  const pending = fundsWithPendingDcaImport(paths.dataDir, archiveEntryFunds(entries, snapshot, layout.translations, layout.rootTranslation));
   if (pending.length > 0) return { ok: false, ...pendingDcaImportRefusal(pending, 'No files were changed.') };
 
   // Business-format compatibility of the accounting payloads (#1811): the
@@ -1843,11 +1966,26 @@ const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null
     // is still replaced rather than shadowed (issue #541).
     const layout = planLayoutTranslation({
       exchangeFiles: collectExchangeFilesFromDir(tempDir),
+      rootFiles: discoverLegacyArtifacts(tempDir),
       snapshot,
       destinationConfig: destination.config,
     });
     if (layout.unresolvable.length > 0) {
       return abort(unresolvableLayoutError(layout.unresolvable), 'legacy-layout-unresolvable-pair');
+    }
+    // The oldest layout kept state at the data root. Translate it first, in the
+    // staging tree and with the destination never consulted, so it lands exactly
+    // where the live root→exchange→pair migrations would put it — and so no
+    // stray root artifact survives to make the next startup refuse to boot.
+    if (layout.rootTranslation) {
+      const { pair } = layout.rootTranslation;
+      const rooted = normalizeLegacyRootToNamespace({ root: tempDir, pair });
+      if (rooted.conflicts.length > 0) {
+        return abort(ambiguousLayoutError(rooted.conflicts), 'legacy-layout-ambiguous-generations');
+      }
+      logger.info(`ℹ️ 💾 Restore translated legacy root artifacts → ${LEGACY_EXCHANGE}${pair ? `/${pair}` : ''}: ${rooted.moved.length} relocated, ${rooted.reconciled.length} already present (${[...rooted.moved, ...rooted.reconciled].join(', ') || 'none'})`, {
+        action: 'restore-legacy-root-layout', filename, exchange: LEGACY_EXCHANGE, pair, moved: rooted.moved.length, reconciled: rooted.reconciled.length,
+      });
     }
     for (const { exchange, pair } of layout.translations) {
       const { moved, skipped } = normalizeExchangeTreeToPairs({ root: tempDir, exchange, pair });

@@ -426,6 +426,23 @@ describe('checkRestorePreconditions mirrors the applier refusals without extract
       assert.deepEqual(tree(dest.dataDir), before);
     });
 
+    it('counts a root-layout legacy archive\'s translated fund in the pre-flight', async () => {
+      const staging = path.join(root, 'root-layout');
+      writeJson(path.join(staging, 'state.json'), { orders: [{ status: 'pending' }] });
+      const filename = 'backup-root-layout-0001.zip';
+      const dest = makeInstall('dest', BASE);
+      seedAccounting(dest);
+      pendImport(dest);
+      fs.mkdirSync(path.join(dest.dataDir, 'backups'), { recursive: true });
+      assert.equal(spawnSync('zip', ['-q', path.join(dest.dataDir, 'backups', filename), 'state.json'], { cwd: staging }).status, 0);
+      const before = tree(dest.dataDir);
+      const check = await checkRestorePreconditions(filename, { paths: dest.paths, acceptLegacyWithoutBase: true });
+      assert.equal(check.code, 'dca-import-pending', JSON.stringify(check));
+      const applied = restoreBackup(filename, { paths: dest.paths, acceptLegacyWithoutBase: true });
+      assert.equal(applied.code, 'dca-import-pending');
+      assert.deepEqual(tree(dest.dataDir), before);
+    });
+
     it('ignores a pending import in a fund the archive does not restore', async () => {
       const source = makeInstall('source', BASE);
       seedAccounting(source);

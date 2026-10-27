@@ -31,6 +31,8 @@ const {
   migrateLegacyNamespace,
   discoverLegacyArtifacts,
   describeBlockedMigration,
+  filesIdentical,
+  lstatOrNull,
   LEGACY_EXCHANGE,
 } = require('./legacy-namespace-migration');
 
@@ -536,6 +538,83 @@ const normalizeExchangeTreeToPairs = ({ root, exchange, pair }) => {
     moved.push(name);
   }
   return { moved, skipped };
+};
+
+/**
+ * Relative POSIX path (under the data root) a pre-namespace root artifact lands at in
+ * the current layout: per-fund files go into the fund directory, everything
+ * else (price caches) stays at exchange level — the same end state the live
+ * root→exchange→pair migrations reach.
+ * @param {string} name
+ * @param {string|null} pair
+ * @returns {string}
+ */
+const legacyRootArtifactTarget = (name, pair) =>
+  (isPerFundFile(name) ? path.posix.join(LEGACY_EXCHANGE, /** @type {string} */ (pair), name) : path.posix.join(LEGACY_EXCHANGE, name));
+
+/**
+ * Every relative path an existing copy of a root artifact could occupy: the
+ * exchange-level name and, for per-fund files, the fund-level name. Mirrors
+ * the candidates `planArtifact` in legacy-namespace-migration weighs.
+ * @param {string} name
+ * @param {string|null} pair
+ * @returns {string[]}
+ */
+const legacyRootArtifactCandidates = (name, pair) => (isPerFundFile(name)
+  ? [path.posix.join(LEGACY_EXCHANGE, name), path.posix.join(LEGACY_EXCHANGE, /** @type {string} */ (pair), name)]
+  : [path.posix.join(LEGACY_EXCHANGE, name)]);
+
+/**
+ * Translate pre-namespace artifacts sitting at `<root>/` into the current
+ * per-fund layout under `<root>/coinbase/`, inside a restore's staging tree.
+ *
+ * The restore equivalent of `migrateLegacyNamespace` + `migrateExchangeToPairs`,
+ * minus the live-data side effects. The whole inventory is judged before
+ * anything moves: a byte-identical existing copy retires the root file, and a
+ * differing copy (or a non-regular file) is a conflict that leaves the tree
+ * untouched — the archive carries two generations and nothing here may guess
+ * a winner.
+ *
+ * @param {Object} params
+ * @param {string} params.root - Staging root holding the archive's files
+ * @param {string|null} params.pair - Fund directory for per-fund artifacts (required when any is present)
+ * @returns {{moved: string[], reconciled: string[], conflicts: Array<{artifact: string, existing: string, reason: string}>}}
+ */
+const normalizeLegacyRootToNamespace = ({ root, pair }) => {
+  const result = { moved: [], reconciled: [], conflicts: [] };
+  const names = discoverLegacyArtifacts(root);
+  if (names.length === 0) return result;
+
+  const fundDir = pair ? resolveFundPath(path.join(root, LEGACY_EXCHANGE), pair) : null;
+  if (!fundDir && names.some(isPerFundFile)) throw new Error('A fund pair is required to place legacy root state');
+
+  const plans = names.map((name) => {
+    const source = path.join(root, name);
+    const existing = legacyRootArtifactCandidates(name, pair)
+      .map((rel) => ({ rel, abs: path.join(root, rel) }))
+      .filter(({ abs }) => lstatOrNull(abs));
+    for (const { rel, abs } of existing) {
+      if (!lstatOrNull(abs)?.isFile()) {
+        result.conflicts.push({ artifact: name, existing: rel, reason: 'existing copy is not a regular file' });
+      } else if (!filesIdentical(source, abs)) {
+        result.conflicts.push({ artifact: name, existing: rel, reason: 'archive holds a different generation' });
+      }
+    }
+    return { name, source, target: path.join(root, legacyRootArtifactTarget(name, pair)), reconcile: existing.length > 0 };
+  });
+  if (result.conflicts.length > 0) return result;
+
+  for (const { name, source, target, reconcile } of plans) {
+    if (reconcile) {
+      fs.rmSync(source);
+      result.reconciled.push(name);
+      continue;
+    }
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.renameSync(source, target);
+    result.moved.push(name);
+  }
+  return result;
 };
 
 /**
@@ -1073,6 +1152,9 @@ module.exports = {
   withFundDataDirOverride,
   migrateExchangeToPairs,
   normalizeExchangeTreeToPairs,
+  normalizeLegacyRootToNamespace,
+  legacyRootArtifactTarget,
+  legacyRootArtifactCandidates,
   repairStrandedLongTermCandles,
   repairStrandedPriceCaches,
   repairStrandedTransactionLog,

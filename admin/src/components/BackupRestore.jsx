@@ -315,6 +315,7 @@ function BackupRestore() {
     || (compatibility?.legacy === true && !legacyAcknowledged)
     || (compatibility?.compatible === true && compatibility?.removedFunds?.length > 0 && !fundRemovalAcknowledged)
     || compatibility?.unresolvableLayoutExchanges?.length > 0
+    || compatibility?.layoutConflicts?.length > 0
 
   if (error) {
     return (
@@ -740,14 +741,25 @@ function BackupRestore() {
               <p className="text-sm font-semibold text-amber-200 mb-2">
                 Pre-multi-pair archive: data files will be relocated into the per-fund layout.
               </p>
-              {compatibility.layoutTranslations?.length > 0 && (
+              {(compatibility.layoutTranslations?.length > 0 || compatibility.rootTranslation) && (
                 <ul className="text-xs text-amber-200/90 font-mono space-y-1">
-                  {compatibility.layoutTranslations.map(t => (
+                  {compatibility.layoutTranslations?.map(t => (
                     <li key={t.exchange}>
                       {t.exchange}/ &rarr; {t.exchange}/{t.pair}/
                     </li>
                   ))}
+                  {compatibility.rootTranslation?.files.map(f => (
+                    <li key={f.name}>
+                      {f.name} &rarr; {f.target}
+                    </li>
+                  ))}
                 </ul>
+              )}
+              {compatibility.layoutConflicts?.length > 0 && (
+                <p className="text-xs text-red-200 mt-2">
+                  The archive holds two different generations of {compatibility.layoutConflicts.map(c => `${c.artifact} (vs ${c.existing})`).join(', ')} —
+                  the restore would be refused before any file is written. Remove the stale copy from the archive.
+                </p>
               )}
               {compatibility.unresolvableLayoutExchanges?.length > 0 && (
                 <p className="text-xs text-red-200 mt-2">

@@ -82,6 +82,9 @@ const makeFill = (overrides = {}) => ({
   ...overrides,
 });
 
+/** Yield one macrotask so concurrent imports interleave at every await. */
+const sleepTick = () => new Promise((resolve) => setImmediate(resolve));
+
 const readManualTradesFile = () => {
   const file = path.join(migration.resolveFundDataDir(EXCHANGE, PAIR), 'manual-trades.json');
   return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null;
@@ -961,6 +964,194 @@ describe('Manual Trade Import', () => {
       assert.equal(store.getAll().length, 1, 'no second record was created');
       assert.equal(pairResult.trade.id, sellResult.trade.id);
       assert.equal(pairResult.trade.status, STATUS.DISMISSED, 'a dismissed trade must stay dismissed, not be promoted to completed');
+    });
+
+    // Issue #1802: a paired import claims both whole orders. A changed
+    // counterpart used to succeed, re-link the buy's ledger rows to the new
+    // sell and add a second completed record sharing an order.
+    describe('whole-order ownership (#1802)', () => {
+      const legs = {
+        'buy-1': [makeFill({ tradeId: 'own-buy-1', side: 'buy', price: 90000, size: 0.004 })],
+        'buy-2': [makeFill({ tradeId: 'own-buy-2', side: 'buy', price: 91000, size: 0.004 })],
+        'sell-1': [makeFill({ tradeId: 'own-sell-1', side: 'sell', price: 100000, size: 0.004 })],
+        'sell-2': [makeFill({ tradeId: 'own-sell-2', side: 'sell', price: 101000, size: 0.004 })],
+      };
+      const sellOrder = { status: 'FILLED', side: 'sell' };
+      const orders = { 'sell-1': sellOrder, 'sell-2': sellOrder };
+
+      /** Durable snapshot: what a restart would read back. */
+      const durable = () => ({
+        trades: readManualTradesFile()?.trades || [],
+        dismissed: readManualTradesFile()?.dismissedFillOrderIds || [],
+        ledger: JSON.parse(JSON.stringify(fillLedger.getAllFills())),
+      });
+
+      it('rejects reusing a paired buy with a different sell and keeps the original link', async () => {
+        const importer = createImporter({ adapter: createFakeAdapter({ fillsByOrder: legs, orders }) });
+        const first = await importer.importPair({ buyOrderId: 'buy-1', sellOrderId: 'sell-1' });
+        assert.equal(first.success, true);
+        const before = durable();
+
+        const second = await importer.importPair({ buyOrderId: 'buy-1', sellOrderId: 'sell-2' });
+
+        assert.equal(second.success, false);
+        assert.match(second.error, /Buy order buy-1 already belongs to manual trade/);
+        assert.deepEqual(durable(), before, 'no ledger or store state changed');
+        assert.equal(fillLedger.getFillsForOrder('buy-1')[0].sellOrderId, 'sell-1');
+        assert.deepEqual(fillLedger.getFillsForOrder('sell-2'), []);
+        assert.equal(store.isFillDismissed('sell-2'), false);
+      });
+
+      it('rejects reusing a paired sell with a different buy without ingesting it', async () => {
+        const importer = createImporter({ adapter: createFakeAdapter({ fillsByOrder: legs, orders }) });
+        assert.equal((await importer.importPair({ buyOrderId: 'buy-1', sellOrderId: 'sell-1' })).success, true);
+        const before = durable();
+
+        const second = await importer.importPair({ buyOrderId: 'buy-2', sellOrderId: 'sell-1' });
+
+        assert.equal(second.success, false);
+        assert.match(second.error, /Sell order sell-1 already belongs to manual trade/);
+        assert.deepEqual(durable(), before);
+        assert.deepEqual(fillLedger.getFillsForOrder('buy-2'), []);
+        assert.equal(store.isFillDismissed('buy-2'), false);
+      });
+
+      it('rejects a buy the ledger already links to another sell even with no manual record', async () => {
+        fillLedger.ingestFill({ ...legs['buy-1'][0], orderId: 'buy-1', fee_asset: 'USDC' }, null, { cycleId: null });
+        fillLedger.annotateFillsByOrderId('buy-1', { sellOrderId: 'engine-tp-1' });
+        const adapter = createFakeAdapter({ fillsByOrder: legs, orders });
+
+        const result = await createImporter({ adapter }).importPair({ buyOrderId: 'buy-1', sellOrderId: 'sell-1' });
+
+        assert.equal(result.success, false);
+        assert.match(result.error, /already linked to sell engine-tp-1/);
+        assert.equal(fillLedger.getFillsForOrder('buy-1')[0].sellOrderId, 'engine-tp-1');
+        assert.deepEqual(adapter.calls.getOrderFills, [], 'a known conflict fails before any exchange read');
+        assert.equal(store.getAll().length, 0);
+      });
+
+      it('rejects a sell the engine already booked against a body', async () => {
+        fillLedger.ingestFill({ ...legs['sell-1'][0], orderId: 'sell-1', fee_asset: 'USDC' }, null, { cycleId: null });
+        fillLedger.annotateFillsByOrderId('sell-1', { bodyId: 'body-9', bodyPnl: 12.5 });
+
+        const result = await createImporter({ adapter: createFakeAdapter({ fillsByOrder: legs, orders }) })
+          .importPair({ buyOrderId: 'buy-1', sellOrderId: 'sell-1' });
+
+        assert.equal(result.success, false);
+        assert.match(result.error, /already booked by the engine against body body-9/);
+        assert.deepEqual(fillLedger.getFillsForOrder('buy-1'), []);
+        assert.equal(store.getAll().length, 0);
+      });
+
+      it('rejects a buy owned by a buy-first body import', async () => {
+        const importer = createImporter({ adapter: createFakeAdapter({ fillsByOrder: legs, orders }), injectBody: null });
+        assert.equal((await importer.importBuy({ buyOrderId: 'buy-1', createBody: true })).success, true);
+        const before = durable();
+
+        const result = await importer.importPair({ buyOrderId: 'buy-1', sellOrderId: 'sell-1' });
+
+        assert.equal(result.success, false);
+        assert.match(result.error, /Buy order buy-1 already belongs to manual trade/);
+        assert.deepEqual(durable(), before);
+        assert.equal(readRegimeStateFile().position.celestialBodies.length, 1);
+      });
+
+      it('rejects a buy owned only by a persisted engine body', async () => {
+        const { loadFundRegimeState, saveFundRegimeState } = require('../src/state-tracker');
+        const saved = loadFundRegimeState(EXCHANGE, PAIR);
+        saved.position.celestialBodies = [{ id: 'engine-body', sourceOrderIds: ['buy-1'], buyOrders: [], tpOrderId: null }];
+        saveFundRegimeState(EXCHANGE, PAIR, saved);
+
+        const result = await createImporter({ adapter: createFakeAdapter({ fillsByOrder: legs, orders }) })
+          .importPair({ buyOrderId: 'buy-1', sellOrderId: 'sell-1' });
+
+        assert.equal(result.success, false);
+        assert.match(result.error, /Celestial body engine-body already owns buy buy-1/);
+        assert.equal(fillLedger.getFillCount(), 0);
+        assert.equal(store.getAll().length, 0);
+      });
+
+      it('rejects pairing a pending sell-first recovery with another order', async () => {
+        const importer = createImporter({
+          adapter: createFakeAdapter({ fillsByOrder: { ...legs, 'recovery-1': legs['buy-2'] }, orders }),
+        });
+        const sold = await importer.importSell({ sellOrderId: 'sell-1', recoveryBuyPrice: '91000' });
+        assert.equal(sold.trade.status, STATUS.BUY_PENDING);
+        const before = durable();
+
+        const otherBuy = await importer.importPair({ buyOrderId: 'buy-1', sellOrderId: 'sell-1' });
+        const otherSell = await importer.importPair({ buyOrderId: 'recovery-1', sellOrderId: 'sell-2' });
+
+        assert.equal(otherBuy.success, false);
+        assert.match(otherBuy.error, /Sell order sell-1 already belongs to manual trade/);
+        assert.equal(otherSell.success, false);
+        assert.match(otherSell.error, /Buy order recovery-1 already belongs to manual trade/);
+        assert.deepEqual(durable(), before);
+        assert.equal(store.getById(sold.trade.id).status, STATUS.BUY_PENDING);
+      });
+
+      it('settles concurrent conflicting pairs with exactly one owner', async () => {
+        // Every fetch yields, so the three requests interleave unless locked.
+        const base = createFakeAdapter({ fillsByOrder: legs, orders });
+        const adapter = {
+          ...base,
+          getOrderFills: async (orderId) => { await sleepTick(); return base.getOrderFills(orderId); },
+          getOrder: async (orderId) => { await sleepTick(); return base.getOrder(orderId); },
+        };
+        const importer = createImporter({ adapter });
+
+        const results = await Promise.all([
+          importer.importPair({ buyOrderId: 'buy-1', sellOrderId: 'sell-1' }),
+          importer.importPair({ buyOrderId: 'buy-1', sellOrderId: 'sell-2' }),
+          importer.importPair({ buyOrderId: 'buy-2', sellOrderId: 'sell-1' }),
+        ]);
+
+        assert.deepEqual(results.map((r) => r.success), [true, false, false]);
+        assert.equal(store.getAll().length, 1);
+        assert.equal(fillLedger.getFillsForOrder('buy-1')[0].sellOrderId, 'sell-1');
+        assert.deepEqual(fillLedger.getFillsForOrder('buy-2'), []);
+        assert.deepEqual(fillLedger.getFillsForOrder('sell-2'), []);
+      });
+
+      it('settles pairs that take the same ids in opposite roles without deadlock', async () => {
+        const base = createFakeAdapter({ fillsByOrder: legs, orders });
+        const adapter = { ...base, getOrderFills: async (orderId) => { await sleepTick(); return base.getOrderFills(orderId); } };
+        const importer = createImporter({ adapter });
+
+        // buy:buy-1 + sell:sell-1 and buy:sell-1 + sell:buy-1 share no lock,
+        // and a third pair queues behind the first on both of its keys.
+        const results = await Promise.all([
+          importer.importPair({ buyOrderId: 'buy-1', sellOrderId: 'sell-1' }),
+          importer.importPair({ buyOrderId: 'sell-1', sellOrderId: 'buy-1' }),
+          importer.importPair({ buyOrderId: 'buy-1', sellOrderId: 'sell-1' }),
+        ]);
+
+        assert.equal(results[0].success, true);
+        assert.equal(results[1].success, false, 'swapped roles fail identity checks');
+        assert.equal(results[2].success, true, 'the exact retry is idempotent');
+        assert.equal(results[2].trade.id, results[0].trade.id);
+        assert.equal(store.getAll().length, 1);
+      });
+
+      it('retries the exact pair after the store write was lost, without a duplicate', async () => {
+        const importer = createImporter({ adapter: createFakeAdapter({ fillsByOrder: legs, orders }) });
+        assert.equal((await importer.importPair({ buyOrderId: 'buy-1', sellOrderId: 'sell-1' })).success, true);
+
+        // Simulate a crash after the ledger persisted but before the store
+        // did: the ledger keeps buy-1 -> sell-1, manual-trades.json is gone.
+        fs.rmSync(path.join(migration.resolveFundDataDir(EXCHANGE, PAIR), 'manual-trades.json'));
+        const { createManualTradeStore } = require('../src/manual-trades');
+        store = createManualTradeStore(EXCHANGE, PAIR);
+        store.load();
+
+        const retried = await createImporter({ adapter: createFakeAdapter({ fillsByOrder: legs, orders }) })
+          .importPair({ buyOrderId: 'buy-1', sellOrderId: 'sell-1' });
+
+        assert.equal(retried.success, true);
+        assert.equal(readManualTradesFile().trades.length, 1);
+        assert.equal(fillLedger.getFillsForOrder('buy-1').length, 1);
+        assert.equal(fillLedger.getFillsForOrder('buy-1')[0].sellOrderId, 'sell-1');
+      });
     });
   });
 
