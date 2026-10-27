@@ -48,6 +48,22 @@ async function main() {
     // A mount alone cannot prove a Three renderer works: require actual draw calls.
     await waitFor('window.__smokeDraws > 5 && !!document.querySelector(\'canvas[aria-label^="Celestial system:"]\')');
     await waitFor('document.querySelectorAll("#layers rect[stroke]").length === 4');
+    // Every rendered body of each celestial preview must project inside the frame (issue #1812),
+    // at several orbit-clock phases so nested motion cannot carry a body out of view.
+    const PADDING_LIMIT = 1; // NDC; fitting adds its own padding on top
+    for (const id of ['celestial-five-desktop', 'celestial-five-mobile', 'celestial-single', 'celestial-siblings']) {
+      await waitFor('!!document.querySelector("#' + id + ' canvas")');
+      for (const elapsed of [0, 35, 90, 210, 480, 1300]) {
+        const projection = await browser.evaluate('window.__celestialProjection("#' + id + '", ' + elapsed + ')');
+        const { count, bounds, camera } = projection;
+        assert.ok(count > 0 && camera.every(Number.isFinite), id + ': scene must have finite camera and meshes');
+        for (const [edge, value] of Object.entries(bounds)) {
+          assert.ok(Number.isFinite(value) && Math.abs(value) <= PADDING_LIMIT, id + ' t=' + elapsed + ': projected ' + edge + '=' + value + ' falls outside the preview');
+        }
+      }
+    }
+    assert.equal(await browser.evaluate('window.__celestialProjection("#celestial-empty", 0)'), null, 'empty system renders no canvas');
+    assert.match(await browser.evaluate('document.querySelector("#celestial-empty").textContent'), /No celestial bodies yet/);
     const geometry = () => browser.evaluate(`(() => {
       const host = document.querySelector('#layers');
       return {
