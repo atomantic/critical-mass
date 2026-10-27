@@ -26,7 +26,12 @@ const { spawnSync, spawn } = require('child_process');
 const { DATA_DIR, BACKUP_DIR } = require('./paths');
 const { validatePersistedPayload, classifyPayloadPath } = require('./persisted-payload-validation');
 const { applyStagedFiles, STAGE_PREFIX, ORIGINALS_PREFIX, JOURNAL_FILENAME, OWNER_PREFIX } = require('./restore-apply');
-const { LOCK_FILENAME: LEGACY_MIGRATION_LOCK } = require('./legacy-namespace-migration');
+const {
+  LOCK_FILENAME: LEGACY_MIGRATION_LOCK,
+  LEGACY_EXCHANGE,
+  isLegacyRootArtifact,
+  discoverLegacyArtifacts,
+} = require('./legacy-namespace-migration');
 
 // UpDown scorecard maintenance lock (relative to data/). A backup taken while a
 // backfill holds it would carry a lock no live process owns into the restore.
@@ -54,8 +59,15 @@ const {
   deepMerge,
   GLOBAL_DEFAULTS,
 } = require('./config-utils');
-const { isPerFundFile, normalizeExchangeTreeToPairs } = require('./migration');
+const {
+  isPerFundFile,
+  normalizeExchangeTreeToPairs,
+  normalizeLegacyRootToNamespace,
+  legacyRootArtifactTarget,
+  legacyRootArtifactCandidates,
+} = require('./migration');
 const { serializeFundState } = require('./dry-run-state');
+const { PLACEMENT_INTENTS_FILENAME, parsePlacementIntentsDocument, assertPlacementIntentRows } = require('./placement-intent-document');
 
 const BACKUPS_DIR = BACKUP_DIR;
 
@@ -81,11 +93,19 @@ const FUND_STATE_SNAPSHOT_FILENAMES = [
   'manual-trades.json',
   'pending-corrective-buys.json',
 ];
+// Placement intents are safety metadata, not accounting: a missing file means
+// "no intents at snapshot time", never "erase the destination's blockers". They
+// are therefore copied and validated with the snapshot but kept out of
+// FUND_STATE_SNAPSHOT_FILENAMES, which drives absence operations and discovery
+// of restored funds in full archives.
+const FUND_STATE_CAPTURED_FILENAMES = [...FUND_STATE_SNAPSHOT_FILENAMES, PLACEMENT_INTENTS_FILENAME];
 
 // Bounds each zip/unzip child. The archive-creation path uses async spawn, so a
 // slow archive no longer blocks the gateway event loop or its shutdown drain;
 // the sync callers (restore, listing) still block for up to this long.
 const SPAWN_TIMEOUT_MS = 60000;
+// Largest archive entry the root-collision comparison will buffer from `unzip -p`.
+const ROOT_COMPARE_MAX_BYTES = 512 * 1024 * 1024;
 
 /**
  * Promise-wrapped spawn with spawnSync's result shape ({status, error, stdout,
@@ -330,21 +350,46 @@ const defaultPairFromConfig = (config, exchange) => {
 };
 
 /**
+ * The pair an exchange's legacy data belongs to: the archive's own snapshot
+ * wins, the destination's default is the fallback (see `planLayoutTranslation`).
+ * @param {string} exchange
+ * @param {Object|null} snapshot
+ * @param {Object} destinationConfig
+ * @returns {string|null}
+ */
+const resolveLegacyPair = (exchange, snapshot, destinationConfig) =>
+  Object.keys(snapshot?.exchanges?.[exchange]?.pairs || {})[0]
+    ?? defaultPairFromConfig(destinationConfig, exchange);
+
+/**
+ * Pre-namespace artifacts an archive entry listing holds directly at its root.
+ * @param {string[]} entries
+ * @returns {string[]}
+ */
+const collectRootFilesFromEntries = (entries) =>
+  [...new Set(entries.filter((entry) => !entry.includes('/') && isLegacyRootArtifact(entry)))];
+
+/**
  * Decide, without touching a single file, which staged exchange trees are in
- * the pre-multi-pair layout and which pair each would be relocated into.
+ * the pre-multi-pair layout and which pair each would be relocated into, and
+ * where artifacts from the oldest (pre-exchange-namespace) layout — kept
+ * directly at the data root — would land.
  *
  * The archive's own snapshot wins: an archive that carries its configuration
  * knows the pair its data belongs to, and the destination's default may name a
  * different fund entirely. The destination's default is the fallback for the
- * data-only (`acceptLegacyWithoutBase`) path, where no snapshot exists.
+ * data-only (`acceptLegacyWithoutBase`) path, where no snapshot exists. The
+ * historic root namespace is always coinbase, the only exchange that existed.
  *
  * @param {Object} params
  * @param {Map<string, string[]>} params.exchangeFiles - Exchange dir -> file names at its root
+ * @param {string[]} [params.rootFiles] - Pre-namespace artifact names at the data root
  * @param {Object|null} params.snapshot - Archive configuration snapshot, if any
  * @param {Object} params.destinationConfig - Destination's effective configuration
- * @returns {{translations: Array<{exchange: string, pair: string}>, unresolvable: string[]}}
+ * @returns {{translations: Array<{exchange: string, pair: string}>, unresolvable: string[],
+ *   rootTranslation: {exchange: string, pair: string|null, files: Array<{name: string, target: string}>}|null}}
  */
-const planLayoutTranslation = ({ exchangeFiles, snapshot, destinationConfig }) => {
+const planLayoutTranslation = ({ exchangeFiles, rootFiles = [], snapshot, destinationConfig }) => {
   const knownExchanges = new Set([
     ...Object.keys(snapshot?.exchanges || {}),
     ...Object.keys(destinationConfig?.exchanges || {}),
@@ -354,13 +399,63 @@ const planLayoutTranslation = ({ exchangeFiles, snapshot, destinationConfig }) =
 
   for (const [exchange, filenames] of exchangeFiles) {
     if (!isLegacyExchangeLayout(exchange, filenames, knownExchanges)) continue;
-    const pair = Object.keys(snapshot?.exchanges?.[exchange]?.pairs || {})[0]
-      ?? defaultPairFromConfig(destinationConfig, exchange);
+    const pair = resolveLegacyPair(exchange, snapshot, destinationConfig);
     if (pair) translations.push({ exchange, pair });
     else unresolvable.push(exchange);
   }
 
-  return { translations, unresolvable };
+  let rootTranslation = null;
+  if (rootFiles.length > 0) {
+    // Only per-fund artifacts need a fund directory; price caches stay at exchange level.
+    const pair = rootFiles.some(isPerFundFile) ? resolveLegacyPair(LEGACY_EXCHANGE, snapshot, destinationConfig) : null;
+    if (pair || !rootFiles.some(isPerFundFile)) {
+      rootTranslation = {
+        exchange: LEGACY_EXCHANGE,
+        pair,
+        files: rootFiles.map((name) => ({ name, target: legacyRootArtifactTarget(name, pair) })),
+      };
+    } else if (!unresolvable.includes(LEGACY_EXCHANGE)) {
+      unresolvable.push(LEGACY_EXCHANGE);
+    }
+  }
+
+  return { translations, unresolvable, rootTranslation };
+};
+
+/**
+ * Root artifacts that collide with a DIFFERENT generation elsewhere in the same
+ * archive, judged from archive entries alone (nothing is extracted to disk).
+ * `readEntry` returns an entry's bytes, or null when it is unreadable.
+ * @param {Object} params
+ * @param {string[]} params.entries
+ * @param {{pair: string|null, files: Array<{name: string}>}|null} params.rootTranslation
+ * @param {(entry: string) => Buffer|null} params.readEntry
+ * @returns {Array<{artifact: string, existing: string}>}
+ */
+const findRootCollisions = ({ entries, rootTranslation, readEntry }) => {
+  if (!rootTranslation) return [];
+  const present = new Set(entries);
+  const collisions = [];
+  for (const { name } of rootTranslation.files) {
+    const rootBytes = readEntry(name);
+    for (const candidate of legacyRootArtifactCandidates(name, rootTranslation.pair)) {
+      if (!present.has(candidate)) continue;
+      const other = readEntry(candidate);
+      if (!rootBytes || !other || !rootBytes.equals(other)) collisions.push({ artifact: name, existing: candidate });
+    }
+  }
+  return collisions;
+};
+
+/** Archive entries `findRootCollisions` needs the bytes of. */
+const rootCollisionEntries = ({ entries, rootTranslation }) => {
+  if (!rootTranslation) return [];
+  const present = new Set(entries);
+  return rootTranslation.files.flatMap(({ name }) => {
+    const others = legacyRootArtifactCandidates(name, rootTranslation.pair)
+      .filter((rel) => present.has(rel));
+    return others.length > 0 ? [name, ...others] : [];
+  });
 };
 
 /**
@@ -384,17 +479,30 @@ const listArchiveEntries = (zipPath) => {
  * @param {Object|null} params.snapshot - Archive configuration snapshot, if any
  * @param {Object} params.destinationConfig - Destination's effective configuration
  * @returns {{legacyLayout: boolean, layoutTranslations: Array<{exchange: string, pair: string}>,
+ *   rootTranslation: Object|null, layoutConflicts: Array<{artifact: string, existing: string}>,
  *   unresolvableLayoutExchanges: string[]}}
  */
 const describeLayoutTranslation = ({ zipPath, snapshot, destinationConfig }) => {
-  const { translations, unresolvable } = planLayoutTranslation({
-    exchangeFiles: collectExchangeFilesFromEntries(listArchiveEntries(zipPath)),
+  const entries = listArchiveEntries(zipPath);
+  const { translations, unresolvable, rootTranslation } = planLayoutTranslation({
+    exchangeFiles: collectExchangeFilesFromEntries(entries),
+    rootFiles: collectRootFilesFromEntries(entries),
     snapshot,
     destinationConfig,
   });
+  const layoutConflicts = findRootCollisions({
+    entries,
+    rootTranslation,
+    readEntry: (entry) => {
+      const result = spawnSync('unzip', ['-p', zipPath, entry], { timeout: SPAWN_TIMEOUT_MS, maxBuffer: ROOT_COMPARE_MAX_BYTES });
+      return result.error || result.status !== 0 ? null : result.stdout;
+    },
+  });
   return {
-    legacyLayout: translations.length > 0 || unresolvable.length > 0,
+    legacyLayout: translations.length > 0 || unresolvable.length > 0 || rootTranslation !== null,
     layoutTranslations: translations,
+    rootTranslation,
+    layoutConflicts,
     unresolvableLayoutExchanges: unresolvable,
   };
 };
@@ -885,7 +993,8 @@ const validateFundStateSnapshot = (snapshotDir, snapshotId, stagedManifest) => {
     if (!manifest || Array.isArray(manifest) || manifest.manifestVersion !== FUND_STATE_MANIFEST_VERSION
       || !isSafeFundStateSegment(manifest.snapshotId) || manifest.snapshotId !== snapshotId
       || typeof manifest.createdAt !== 'string' || !Number.isFinite(Date.parse(manifest.createdAt))
-      || !Array.isArray(manifest.funds) || manifest.funds.length === 0) {
+      || !Array.isArray(manifest.funds) || manifest.funds.length === 0
+      || (manifest.placementIntentsCaptured !== undefined && manifest.placementIntentsCaptured !== true)) {
       throw new Error(`${FUND_STATE_MANIFEST_FILENAME} is malformed or unsupported (check identity, creation time and funds)`);
     }
     const identities = new Set();
@@ -899,11 +1008,16 @@ const validateFundStateSnapshot = (snapshotDir, snapshotId, stagedManifest) => {
       identities.add(identity);
       const filenames = new Set();
       for (const name of fund.files) {
-        if (!FUND_STATE_SNAPSHOT_FILENAMES.includes(name) || filenames.has(name)) {
+        if (!FUND_STATE_CAPTURED_FILENAMES.includes(name) || filenames.has(name)) {
           throw new Error(`Snapshot contains an unsupported or duplicate state file for ${identity}`);
         }
         filenames.add(name);
-        checkPath([fund.exchange, fund.pair, name]);
+        if (name === PLACEMENT_INTENTS_FILENAME) {
+          const file = `${identity}/${name}`;
+          assertPlacementIntentRows(parsePlacementIntentsDocument(checkPath([fund.exchange, fund.pair, name], false, true), file), file);
+        } else {
+          checkPath([fund.exchange, fund.pair, name]);
+        }
       }
     }
     return { ok: true, manifest };
@@ -930,7 +1044,7 @@ const directorySizeBytes = (root) => {
 /**
  * List the hourly fund-state snapshots, newest first.
  * @param {{paths?: {dataDir?: string, baseConfigFile?: string}}} [options]
- * @returns {Array<{snapshotId: string, createdAt: string, funds: Array<Object>, sizeBytes: number}>}
+ * @returns {Array<{snapshotId: string, createdAt: string, funds: Array<Object>, placementIntentsCaptured: boolean, sizeBytes: number}>}
  */
 const listFundStateBackups = ({ paths: pathOverrides } = {}) => {
   const paths = resolvePaths(pathOverrides);
@@ -948,6 +1062,8 @@ const listFundStateBackups = ({ paths: pathOverrides } = {}) => {
           snapshotId: manifest.snapshotId,
           createdAt: manifest.createdAt,
           funds: manifest.funds,
+          // Snapshots from before intents were captured cannot recover them.
+          placementIntentsCaptured: manifest.placementIntentsCaptured === true,
           sizeBytes: directorySizeBytes(snapshotDir),
         };
       } catch (_error) {
@@ -1066,7 +1182,7 @@ const createFundStateBackup = ({ paths: pathOverrides, now = new Date(), maxBack
     for (const { exchange, pair } of identities) {
       const sourceDir = path.join(paths.dataDir, exchange, pair);
       const copied = [];
-      for (const name of FUND_STATE_SNAPSHOT_FILENAMES) {
+      for (const name of FUND_STATE_CAPTURED_FILENAMES) {
         const source = path.join(sourceDir, name);
         if (!fs.existsSync(source)) continue;
         const stat = fs.lstatSync(source);
@@ -1091,6 +1207,7 @@ const createFundStateBackup = ({ paths: pathOverrides, now = new Date(), maxBack
       manifestVersion: FUND_STATE_MANIFEST_VERSION,
       snapshotId,
       createdAt,
+      placementIntentsCaptured: true,
       funds,
     }, null, 2), { mode: 0o600 });
     fsyncFile(path.join(stageDir, FUND_STATE_MANIFEST_FILENAME));
@@ -1161,17 +1278,55 @@ const resolveFundStateSnapshot = (snapshotId, exchange, pair, paths) => {
 };
 
 /**
+ * A snapshot taken before placement intents were captured cannot say whether the
+ * fund had an unresolved order POST, so presenting it as a complete
+ * placement-safe recovery point would be false. Restoring one is allowed only
+ * on an explicit acknowledgement; the destination's own intents are kept either way.
+ * @param {Object} manifest - Validated snapshot manifest
+ * @param {boolean} acceptMissingPlacementIntents
+ * @returns {{ok: true} | {ok: false, code: string, error: string}}
+ */
+const checkPlacementIntentEvidence = (manifest, acceptMissingPlacementIntents) => (
+  manifest.placementIntentsCaptured === true || acceptMissingPlacementIntents === true
+    ? { ok: true }
+    : {
+      ok: false,
+      code: 'placement-intents-not-captured',
+      error: 'This snapshot predates placement-intent capture, so it cannot recover an unresolved order POST the fund may have had. Check the exchange for open orders on this fund, then retry with acceptMissingPlacementIntents. Intents already on this machine are kept.',
+    }
+);
+
+/**
  * The checks `restoreFundStateBackup` makes before staging, run on their own so
  * a restore that would refuse does so before any engine is stopped (#1384).
  * @param {string} snapshotId
  * @param {string} exchange
  * @param {string} pair
- * @param {{paths?: {dataDir?: string, baseConfigFile?: string}}} [options]
- * @returns {{ok: true} | {ok: false, error: string}}
+ * @param {{paths?: {dataDir?: string, baseConfigFile?: string}, acceptMissingPlacementIntents?: boolean}} [options]
+ * @returns {{ok: true} | {ok: false, error: string, code?: string}}
  */
-const checkFundStateRestorePreconditions = (snapshotId, exchange, pair, { paths: pathOverrides } = {}) => {
+const checkFundStateRestorePreconditions = (snapshotId, exchange, pair, { paths: pathOverrides, acceptMissingPlacementIntents = false } = {}) => {
   const resolved = resolveFundStateSnapshot(snapshotId, exchange, pair, resolvePaths(pathOverrides));
-  return resolved.ok ? { ok: true } : { ok: false, error: resolved.error };
+  return resolved.ok ? checkPlacementIntentEvidence(resolved.manifest, acceptMissingPlacementIntents) : { ok: false, error: resolved.error };
+};
+
+/**
+ * Merge a snapshot's intents into the destination's. Rows are never dropped:
+ * the union keeps every intent id from either side (the destination's row wins
+ * a shared id as the newer state), so a restore can add blockers but never
+ * clear one. An intent resolved after the snapshot returns and blocks until
+ * normal reconciliation proves its outcome again.
+ * @param {string} snapshotFile
+ * @param {string} destinationFile
+ * @returns {string} Serialized intents document
+ */
+const mergePlacementIntentsForRestore = (snapshotFile, destinationFile) => {
+  const snapshotRows = assertPlacementIntentRows(parsePlacementIntentsDocument(fs.readFileSync(snapshotFile, 'utf8'), snapshotFile), snapshotFile);
+  const destinationRows = fs.existsSync(destinationFile)
+    ? parsePlacementIntentsDocument(fs.readFileSync(destinationFile, 'utf8'), destinationFile)
+    : [];
+  const destinationIds = new Set(destinationRows.map((row) => row?.id));
+  return JSON.stringify({ version: 1, intents: [...snapshotRows.filter((row) => !destinationIds.has(row.id)), ...destinationRows] }, null, 2);
 };
 
 /**
@@ -1180,13 +1335,15 @@ const checkFundStateRestorePreconditions = (snapshotId, exchange, pair, { paths:
  * @param {string} snapshotId
  * @param {string} exchange
  * @param {string} pair
- * @param {{paths?: {dataDir?: string, baseConfigFile?: string}, logger?: Object}} [options]
- * @returns {{success: boolean, filesRestored?: number, error?: string, code?: string, rolledBack?: boolean, recovery?: Object}}
+ * @param {{paths?: {dataDir?: string, baseConfigFile?: string}, logger?: Object, acceptMissingPlacementIntents?: boolean}} [options]
+ * @returns {{success: boolean, filesRestored?: number, error?: string, code?: string, rolledBack?: boolean, recovery?: Object, warnings?: Array<string>}}
  */
-const restoreFundStateBackup = (snapshotId, exchange, pair, { paths: pathOverrides, logger = SILENT_LOGGER } = {}) => {
+const restoreFundStateBackup = (snapshotId, exchange, pair, { paths: pathOverrides, logger = SILENT_LOGGER, acceptMissingPlacementIntents = false } = {}) => {
   const paths = resolvePaths(pathOverrides);
   const resolved = resolveFundStateSnapshot(snapshotId, exchange, pair, paths);
   if (!resolved.ok) return { success: false, error: resolved.error };
+  const evidence = checkPlacementIntentEvidence(resolved.manifest, acceptMissingPlacementIntents);
+  if (!evidence.ok) return { success: false, code: evidence.code, error: evidence.error };
   const { snapshotDir } = resolved;
 
   const stageDir = fs.mkdtempSync(path.join(paths.dataDir, STAGE_PREFIX));
@@ -1198,7 +1355,12 @@ const restoreFundStateBackup = (snapshotId, exchange, pair, { paths: pathOverrid
       if (!sourceStat.isFile()) throw new Error(`Snapshot state file is not a regular file: ${name}`);
       const target = path.join(stageDir, exchange, pair, name);
       fs.mkdirSync(path.dirname(target), { recursive: true });
-      fs.copyFileSync(source, target);
+      if (name === PLACEMENT_INTENTS_FILENAME) {
+        // Staged with the accounting files so one journal commits or rolls back both.
+        fs.writeFileSync(target, mergePlacementIntentsForRestore(source, path.join(paths.dataDir, exchange, pair, name)));
+      } else {
+        fs.copyFileSync(source, target);
+      }
     }
     const sourceValidated = validateFundStateSnapshot(snapshotDir, snapshotId);
     if (!sourceValidated.ok) throw new Error(sourceValidated.error);
@@ -1220,6 +1382,9 @@ const restoreFundStateBackup = (snapshotId, exchange, pair, { paths: pathOverrid
     absent,
   });
   if (!applied.success && applied.rolledBack !== false) fs.rmSync(stageDir, { recursive: true, force: true });
+  if (applied.success && resolved.manifest.placementIntentsCaptured !== true) {
+    return { ...applied, warnings: [`Snapshot ${snapshotId} predates placement-intent capture: any unresolved order POST on ${exchange}/${pair} is NOT recovered. Check the exchange for open or duplicate orders before restarting this fund.`] };
+  }
   return applied;
 };
 
@@ -1440,13 +1605,21 @@ const planRestoreConfig = ({ snapshot, destination, acceptFundRemoval }) => {
 };
 
 /**
- * @param {string[]} unresolvable - Exchanges with exchange-level fund files and no known pair
+ * @param {string[]} unresolvable - Exchanges with root- or exchange-level fund files and no known pair
  * @returns {string}
  */
 const unresolvableLayoutError = (unresolvable) =>
-  `This archive predates the multi-pair layout and holds per-fund files at the exchange level for ${unresolvable.join(', ')}, `
+  `This archive predates the multi-pair layout and holds per-fund files at the data root or exchange level for ${unresolvable.join(', ')}, `
   + 'but neither the archive nor this machine names a fund for those exchanges, so there is no directory to restore them into. '
   + 'Configure the fund before restoring. No files were changed.';
+
+/**
+ * @param {Array<{artifact: string, existing: string}>} conflicts
+ * @returns {string}
+ */
+const ambiguousLayoutError = (conflicts) =>
+  `This archive holds two different generations of the same legacy data (${conflicts.map(({ artifact, existing }) => `${artifact} vs ${existing}`).join(', ')}), `
+  + 'and there is no way to tell which one is current. Remove the stale copy from the archive and retry. No files were changed.';
 
 /**
  * Parse JSON read out of an archive entry.
@@ -1521,11 +1694,21 @@ const checkRestorePreconditions = async (filename, { paths: pathOverrides, legac
 
   const layout = planLayoutTranslation({
     exchangeFiles: collectExchangeFilesFromEntries(entries),
+    rootFiles: collectRootFilesFromEntries(entries),
     snapshot,
     destinationConfig: destination.config,
   });
   if (layout.unresolvable.length > 0) {
     return { ok: false, code: 'legacy-layout-unresolvable-pair', error: unresolvableLayoutError(layout.unresolvable) };
+  }
+  const bytes = new Map();
+  for (const entry of rootCollisionEntries({ entries, rootTranslation: layout.rootTranslation })) {
+    const read = await spawnAsync('unzip', ['-p', zipPath, entry]);
+    bytes.set(entry, read.error || read.status !== 0 ? null : read.stdout);
+  }
+  const conflicts = findRootCollisions({ entries, rootTranslation: layout.rootTranslation, readEntry: (entry) => bytes.get(entry) ?? null });
+  if (conflicts.length > 0) {
+    return { ok: false, code: 'legacy-layout-ambiguous-generations', error: ambiguousLayoutError(conflicts) };
   }
 
   // Business-format compatibility of the accounting payloads (#1811): the
@@ -1666,11 +1849,26 @@ const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null
     // is still replaced rather than shadowed (issue #541).
     const layout = planLayoutTranslation({
       exchangeFiles: collectExchangeFilesFromDir(tempDir),
+      rootFiles: discoverLegacyArtifacts(tempDir),
       snapshot,
       destinationConfig: destination.config,
     });
     if (layout.unresolvable.length > 0) {
       return abort(unresolvableLayoutError(layout.unresolvable), 'legacy-layout-unresolvable-pair');
+    }
+    // The oldest layout kept state at the data root. Translate it first, in the
+    // staging tree and with the destination never consulted, so it lands exactly
+    // where the live root→exchange→pair migrations would put it — and so no
+    // stray root artifact survives to make the next startup refuse to boot.
+    if (layout.rootTranslation) {
+      const { pair } = layout.rootTranslation;
+      const rooted = normalizeLegacyRootToNamespace({ root: tempDir, pair });
+      if (rooted.conflicts.length > 0) {
+        return abort(ambiguousLayoutError(rooted.conflicts), 'legacy-layout-ambiguous-generations');
+      }
+      logger.info(`ℹ️ 💾 Restore translated legacy root artifacts → ${LEGACY_EXCHANGE}${pair ? `/${pair}` : ''}: ${rooted.moved.length} relocated, ${rooted.reconciled.length} already present (${[...rooted.moved, ...rooted.reconciled].join(', ') || 'none'})`, {
+        action: 'restore-legacy-root-layout', filename, exchange: LEGACY_EXCHANGE, pair, moved: rooted.moved.length, reconciled: rooted.reconciled.length,
+      });
     }
     for (const { exchange, pair } of layout.translations) {
       const { moved, skipped } = normalizeExchangeTreeToPairs({ root: tempDir, exchange, pair });

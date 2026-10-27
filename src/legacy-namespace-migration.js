@@ -56,6 +56,14 @@ const LEGACY_FILES = ['state.json', 'transactions.tsv', 'optimizer-cache.json'];
 /** Legacy price caches: `btc-price-cache-<interval>.json` (backups excluded by the suffix). */
 const isLegacyPriceCache = (name) => name.startsWith('btc-price-cache') && name.endsWith('.json');
 
+/**
+ * Whether a data-root file name is one of the pre-namespace artifacts
+ * `discoverLegacyArtifacts` would migrate.
+ * @param {string} name
+ * @returns {boolean}
+ */
+const isLegacyRootArtifact = (name) => LEGACY_FILES.includes(name) || isLegacyPriceCache(name);
+
 /** Cross-process ownership marker. Dot-prefixed so exchange/backup scans skip it. */
 const LOCK_FILENAME = '.legacy-namespace-migration.lock';
 
@@ -510,6 +518,9 @@ const describeBlockedMigration = (result) => {
 module.exports = {
   migrateLegacyNamespace,
   discoverLegacyArtifacts,
+  isLegacyRootArtifact,
+  filesIdentical,
+  lstatOrNull,
   describeBlockedMigration,
   acquireMigrationLock,
   releaseMigrationLock,

@@ -11,6 +11,25 @@ Node 22 line. Container users should use an image with Node.js 22.12.0 or newer.
 
 ---
 
+## Hourly Snapshots Carry Placement Intents (Unreleased)
+
+Hourly fund-state snapshots now include each fund's `placement-intents.json`, so a
+restored fund still refuses new placements until normal reconciliation resolves
+an order POST whose outcome was unknown. Intents are safety metadata, not
+accounting: a snapshot without the file never removes the destination's intents,
+and restore merges snapshot and destination rows by intent id (a restore can add
+blockers, never clear one). The intents file is staged in the same transaction
+as the accounting files, so a failed restore rolls both back. Placement ownership
+locks (`placement-intents.json.lock*`) are never captured or restored.
+
+Snapshots taken before this change cannot recover intents. They are listed with
+`placementIntentsCaptured: false`, and restoring one is refused (code
+`placement-intents-not-captured`, before any engine stops) unless the request sets
+`acceptMissingPlacementIntents: true`. Check the exchange for open or duplicate
+orders on the fund before restarting it.
+
+---
+
 ## Restores Reproduce Missing Fund Accounting State (Unreleased)
 
 Hourly fund snapshots and full archives now reproduce the presence or absence of
@@ -299,16 +318,16 @@ Restoring such an archive onto a fresh clone recovered the state files of, say, 
 
 Old archives have no manifest, so they cannot be made portable on their own. Restore refuses them by default rather than silently letting the destination's defaults win. You have two options:
 
-**Oldest flat-layout archives need separate recovery.** The options below cover
-exchange-level (`coinbase/state.json`) and current per-fund layouts. Archives
-with accounting files directly at the data root (for example `state.json` or
-`transactions.tsv`) are not translated by restore. On an already-migrated
-destination, restore can report success while leaving the current fund unchanged
-and creating a namespace conflict that prevents the next startup. Do not apply
-that layout to a live installation; preserve the archive and verify recovery on
-an isolated copy until [issue #1795](https://github.com/atomantic/critical-mass/issues/1795)
-is resolved. Supplying `legacyBaseConfig` or accepting data-only restore does not
-fix this layout limitation.
+**Oldest flat-layout archives are translated.** Archives with accounting files
+directly at the data root (`state.json`, `transactions.tsv`, `optimizer-cache.json`,
+`btc-price-cache*.json`) predate exchange namespacing. Restore maps that root to
+`coinbase`, places per-fund files in `coinbase/<pair>/` (the pair comes from
+`legacyBaseConfig` when supplied, otherwise this machine's coinbase fund), and
+leaves no root file behind to block the next startup. The restore confirmation
+screen lists each translation. Restore refuses, before writing anything, when
+no coinbase fund can be resolved or when the archive carries two differing
+generations of the same file (for example a root `state.json` and a different
+`coinbase/<pair>/state.json`); remove the stale copy from the archive and retry.
 
 1. **Recommended — supply the source machine's base config.** Copy the *source* install's root `config.json` and pass it to the restore API as `legacyBaseConfig`:
 
