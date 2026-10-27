@@ -273,6 +273,7 @@ describe('gateway shutdown tracks accepted background jobs (issue #1815)', () =>
 
     let responseStatus;
     let responseBody = '';
+    let responseEnded = false;
     const req = http.request({
       host: '127.0.0.1',
       port,
@@ -282,11 +283,12 @@ describe('gateway shutdown tracks accepted background jobs (issue #1815)', () =>
     }, (res) => {
       responseStatus = res.statusCode;
       res.on('data', (c) => { responseBody += c; });
+      res.on('end', () => { responseEnded = true; });
     });
     req.write(JSON.stringify({ providerId: 'testprov', prompt: 'test prompt' }));
     req.end();
 
-    while (responseStatus === undefined) await settle();
+    while (!responseEnded) await settle();
     assert.equal(responseStatus, 202);
     const runInfo = JSON.parse(responseBody);
     assert.equal(runInfo.status, 'started');
@@ -380,6 +382,7 @@ describe('gateway shutdown tracks accepted background jobs (issue #1815)', () =>
 
     let responseStatus;
     let responseBody = '';
+    let responseEnded = false;
     const req = http.request({
       host: '127.0.0.1',
       port,
@@ -389,11 +392,12 @@ describe('gateway shutdown tracks accepted background jobs (issue #1815)', () =>
     }, (res) => {
       responseStatus = res.statusCode;
       res.on('data', (c) => { responseBody += c; });
+      res.on('end', () => { responseEnded = true; });
     });
     req.write(JSON.stringify({ providerId: 'testprov', prompt: 'test prompt' }));
     req.end();
 
-    while (responseStatus === undefined) await settle();
+    while (!responseEnded) await settle();
     assert.equal(responseStatus, 202);
     const runInfo = JSON.parse(responseBody);
     const runId = runInfo.runId;
@@ -457,6 +461,7 @@ describe('gateway shutdown tracks accepted background jobs (issue #1815)', () =>
 
     let responseStatus;
     let responseBody = '';
+    let responseEnded = false;
     const req = http.request({
       host: '127.0.0.1',
       port,
@@ -466,6 +471,7 @@ describe('gateway shutdown tracks accepted background jobs (issue #1815)', () =>
     }, (res) => {
       responseStatus = res.statusCode;
       res.on('data', (c) => { responseBody += c; });
+      res.on('end', () => { responseEnded = true; });
     });
     req.write(JSON.stringify({
       productId: 'BTC-USDC',
@@ -476,7 +482,7 @@ describe('gateway shutdown tracks accepted background jobs (issue #1815)', () =>
     }));
     req.end();
 
-    while (responseStatus === undefined) await settle();
+    while (!responseEnded) await settle();
     assert.equal(responseStatus, 200);
     const body = JSON.parse(responseBody);
     assert.equal(body.streaming, true);
@@ -559,6 +565,7 @@ describe('gateway shutdown tracks accepted background jobs (issue #1815)', () =>
     const port = server.address().port;
 
     let responseStatus;
+    let responseEnded = false;
     const req = http.request({
       host: '127.0.0.1',
       port,
@@ -567,6 +574,8 @@ describe('gateway shutdown tracks accepted background jobs (issue #1815)', () =>
       headers: { 'Content-Type': 'application/json' },
     }, (res) => {
       responseStatus = res.statusCode;
+      res.resume();
+      res.on('end', () => { responseEnded = true; });
     });
     req.write(JSON.stringify({
       productId: 'BTC-USDC',
@@ -577,7 +586,7 @@ describe('gateway shutdown tracks accepted background jobs (issue #1815)', () =>
     }));
     req.end();
 
-    while (responseStatus === undefined) await settle();
+    while (!responseEnded) await settle();
     assert.equal(responseStatus, 200);
 
     req.destroy();
