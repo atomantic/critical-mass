@@ -326,7 +326,14 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
   const activeSeriesKeyRef = useRef(null)
   const fetchSeqRef = useRef(0)
   const lastTickTimeRef = useRef(null)
-  const fetchedForBucketsRef = useRef(0)
+  const lastTickWallClockRef = useRef(null)
+
+  const getNow = useCallback(() => {
+    if (lastTickTimeRef.current != null && lastTickWallClockRef.current != null) {
+      return lastTickTimeRef.current + (Date.now() - lastTickWallClockRef.current)
+    }
+    return Date.now()
+  }, [])
 
   const viewConfig = legacyMode ? (views[view] || views[viewKeys[0]]) : {
     bucketMs, maxBuckets, candleTf, indicatorTf,
@@ -478,9 +485,10 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
    * Merge fetched historical candles into the canonical source sequence,
    * preserving newer live observations and observed extrema.
    */
-  const mergeHistoricalCandles = useCallback((candles, fetchSeq) => {
+  const mergeHistoricalCandles = useCallback((candles, requestTime, fetchSeq) => {
     if (!candles?.length) return
     const sourceMap = sourceCandlesMapRef.current
+    const now = getNow()
 
     // Aggregate historical candles in incoming batch by sourceKey (sum volume, min/max extrema)
     const batchAggregated = new Map()
@@ -507,7 +515,6 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
       }
     }
 
-    const currentObservedTime = lastTickTimeRef.current != null ? lastTickTimeRef.current : Date.now()
     for (const [sourceKey, b] of batchAggregated.entries()) {
       const existing = sourceMap.get(sourceKey)
       if (existing) {
@@ -519,14 +526,15 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
         }
         // Replace historical volume on refresh to avoid double counting
         existing.volume = b.volume
-        // A late historical reply cannot replace newer live observations.
-        // For unfinished source candles, live close is preserved even on refresh.
-        // Completed candles allow replacement only when the response is authoritative (fetch started after live ticks stopped).
-        const isCandleCompleted = currentObservedTime >= sourceKey + sourceCandleMs
-        const isResponseAuthoritative = fetchSeq != null && existing.lastTickFetchSeq != null && fetchSeq > existing.lastTickFetchSeq
 
-        if (existing.hasLiveTicks && !isCandleCompleted) {
-          // Unfinished source candle: preserve live close; do not overwrite with historical snapshot
+        const candleEndTime = sourceKey + sourceCandleMs
+        const isCandleCompleted = now >= candleEndTime
+        const requestStartedAfterCandleEnd = requestTime != null && requestTime >= candleEndTime
+        const isResponseAuthoritative = requestStartedAfterCandleEnd && fetchSeq != null && (existing.lastTickFetchSeq == null || fetchSeq > existing.lastTickFetchSeq)
+
+        if (existing.hasLiveTicks && (!isCandleCompleted || !requestStartedAfterCandleEnd)) {
+          // Unfinished source candle or request started before candle completion:
+          // Preserve live close; do not overwrite with pre-completion historical snapshot
         } else if (isResponseAuthoritative || !existing.hasLiveTicks) {
           existing.close = b.close
           if (isCandleCompleted) {
@@ -543,7 +551,7 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
 
     // Project onto display buckets and compute indicators
     updateFromSourceCandles()
-  }, [bucketMs, candleTf, sourceCandleMs, updateFromSourceCandles, views])
+  }, [bucketMs, candleTf, getNow, sourceCandleMs, updateFromSourceCandles, views])
 
   const syncChartRef = useRef(syncChart)
   syncChartRef.current = syncChart
@@ -563,7 +571,6 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
     // Isolated timeframe/exchange check:
     if (activeSeriesKeyRef.current !== seriesKey) {
       activeSeriesKeyRef.current = seriesKey
-      fetchedForBucketsRef.current = 0
       sourceCandlesMapRef.current = new Map()
       bucketsRef.current = new Map()
       lastBucketKeyRef.current = null
@@ -571,6 +578,8 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
       historicalCandlesRef.current = null
       labelCacheRef.current.clear()
       setChartData([])
+      lastTickTimeRef.current = null
+      lastTickWallClockRef.current = null
     }
 
     retryRef.current = false
@@ -578,6 +587,7 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
     setError(null)
     const doFetch = () => {
       const fetchSeq = ++fetchSeqRef.current
+      const requestTime = getNow()
       controller = new AbortController()
       apiGet(`/api/candles/${exchange}`, { signal: controller.signal })
         .then(result => {
@@ -591,7 +601,7 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
           // If the requested TF has data or we already retried, done loading
           if (data.candles[candleTf]?.length || retryRef.current) {
             if (data.candles[candleTf]?.length) {
-              mergeHistoricalCandlesRef.current(data.candles[candleTf], fetchSeq)
+              mergeHistoricalCandlesRef.current(data.candles[candleTf], requestTime, fetchSeq)
               syncChartRef.current()
             }
             setIsLoading(false)
@@ -613,7 +623,7 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
       controller.abort()
       if (retryTimer !== null) clearTimeout(retryTimer)
     }
-  }, [exchange, candleTf, retryNonce, seriesKey])
+  }, [exchange, candleTf, retryNonce, seriesKey, getNow])
 
   // Derive projection on display limit / range / bucket aggregation / annotations change
   useEffect(() => {
@@ -624,8 +634,9 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
   // Process live ticks into source candles and buckets (ref mutation only — no re-render per tick)
   useEffect(() => {
     if (tickPrice == null) return
-    const now = tickTimestamp || Date.now()
+    const now = tickTimestamp != null ? Number(tickTimestamp) : Date.now()
     lastTickTimeRef.current = now
+    lastTickWallClockRef.current = Date.now()
     const sourceKey = Math.floor(now / sourceCandleMs) * sourceCandleMs
     const bKey = Math.floor(now / bucketMs) * bucketMs
     const sourceMap = sourceCandlesMapRef.current

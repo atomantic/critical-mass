@@ -690,4 +690,76 @@ describe('useCandleData display limit and live candle preservation', () => {
     expect(result.current.chartData[0].time).toBe(0)
     expect(result.current.chartData[299].time).toBe(299 * 300_000)
   })
+
+  it('preserves live close when refresh was requested during an unfinished candle even if reply arrives after next candle opens', async () => {
+    let resolveRefreshFetch
+    let fetchCount = 0
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      fetchCount++
+      if (fetchCount === 1) {
+        return {
+          ok: true, status: 200,
+          headers: new Headers({ 'content-type': 'application/json' }),
+          json: async () => ({
+            success: true,
+            candles: {
+              '1m': [{ timestamp: 0, open: 100, high: 105, low: 95, close: 100, volume: 10 }],
+            },
+          }),
+        }
+      }
+      return new Promise(res => {
+        resolveRefreshFetch = () => res({
+          ok: true, status: 200,
+          headers: new Headers({ 'content-type': 'application/json' }),
+          json: async () => ({
+            success: true,
+            candles: {
+              '1m': [
+                { timestamp: 0, open: 100, high: 105, low: 95, close: 100, volume: 10 },
+                // Stale server snapshot taken while candle was unfinished
+                { timestamp: 60_000, open: 100, high: 125, low: 95, close: 105, volume: 15 },
+              ],
+            },
+          }),
+        })
+      })
+    }))
+
+    let props = {
+      exchange: 'coinbase',
+      tickPrice: null,
+      tickTimestamp: null,
+      options: { defaultInterval: '1m', maxBucketsOverride: 10 },
+    }
+
+    const { result, rerender } = renderHook(() =>
+      useCandleData(props.exchange, props.tickPrice, props.tickTimestamp, props.options)
+    )
+
+    await vi.waitFor(() => expect(result.current.chartData.length).toBe(1))
+
+    // Deliver live tick for candle t=60_000 with price 125 at t=60_020
+    props = { ...props, tickPrice: 125, tickTimestamp: 60_020 }; rerender()
+
+    // Refresh is requested while candle t=60_000 is still unfinished (requestTime = 60_020 < 120_000)
+    props = { ...props, tickPrice: null, tickTimestamp: null }; rerender()
+    act(() => {
+      result.current.retry()
+    })
+
+    // Now, while the refresh fetch is still in flight, next candle opens with tick at t=120_000
+    props = { ...props, tickPrice: 130, tickTimestamp: 120_000 }; rerender()
+
+    // Now the delayed refresh response finally arrives
+    await act(async () => {
+      resolveRefreshFetch()
+    })
+
+    await vi.waitFor(() => expect(result.current.isLoading).toBe(false))
+
+    // The live close of 125 for candle 60_000 must NOT be overwritten by the pre-completion snapshot (105)
+    const bucket60k = result.current.chartData.find(c => c.time === 60_000)
+    expect(bucket60k.price).toBe(125)
+  })
 })
