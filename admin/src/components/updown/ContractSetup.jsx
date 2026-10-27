@@ -8,6 +8,43 @@ import { pnlColorClass, signedPrefix } from '../../utils/pnlFormat.mjs'
 const LS_PROVIDER_KEY = 'updown-screenshot-provider'
 const LS_MODEL_KEY = 'updown-screenshot-model'
 
+function normalizeContract(c) {
+  if (!c) return null
+  let expiry = ''
+  if (typeof c.expiry === 'number' && c.expiry > 0) {
+    expiry = new Date(c.expiry).toISOString()
+  } else {
+    expiry = c.expiry || ''
+  }
+  const dir = c.direction || ''
+  const direction = dir ? dir.charAt(0).toUpperCase() + dir.slice(1).toLowerCase() : 'Up'
+  return {
+    expiry,
+    target: c.target != null ? c.target.toString() : '',
+    stop: c.stop != null ? c.stop.toString() : '',
+    range: c.range != null ? c.range.toString() : '500',
+    direction,
+  }
+}
+
+function areContractsEqual(a, b) {
+  if (!a && !b) return true
+  if (!a || !b) return false
+  return (
+    a.expiry === b.expiry &&
+    a.target === b.target &&
+    a.stop === b.stop &&
+    a.range === b.range &&
+    a.direction === b.direction
+  )
+}
+
+function contractKey(c) {
+  if (!c) return ''
+  const norm = normalizeContract(c)
+  return `${norm.expiry}-${norm.target}-${norm.stop}-${norm.range}-${norm.direction}`
+}
+
 export default function ContractSetup({ initialContract }) {
   const providerSelectId = useId()
   const modelSelectId = useId()
@@ -15,14 +52,34 @@ export default function ContractSetup({ initialContract }) {
   const targetId = useId()
   const stopId = useId()
   const rangeId = useId()
-  const [expiry, setExpiry] = useState('')
-  const [target, setTarget] = useState('')
-  const [stop, setStop] = useState('')
-  const [range, setRange] = useState('500')
-  const [direction, setDirection] = useState('Up')
+
+  const init = normalizeContract(initialContract) || {
+    expiry: '',
+    target: '',
+    stop: '',
+    range: '500',
+    direction: 'Up',
+  }
+
+  const [expiry, setExpiry] = useState(init.expiry)
+  const [target, setTarget] = useState(init.target)
+  const [stop, setStop] = useState(init.stop)
+  const [range, setRange] = useState(init.range)
+  const [direction, setDirection] = useState(init.direction)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [saveError, setSaveError] = useState('')
+
+  // Write serialization guard: ensures Save and screenshot Apply writes cannot overlap
+  const writeLockRef = useRef(false)
+
+  // Revision & baseline tracking
+  const baselineRef = useRef(init)
+  const draftRef = useRef({ ...init })
+  const draftRevisionRef = useRef(0)
+  const confirmedRevisionRef = useRef(0)
+  const prevContractRef = useRef(initialContract ? contractKey(initialContract) : null)
+
   // One "Saved" timer: an earlier save's timer must not clear a later save's confirmation.
   const savedTimerRef = useRef(null)
   const showSaved = () => {
@@ -31,6 +88,40 @@ export default function ContractSetup({ initialContract }) {
     savedTimerRef.current = setTimeout(() => setSaved(false), 2000)
   }
   useEffect(() => () => clearTimeout(savedTimerRef.current), [])
+
+  const markDraftEdit = () => {
+    draftRevisionRef.current += 1
+    clearTimeout(savedTimerRef.current)
+    setSaved(false)
+  }
+
+  const handleExpiryChange = (val) => {
+    markDraftEdit()
+    setExpiry(val)
+    draftRef.current.expiry = val
+  }
+  const handleTargetChange = (val) => {
+    markDraftEdit()
+    setTarget(val)
+    draftRef.current.target = val
+  }
+  const handleStopChange = (val) => {
+    markDraftEdit()
+    setStop(val)
+    draftRef.current.stop = val
+  }
+  const handleRangeChange = (val) => {
+    markDraftEdit()
+    setRange(val)
+    draftRef.current.range = val
+  }
+  const handleDirectionChange = (val) => {
+    if (draftRef.current.direction !== val) {
+      markDraftEdit()
+      setDirection(val)
+      draftRef.current.direction = val
+    }
+  }
 
   // Screenshot AI state
   const [providers, setProviders] = useState(null) // null = not loaded
@@ -55,24 +146,33 @@ export default function ContractSetup({ initialContract }) {
     setScreenshotError('')
   }, [selectedProvider, selectedModel])
 
-  // Only update form when the server-side contract actually changes
-  const prevContractRef = useRef(null)
+  // Only update form when the server-side contract actually changes and draft is pristine with no active write
   useEffect(() => {
     if (!initialContract) return
-    const key = `${initialContract.expiry}-${initialContract.target}-${initialContract.stop}-${initialContract.range}-${initialContract.direction}`
+    const key = contractKey(initialContract)
+
+    // Check if write owns the contract or draft is dirty (not pristine)
+    const isWriting = writeLockRef.current
+    const isPristine =
+      draftRevisionRef.current === confirmedRevisionRef.current &&
+      areContractsEqual(draftRef.current, baselineRef.current)
+
+    if (isWriting || !isPristine) {
+      // Do not overwrite user edits or in-flight writes
+      return
+    }
+
     if (prevContractRef.current === key) return
     prevContractRef.current = key
-    const expiryVal = initialContract.expiry
-    if (typeof expiryVal === 'number' && expiryVal > 0) {
-      setExpiry(new Date(expiryVal).toISOString())
-    } else {
-      setExpiry(expiryVal || '')
-    }
-    setTarget(initialContract.target?.toString() || '')
-    setStop(initialContract.stop?.toString() || '')
-    setRange(initialContract.range?.toString() || '500')
-    const dir = initialContract.direction || ''
-    setDirection(dir ? dir.charAt(0).toUpperCase() + dir.slice(1) : 'Up')
+
+    const normalized = normalizeContract(initialContract)
+    baselineRef.current = normalized
+    draftRef.current = { ...normalized }
+    setExpiry(normalized.expiry)
+    setTarget(normalized.target)
+    setStop(normalized.stop)
+    setRange(normalized.range)
+    setDirection(normalized.direction)
   }, [initialContract])
 
   // Fetch available AI providers
@@ -102,27 +202,58 @@ export default function ContractSetup({ initialContract }) {
   }, [selectedProvider, providers])
 
   /** PUT the contract; any failure lands in saveError beside the Save button. */
-  const saveContract = async (contract) => {
+  const saveContract = async (contract, draftSnapshot) => {
+    if (writeLockRef.current) return false
+    writeLockRef.current = true
+
+    const submittedRevision = draftRevisionRef.current
+    const submittedSnapshot = draftSnapshot ? { ...draftSnapshot } : { ...draftRef.current }
+
     setSaving(true)
     setSaved(false)
     setSaveError('')
-    const result = await apiPut('/api/updown/contract', contract)
-    setSaving(false)
+
+    let result
+    try {
+      result = await apiPut('/api/updown/contract', contract)
+    } finally {
+      writeLockRef.current = false
+      setSaving(false)
+    }
+
     if (!result.ok) {
       setSaveError(describeMutationFailure(result, 'Failed to save contract'))
       return false
     }
-    showSaved()
+
+    // Advance baseline to the submitted/confirmed snapshot
+    baselineRef.current = { ...submittedSnapshot }
+    confirmedRevisionRef.current = submittedRevision
+    prevContractRef.current = contractKey(submittedSnapshot)
+
+    // Show Saved only for the current confirmed draft; if newer edits exist, retain them and present them as unsaved
+    const hasNewerEdits =
+      draftRevisionRef.current !== submittedRevision ||
+      !areContractsEqual(draftRef.current, submittedSnapshot)
+
+    if (!hasNewerEdits) {
+      showSaved()
+    }
+
     return true
   }
 
-  const handleSave = () => saveContract({
-    expiry,
-    target: parseFloat(target),
-    stop: parseFloat(stop),
-    range: parseInt(range, 10),
-    direction: direction.toLowerCase(),
-  })
+  const handleSave = () => {
+    if (writeLockRef.current) return false
+    const draftSnapshot = { ...draftRef.current }
+    return saveContract({
+      expiry: draftSnapshot.expiry,
+      target: parseFloat(draftSnapshot.target),
+      stop: parseFloat(draftSnapshot.stop),
+      range: parseInt(draftSnapshot.range, 10),
+      direction: draftSnapshot.direction.toLowerCase(),
+    }, draftSnapshot)
+  }
 
   const analyzeScreenshot = useCallback(async (file) => {
     if (!selectedProvider) {
@@ -195,32 +326,51 @@ export default function ContractSetup({ initialContract }) {
   }, [analyzeScreenshot])
 
   const applyPreview = async () => {
+    if (writeLockRef.current) return
     const d = preview
     if (!d) return
     setPreview(null)
     setScreenshotError('')
 
     const screenType = d.screenType || 'select'
-    const dir = d.direction || direction
+    const dir = d.direction || draftRef.current.direction
 
     // Update contract form fields and save (all screen types can have contract-relevant data)
     const hasContractData = d.target || d.stop || d.range || d.expiryISO
     if (screenType === 'select' || screenType === 'order' || hasContractData) {
-      if (d.direction) setDirection(d.direction)
-      if (d.range) setRange(d.range.toString())
-      if (d.target) setTarget(d.target.toString())
-      if (d.stop) setStop(d.stop.toString())
-      if (d.expiryISO) setExpiry(d.expiryISO)
+      markDraftEdit()
+
+      const nextTarget = d.target != null ? d.target.toString() : draftRef.current.target
+      const nextStop = d.stop != null ? d.stop.toString() : draftRef.current.stop
+      const nextRange = d.range != null ? d.range.toString() : draftRef.current.range
+      const nextExpiry = d.expiryISO || draftRef.current.expiry
+      const nextDirection = d.direction
+        ? d.direction.charAt(0).toUpperCase() + d.direction.slice(1).toLowerCase()
+        : draftRef.current.direction
+
+      if (d.direction) setDirection(nextDirection)
+      if (d.range) setRange(nextRange)
+      if (d.target) setTarget(nextTarget)
+      if (d.stop) setStop(nextStop)
+      if (d.expiryISO) setExpiry(nextExpiry)
+
+      draftRef.current = {
+        expiry: nextExpiry,
+        target: nextTarget,
+        stop: nextStop,
+        range: nextRange,
+        direction: nextDirection,
+      }
 
       // The form already shows the extracted values, so on failure Save Contract
       // retries exactly what Apply tried to save.
       const ok = await saveContract({
-        expiry: d.expiryISO || expiry,
-        target: d.target ?? parseFloat(target),
-        stop: d.stop ?? parseFloat(stop),
-        range: d.range ?? parseInt(range, 10),
+        expiry: nextExpiry,
+        target: d.target ?? parseFloat(nextTarget),
+        stop: d.stop ?? parseFloat(nextStop),
+        range: d.range ?? parseInt(nextRange, 10),
         direction: (dir).toLowerCase(),
-      })
+      }, draftRef.current)
       if (!ok) setScreenshotError('Extracted values were applied to the form but not saved — see the error below Save Contract.')
     }
 
@@ -468,6 +618,7 @@ export default function ContractSetup({ initialContract }) {
             <div className="flex gap-2 pt-1">
               <Button
                 onClick={applyPreview}
+                disabled={saving}
                 variant="purple" size="compact-xs" className="flex-1 font-medium gap-1"
               >
                 <Check size={12} /> Apply
@@ -490,7 +641,7 @@ export default function ContractSetup({ initialContract }) {
             id={expiryId}
             type="text"
             value={expiry}
-            onChange={e => setExpiry(e.target.value)}
+            onChange={e => handleExpiryChange(e.target.value)}
             placeholder="2026-02-21T00:00:00Z"
             className="w-full bg-gray-900 border border-gray-700 rounded-sm px-3 py-1.5 text-sm text-white placeholder-gray-400 focus:outline-hidden focus:border-blue-500"
           />
@@ -503,7 +654,7 @@ export default function ContractSetup({ initialContract }) {
               id={targetId}
               type="number"
               value={target}
-              onChange={e => setTarget(e.target.value)}
+              onChange={e => handleTargetChange(e.target.value)}
               placeholder="100000"
               className="w-full bg-gray-900 border border-gray-700 rounded-sm px-3 py-1.5 text-sm text-white placeholder-gray-400 focus:outline-hidden focus:border-blue-500"
             />
@@ -514,7 +665,7 @@ export default function ContractSetup({ initialContract }) {
               id={stopId}
               type="number"
               value={stop}
-              onChange={e => setStop(e.target.value)}
+              onChange={e => handleStopChange(e.target.value)}
               placeholder="95000"
               className="w-full bg-gray-900 border border-gray-700 rounded-sm px-3 py-1.5 text-sm text-white placeholder-gray-400 focus:outline-hidden focus:border-blue-500"
             />
@@ -527,7 +678,7 @@ export default function ContractSetup({ initialContract }) {
             <select
               id={rangeId}
               value={range}
-              onChange={e => setRange(e.target.value)}
+              onChange={e => handleRangeChange(e.target.value)}
               className="w-full bg-gray-900 border border-gray-700 rounded-sm px-3 py-1.5 text-sm text-white focus:outline-hidden focus:border-blue-500"
             >
               <option value="500">$500</option>
@@ -538,13 +689,13 @@ export default function ContractSetup({ initialContract }) {
             <label className="text-xs text-gray-400 block mb-1">Direction</label>
             <div className="flex gap-2">
               <Button
-                onClick={() => setDirection('Up')}
+                onClick={() => handleDirectionChange('Up')}
                 variant={direction === 'Up' ? 'success' : 'secondary'} size="compact" className="flex-1 font-medium"
               >
                 Up
               </Button>
               <Button
-                onClick={() => setDirection('Down')}
+                onClick={() => handleDirectionChange('Down')}
                 variant={direction === 'Down' ? 'destructive' : 'secondary'} size="compact" className="flex-1 font-medium"
               >
                 Down

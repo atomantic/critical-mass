@@ -109,11 +109,11 @@ afterEach(() => {
 
 function mockFetchForSave(saveResponse) {
   vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => {} })
-  vi.stubGlobal('fetch', vi.fn((url) => {
+  vi.stubGlobal('fetch', vi.fn((url, options) => {
     if (url === '/api/updown/providers') {
       return Promise.resolve({ ok: true, json: async () => ({ success: true, providers: [] }) })
     }
-    return saveResponse()
+    return saveResponse(url, options)
   }))
 }
 
@@ -206,5 +206,229 @@ describe('ContractSetup failure recovery', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Save Contract' }).disabled).toBe(false))
     expect(screen.getByText(/applied to the form but not saved/)).toBeTruthy()
     expect(screen.getByLabelText(/Target/).value).toBe('70000')
+  })
+})
+
+describe('ContractSetup draft revision and server readback transitions', () => {
+  it('preserves newer edits when a held save resolves and its readback is delivered', async () => {
+    const put = deferred()
+    mockFetchForSave((url) => {
+      if (url === '/api/updown/contract') return put.promise
+      throw new Error(`unexpected ${url}`)
+    })
+
+    const initial = {
+      expiry: '2026-02-21T00:00:00.000Z',
+      target: 100000,
+      stop: 95000,
+      range: 500,
+      direction: 'up',
+    }
+
+    const { rerender } = render(<ContractSetup initialContract={initial} />)
+    expect(screen.getByLabelText(/Target/).value).toBe('100000')
+
+    // Edit target to 110000 and initiate save
+    fireEvent.change(screen.getByLabelText(/Target/), { target: { value: '110000' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save Contract' }))
+
+    // Save is now held (pending)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Saving...' })).toBeTruthy())
+
+    // Edit target/stop/expiry/direction while save is held
+    fireEvent.change(screen.getByLabelText(/Target/), { target: { value: '120000' } })
+    fireEvent.change(screen.getByLabelText(/Stop/), { target: { value: '96000' } })
+    fireEvent.change(screen.getByLabelText(/Expiry/), { target: { value: '2026-02-22T00:00:00.000Z' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Down' }))
+
+    // Resolve the held save
+    await act(async () => {
+      put.resolve({ ok: true, json: async () => ({ success: true }) })
+      await put.promise
+    })
+
+    // Saved should NOT be shown because newer edits exist
+    expect(screen.queryByRole('button', { name: 'Saved' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Save Contract' })).toBeTruthy()
+
+    // Deliver status readback matching what was saved on the server
+    const readback = {
+      expiry: '2026-02-21T00:00:00.000Z',
+      target: 110000,
+      stop: 95000,
+      range: 500,
+      direction: 'up',
+    }
+    rerender(<ContractSetup initialContract={readback} />)
+
+    // The newer edits made during the save must survive
+    expect(screen.getByLabelText(/Target/).value).toBe('120000')
+    expect(screen.getByLabelText(/Stop/).value).toBe('96000')
+    expect(screen.getByLabelText(/Expiry/).value).toBe('2026-02-22T00:00:00.000Z')
+    expect(screen.getByRole('button', { name: 'Down' }).className).toContain('bg-')
+  })
+
+  it('preserves edits made after successful save but before the next status poll', async () => {
+    mockFetchForSave((url) => {
+      if (url === '/api/updown/contract') return Promise.resolve({ ok: true, json: async () => ({ success: true }) })
+      throw new Error(`unexpected ${url}`)
+    })
+
+    const initial = { target: 100000, stop: 95000, range: 500, direction: 'up', expiry: '' }
+    const { rerender } = render(<ContractSetup initialContract={initial} />)
+
+    fireEvent.change(screen.getByLabelText(/Target/), { target: { value: '110000' } })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Save Contract' }))
+    })
+
+    expect(await screen.findByRole('button', { name: 'Saved' })).toBeTruthy()
+
+    // Make an edit after PUT settled, before poll arrives
+    fireEvent.change(screen.getByLabelText(/Target/), { target: { value: '130000' } })
+    // Saved confirmation disappears immediately
+    expect(screen.queryByRole('button', { name: 'Saved' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Save Contract' })).toBeTruthy()
+
+    // Status poll arrives with the saved contract
+    rerender(<ContractSetup initialContract={{ target: 110000, stop: 95000, range: 500, direction: 'up', expiry: '' }} />)
+
+    // Newer edit survives
+    expect(screen.getByLabelText(/Target/).value).toBe('130000')
+  })
+
+  it('never shows Saved for an unsent or modified draft', async () => {
+    const put = deferred()
+    mockFetchForSave((url) => {
+      if (url === '/api/updown/contract') return put.promise
+      throw new Error(`unexpected ${url}`)
+    })
+
+    render(<ContractSetup initialContract={{ target: 100000 }} />)
+
+    // Edit target and save
+    fireEvent.change(screen.getByLabelText(/Target/), { target: { value: '110000' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save Contract' }))
+
+    // While saving, modify target again
+    fireEvent.change(screen.getByLabelText(/Target/), { target: { value: '115000' } })
+
+    // Resolve PUT
+    await act(async () => {
+      put.resolve({ ok: true, json: async () => ({ success: true }) })
+      await put.promise
+    })
+
+    // Button must present unsaved state ("Save Contract"), not "Saved"
+    expect(screen.queryByRole('button', { name: 'Saved' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Save Contract' })).toBeTruthy()
+  })
+
+  it('adopts a genuinely changed server contract on a pristine form, and ignores polls when dirty', async () => {
+    const initial = { target: 100000, stop: 95000, range: 500, direction: 'up', expiry: '' }
+    const { rerender } = render(<ContractSetup initialContract={initial} />)
+
+    expect(screen.getByLabelText(/Target/).value).toBe('100000')
+
+    // Pristine form adopts genuinely changed server contract
+    const changed = { target: 200000, stop: 190000, range: 2000, direction: 'down', expiry: '' }
+    rerender(<ContractSetup initialContract={changed} />)
+    expect(screen.getByLabelText(/Target/).value).toBe('200000')
+    expect(screen.getByLabelText(/Stop/).value).toBe('190000')
+    expect(screen.getByLabelText(/Range/).value).toBe('2000')
+
+    // Make an edit -> form is dirty
+    fireEvent.change(screen.getByLabelText(/Target/), { target: { value: '250000' } })
+    expect(screen.getByLabelText(/Target/).value).toBe('250000')
+
+    // Repeated identical poll does not disturb edit
+    rerender(<ContractSetup initialContract={changed} />)
+    expect(screen.getByLabelText(/Target/).value).toBe('250000')
+
+    // Another poll with different contract does not overwrite unsaved dirty draft
+    rerender(<ContractSetup initialContract={{ target: 300000, stop: 190000, range: 2000, direction: 'down', expiry: '' }} />)
+    expect(screen.getByLabelText(/Target/).value).toBe('250000')
+  })
+
+  it('serializes Save and screenshot Apply through a synchronous write guard, and preserves retry payload on failure', async () => {
+    const put = deferred()
+    const putCalls = []
+    mockFetchForSave((url, options) => {
+      if (url === '/api/updown/contract') {
+        putCalls.push(options)
+        return put.promise
+      }
+      throw new Error(`unexpected ${url}`)
+    })
+
+    render(<ContractSetup initialContract={{ target: 100000 }} />)
+
+    // Start Save
+    fireEvent.change(screen.getByLabelText(/Target/), { target: { value: '110000' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save Contract' }))
+
+    expect(putCalls).toHaveLength(1)
+    expect(screen.getByRole('button', { name: 'Saving...' })).toBeTruthy()
+
+    // Attempt second Save while first is pending -> write guard blocks overlap
+    fireEvent.click(screen.getByRole('button', { name: 'Saving...' }))
+    expect(putCalls).toHaveLength(1)
+
+    // Save fails
+    await act(async () => {
+      put.resolve({ ok: false, status: 500, json: async () => ({ error: 'database down' }) })
+      await put.promise
+    })
+
+    // Error is shown, Save is re-enabled, draft is preserved for retry
+    expect((await screen.findByRole('alert')).textContent).toContain('database down')
+    expect(screen.getByLabelText(/Target/).value).toBe('110000')
+    expect(screen.getByRole('button', { name: 'Save Contract' }).disabled).toBe(false)
+  })
+
+  it('disables screenshot Apply and blocks write overlap while a save is in progress', async () => {
+    const values = new Map([
+      ['updown-screenshot-provider', 'provider-a'],
+      ['updown-screenshot-model', 'model-a'],
+    ])
+    vi.stubGlobal('localStorage', { getItem: key => values.get(key) || null, setItem: (key, value) => values.set(key, value) })
+
+    const put = deferred()
+    const putCalls = []
+    vi.stubGlobal('fetch', vi.fn(async (url, options) => {
+      if (url === '/api/updown/providers') return { ok: true, json: async () => ({ success: true, providers: [{ id: 'provider-a', models: ['model-a'] }] }) }
+      if (url.startsWith('/api/updown/screenshot')) return { ok: true, json: async () => ({ success: true, extracted: { screenType: 'select', target: 80000, stop: 75000, range: 500, direction: 'Up' } }) }
+      if (url === '/api/updown/contract') {
+        putCalls.push(options)
+        return put.promise
+      }
+      throw new Error(`unexpected ${url}`)
+    }))
+
+    render(<ContractSetup initialContract={{ target: 100000 }} />)
+
+    // Upload screenshot to get preview
+    fireEvent.change(document.querySelector('input[type="file"]'), { target: { files: [new File(['x'], 'x.png', { type: 'image/png' })] } })
+    const applyButton = await screen.findByRole('button', { name: 'Apply' })
+    expect(applyButton).toBeTruthy()
+
+    // Start Save Contract
+    fireEvent.change(screen.getByLabelText(/Target/), { target: { value: '110000' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save Contract' }))
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Saving...' })).toBeTruthy())
+    expect(putCalls).toHaveLength(1)
+    // Apply button is disabled while saving
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Apply' }).disabled).toBe(true))
+
+    // Attempting to click Apply does not fire a second PUT
+    fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
+    expect(putCalls).toHaveLength(1)
+
+    // Resolve Save
+    await act(async () => {
+      put.resolve({ ok: true, json: async () => ({ success: true }) })
+      await put.promise
+    })
   })
 })
