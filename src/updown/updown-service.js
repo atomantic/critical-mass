@@ -124,7 +124,7 @@ const createUpDownService = (io, deps) => {
   let startPromise = null;
 
   // State
-  let contract = { expiry: null, target: null, stop: null, range: null, direction: null };
+  let contract = { expiry: null, target: null, stop: null, range: null, direction: null, version: 1 };
   let position = null;
   /** @type {Array<Object>} */
   const signalHistory = [];
@@ -617,13 +617,15 @@ const createUpDownService = (io, deps) => {
    * @param {string | null} config.direction - 'up' or 'down'
    */
   const setContract = (config) => {
-    contract = { ...contract, ...config };
+    const nextVersion = (contract.version || 0) + 1;
+    contract = { ...contract, ...config, version: nextVersion };
     persistState();
     updownLogger.info(`ℹ️ 📊 UpDown contract updated expiry=${contract.expiry} direction=${contract.direction}`, {
       action: 'set-contract',
       expiry: contract.expiry,
       direction: contract.direction,
     });
+    return contract;
   };
 
   /**

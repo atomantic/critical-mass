@@ -388,8 +388,8 @@ module.exports = (app, deps) => {
     if (expiry != null && expiry !== '' && !Number.isFinite(expiryMs)) {
       return res.status(400).json({ success: false, error: 'expiry must be a valid date or timestamp' });
     }
-    updownService.setContract({ expiry: expiryMs, ...parsed, direction: direction ?? null });
-    res.json({ success: true });
+    const updated = updownService.setContract({ expiry: expiryMs, ...parsed, direction: direction ?? null });
+    res.json({ success: true, contract: updated });
   });
 
   app.put('/api/updown/position', (req, res) => {
