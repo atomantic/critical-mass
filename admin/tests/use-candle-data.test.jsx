@@ -367,4 +367,115 @@ describe('useCandleData display limit and live candle preservation', () => {
     // VWAP calculation uses aggregated volume (100)
     expect(bucket.vwap).not.toBeNull()
   })
+
+  it('rebuilds display buckets from retained source candles when bucketMs changes without re-fetching', async () => {
+    // Custom views with same candleTf '1m' but different bucketMs
+    const customViews = {
+      '1m_agg': { bucketMs: 60_000, maxBuckets: 60, candleTf: '1m', indicatorTf: '1m' },
+      '5m_agg': { bucketMs: 300_000, maxBuckets: 12, candleTf: '1m', indicatorTf: '1m' },
+    }
+    const historical = [
+      { timestamp: 0, open: 100, high: 105, low: 95, close: 100, volume: 10 },
+    ]
+    const fetchMock = makeFetchMock({ '1m': historical })
+    vi.stubGlobal('fetch', fetchMock)
+
+    let props = {
+      exchange: 'coinbase',
+      tickPrice: null,
+      tickTimestamp: null,
+      options: { views: customViews, defaultView: '1m_agg' },
+    }
+
+    const { result, rerender } = renderHook(() =>
+      useCandleData(props.exchange, props.tickPrice, props.tickTimestamp, props.options)
+    )
+
+    await vi.waitFor(() => expect(result.current.chartData.length).toBe(1))
+
+    // Accumulate live candles
+    props = { ...props, tickPrice: 110, tickTimestamp: 60_000 }; rerender()
+    props = { ...props, tickPrice: 120, tickTimestamp: 120_000 }; rerender()
+
+    expect(result.current.chartData.length).toBe(3)
+
+    // Switch view to 5m_agg (same candleTf '1m', different bucketMs 300_000)
+    act(() => {
+      result.current.setView('5m_agg')
+    })
+
+    // Should aggregate the 3 retained 1m candles into one 5m bucket (0..300_000)
+    expect(result.current.chartData.length).toBe(1)
+    expect(result.current.chartData[0].open).toBe(100)
+    expect(result.current.chartData[0].price).toBe(120)
+
+    // Verify fetch was NOT rerun because seriesKey (exchange:candleTf) did not change
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('allows a newer finalized historical response to update completed candle close after live ticks stop', async () => {
+    const historicalInitial = [
+      { timestamp: 0, open: 100, high: 105, low: 95, close: 100, volume: 10 },
+    ]
+    let fetchCount = 0
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      fetchCount++
+      if (fetchCount === 1) {
+        return {
+          ok: true, status: 200,
+          headers: new Headers({ 'content-type': 'application/json' }),
+          json: async () => ({ success: true, candles: { '1m': historicalInitial } }),
+        }
+      }
+      // On retry/refresh after live ticks stop:
+      // Finalized candle for t=60_000 closed at 118 (whereas last live tick was 115)
+      return {
+        ok: true, status: 200,
+        headers: new Headers({ 'content-type': 'application/json' }),
+        json: async () => ({
+          success: true,
+          candles: {
+            '1m': [
+              { timestamp: 0, open: 100, high: 105, low: 95, close: 100, volume: 10 },
+              { timestamp: 60_000, open: 100, high: 120, low: 95, close: 118, volume: 25 },
+            ],
+          },
+        }),
+      }
+    }))
+
+    let props = {
+      exchange: 'coinbase',
+      tickPrice: null,
+      tickTimestamp: null,
+      options: { defaultInterval: '1m', maxBucketsOverride: 10 },
+    }
+
+    const { result, rerender } = renderHook(() =>
+      useCandleData(props.exchange, props.tickPrice, props.tickTimestamp, props.options)
+    )
+
+    await vi.waitFor(() => expect(result.current.chartData.length).toBe(1))
+
+    // Live tick at t=60_000 with price 115
+    props = { ...props, tickPrice: 115, tickTimestamp: 60_000 }; rerender()
+
+    // Move to next bucket (t=120_000) so t=60_000 is completed
+    props = { ...props, tickPrice: 130, tickTimestamp: 120_000 }; rerender()
+
+    const bucket60kBefore = result.current.chartData.find(c => c.time === 60_000)
+    expect(bucket60kBefore.price).toBe(115)
+
+    // Stop live ticks, trigger retry (refresh)
+    props = { ...props, tickPrice: null, tickTimestamp: null }; rerender()
+    act(() => {
+      result.current.retry()
+    })
+
+    // The newer finalized historical close (118) should now update the completed candle
+    await vi.waitFor(() => {
+      const bucket60kAfter = result.current.chartData.find(c => c.time === 60_000)
+      expect(bucket60kAfter.price).toBe(118)
+    })
+  })
 })

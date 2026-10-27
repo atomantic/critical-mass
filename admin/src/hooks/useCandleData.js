@@ -264,6 +264,7 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
   const historicalCandlesRef = useRef(null)
   const lastHARef = useRef(null) // previous bucket's HA values for live tick updates
   const activeSeriesKeyRef = useRef(null)
+  const fetchSeqRef = useRef(0)
 
   const viewConfig = legacyMode ? (views[view] || views[viewKeys[0]]) : {
     bucketMs, maxBuckets, candleTf, indicatorTf,
@@ -349,8 +350,13 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
       bucket.low = Math.min(...group.map(c => c.low))
       bucket.price = group[group.length - 1].close
       bucket.volume = group.reduce((sum, c) => sum + (c.volume || 0), 0)
-      if (group.some(c => c.hasLiveTicks)) {
-        bucket.hasLiveTicks = true
+      bucket.hasLiveTicks = group.some(c => c.hasLiveTicks)
+    }
+
+    // Prune stale display buckets when aggregation grouping changes
+    for (const key of map.keys()) {
+      if (!bucketSourceGroups.has(key)) {
+        map.delete(key)
       }
     }
 
@@ -408,7 +414,7 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
    * Merge fetched historical candles into the canonical source sequence,
    * preserving newer live observations and observed extrema.
    */
-  const mergeHistoricalCandles = useCallback((candles) => {
+  const mergeHistoricalCandles = useCallback((candles, fetchSeq) => {
     if (!candles?.length) return
     const sourceMap = sourceCandlesMapRef.current
 
@@ -448,8 +454,14 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
         }
         // Replace historical volume on refresh to avoid double counting
         existing.volume = b.volume
-        if (!existing.hasLiveTicks) {
+        // A late historical reply (fetch started before the latest live tick) cannot replace newer live observations.
+        // However, a newer finalized historical response (fetch started after the latest live tick) updates completed candles.
+        const isLiveTickNewer = existing.hasLiveTicks && existing.lastTickFetchSeq != null && fetchSeq != null && existing.lastTickFetchSeq >= fetchSeq
+        if (!isLiveTickNewer) {
           existing.close = b.close
+          if (fetchSeq != null && existing.lastTickFetchSeq != null && fetchSeq > existing.lastTickFetchSeq) {
+            existing.hasLiveTicks = false
+          }
         }
       } else {
         sourceMap.set(sourceKey, b)
@@ -473,7 +485,7 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
   const mergeHistoricalCandlesRef = useRef(mergeHistoricalCandles)
   mergeHistoricalCandlesRef.current = mergeHistoricalCandles
 
-  const seriesKey = `${exchange}:${candleTf}:${bucketMs}`
+  const seriesKey = `${exchange}:${candleTf}`
 
   // Fetch historical candles on mount or timeframe/exchange change.
   // Retries once after 5s if the requested candleTf is missing (derived TFs may not be ready yet)
@@ -499,6 +511,7 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
     setIsLoading(true)
     setError(null)
     const doFetch = () => {
+      const fetchSeq = ++fetchSeqRef.current
       controller = new AbortController()
       apiGet(`/api/candles/${exchange}`, { signal: controller.signal })
         .then(result => {
@@ -512,7 +525,7 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
           // If the requested TF has data or we already retried, done loading
           if (data.candles[candleTf]?.length || retryRef.current) {
             if (data.candles[candleTf]?.length) {
-              mergeHistoricalCandlesRef.current(data.candles[candleTf])
+              mergeHistoricalCandlesRef.current(data.candles[candleTf], fetchSeq)
               syncChartRef.current()
             }
             setIsLoading(false)
@@ -534,16 +547,17 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
       controller.abort()
       if (retryTimer !== null) clearTimeout(retryTimer)
     }
-  }, [exchange, candleTf, bucketMs, retryNonce, seriesKey])
+  }, [exchange, candleTf, retryNonce, seriesKey])
 
-  // Derive projection on display limit / range changes or signal annotations change
+  // Derive projection on display limit / range / bucket aggregation / annotations change
   useEffect(() => {
+    updateFromSourceCandles()
     syncChart()
-  }, [maxBuckets, options.signalAnnotations, syncChart])
+  }, [bucketMs, maxBuckets, options.signalAnnotations, syncChart, updateFromSourceCandles])
 
   // Process live ticks into source candles and buckets (ref mutation only — no re-render per tick)
   useEffect(() => {
-    if (!tickPrice) return
+    if (tickPrice == null) return
     const now = tickTimestamp || Date.now()
     const sourceKey = Math.floor(now / sourceCandleMs) * sourceCandleMs
     const bKey = Math.floor(now / bucketMs) * bucketMs
@@ -555,6 +569,7 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
     if (sc) {
       sc.close = tickPrice
       sc.hasLiveTicks = true
+      sc.lastTickFetchSeq = fetchSeqRef.current
       if (tickPrice > sc.high) sc.high = tickPrice
       if (tickPrice < sc.low) sc.low = tickPrice
     } else {
@@ -566,6 +581,7 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
         close: tickPrice,
         volume: 0,
         hasLiveTicks: true,
+        lastTickFetchSeq: fetchSeqRef.current,
       })
     }
 
