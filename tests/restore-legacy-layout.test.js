@@ -27,6 +27,7 @@ const { createBackup, restoreBackup, inspectBackup, checkRestorePreconditions } 
 const { migrateLegacyNamespace } = require('../src/legacy-namespace-migration');
 const { normalizeExchangeTreeToPairs } = require('../src/migration');
 const { JOURNAL_FILENAME } = require('../src/restore-apply');
+const { ledgerOf } = require('./helpers/ledger-fixture');
 
 const silentLogger = { info: () => {}, warn: () => {}, error: () => {} };
 
@@ -146,11 +147,14 @@ describe('normalizeExchangeTreeToPairs (issue #541)', () => {
   });
 });
 
+const ARCHIVED_LEDGER = JSON.stringify(ledgerOf('archived'));
+const LIVE_LEDGER = JSON.stringify(ledgerOf('live'));
+
 describe('restoreBackup translates a pre-multi-pair archive (issue #541)', () => {
   it('relocates exchange-level files onto a destination that already holds per-fund files', async () => {
     const { source, filename } = await makeLegacyLayoutArchive(configWith({ coinbase: 'BTC-USDC' }), {
       'coinbase/state.json': '{"generation":"archived"}',
-      'coinbase/fill-ledger.json': 'archived-ledger',
+      'coinbase/fill-ledger.json': ARCHIVED_LEDGER,
       'coinbase/regime-state.json': '{"regime":"archived"}',
     });
 
@@ -164,7 +168,7 @@ describe('restoreBackup translates a pre-multi-pair archive (issue #541)', () =>
 
     const fundDir = path.join(dest.dataDir, 'coinbase', 'BTC-USDC');
     assert.equal(read(path.join(fundDir, 'state.json')), '{"generation":"archived"}');
-    assert.equal(read(path.join(fundDir, 'fill-ledger.json')), 'archived-ledger');
+    assert.equal(read(path.join(fundDir, 'fill-ledger.json')), ARCHIVED_LEDGER);
     assert.equal(read(path.join(fundDir, 'regime-state.json')), '{"regime":"archived"}');
     // Nothing stranded at the exchange level to re-trigger the startup migration.
     assert.equal(read(path.join(dest.dataDir, 'coinbase', 'state.json')), null);
@@ -249,13 +253,13 @@ describe('restoreBackup translates a pre-multi-pair archive (issue #541)', () =>
   it('rolls the translated destinations back when the application fails mid-apply', async () => {
     const { source, filename } = await makeLegacyLayoutArchive(configWith({ coinbase: 'BTC-USDC' }), {
       'coinbase/state.json': '{"generation":"archived"}',
-      'coinbase/fill-ledger.json': 'archived-ledger',
+      'coinbase/fill-ledger.json': ARCHIVED_LEDGER,
     });
 
     const dest = makeInstall('dest', configWith({ coinbase: 'BTC-USDC' }));
     const fundDir = path.join(dest.dataDir, 'coinbase', 'BTC-USDC');
     write(path.join(fundDir, 'state.json'), '{"generation":"live"}');
-    write(path.join(fundDir, 'fill-ledger.json'), 'live-ledger');
+    write(path.join(fundDir, 'fill-ledger.json'), LIVE_LEDGER);
     transferArchive(source, dest, filename);
 
     // Break the rename of one TRANSLATED destination — reachable only because
@@ -275,7 +279,7 @@ describe('restoreBackup translates a pre-multi-pair archive (issue #541)', () =>
     assert.equal(result.rolledBack, true);
 
     assert.equal(read(path.join(fundDir, 'state.json')), '{"generation":"live"}');
-    assert.equal(read(path.join(fundDir, 'fill-ledger.json')), 'live-ledger');
+    assert.equal(read(path.join(fundDir, 'fill-ledger.json')), LIVE_LEDGER);
     assert.equal(fs.existsSync(path.join(dest.dataDir, JOURNAL_FILENAME)), false);
   });
 });

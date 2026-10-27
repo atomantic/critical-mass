@@ -22,6 +22,7 @@ const baseConfigFile = path.join(root, 'config.json');
 const paths = { dataDir, baseConfigFile };
 const fundDir = path.join(dataDir, 'coinbase', 'BTC-USDC');
 
+
 const writeJson = (file, value) => {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify(value, null, 2));
@@ -39,7 +40,7 @@ after(() => fs.rmSync(root, { recursive: true, force: true }));
 
 describe('hourly fund-state snapshots', () => {
   it('copies non-reconstructable fund state and prunes rolling snapshots', () => {
-    writeJson(path.join(fundDir, 'fill-ledger.json'), { fills: [{ id: 'fill-1' }] });
+    writeJson(path.join(fundDir, 'fill-ledger.json'), ledgerOf('fill-1'));
     writeJson(path.join(fundDir, 'regime-state.json'), { position: { totalAsset: 0.5 } });
     writeJson(path.join(fundDir, 'closed-trades.json'), [{ id: 'trade-1' }]);
     writeJson(path.join(fundDir, 'chart-data-buffer.json'), { candles: ['rebuildable'] });
@@ -69,7 +70,7 @@ describe('hourly fund-state snapshots', () => {
 
     assert.equal(restored.success, true, JSON.stringify(restored));
     assert.equal(restored.filesRestored, 3);
-    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(fundDir, 'fill-ledger.json'), 'utf8')), { fills: [{ id: 'fill-1' }] });
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(fundDir, 'fill-ledger.json'), 'utf8')), ledgerOf('fill-1'));
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(fundDir, 'regime-state.json'), 'utf8')), { position: { totalAsset: 0.5 } });
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(fundDir, 'closed-trades.json'), 'utf8')), [{ id: 'trade-1' }]);
     assert.equal(fs.existsSync(path.join(fundDir, 'chart-data-buffer.json')), false);
@@ -141,6 +142,7 @@ describe('hourly fund-state snapshots', () => {
 
 // An absent sidecar and an explicit empty one describe the same generation.
 const { exerciseFundRestoreGeneration } = require('./helpers/fund-restore-generation');
+const { ledgerOf } = require('./helpers/ledger-fixture');
 for (const explicitEmpty of [false, true]) {
   it(`hourly restore resets newer accounting (${explicitEmpty ? 'empty' : 'absent'} closed trades, #1702)`, async (t) => {
     await exerciseFundRestoreGeneration(t, 'hourly', explicitEmpty);
@@ -155,7 +157,7 @@ const makeRecoveryFixture = (t) => {
   const paths = { dataDir: path.join(root, 'data'), baseConfigFile: path.join(root, 'config.json') };
   writeJson(paths.baseConfigFile, { exchanges: { coinbase: { pairs: { 'BTC-USDC': {} } } } });
   const liveDir = path.join(paths.dataDir, 'coinbase', 'BTC-USDC');
-  writeJson(path.join(liveDir, 'fill-ledger.json'), { fills: ['saved'] });
+  writeJson(path.join(liveDir, 'fill-ledger.json'), ledgerOf('saved'));
   writeJson(path.join(liveDir, 'regime-state.json'), { generation: 'saved' });
   const older = createFundStateBackup({ paths, now: new Date('2026-10-01'), maxBackups: 10 });
   const newer = createFundStateBackup({ paths, now: new Date('2026-10-02'), maxBackups: 10 });
@@ -232,7 +234,7 @@ describe('complete snapshot validation (#1703)', () => {
 
   it('rechecks a source lost after preflight and preserves every live destination', (t) => {
     const fixture = makeRecoveryFixture(t);
-    writeJson(path.join(fixture.liveDir, 'fill-ledger.json'), { fills: ['live'] });
+    writeJson(path.join(fixture.liveDir, 'fill-ledger.json'), ledgerOf('live'));
     writeJson(path.join(fixture.liveDir, 'closed-trades.json'), ['live-sidecar']);
     const before = fs.readdirSync(fixture.liveDir).map((name) => [name, fs.readFileSync(path.join(fixture.liveDir, name))]);
     assert.deepEqual(checkFundStateRestorePreconditions(fixture.newer.snapshotId, 'coinbase', 'BTC-USDC', { paths: fixture.paths }), { ok: true });
@@ -274,5 +276,64 @@ describe('complete snapshot validation (#1703)', () => {
     assert.equal(result.success, false);
     assert.match(result.error, /staging failed.*incomplete/);
     assert.deepEqual(fs.readdirSync(fixture.liveDir).map((name) => [name, fs.readFileSync(path.join(fixture.liveDir, name))]), before);
+  });
+});
+
+describe('hourly snapshot publication validates accounting payloads (#1811)', () => {
+  it('does not publish an incompatible snapshot or prune usable recovery points', (t) => {
+    const fixture = makeRecoveryFixture(t);
+    const snapshotsDir = path.dirname(fixture.snapshotDir);
+    const before = fs.readdirSync(snapshotsDir).sort();
+    const liveLedger = path.join(fixture.liveDir, 'fill-ledger.json');
+    const cases = [
+      ['non-array', { fills: [] }, /not an array/],
+      ['newer format', ledgerOf('t1').map((row) => ({ ...row, formatVersion: 2 })), /newer build/],
+      ['malformed row', [{ tradeId: 't1' }], /invalid entry/],
+    ];
+    for (const [name, payload, reason] of cases) {
+      writeJson(liveLedger, payload);
+      const result = createFundStateBackup({ paths: fixture.paths, now: new Date('2026-10-03'), maxBackups: 2 });
+      assert.equal(result.success, false, name);
+      assert.match(result.error, reason);
+      assert.deepEqual(fs.readdirSync(snapshotsDir).sort(), before, `${name}: nothing published, nothing pruned`);
+    }
+    fs.writeFileSync(liveLedger, '{not json');
+    assert.equal(createFundStateBackup({ paths: fixture.paths, now: new Date('2026-10-03'), maxBackups: 2 }).success, false);
+    assert.deepEqual(fs.readdirSync(snapshotsDir).sort(), before);
+  });
+
+  it('accepts an unversioned fee-only legacy ledger and restores it unchanged', (t) => {
+    const fixture = makeRecoveryFixture(t);
+    const legacy = [{ tradeId: 'old-1', side: 'buy', size: 1, price: 10, quoteAmount: 10, fee: 0.01, timestamp: 1 }];
+    writeJson(path.join(fixture.liveDir, 'fill-ledger.json'), legacy);
+    const created = createFundStateBackup({ paths: fixture.paths, now: new Date('2026-10-03'), maxBackups: 10 });
+    assert.equal(created.success, true, created.error);
+    writeJson(path.join(fixture.liveDir, 'fill-ledger.json'), ledgerOf('after'));
+    const restored = restoreFundStateBackup(created.snapshotId, 'coinbase', 'BTC-USDC', { paths: fixture.paths });
+    assert.equal(restored.success, true, restored.error);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(fixture.liveDir, 'fill-ledger.json'), 'utf8')), legacy);
+  });
+
+  it('rechecks the staged generation when the snapshot changes after preflight', (t) => {
+    const fixture = makeRecoveryFixture(t);
+    const liveLedger = path.join(fixture.liveDir, 'fill-ledger.json');
+    writeJson(liveLedger, ledgerOf('live'));
+    const before = fs.readFileSync(liveLedger, 'utf8');
+    assert.deepEqual(checkFundStateRestorePreconditions(fixture.newer.snapshotId, 'coinbase', 'BTC-USDC', { paths: fixture.paths }), { ok: true });
+    writeJson(fixture.ledger, { fills: [] });
+    const result = restoreFundStateBackup(fixture.newer.snapshotId, 'coinbase', 'BTC-USDC', { paths: fixture.paths });
+    assert.equal(result.success, false);
+    assert.match(result.error, /not an array/);
+    assert.equal(fs.readFileSync(liveLedger, 'utf8'), before);
+    assert.equal(fs.readdirSync(fixture.paths.dataDir).some((name) => name.startsWith('.restore-')), false);
+  });
+
+  it('leaves the snapshot bytes untouched when refusing (no quarantine, no normalization)', (t) => {
+    const fixture = makeRecoveryFixture(t);
+    writeJson(fixture.ledger, { fills: [] });
+    const bytes = fs.readFileSync(fixture.ledger);
+    assert.equal(checkFundStateRestorePreconditions(fixture.newer.snapshotId, 'coinbase', 'BTC-USDC', { paths: fixture.paths }).ok, false);
+    assert.deepEqual(fs.readFileSync(fixture.ledger), bytes);
+    assert.deepEqual(fs.readdirSync(path.dirname(fixture.ledger)).sort(), ['fill-ledger.json', 'regime-state.json']);
   });
 });

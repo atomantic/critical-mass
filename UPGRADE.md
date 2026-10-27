@@ -299,16 +299,16 @@ Restoring such an archive onto a fresh clone recovered the state files of, say, 
 
 Old archives have no manifest, so they cannot be made portable on their own. Restore refuses them by default rather than silently letting the destination's defaults win. You have two options:
 
-**Oldest flat-layout archives need separate recovery.** The options below cover
-exchange-level (`coinbase/state.json`) and current per-fund layouts. Archives
-with accounting files directly at the data root (for example `state.json` or
-`transactions.tsv`) are not translated by restore. On an already-migrated
-destination, restore can report success while leaving the current fund unchanged
-and creating a namespace conflict that prevents the next startup. Do not apply
-that layout to a live installation; preserve the archive and verify recovery on
-an isolated copy until [issue #1795](https://github.com/atomantic/critical-mass/issues/1795)
-is resolved. Supplying `legacyBaseConfig` or accepting data-only restore does not
-fix this layout limitation.
+**Oldest flat-layout archives are translated.** Archives with accounting files
+directly at the data root (`state.json`, `transactions.tsv`, `optimizer-cache.json`,
+`btc-price-cache*.json`) predate exchange namespacing. Restore maps that root to
+`coinbase`, places per-fund files in `coinbase/<pair>/` (the pair comes from
+`legacyBaseConfig` when supplied, otherwise this machine's coinbase fund), and
+leaves no root file behind to block the next startup. The restore confirmation
+screen lists each translation. Restore refuses, before writing anything, when
+no coinbase fund can be resolved or when the archive carries two differing
+generations of the same file (for example a root `state.json` and a different
+`coinbase/<pair>/state.json`); remove the stale copy from the archive and retry.
 
 1. **Recommended — supply the source machine's base config.** Copy the *source* install's root `config.json` and pass it to the restore API as `legacyBaseConfig`:
 
