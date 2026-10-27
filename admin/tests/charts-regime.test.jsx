@@ -2,6 +2,7 @@ import React, { Component } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import ChartsRegime, { deriveFillMarker } from '../src/components/ChartsRegime'
+import { STATUS_STALE_MS } from '../src/utils/regimeStatusSnapshot.mjs'
 
 const fixture = vi.hoisted(() => ({ initializeFromCache: vi.fn(), status: null, statusSeq: null, connected: false }))
 vi.mock('../src/hooks/useTradeEvents', () => ({
@@ -767,5 +768,168 @@ describe('HTTP and realtime status snapshot arbitration (#1817)', () => {
     })
 
     expect(await screen.findByText('Engine Running')).toBeTruthy()
+  })
+})
+
+describe('ChartsRegime silent engine status expiration', () => {
+  it('stops presenting Engine Running within STATUS_STALE_MS and probes status endpoint', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    let statusCalls = 0
+    let releaseProbe
+    vi.stubGlobal('fetch', vi.fn(async url => {
+      if (url.includes('/regime/status')) {
+        statusCalls++
+        if (statusCalls > 1) {
+          return new Promise(resolve => { releaseProbe = resolve })
+        }
+        return { ok: true, json: async () => ({ status: { isRunning: true, market: { lastPrice: 50000 } } }) }
+      }
+      return { ok: true, json: async () => ({ config: {}, buyCount: 0, sellCount: 0, pnlPoints: [], candles: [] }) }
+    }))
+
+    render(<ChartsRegime exchange="coinbase" pair="BTC-USDC" />)
+    expect(await screen.findByText('Engine Running')).toBeTruthy()
+    expect(statusCalls).toBe(1)
+
+    // Advance to STATUS_STALE_MS
+    await act(async () => {
+      vi.advanceTimersByTime(STATUS_STALE_MS)
+    })
+
+    // Stopped presenting healthy running fund while probe is in flight
+    expect(screen.queryByText('Engine Running')).toBeNull()
+    expect(screen.getByText('Engine Unreachable')).toBeTruthy()
+    expect(statusCalls).toBe(2)
+
+    // Probe resolves with running status -> recovers
+    await act(async () => {
+      releaseProbe({ ok: true, json: async () => ({ status: { isRunning: true, market: { lastPrice: 50000 } } }) })
+    })
+    expect(await screen.findByText('Engine Running')).toBeTruthy()
+  })
+
+  it('offline success removes running indication and shows Engine Stopped', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    let statusCalls = 0
+    vi.stubGlobal('fetch', vi.fn(async url => {
+      if (url.includes('/regime/status')) {
+        statusCalls++
+        if (statusCalls > 1) {
+          // Probe returns stopped status
+          return { ok: true, json: async () => ({ status: { isRunning: false, health: { mode: 'STOPPED' } } }) }
+        }
+        return { ok: true, json: async () => ({ status: { isRunning: true, market: { lastPrice: 50000 } } }) }
+      }
+      return { ok: true, json: async () => ({ config: {}, buyCount: 0, sellCount: 0, pnlPoints: [], candles: [] }) }
+    }))
+
+    render(<ChartsRegime exchange="coinbase" pair="BTC-USDC" />)
+    expect(await screen.findByText('Engine Running')).toBeTruthy()
+
+    await act(async () => {
+      vi.advanceTimersByTime(STATUS_STALE_MS)
+    })
+
+    expect(screen.queryByText('Engine Running')).toBeNull()
+    expect(screen.getByText('Engine Stopped')).toBeTruthy()
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('failed probe retains last snapshot with stale label and inline Retry', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    let statusCalls = 0
+    let failProbe = true
+    vi.stubGlobal('fetch', vi.fn(async url => {
+      if (url.includes('/regime/status')) {
+        statusCalls++
+        if (statusCalls > 1 && failProbe) {
+          return { ok: false, status: 504, json: async () => ({ error: 'Gateway timeout' }) }
+        }
+        return { ok: true, json: async () => ({ status: { isRunning: true, market: { lastPrice: 50000 } } }) }
+      }
+      return { ok: true, json: async () => ({ config: {}, buyCount: 5, sellCount: 2, pnlPoints: [], candles: [] }) }
+    }))
+
+    render(<ChartsRegime exchange="coinbase" pair="BTC-USDC" />)
+    expect(await screen.findByText('Engine Running')).toBeTruthy()
+    expect(screen.getByText('Current Price:').nextElementSibling.textContent).toContain('50,000')
+
+    await act(async () => {
+      vi.advanceTimersByTime(STATUS_STALE_MS)
+    })
+
+    // Shows probe failed alert with Retry
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toContain('Status probe failed')
+    expect(alert.textContent).toContain('stale')
+    expect(screen.getByText('Current Price:').nextElementSibling.textContent).toContain('50,000')
+
+    // Retry inline
+    failProbe = false
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    await act(async () => {
+      vi.advanceTimersByTime(100)
+    })
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.getByText('Engine Running')).toBeTruthy()
+  })
+
+  it('fresh socket events recover the fund without remounting', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    let statusCalls = 0
+    vi.stubGlobal('fetch', vi.fn(async url => {
+      if (url.includes('/regime/status')) {
+        statusCalls++
+        if (statusCalls > 1) {
+          return { ok: false, status: 504, json: async () => ({ error: 'Gateway timeout' }) }
+        }
+        return { ok: true, json: async () => ({ status: { isRunning: true, market: { lastPrice: 50000 } } }) }
+      }
+      return { ok: true, json: async () => ({ config: {}, buyCount: 0, sellCount: 0, pnlPoints: [], candles: [] }) }
+    }))
+
+    const { rerender } = render(<ChartsRegime exchange="coinbase" pair="BTC-USDC" />)
+    expect(await screen.findByText('Engine Running')).toBeTruthy()
+
+    await act(async () => {
+      vi.advanceTimersByTime(STATUS_STALE_MS)
+    })
+    expect(await screen.findByRole('alert')).toBeTruthy()
+
+    // Fresh socket event arrives
+    fixture.status = { isRunning: true, market: { lastPrice: 51000 } }
+    rerender(<ChartsRegime exchange="coinbase" pair="BTC-USDC" />)
+
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.getByText('Engine Running')).toBeTruthy()
+  })
+
+  it('stopped snapshots do not repeatedly probe, and unmount releases timers', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    let statusCalls = 0
+    vi.stubGlobal('fetch', vi.fn(async url => {
+      if (url.includes('/regime/status')) {
+        statusCalls++
+        return { ok: true, json: async () => ({ status: { isRunning: false, health: { mode: 'STOPPED' } } }) }
+      }
+      return { ok: true, json: async () => ({ config: {}, buyCount: 0, sellCount: 0, pnlPoints: [], candles: [] }) }
+    }))
+
+    const { unmount } = render(<ChartsRegime exchange="coinbase" pair="BTC-USDC" />)
+    expect(await screen.findByText('Engine Stopped')).toBeTruthy()
+    expect(statusCalls).toBe(1)
+
+    // Stopped fund does not probe after 2 * STATUS_STALE_MS
+    await act(async () => {
+      vi.advanceTimersByTime(STATUS_STALE_MS * 2)
+    })
+    expect(statusCalls).toBe(1)
+
+    // Unmount releases without errors
+    unmount()
+    await act(async () => {
+      vi.advanceTimersByTime(STATUS_STALE_MS)
+    })
+    expect(statusCalls).toBe(1)
   })
 })
