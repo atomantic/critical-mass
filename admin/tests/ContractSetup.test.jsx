@@ -431,4 +431,70 @@ describe('ContractSetup draft revision and server readback transitions', () => {
       await put.promise
     })
   })
+
+  it('ignores a stale pre-save status readback after save succeeds on a pristine form', async () => {
+    mockFetchForSave((url) => {
+      if (url === '/api/updown/contract') return Promise.resolve({ ok: true, json: async () => ({ success: true }) })
+      throw new Error(`unexpected ${url}`)
+    })
+
+    const initial = { target: 100000, stop: 95000, range: 500, direction: 'up', expiry: '' }
+    const { rerender } = render(<ContractSetup initialContract={initial} />)
+
+    // Save target 110000
+    fireEvent.change(screen.getByLabelText(/Target/), { target: { value: '110000' } })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Save Contract' }))
+    })
+
+    expect(await screen.findByRole('button', { name: 'Saved' })).toBeTruthy()
+    expect(screen.getByLabelText(/Target/).value).toBe('110000')
+
+    // An in-flight or older poll delivers pre-save contract (target 100000)
+    rerender(<ContractSetup initialContract={initial} />)
+
+    // Stale pre-save response must NOT overwrite saved 110000
+    expect(screen.getByLabelText(/Target/).value).toBe('110000')
+
+    // Status poll acknowledges saved contract (target 110000)
+    rerender(<ContractSetup initialContract={{ target: 110000, stop: 95000, range: 500, direction: 'up', expiry: '' }} />)
+    expect(screen.getByLabelText(/Target/).value).toBe('110000')
+
+    // Later genuinely changed contract from another client (target 200000) is adopted on pristine form
+    rerender(<ContractSetup initialContract={{ target: 200000, stop: 95000, range: 500, direction: 'up', expiry: '' }} />)
+    expect(screen.getByLabelText(/Target/).value).toBe('200000')
+  })
+
+  it('updates both form display and draft when screenshot extracted values contain zero', async () => {
+    const values = new Map([
+      ['updown-screenshot-provider', 'provider-a'],
+      ['updown-screenshot-model', 'model-a'],
+    ])
+    vi.stubGlobal('localStorage', { getItem: key => values.get(key) || null, setItem: (key, value) => values.set(key, value) })
+
+    let submittedBody = null
+    vi.stubGlobal('fetch', vi.fn(async (url, options) => {
+      if (url === '/api/updown/providers') return { ok: true, json: async () => ({ success: true, providers: [{ id: 'provider-a', models: ['model-a'] }] }) }
+      if (url.startsWith('/api/updown/screenshot')) return { ok: true, json: async () => ({ success: true, extracted: { screenType: 'select', target: 0, stop: 0, range: 500, direction: 'Down' } }) }
+      if (url === '/api/updown/contract') {
+        submittedBody = JSON.parse(options.body)
+        return { ok: true, json: async () => ({ success: true }) }
+      }
+      throw new Error(`unexpected ${url}`)
+    }))
+
+    render(<ContractSetup initialContract={{ target: 100000, stop: 95000 }} />)
+
+    // Upload screenshot and Apply preview with target: 0 and stop: 0
+    fireEvent.change(document.querySelector('input[type="file"]'), { target: { files: [new File(['x'], 'x.png', { type: 'image/png' })] } })
+    const applyButton = await screen.findByRole('button', { name: 'Apply' })
+    await act(async () => {
+      fireEvent.click(applyButton)
+    })
+
+    // Displayed input values must synchronize with zero
+    expect(screen.getByLabelText(/Target/).value).toBe('0')
+    expect(screen.getByLabelText(/Stop/).value).toBe('0')
+    expect(submittedBody).toEqual(expect.objectContaining({ target: 0, stop: 0, direction: 'down' }))
+  })
 })

@@ -79,6 +79,7 @@ export default function ContractSetup({ initialContract }) {
   const draftRevisionRef = useRef(0)
   const confirmedRevisionRef = useRef(0)
   const prevContractRef = useRef(initialContract ? contractKey(initialContract) : null)
+  const awaitingServerAckRef = useRef(false)
 
   // One "Saved" timer: an earlier save's timer must not clear a later save's confirmation.
   const savedTimerRef = useRef(null)
@@ -138,8 +139,26 @@ export default function ContractSetup({ initialContract }) {
   const screenshotRequestOwner = useRef(null)
   if (!screenshotRequestOwner.current) screenshotRequestOwner.current = createRequestOwner()
 
+  const prevContextRef = useRef({ provider: selectedProvider, model: selectedModel })
+  const initialModelPopulatedRef = useRef(!selectedProvider || Boolean(selectedModel))
+
   useEffect(() => () => screenshotRequestOwner.current.invalidate(), [])
   useEffect(() => {
+    const isFirstRender =
+      prevContextRef.current.provider === selectedProvider &&
+      prevContextRef.current.model === selectedModel
+    if (isFirstRender) return
+
+    const providerChanged = prevContextRef.current.provider !== selectedProvider
+    const modelChanged = prevContextRef.current.model !== selectedModel
+    prevContextRef.current = { provider: selectedProvider, model: selectedModel }
+
+    if (!providerChanged && modelChanged && !initialModelPopulatedRef.current) {
+      initialModelPopulatedRef.current = true
+      return
+    }
+    initialModelPopulatedRef.current = true
+
     screenshotRequestOwner.current.invalidate()
     setAnalyzing(false)
     setPreview(null)
@@ -159,6 +178,15 @@ export default function ContractSetup({ initialContract }) {
 
     if (isWriting || !isPristine) {
       // Do not overwrite user edits or in-flight writes
+      return
+    }
+
+    // If we are awaiting status acknowledgement of our save, ignore stale pre-save polls
+    if (awaitingServerAckRef.current) {
+      if (key === prevContractRef.current) {
+        // Server status has acknowledged our save
+        awaitingServerAckRef.current = false
+      }
       return
     }
 
@@ -230,6 +258,7 @@ export default function ContractSetup({ initialContract }) {
     baselineRef.current = { ...submittedSnapshot }
     confirmedRevisionRef.current = submittedRevision
     prevContractRef.current = contractKey(submittedSnapshot)
+    awaitingServerAckRef.current = true
 
     // Show Saved only for the current confirmed draft; if newer edits exist, retain them and present them as unsaved
     const hasNewerEdits =
@@ -336,7 +365,7 @@ export default function ContractSetup({ initialContract }) {
     const dir = d.direction || draftRef.current.direction
 
     // Update contract form fields and save (all screen types can have contract-relevant data)
-    const hasContractData = d.target || d.stop || d.range || d.expiryISO
+    const hasContractData = d.target != null || d.stop != null || d.range != null || Boolean(d.expiryISO)
     if (screenType === 'select' || screenType === 'order' || hasContractData) {
       markDraftEdit()
 
@@ -349,9 +378,9 @@ export default function ContractSetup({ initialContract }) {
         : draftRef.current.direction
 
       if (d.direction) setDirection(nextDirection)
-      if (d.range) setRange(nextRange)
-      if (d.target) setTarget(nextTarget)
-      if (d.stop) setStop(nextStop)
+      if (d.range != null) setRange(nextRange)
+      if (d.target != null) setTarget(nextTarget)
+      if (d.stop != null) setStop(nextStop)
       if (d.expiryISO) setExpiry(nextExpiry)
 
       draftRef.current = {
