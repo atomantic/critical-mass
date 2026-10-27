@@ -15,6 +15,7 @@ after(() => {
   isolatedData.cleanup();
 });
 
+const { shouldSkipOwnedBuyRecommit } = require('../src/regime-pure-helpers');
 const { createRegimeEngine, cancelPartialFillOrder, resolveEntryBudget, makeFillDedupKey, isBuyAlreadyCommitted, shouldSkipBuyRecommit, isStrandedDustBody } = require('../src/regime-engine');
 const { instrumentAdapterForHealth, isRateLimitError, isAuthDeniedError } = require('../src/health-monitor');
 const { getRegimeStateFile } = require('../src/state-tracker');
@@ -135,11 +136,38 @@ describe('isBuyAlreadyCommitted (issue #131)', () => {
   });
 });
 
+describe('shouldSkipOwnedBuyRecommit (bookable-row guard)', () => {
+  const bodies = [{ sourceOrderIds: ['buy-x'], buyOrders: [{ orderId: 'buy-x' }] }];
+
+  it('skips an owned replay only when no bookable rows remain', () => {
+    assert.equal(shouldSkipOwnedBuyRecommit({ hasBookableRows: false, bodies, orderId: 'buy-x' }), true);
+    assert.equal(shouldSkipOwnedBuyRecommit({ hasBookableRows: true, bodies, orderId: 'buy-x' }), false);
+  });
+
+  it('books recovered unsettled rows even when no new rows were ingested', () => {
+    assert.equal(shouldSkipBuyRecommit(0, bodies, 'buy-x'), true);
+    assert.equal(shouldSkipOwnedBuyRecommit({ hasBookableRows: true, bodies, orderId: 'buy-x' }), false);
+  });
+
+  it('does not skip an unowned order regardless of row availability', () => {
+    for (const hasBookableRows of [false, true]) {
+      assert.equal(shouldSkipOwnedBuyRecommit({ hasBookableRows, bodies, orderId: 'buy-new' }), false);
+      assert.equal(shouldSkipOwnedBuyRecommit({ hasBookableRows, bodies: [], orderId: 'buy-new' }), false);
+    }
+  });
+});
+
 describe('shouldSkipBuyRecommit (issue #131 — advancing-partial guard, codex P1)', () => {
   const committed = [{ sourceOrderIds: ['buy-x'], buyOrders: [{ orderId: 'buy-x' }] }];
 
   it('SKIPS a retry: body already owns the orderId AND no new fills ingested', () => {
     assert.equal(shouldSkipBuyRecommit(0, committed, 'buy-x'), true);
+  });
+
+  it('preserves strict numeric-zero semantics in the compatibility wrapper', () => {
+    for (const count of [-1, 1, 2, NaN, undefined, null, false, '0']) {
+      assert.equal(shouldSkipBuyRecommit(count, committed, 'buy-x'), false);
+    }
   });
 
   it('does NOT skip an advancing partial: body owns the orderId but NEW fills were ingested', () => {

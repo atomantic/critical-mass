@@ -374,20 +374,29 @@ const isStrandedDustBody = (body, baseMinSize, baseIncrement, economics = null) 
 const snapshotBody = (body) => ({ ...body, buyOrders: [...(body.buyOrders || [])] });
 
 /**
- * Decide whether a buy-fill handling pass is a RETRY that must be skipped to
- * avoid double-counting (issue #131), vs. a legitimate new tranche (including an
- * advancing partial) that must process. The distinguishing signal is whether
- * any NEW fill rows were ingested this pass: ingestFill dedups by tradeId, so a
- * pure retry ingests nothing (ingestedCount === 0) and re-aggregates the full
- * order, whereas a real new/advancing fill brings new rows (ingestedCount > 0)
- * and must NOT be dropped even though a body already owns the orderId.
- * @param {number} ingestedCount - number of NEW fills ingested this pass
+ * Skip a buy re-commit only when a body already owns the order and its bounded
+ * booking batch has no unfinished rows. Bookable rows can include recovered,
+ * persisted unsettled rows even when ingestion deduplicates every fetched fill.
+ * Advancing or recovered tranches must still book into the owning body.
+ * @param {Object} options
+ * @param {boolean} options.hasBookableRows - bounded batch has rows left to book
+ * @param {Array} options.bodies - positionState.celestialBodies
+ * @param {string} options.orderId
+ * @returns {boolean} true → skip redundant body commit after a prior attempt
+ */
+const shouldSkipOwnedBuyRecommit = ({ hasBookableRows, bodies, orderId }) =>
+  !hasBookableRows && isBuyAlreadyCommitted(bodies, orderId);
+
+/**
+ * Legacy numeric compatibility wrapper. Only an exactly zero count allows an
+ * already-owned order to be skipped; live booking uses row availability instead.
+ * @param {number} ingestedCount - number of new fills ingested this pass
  * @param {Array} bodies - positionState.celestialBodies
  * @param {string} orderId
- * @returns {boolean} true → skip (retry after a body already committed)
+ * @returns {boolean}
  */
 const shouldSkipBuyRecommit = (ingestedCount, bodies, orderId) =>
-  ingestedCount === 0 && isBuyAlreadyCommitted(bodies, orderId);
+  shouldSkipOwnedBuyRecommit({ hasBookableRows: ingestedCount !== 0, bodies, orderId });
 
 module.exports = {
   buildPartialFillData,
@@ -406,5 +415,6 @@ module.exports = {
   pruneStaleTpCancelMarkers,
   isStrandedDustBody,
   snapshotBody,
+  shouldSkipOwnedBuyRecommit,
   shouldSkipBuyRecommit,
 };
