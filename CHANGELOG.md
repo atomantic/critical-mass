@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- **[issue-1818] Live fill refreshes coalesce behind pending reads** — ChartsRegime tracks requested markers separately from loaded aggregates, coalescing marker updates during page or fills reads and issuing a trailing fills read when work settles so realized P&L, cycle count and TP count never stay stale.
+
 - **[issue-1796] Health sweeps preserve control capacity** — concurrent health requests share one sweep and probe each exchange’s funds sequentially, so five or more healthy funds remain healthy while stop and maintenance commands retain IPC capacity.
 
 - **[issue-1783] Auto-aggressiveness sizes ladder entries** — previews, automatic ladders (including auto-switch) and rebuilds scale rungs in price order, counting earlier commitments toward the capital governor and respecting available capital. Reductions reserve cash; boosts consume the ladder budget sooner. Disabled or stale signals preserve baseline sizing.

@@ -38,11 +38,16 @@ function ChartsRegime({ exchange = 'coinbase', pair, fillDebounceMs = 1500 }) {
   const [stale, setStale] = useState(false)
   const [historyUnavailable, setHistoryUnavailable] = useState(false)
   const readState = useRef(null)
+  const fetchFillsRef = useRef(null)
 
   const { connected, status: socketStatus } = useRegimeEvents(exchange, pair)
+  const socketStatusRef = useRef(socketStatus)
+  socketStatusRef.current = socketStatus
 
   // Use socket status when available, fall back to local status
   const status = socketStatus || localStatus
+  const statusRef = useRef(status)
+  statusRef.current = status
 
   // Chart data buffering (for real-time updates) with cache support
   const { priceHistory: realtimePrices, atrHistory: realtimeAtr, regimeHistory, initializeFromCache } = useChartDataBuffer(status)
@@ -74,9 +79,12 @@ function ChartsRegime({ exchange = 'coinbase', pair, fillDebounceMs = 1500 }) {
   const fetchData = useCallback(async () => {
     const session = readState.current
     if (!session?.active || session.inFlight) return
+    const priorMarker = session.hasSnapshot ? session.loadedMarker : null
+    const startSocketMarker = deriveFillMarker(socketStatusRef.current)
     session.inFlight = true
     const controller = new AbortController()
     session.controller = controller
+    let readSucceeded = false
     try {
       const candlesQuery = pair ? `?granularity=ONE_MINUTE&limit=60&pair=${encodeURIComponent(pair)}` : '?granularity=ONE_MINUTE&limit=60'
       const read = async (url, name) => {
@@ -97,13 +105,31 @@ function ChartsRegime({ exchange = 'coinbase', pair, fillDebounceMs = 1500 }) {
       const [statusData, configData, fillsData] = results.slice(0, 3).map(result => result.value)
       const candlesResult = results[3]
       const cacheResult = results[4]
+      const statusMarker = deriveFillMarker(statusData.status)
+      const currentSocketMarker = deriveFillMarker(socketStatusRef.current)
+
       session.hasSnapshot = true
-      fillRefreshRef.current = deriveFillMarker(socketStatus || statusData.status)
       setLocalStatus(statusData.status)
       setConfig(configData.config)
       setFillAggregates(fillsData)
       setError(null)
       setStale(false)
+      readSucceeded = true
+
+      // If a fill marker was observed via socket during the page read, retain it as requested.
+      if (currentSocketMarker && currentSocketMarker !== startSocketMarker) {
+        session.requestedMarker = currentSocketMarker
+      }
+
+      if (session.requestedMarker) {
+        // A fill arrived while the page read was pending. Fills aggregates in this snapshot
+        // may have been read before the fill, so do not acknowledge the requested marker.
+        // Retain the prior loaded marker so settling issues a trailing fills read.
+        session.loadedMarker = priorMarker || ''
+      } else {
+        session.loadedMarker = statusMarker
+      }
+
       const unavailable = candlesResult.status === 'rejected' || cacheResult.status === 'rejected'
       setHistoryUnavailable(unavailable)
       if (candlesResult.status === 'fulfilled' && candlesResult.value.candles?.length) {
@@ -118,16 +144,23 @@ function ChartsRegime({ exchange = 'coinbase', pair, fillDebounceMs = 1500 }) {
       else setStale(true)
     } finally {
       session.inFlight = false
+      if (session.controller === controller) session.controller = null
       if (session.active) setLoading(false)
+      if (session.active && readSucceeded && session.requestedMarker && session.requestedMarker !== session.loadedMarker) {
+        fetchFillsRef.current?.()
+      }
     }
   }, [exchange, pair, initializeFromCache]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const fetchFills = useCallback(async () => {
     const session = readState.current
     if (!session?.active || session.inFlight) return
+    // Capture the marker at request start so a completed older request cannot acknowledge a later marker.
+    const requestMarker = session.requestedMarker || deriveFillMarker(statusRef.current)
     session.inFlight = true
     const controller = new AbortController()
     session.fillsController = controller
+    let readSucceeded = false
     try {
       const result = await apiGet(`/api/${exchange}/regime/fills/cycles${pairQuery}`, { signal: controller.signal })
       if (!result.ok) throw new Error(result.status ? `Fills fetch failed: HTTP ${result.status}` : result.error)
@@ -135,6 +168,11 @@ function ChartsRegime({ exchange = 'coinbase', pair, fillDebounceMs = 1500 }) {
       if (!session.active) return
       setFillAggregates(fillsData)
       setStale(false)
+      session.loadedMarker = requestMarker
+      readSucceeded = true
+      if (session.requestedMarker === requestMarker) {
+        session.requestedMarker = null
+      }
     } catch (err) {
       if (!session.active) return
       if (err.name !== 'AbortError') {
@@ -144,11 +182,23 @@ function ChartsRegime({ exchange = 'coinbase', pair, fillDebounceMs = 1500 }) {
     } finally {
       session.inFlight = false
       if (session.fillsController === controller) session.fillsController = null
+      if (session.active && readSucceeded && session.requestedMarker && session.requestedMarker !== session.loadedMarker) {
+        fetchFillsRef.current?.()
+      }
     }
   }, [exchange, pairQuery])
+  fetchFillsRef.current = fetchFills
 
   useEffect(() => {
-    const session = { active: true, inFlight: false, hasSnapshot: false, controller: null, fillsController: null }
+    const session = {
+      active: true,
+      inFlight: false,
+      hasSnapshot: false,
+      loadedMarker: null,
+      requestedMarker: null,
+      controller: null,
+      fillsController: null,
+    }
     readState.current = session
     setLocalStatus(null)
     setConfig(null)
@@ -167,21 +217,29 @@ function ChartsRegime({ exchange = 'coinbase', pair, fillDebounceMs = 1500 }) {
     }
   }, [fetchData])
 
-  // Refresh fills aggregates when a fill lands in live status (#1390).
+  // Refresh fills aggregates when a fill lands in live status (#1390, #1818).
   const fillMarker = deriveFillMarker(status)
-  const fillRefreshRef = useRef(null)
   useEffect(() => {
-    if (fillRefreshRef.current === null) {
-      fillRefreshRef.current = fillMarker
+    const session = readState.current
+    if (!session?.active) return
+    if (session.lastMarker === undefined) {
+      session.lastMarker = fillMarker
       return
     }
-    if (fillRefreshRef.current === fillMarker) return
-    fillRefreshRef.current = fillMarker
+    if (session.lastMarker === fillMarker) return
+    session.lastMarker = fillMarker
+    if (fillMarker && fillMarker === session.loadedMarker) return
+
     const t = setTimeout(() => {
-      fetchFills()
+      const session = readState.current
+      if (!session?.active) return
+      session.requestedMarker = fillMarker
+      if (session.inFlight) return
+      if (session.loadedMarker === fillMarker) return
+      fetchFillsRef.current?.()
     }, fillDebounceMs)
     return () => clearTimeout(t)
-  }, [fillMarker, fetchFills, fillDebounceMs])
+  }, [exchange, pair, fillMarker, fillDebounceMs])
 
   const isRunning = status?.isRunning
   const isDryRun = Boolean(status?.isDryRun || config?.dryRun)
