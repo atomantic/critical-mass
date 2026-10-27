@@ -48,8 +48,8 @@ A real-time, volatility-aware strategy that adapts to market conditions:
 - **Real-Time Dashboard** - React admin UI with WebSocket-driven live updates
 - **Celestial Visualization** - Positions rendered as orbiting bodies in a solar system view
 - **Volatility Charts** - Live ATR, price, and regime timeline charts
-- **Backtesting** - Simulate strategies against historical data
-- **Parameter Optimizer** - Find optimal settings via grid search
+- **Backtesting** - Simulate Simple DCA against historical data (excludes the regime strategy)
+- **Parameter Optimizer** - Compare Simple DCA settings via grid search
 - **Dry-Run Mode** - Test strategies without real trades
 - **Notifications** - Configurable alerts for fills, errors, and regime changes
 - **Backup & Restore** - Automatic state backups with pruning

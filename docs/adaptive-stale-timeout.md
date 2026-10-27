@@ -82,9 +82,16 @@ staleMs = clamp( 4min × (offsetBps / ATRbps)²,  orderStaleMs,  maxIntervalMs )
   consumed by a partial and the bid would rest until price returned.
 
 Both executors honor the per-order value: the live executor's
-`scheduleStaleOrderTimeout` `setTimeout` path (`order.staleMs ?? effectiveStaleMs`),
+`scheduleStaleOrderTimeout` `setTimeout` path (`staleMsOverride ?? getEffectiveStaleMs()`),
 and the dry-run executor's `checkEntryFills` (`order.staleMs ?? config.orderStaleMs`),
-so backtests and dry-run match live behavior.
+so live and dry-run regime entries use the same adaptive window. Dry-run fills
+are still price-check simulations, not exchange execution guarantees.
+
+The Backtest and Parameter Optimizer tools use `src/backtest-engine.js`, a
+separate Simple DCA simulation that buys at each candle's midpoint. They do not
+run the regime engine, resting reactive bids, or adaptive stale timers. Their
+results cannot validate this timeout or predict regime entry fill rates. Use a
+dry-run regime fund to observe adaptive entry behavior without placing live orders.
 
 ## Preset changes
 
