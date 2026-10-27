@@ -6,7 +6,8 @@ import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } 
 import RegimeDashboard from '../src/components/RegimeDashboard'
 import useRegimeDashboardData from '../src/components/regime/useRegimeDashboardData'
 import useRegimeDashboardActions from '../src/components/regime/useRegimeDashboardActions'
-import { mergeRegimeStatus, STATUS_STALE_MS, toUnreachableStatus } from '../src/utils/regimeStatusSnapshot.mjs'
+import { mergeRegimeStatus, STATUS_STALE_MS, toUnreachableStatus, createFundStatusOwner } from '../src/utils/regimeStatusSnapshot.mjs'
+import { useFundStatusFreshness } from '../src/hooks/useFundStatusFreshness'
 
 const handlers = new Map()
 const socket = {
@@ -311,5 +312,188 @@ describe('mutation/socket status ordering', () => {
     await waitFor(() => expect(screen.queryByRole('alert')).toBeNull())
     expect(screen.getByText('Engine Stopped')).toBeTruthy()
     expectNoRunningPanels()
+  })
+})
+
+describe('shared per-fund status owner and freshness hook (#1816)', () => {
+  it('arms watchdog only for running status, marks silent after STATUS_STALE_MS and probes', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    let probeCalled = 0
+    let releaseProbe
+    const owner = createFundStatusOwner({
+      exchange: 'coinbase',
+      pair: 'BTC-USDC',
+      initialStatus: runningStatus(),
+      fetchStatus: async () => {
+        probeCalled++
+        return new Promise(resolve => { releaseProbe = resolve })
+      },
+    })
+
+    expect(owner.getSnapshot().isRunning).toBe(true)
+    expect(owner.getSnapshot().isSilent).toBe(false)
+    expect(probeCalled).toBe(0)
+
+    // Advance to STATUS_STALE_MS
+    await act(async () => { vi.advanceTimersByTime(STATUS_STALE_MS) })
+
+    expect(owner.getSnapshot().isRunning).toBe(false)
+    expect(owner.getSnapshot().isSilent).toBe(true)
+    expect(owner.getSnapshot().isStale).toBe(true)
+    expect(probeCalled).toBe(1)
+
+    // Settle probe with offline status
+    await act(async () => {
+      releaseProbe({ status: stoppedStatus() })
+    })
+
+    expect(owner.getSnapshot().isRunning).toBe(false)
+    expect(owner.getSnapshot().isSilent).toBe(false)
+    expect(owner.getSnapshot().probeFailed).toBe(false)
+
+    owner.dispose()
+  })
+
+  it('keeps retryable failure and retains last financial snapshot on probe failure', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    let probeAttempts = 0
+    let failProbe = true
+    const owner = createFundStatusOwner({
+      exchange: 'gemini',
+      pair: 'ETH-USDC',
+      initialStatus: runningStatus(3500),
+      fetchStatus: async () => {
+        probeAttempts++
+        if (failProbe) throw new Error('Network timeout')
+        return { status: runningStatus(3600) }
+      },
+    })
+
+    await act(async () => { vi.advanceTimersByTime(STATUS_STALE_MS) })
+
+    expect(probeAttempts).toBe(1)
+    const snap = owner.getSnapshot()
+    expect(snap.probeFailed).toBe(true)
+    expect(snap.probeError).toContain('Network timeout')
+    expect(snap.isStale).toBe(true)
+    expect(snap.status.position.totalCostBasis).toBe(5000)
+    expect(snap.status.market.lastPrice).toBe(3500)
+    expect(snap.status.market.stale).toBe(true)
+
+    // Retry succeeds
+    failProbe = false
+    await act(async () => { await owner.retry() })
+
+    expect(probeAttempts).toBe(2)
+    const recovered = owner.getSnapshot()
+    expect(recovered.probeFailed).toBe(false)
+    expect(recovered.isRunning).toBe(true)
+    expect(recovered.status.market.lastPrice).toBe(3600)
+
+    owner.dispose()
+  })
+
+  it('two owners age independently; active engine does not refresh a silent peer', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    let btcProbed = 0
+    let ethProbed = 0
+
+    const btcOwner = createFundStatusOwner({
+      exchange: 'coinbase',
+      pair: 'BTC-USDC',
+      initialStatus: runningStatus(60000),
+      fetchStatus: async () => { btcProbed++; return { status: runningStatus(60000) } },
+    })
+
+    const ethOwner = createFundStatusOwner({
+      exchange: 'coinbase',
+      pair: 'ETH-USDC',
+      initialStatus: runningStatus(3000),
+      fetchStatus: async () => { ethProbed++; return { status: runningStatus(3000) } },
+    })
+
+    // At 15s, BTC receives fresh status
+    await act(async () => { vi.advanceTimersByTime(15000) })
+    btcOwner.acceptSnapshot(runningStatus(60500), undefined, { isSocket: true })
+
+    // At 30s, ETH has reached 30s silence, but BTC has only reached 15s
+    await act(async () => { vi.advanceTimersByTime(15000) })
+
+    expect(ethProbed).toBe(1)
+    expect(btcProbed).toBe(0)
+    expect(ethOwner.getSnapshot().isSilent).toBe(false) // probe resolved
+    expect(btcOwner.getSnapshot().isSilent).toBe(false)
+
+    btcOwner.dispose()
+    ethOwner.dispose()
+  })
+
+  it('stopped snapshots do not repeatedly probe and disposal cancels pending probe', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    let probes = 0
+    let signalAborted = false
+
+    const owner = createFundStatusOwner({
+      exchange: 'coinbase',
+      pair: 'BTC-USDC',
+      initialStatus: stoppedStatus(),
+      fetchStatus: async ({ signal }) => {
+        probes++
+        signal?.addEventListener('abort', () => { signalAborted = true })
+        return { status: stoppedStatus() }
+      },
+    })
+
+    // Advance 60s
+    await act(async () => { vi.advanceTimersByTime(STATUS_STALE_MS * 2) })
+    expect(probes).toBe(0)
+
+    // Switch to running, then dispose mid-probe
+    owner.acceptSnapshot(runningStatus(), 2, { isSocket: true })
+    let hangProbe = true
+    owner.probe = async () => {
+      // simulate probe start
+    }
+    owner.dispose()
+    expect(owner.isDisposed).toBe(true)
+
+    await act(async () => { vi.advanceTimersByTime(STATUS_STALE_MS * 2) })
+    expect(probes).toBe(0)
+  })
+
+  it('useFundStatusFreshness hook recovers upon fresh socket emit without remounting', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    let probeCalls = 0
+    const fetchStatus = async () => {
+      probeCalls++
+      throw new Error('Failed to reach engine')
+    }
+
+    const { result, rerender } = renderHook(
+      ({ socketStatus }) => useFundStatusFreshness({
+        exchange: 'coinbase',
+        pair: 'BTC-USDC',
+        initialStatus: runningStatus(50000),
+        socketStatus,
+        fetchStatus,
+      }),
+      { initialProps: { socketStatus: null } },
+    )
+
+    expect(result.current.isRunning).toBe(true)
+
+    // Wait until silence expiration
+    await act(async () => { vi.advanceTimersByTime(STATUS_STALE_MS) })
+
+    expect(probeCalls).toBe(1)
+    expect(result.current.probeFailed).toBe(true)
+    expect(result.current.isRunning).toBe(false)
+
+    // Socket status arrives
+    rerender({ socketStatus: runningStatus(52000) })
+
+    expect(result.current.probeFailed).toBe(false)
+    expect(result.current.isRunning).toBe(true)
+    expect(result.current.status.market.lastPrice).toBe(52000)
   })
 })

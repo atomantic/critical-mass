@@ -1,5 +1,5 @@
 import Button from './ui/Button'
-import { useState, useEffect, useRef, lazy, Suspense } from 'react'
+import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react'
 import { Link, useNavigate } from '../lib/router'
 import { ExternalLink } from './icons'
 import { useMultiRegimeStatuses } from '../hooks/useTradeEvents'
@@ -11,16 +11,19 @@ import { EXCHANGE_ICONS, EXCHANGE_COLORS } from './exchangeStyles'
 import { REGIME_COLORS, HEALTH_COLORS } from './regime/regimeStyles'
 import { apiGet } from '../utils/apiClient'
 import { pnlColorClass, signedPrefix } from '../utils/pnlFormat.mjs'
-import { mergeRegimeStatus, nextRegimeStatusSeq } from '../utils/regimeStatusSnapshot.mjs'
+import { createFundStatusOwner, mergeRegimeStatus, nextRegimeStatusSeq } from '../utils/regimeStatusSnapshot.mjs'
 
 const CelestialVisualization = lazy(() => import('./celestial/CelestialVisualization'))
 
-const getEngineStatus = (isRunning, isDryRun, lifecycle) => {
+const getEngineStatus = (isRunning, isDryRun, lifecycle, engineDown) => {
   if (lifecycle === 'closed') {
     return { label: 'Closed', color: 'bg-gray-700', textColor: 'text-gray-400' }
   }
   if (lifecycle === 'draining') {
     return { label: 'Draining', color: 'bg-yellow-700', textColor: 'text-yellow-200', pulse: true }
+  }
+  if (engineDown) {
+    return { label: 'Unreachable', color: 'bg-orange-700', textColor: 'text-orange-200' }
   }
   if (isRunning) {
     return isDryRun
@@ -44,6 +47,7 @@ function Overview() {
   snapshotMapRef.current = snapshotMap
 
   const { snapshots: wsSnapshots, statuses: wsStatuses, connected } = useMultiRegimeStatuses()
+  const ownersRef = useRef(new Map())
 
   const refreshExchanges = async () => {
     // A failed read leaves the existing exchange list as-is; caller UI isn't gated on this.
@@ -56,6 +60,41 @@ function Overview() {
   // on the same exchange (e.g., coinbase BTC-USDC and coinbase ETH-USDC) keep
   // independent status entries.
   const fundKey = (ex) => `${ex.name}::${ex.pair || ex.productId || ex.name || 'default'}`
+
+  const getOrCreateOwner = useCallback((ex) => {
+    const key = fundKey(ex)
+    let owner = ownersRef.current.get(key)
+    if (!owner) {
+      const pairParam = ex.pair || ex.productId || ''
+      owner = createFundStatusOwner({
+        exchange: ex.name,
+        pair: pairParam,
+        onUpdate: (snap) => {
+          setSnapshotMap(prev => {
+            const current = prev[key]
+            if (current && snap.seq < current.seq) return prev
+            return { ...prev, [key]: { status: snap.status, seq: snap.seq } }
+          })
+          setStatusState(prev => ({
+            ...prev,
+            [key]: snap.probeFailed ? 'error' : (snap.isStale ? 'stale' : 'ok'),
+          }))
+        },
+      })
+      ownersRef.current.set(key, owner)
+    }
+    return owner
+  }, [])
+
+  const retryFund = useCallback(async (card) => {
+    const key = card.key || fundKey(card)
+    const owner = ownersRef.current.get(key)
+    if (owner) {
+      await owner.retry()
+    } else {
+      await load()
+    }
+  }, [])
 
   // Fetch exchange list and each fund status as one retryable, fenced page load (#1817).
   const load = async () => {
@@ -72,14 +111,37 @@ function Overview() {
       setExchanges(exchangeList)
       setExchangesError(null)
 
+      const activeKeys = new Set(exchangeList.map(fundKey))
+      for (const [key, owner] of ownersRef.current.entries()) {
+        if (!activeKeys.has(key)) {
+          owner.dispose()
+          ownersRef.current.delete(key)
+        }
+      }
+
       const entries = await Promise.all(exchangeList.map(async (ex) => {
+        const key = fundKey(ex)
+        const owner = getOrCreateOwner(ex)
         const pairParam = ex.pair || ex.productId || ''
         const readSeq = nextRegimeStatusSeq()
-        const r = await apiGet(`/api/${ex.name}/regime/status?pair=${encodeURIComponent(pairParam)}`, { signal: controller.signal })
-        if (loadOwnerRef.current !== loadId) return null
-        const key = fundKey(ex)
-        if (!r.ok) return { key, status: null, state: 'error', seq: readSeq }
-        return { key, status: r.data?.status || null, state: r.data?.status ? 'ok' : 'error', seq: readSeq }
+        try {
+          const r = await apiGet(`/api/${ex.name}/regime/status?pair=${encodeURIComponent(pairParam)}`, { signal: controller.signal })
+          if (loadOwnerRef.current !== loadId) return null
+          if (!r.ok) {
+            const existing = owner.getSnapshot().status
+            return { key, status: existing, state: 'error', seq: readSeq }
+          }
+          const status = r.data?.status || null
+          if (status) {
+            owner.acceptSnapshot(status, readSeq, { isSocket: false })
+            return { key, status: owner.getSnapshot().status, state: 'ok', seq: readSeq }
+          }
+          return { key, status: null, state: 'error', seq: readSeq }
+        } catch {
+          if (loadOwnerRef.current !== loadId) return null
+          const existing = owner.getSnapshot().status
+          return { key, status: existing, state: 'error', seq: readSeq }
+        }
       }))
       if (loadOwnerRef.current !== loadId) return
 
@@ -142,16 +204,48 @@ function Overview() {
     return () => {
       loadOwnerRef.current += 1
       abortControllerRef.current?.abort()
+      for (const owner of ownersRef.current.values()) {
+        owner.dispose()
+      }
+      ownersRef.current.clear()
     }
   }, [])
 
   // Merge WebSocket updates into snapshot map. wsSnapshots is keyed by
   // `${exchange}::${pair}` with monotonic generations so each fund updates
   // independently and HTTP/socket ordering is strictly arbitrated (#1817).
+  // Status owners also track freshness and silence timeouts (#1816).
   useEffect(() => {
     const hasSnapshots = wsSnapshots && Object.keys(wsSnapshots).length > 0
     const hasStatuses = wsStatuses && Object.keys(wsStatuses).length > 0
     if (!hasSnapshots && !hasStatuses) return
+
+    if (hasSnapshots) {
+      for (const [key, snap] of Object.entries(wsSnapshots)) {
+        if (!snap?.status) continue
+        let owner = ownersRef.current.get(key)
+        if (!owner) {
+          const ex = exchanges.find(e => fundKey(e) === key)
+          if (ex) owner = getOrCreateOwner(ex)
+        }
+        if (owner) {
+          owner.acceptSnapshot(snap.status, snap.seq, { isSocket: true })
+        }
+      }
+    } else {
+      // Fallback for tests or mocks providing only wsStatuses
+      for (const [key, status] of Object.entries(wsStatuses)) {
+        if (!status) continue
+        let owner = ownersRef.current.get(key)
+        if (!owner) {
+          const ex = exchanges.find(e => fundKey(e) === key)
+          if (ex) owner = getOrCreateOwner(ex)
+        }
+        if (owner) {
+          owner.acceptSnapshot(status, nextRegimeStatusSeq(), { isSocket: true })
+        }
+      }
+    }
 
     setSnapshotMap(prev => {
       const next = { ...prev }
@@ -187,13 +281,16 @@ function Overview() {
       }
       return next
     })
-  }, [wsSnapshots, wsStatuses])
+  }, [wsSnapshots, wsStatuses, exchanges, getOrCreateOwner])
 
   // Build card data from exchanges + statuses
   const cards = exchanges.map(ex => {
     const key = fundKey(ex)
     const status = snapshotMap[key]?.status
-    const statusUnavailable = statusState[key] === 'error'
+    const state = statusState[key]
+    const hasSnapshot = Boolean(status)
+    const isStale = Boolean(status?.market?.stale || status?.statusSilent || status?.probeFailed || state === 'stale' || (state === 'error' && hasSnapshot))
+    const statusUnavailable = state === 'error' && !hasSnapshot
     const pair = ex.pair || ex.productId || 'BTC-USDC'
     const baseCurrency = getBaseCurrency(ex.productId || pair)
     const quoteCurrency = getQuoteCurrency(ex.productId || pair)
@@ -205,6 +302,7 @@ function Overview() {
     const celestial = status?.celestial
     const isRunning = status?.isRunning ?? false
     const isDryRun = status?.isDryRun ?? false
+    const engineDown = Boolean(status?.engineDown)
     const lifecycle = status?.lifecycle?.lifecycle || ex.lifecycle || 'active'
 
     const lastPrice = market?.lastPrice ?? 0
@@ -254,11 +352,17 @@ function Overview() {
     return {
       exchange: ex.name,
       pair,
+      key,
+      status,
+      hasSnapshot,
       statusUnavailable,
+      stale: isStale,
+      probeFailed: Boolean(status?.probeFailed || (state === 'error' && hasSnapshot)),
       baseCurrency,
       quoteCurrency,
       isRunning,
       isDryRun,
+      engineDown,
       lifecycle,
       healthMode,
       regimeMode,
@@ -294,7 +398,7 @@ function Overview() {
   })
 
   // Aggregate summary
-  const availableCards = cards.filter(c => !c.statusUnavailable)
+  const availableCards = cards.filter(c => !c.statusUnavailable && !c.stale)
   const unavailableCount = cards.length - availableCards.length
   const totals = availableCards.reduce((acc, c) => ({
     deployed: acc.deployed + c.totalCostBasis,
@@ -457,14 +561,14 @@ function Overview() {
               </div>
             )
           }
-          const engineStatus = getEngineStatus(card.isRunning, card.isDryRun, card.lifecycle)
+          const engineStatus = getEngineStatus(card.isRunning, card.isDryRun, card.lifecycle, card.engineDown)
           const regimeColor = REGIME_COLORS[card.regimeMode] || {}
           const healthColor = HEALTH_COLORS[card.healthMode]?.text || 'text-gray-400'
 
           return (
             <div
               key={`${card.exchange}-${card.pair}`}
-              className="bg-gray-800 rounded-lg border border-gray-700 transition-colors p-4 block"
+              className={`bg-gray-800 rounded-lg border ${card.stale ? 'border-amber-700/80' : 'border-gray-700'} transition-colors p-4 block`}
             >
               {/* Header: icon + name + pair + badges */}
               <Link to={`/${card.exchange}/${card.pair}`} className="flex items-center justify-between mb-3 hover:opacity-80 transition-opacity">
@@ -479,10 +583,25 @@ function Overview() {
                   </div>
                   <ExternalLink className="w-3.5 h-3.5 text-gray-500" />
                 </div>
-                <span className={`text-xs px-2 py-0.5 rounded-sm ${engineStatus.color} ${engineStatus.textColor} ${engineStatus.pulse ? 'animate-pulse' : ''}`}>
-                  {engineStatus.label}
-                </span>
+                <div className="flex items-center gap-2">
+                  {card.stale && (
+                    <span className="text-xs px-2 py-0.5 rounded-sm bg-amber-900/60 text-amber-200">
+                      Status stale
+                    </span>
+                  )}
+                  <span className={`text-xs px-2 py-0.5 rounded-sm ${engineStatus.color} ${engineStatus.textColor} ${engineStatus.pulse ? 'animate-pulse' : ''}`}>
+                    {engineStatus.label}
+                  </span>
+                </div>
               </Link>
+
+              {/* Stale retry banner */}
+              {card.stale && (
+                <div className="flex items-center justify-between bg-amber-950/40 border border-amber-700/50 rounded-sm px-2.5 py-1.5 mb-3 text-xs text-amber-200">
+                  <span>{card.probeFailed ? 'Status probe failed' : 'Showing last known data (stale)'}</span>
+                  <Button onClick={(e) => { e.preventDefault(); e.stopPropagation(); retryFund(card); }} variant="primary" size="compact">Retry</Button>
+                </div>
+              )}
 
               {/* Status pills */}
               <div className="flex items-center gap-2 mb-3">

@@ -1,8 +1,8 @@
 import React from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import Overview from '../src/components/Overview'
-import { nextRegimeStatusSeq } from '../src/utils/regimeStatusSnapshot.mjs'
+import { nextRegimeStatusSeq, STATUS_STALE_MS } from '../src/utils/regimeStatusSnapshot.mjs'
 
 const fixture = vi.hoisted(() => ({ statuses: {}, snapshots: {} }))
 vi.mock('../src/lib/router', () => ({
@@ -296,5 +296,151 @@ describe('Overview HTTP and realtime status snapshot arbitration (#1817)', () =>
 
     // Resolving the older in-flight request after unmount is safely ignored
     resolveFirstLoad()
+  })
+})
+
+describe('Overview status freshness and silent engine expiration', () => {
+  it('expires silent running fund within STATUS_STALE_MS and probes status', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    fetch.mockImplementation(async (url) => {
+      if (url === '/api/exchanges') return { ok: true, json: async () => ({ exchanges: exchangeList }) }
+      if (url.includes('/coinbase/')) return { ok: true, json: async () => ({ status: status(100, 7) }) }
+      if (url.includes('/gemini/')) return { ok: true, json: async () => ({ status: status(900, 90) }) }
+      return { ok: true, json: async () => ({}) }
+    })
+
+    render(<Overview />)
+    await screen.findByText('$1,000.00')
+    const runningBadges = screen.getAllByText('Running')
+    expect(runningBadges.length).toBe(2)
+
+    const geminiProbeCalls = () => fetch.mock.calls.filter(([url]) => url.includes('/gemini/regime/status')).length
+    const initialGeminiCalls = geminiProbeCalls()
+
+    // Advance to just before STATUS_STALE_MS
+    await act(async () => { vi.advanceTimersByTime(STATUS_STALE_MS - 1000) })
+    expect(screen.getAllByText('Running').length).toBe(2)
+    expect(geminiProbeCalls()).toBe(initialGeminiCalls)
+
+    // Advance past STATUS_STALE_MS
+    await act(async () => { vi.advanceTimersByTime(1000) })
+    expect(geminiProbeCalls()).toBeGreaterThan(initialGeminiCalls)
+  })
+
+  it('handles offline success: removes running indication and shows Stopped without error', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    let geminiCalls = 0
+    fetch.mockImplementation(async (url) => {
+      if (url === '/api/exchanges') return { ok: true, json: async () => ({ exchanges: exchangeList }) }
+      if (url.includes('/coinbase/')) return { ok: true, json: async () => ({ status: status(100, 7) }) }
+      if (url.includes('/gemini/')) {
+        geminiCalls++
+        if (geminiCalls > 1) {
+          // Probe returns stopped status
+          return {
+            ok: true,
+            json: async () => ({
+              status: {
+                isRunning: false,
+                position: { totalAsset: 1, totalCostBasis: 900, realizedPnL: 90 },
+                market: { lastPrice: 10 },
+                apy: { deployedInPosition: 900, estimatedApy: 0, availableCapital: 0 },
+                health: { mode: 'STOPPED' },
+              },
+            }),
+          }
+        }
+        return { ok: true, json: async () => ({ status: status(900, 90) }) }
+      }
+      return { ok: true, json: async () => ({}) }
+    })
+
+    render(<Overview />)
+    await screen.findByText('$1,000.00')
+    expect(screen.getAllByText('Running').length).toBe(2)
+
+    await act(async () => { vi.advanceTimersByTime(STATUS_STALE_MS) })
+    await waitFor(() => expect(screen.getAllByText('Running').length).toBe(1))
+    expect(screen.getByText('Stopped')).toBeTruthy()
+    expect(screen.queryByText('Status probe failed')).toBeNull()
+  })
+
+  it('handles probe failure: retains last financial values with stale label, excludes from totals, and retries inline', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    let geminiCalls = 0
+    fetch.mockImplementation(async (url) => {
+      if (url === '/api/exchanges') return { ok: true, json: async () => ({ exchanges: exchangeList }) }
+      if (url.includes('/coinbase/')) return { ok: true, json: async () => ({ status: status(100, 7) }) }
+      if (url.includes('/gemini/')) {
+        geminiCalls++
+        if (geminiCalls > 1 && fetch.geminiFails) {
+          return { ok: false, status: 504, json: async () => ({ error: 'Gateway timeout' }) }
+        }
+        return { ok: true, json: async () => ({ status: status(900, 90) }) }
+      }
+      return { ok: true, json: async () => ({}) }
+    })
+    fetch.geminiFails = true
+
+    render(<Overview />)
+    await screen.findByText('$1,000.00')
+    expect(screen.getAllByText('Running').length).toBe(2)
+
+    // Trigger silence and failed probe
+    await act(async () => { vi.advanceTimersByTime(STATUS_STALE_MS) })
+    expect(await screen.findByText('Status stale')).toBeTruthy()
+    expect(screen.getByText('Status probe failed')).toBeTruthy()
+
+    // Gemini last financial data is retained
+    expect(screen.getByText('$900.00 cost')).toBeTruthy()
+
+    // Excluded from totals
+    expect(screen.getByText('1 fund unavailable; excluded from totals.')).toBeTruthy()
+    const capital = screen.getByText('Capital').parentElement
+    expect(within(capital).getByText('$100.00')).toBeTruthy()
+    expect(within(capital).queryByText('$1,000.00')).toBeNull()
+
+    // Retry inline
+    fetch.geminiFails = false
+    const geminiCard = screen.getByText('Status probe failed').closest('.bg-gray-800')
+    fireEvent.click(within(geminiCard).getByRole('button', { name: 'Retry' }))
+    await waitFor(() => expect(screen.queryByText('Status stale')).toBeNull())
+    expect(screen.queryByText('Status probe failed')).toBeNull()
+    expect(within(capital).getByText('$1,000.00')).toBeTruthy()
+  })
+
+  it('two funds age independently; one active fund does not refresh another silent fund', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    let geminiProbeCalled = false
+    fetch.mockImplementation(async (url) => {
+      if (url === '/api/exchanges') return { ok: true, json: async () => ({ exchanges: exchangeList }) }
+      if (url.includes('/coinbase/')) return { ok: true, json: async () => ({ status: status(100, 7) }) }
+      if (url.includes('/gemini/')) {
+        if (geminiProbeCalled) {
+          return { ok: false, status: 503, json: async () => ({}) }
+        }
+        return { ok: true, json: async () => ({ status: status(900, 90) }) }
+      }
+      return { ok: true, json: async () => ({}) }
+    })
+
+    const { rerender } = render(<Overview />)
+    await screen.findByText('$1,000.00')
+    expect(screen.getAllByText('Running').length).toBe(2)
+
+    // At 15s, coinbase emits a fresh status via socket
+    await act(async () => { vi.advanceTimersByTime(15000) })
+    fixture.statuses = { 'coinbase::BTC-USDC': status(105, 8) }
+    rerender(<Overview />)
+
+    // At 30s, gemini has had 30s of silence, while coinbase only had 15s
+    geminiProbeCalled = true
+    await act(async () => { vi.advanceTimersByTime(15000) })
+
+    // Gemini expired and probed (probe failed -> stale)
+    expect(await screen.findByText('Status stale')).toBeTruthy()
+
+    // Coinbase is still running and healthy
+    expect(screen.getAllByText('Running').length).toBe(1)
   })
 })

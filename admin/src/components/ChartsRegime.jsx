@@ -12,6 +12,7 @@ import { deriveRegimeCumulativePnl } from '../utils/regimeFillGroups.mjs'
 import { apiGet } from '../utils/apiClient'
 import { pnlColorClass } from '../utils/pnlFormat.mjs'
 import { EMPTY_SNAPSHOT, nextRegimeStatusSeq } from '../utils/regimeStatusSnapshot.mjs'
+import { useFundStatusFreshness } from '../hooks/useFundStatusFreshness'
 
 export function deriveFillMarker(status) {
   if (!status) return ''
@@ -60,12 +61,28 @@ function ChartsRegime({ exchange = 'coinbase', pair, fillDebounceMs = 1500 }) {
   const socketStatusRef = useRef(socketStatus)
   socketStatusRef.current = socketStatus
 
-  // The newest snapshot wins whichever source it came from, so an HTTP read
-  // after an action or a Retry/Refresh can replace a stale socket snapshot (#1388, #1817).
+  const {
+    status: freshnessStatus,
+    isRunning: freshnessRunning,
+    isStale: freshnessStale,
+    probeFailed,
+    probeError,
+    retry: retryProbe,
+    acceptSnapshot,
+  } = useFundStatusFreshness({
+    exchange,
+    pair,
+    initialStatus: localSnapshot.status,
+    socketStatus,
+    socketSeq,
+  })
+
+  // The newest snapshot wins whichever source it came from (#1817),
+  // and freshness monitoring expires silent engines and active probes (#1816).
   const latest = socketStatus && (!localSnapshot.status || socketSeq > localSnapshot.seq)
     ? { status: socketStatus, seq: socketSeq }
     : localSnapshot
-  const status = latest.status
+  const status = freshnessStatus || latest.status
   const statusRef = useRef(status)
   statusRef.current = status
 
@@ -131,6 +148,7 @@ function ChartsRegime({ exchange = 'coinbase', pair, fillDebounceMs = 1500 }) {
 
       session.hasSnapshot = true
       setLocalSnapshot({ status: statusData.status, seq: readSeq })
+      acceptSnapshot(statusData.status, readSeq, { isSocket: false })
       setConfig(configData.config)
       setFillAggregates(fillsData)
       setError(null)
@@ -290,18 +308,26 @@ function ChartsRegime({ exchange = 'coinbase', pair, fillDebounceMs = 1500 }) {
     )
   }
 
+  const effectiveStale = stale || freshnessStale
+
   return (
     <div className="space-y-6">
-      {stale && <div role="status" className="bg-yellow-900/30 border border-yellow-600 rounded-lg p-3 flex items-center justify-between"><span className="text-yellow-400">Data is stale. Waiting for a successful refresh...</span><Button onClick={fetchData} variant="warning" size="sm">Refresh Now</Button></div>}
-      {!stale && <div className="flex justify-end"><Button onClick={fetchData} variant="secondary" size="sm">Refresh</Button></div>}
+      {probeFailed && (
+        <div role="alert" className="bg-red-900/40 border border-red-700 rounded-lg p-3 flex items-center justify-between text-red-200 text-sm">
+          <span>Status probe failed: {probeError || 'engine status unavailable'}. Showing last known state (stale).</span>
+          <Button onClick={retryProbe} variant="primary" size="compact">Retry</Button>
+        </div>
+      )}
+      {effectiveStale && !probeFailed && <div role="status" className="bg-yellow-900/30 border border-yellow-600 rounded-lg p-3 flex items-center justify-between"><span className="text-yellow-400">Data is stale. Waiting for a successful refresh...</span><Button onClick={fetchData} variant="warning" size="sm">Refresh Now</Button></div>}
+      {!effectiveStale && !probeFailed && <div className="flex justify-end"><Button onClick={fetchData} variant="secondary" size="sm">Refresh</Button></div>}
       {historyUnavailable && <p className="text-sm text-yellow-400">Price history unavailable.</p>}
       {/* Status Banner */}
       <div className="bg-gray-800 rounded-lg p-4 flex items-center justify-between">
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-2">
-            <span className={`w-2 h-2 rounded-full ${isRunning ? 'bg-green-500 animate-pulse' : 'bg-gray-500'}`} />
-            <span className={isRunning ? 'text-green-400' : 'text-gray-400'}>
-              {isRunning ? 'Engine Running' : 'Engine Stopped'}
+            <span className={`w-2 h-2 rounded-full ${isRunning ? 'bg-green-500 animate-pulse' : (status?.engineDown ? 'bg-orange-500' : 'bg-gray-500')}`} />
+            <span className={isRunning ? 'text-green-400' : (status?.engineDown ? 'text-orange-400' : 'text-gray-400')}>
+              {isRunning ? 'Engine Running' : (status?.engineDown ? 'Engine Unreachable' : 'Engine Stopped')}
             </span>
           </div>
           <div className="flex items-center gap-2">
