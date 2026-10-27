@@ -26,15 +26,16 @@ const DEFAULT_RUN_LIST_LIMIT = 50;
 
 /**
  * @param {import('express').Express} app
- * @param {{ DATA_DIR: string }} sharedDeps
+ * @param {{ DATA_DIR: string, trackBackgroundWork?: (work: Promise<void>) => unknown }} sharedDeps
  * @param {{ allowedOrigins?: Set<string>, fetchImpl?: typeof fetch, maxConcurrentRuns?: number }} [options] - injectable for tests
  */
-module.exports = (app, { DATA_DIR }, { allowedOrigins = parseAllowedOrigins(), fetchImpl, maxConcurrentRuns = 3 } = {}) => {
+module.exports = (app, { DATA_DIR, trackBackgroundWork }, { allowedOrigins = parseAllowedOrigins(), fetchImpl, maxConcurrentRuns = 3 } = {}) => {
   const providers = createProviderStore({ dataDir: DATA_DIR, allowedOrigins, fetchImpl });
   const runs = createRunRecorder({
     dataDir: DATA_DIR,
     providers,
     maxConcurrentRuns,
+    trackBackgroundWork,
     onRunCompleted: (metadata) => {
       aiRoutesLogger.info(`ℹ️ [${ts()}] 🤖 AI run completed: ${metadata.providerName}/${metadata.model} (${(metadata.duration / 1000).toFixed(1)}s)`, {
         action: 'run-completed',

@@ -39,11 +39,12 @@ const completionText = (payload) => {
  *   dataDir: string,
  *   providers: ReturnType<typeof import('./provider-store').createProviderStore>,
  *   maxConcurrentRuns?: number,
+ *   trackBackgroundWork?: (work: Promise<void>) => unknown,
  *   onRunCompleted?: (metadata: any) => void,
  *   onRunFailed?: (metadata: any) => void,
  * }} options
  */
-const createRunRecorder = ({ dataDir, providers, maxConcurrentRuns = 3, onRunCompleted = () => {}, onRunFailed = () => {} }) => {
+const createRunRecorder = ({ dataDir, providers, maxConcurrentRuns = 3, trackBackgroundWork = () => {}, onRunCompleted = () => {}, onRunFailed = () => {} }) => {
   const runsPath = path.join(dataDir, 'runs');
   /** @type {Map<string, { controller: AbortController, reason: string | null, done: Promise<void> }>} */
   const active = new Map();
@@ -186,6 +187,9 @@ const createRunRecorder = ({ dataDir, providers, maxConcurrentRuns = 3, onRunCom
       entry.done = execute(runId, provider, effectiveModel, prompt, timeoutMs, entry)
         .catch((err) => onRunFailed({ ...metadata, error: `Run could not be recorded: ${err.message}` }))
         .finally(() => active.delete(runId));
+      // Owned by the process lifecycle, not the request: the caller's socket may
+      // close long before the output and terminal metadata are durable.
+      trackBackgroundWork(entry.done);
       return { runId, status: 'started', metadata };
     },
 

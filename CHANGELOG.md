@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- **[issue-1815] Gateway shutdown drains accepted background jobs** — AI prompt runs and optimizer runs register their full terminal work (run output and metadata; optimizer cache publication and completion/failure event) with the gateway drain via `trackBackgroundWork`, independent of the initiating socket, so a normal SIGTERM no longer discards jobs that would finish within the existing 30-second grace. HTTP acknowledgements, concurrency limits and the nonzero deadline exit are unchanged.
+
 - **[issue-1794] Buy retry eligibility names bookable rows** — the live guard and recovery comments describe unfinished bounded booking batches directly, preserving the numeric helper export and existing booking behavior.
 
 - **[issue-1819] Preserve live candles when changing chart display limits** — `useCandleData` separates canonical per-exchange/timeframe candle state from display projections, preserving completed live candles, observed extrema, and current bucket close when changing display limits (Auto/100/300) or ranges.
