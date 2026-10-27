@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- **[issue-1810] Hourly recovery snapshots preserve placement intents** — fund-state snapshots capture and validate `placement-intents.json` (never the ownership locks), restoring merges it with the destination's intents in the same transaction as the accounting files, and a snapshot missing intent evidence never clears blockers. Pre-capture snapshots are marked `placementIntentsCaptured: false` and need an explicit `acceptMissingPlacementIntents` acknowledgement to restore (UI checkbox included).
+
 - **[issue-1815] Gateway shutdown drains accepted background jobs** — AI prompt runs and optimizer runs register their full terminal work (run output and metadata; optimizer cache publication and completion/failure event) with the gateway drain via `trackBackgroundWork`, independent of the initiating socket, so a normal SIGTERM no longer discards jobs that would finish within the existing 30-second grace. HTTP acknowledgements, concurrency limits and the nonzero deadline exit are unchanged.
 
 - **[issue-1794] Buy retry eligibility names bookable rows** — the live guard and recovery comments describe unfinished bounded booking batches directly, preserving the numeric helper export and existing booking behavior.

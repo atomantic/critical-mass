@@ -11,6 +11,25 @@ Node 22 line. Container users should use an image with Node.js 22.12.0 or newer.
 
 ---
 
+## Hourly Snapshots Carry Placement Intents (Unreleased)
+
+Hourly fund-state snapshots now include each fund's `placement-intents.json`, so a
+restored fund still refuses new placements until normal reconciliation resolves
+an order POST whose outcome was unknown. Intents are safety metadata, not
+accounting: a snapshot without the file never removes the destination's intents,
+and restore merges snapshot and destination rows by intent id (a restore can add
+blockers, never clear one). The intents file is staged in the same transaction
+as the accounting files, so a failed restore rolls both back. Placement ownership
+locks (`placement-intents.json.lock*`) are never captured or restored.
+
+Snapshots taken before this change cannot recover intents. They are listed with
+`placementIntentsCaptured: false`, and restoring one is refused (code
+`placement-intents-not-captured`, before any engine stops) unless the request sets
+`acceptMissingPlacementIntents: true`. Check the exchange for open or duplicate
+orders on the fund before restarting it.
+
+---
+
 ## Restores Reproduce Missing Fund Accounting State (Unreleased)
 
 Hourly fund snapshots and full archives now reproduce the presence or absence of
