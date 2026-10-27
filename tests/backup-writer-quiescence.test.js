@@ -9,6 +9,7 @@ const { trackPendingWrite, drainPendingWrites } = require('../src/pending-writes
 const maintenance = require('../src/restore-maintenance');
 const { getEngineMaintenance, setEngineMaintenance, setEngineBackupPaused, refuseDuringMaintenance } = require('../src/engine-maintenance');
 const { createBackup, restoreBackup, createFundStateBackup, restoreFundStateBackup } = require('../src/backup-service');
+const { ledgerOf, fixturePayload } = require('./helpers/ledger-fixture');
 const logger = { info() {}, warn() {}, error() {} };
 const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
 const ipc = (override = {}) => ({ isConnected: () => true, request: async (channel, payload) => {
@@ -150,7 +151,7 @@ describe('scheduled backup maintenance windows', () => {
       const files = ['fill-ledger.json', 'regime-state.json', 'closed-trades.json', 'state.json', 'dry-run-state.json'];
       fs.mkdirSync(fundDir, { recursive: true });
       fs.writeFileSync(baseConfigFile, JSON.stringify({ exchanges: { coinbase: { pairs: { 'BTC-USDC': { enabled: true, productId: 'BTC-USDC' } } } } }));
-      const write = (file, generation) => fs.writeFileSync(path.join(fundDir, file), JSON.stringify({ generation }));
+      const write = (file, generation) => fs.writeFileSync(path.join(fundDir, file), JSON.stringify(fixturePayload(file, { generation })));
       files.forEach((file) => write(file, 0));
       const gate = deferred();
       const entered = deferred();
@@ -179,7 +180,7 @@ describe('scheduled backup maintenance windows', () => {
       files.forEach((file) => write(file, 2));
       const restored = kind === 'archive' ? restoreBackup(result.filename, { paths }) : restoreFundStateBackup(result.snapshotId, 'coinbase', 'BTC-USDC', { paths });
       assert.equal(restored.success, true, JSON.stringify(restored));
-      for (const file of files) assert.deepEqual(JSON.parse(fs.readFileSync(path.join(fundDir, file))), { generation: 1 });
+      for (const file of files) assert.deepEqual(JSON.parse(fs.readFileSync(path.join(fundDir, file))), fixturePayload(file, { generation: 1 }));
       fs.rmSync(root, { recursive: true, force: true });
     });
   }
