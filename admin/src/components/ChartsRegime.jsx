@@ -113,9 +113,11 @@ function ChartsRegime({ exchange = 'coinbase', pair, fillDebounceMs = 1500 }) {
       readSucceeded = true
 
       // If live socket status has a newer marker than the snapshot we just loaded, retain it as requested.
-      const liveMarker = deriveFillMarker(statusRef.current || socketStatus)
-      if (liveMarker && liveMarker !== loadedMarker) {
-        session.requestedMarker = liveMarker
+      const liveSocketMarker = deriveFillMarker(socketStatus)
+      if (liveSocketMarker && liveSocketMarker !== loadedMarker) {
+        session.requestedMarker = liveSocketMarker
+      } else if (session.requestedMarker === loadedMarker) {
+        session.requestedMarker = null
       }
 
       const unavailable = candlesResult.status === 'rejected' || cacheResult.status === 'rejected'
@@ -158,6 +160,9 @@ function ChartsRegime({ exchange = 'coinbase', pair, fillDebounceMs = 1500 }) {
       setStale(false)
       session.loadedMarker = requestMarker
       readSucceeded = true
+      if (session.requestedMarker === requestMarker) {
+        session.requestedMarker = null
+      }
     } catch (err) {
       if (!session.active) return
       if (err.name !== 'AbortError') {

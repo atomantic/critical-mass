@@ -538,4 +538,46 @@ describe('live fill marker refreshes', () => {
     // Trailing read must NOT be executed after unmount
     expect(fillsCalls).toBe(2)
   })
+
+  it('does not issue redundant fills read when page refresh loads changed marker while socket is disconnected', async () => {
+    let fillsCalls = 0
+    let currentCycles = 1
+    const fetchMock = vi.fn(async url => {
+      if (url.includes('/regime/status')) {
+        return { ok: true, json: async () => ({ status: { isRunning: true, position: { cyclesCompleted: currentCycles, cycleBuys: 2, realizedPnL: 10 * currentCycles } } }) }
+      }
+      if (url.includes('/regime/config')) {
+        return { ok: true, json: async () => ({ config: {} }) }
+      }
+      if (url.includes('/regime/fills/cycles')) {
+        fillsCalls++
+        return { ok: true, json: async () => ({ buyCount: 2, sellCount: currentCycles, pnlPoints: [] }) }
+      }
+      return { ok: true, json: async () => ({ candles: [] }) }
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    fixture.status = null // WebSocket disconnected
+    render(<ChartsRegime exchange="coinbase" pair="BTC-USDC" fillDebounceMs={1500} />)
+    expect(await screen.findByText('Engine Running')).toBeTruthy()
+    expect(screen.getByText('TPs Filled').previousElementSibling.textContent).toBe('1')
+    expect(fillsCalls).toBe(1)
+
+    vi.useFakeTimers()
+
+    // Trigger manual refresh where server has updated data
+    currentCycles = 2
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+    })
+
+    expect(screen.getByText('TPs Filled').previousElementSibling.textContent).toBe('2')
+    expect(fillsCalls).toBe(2) // 1 initial + 1 from Refresh button (fetchData), NO trailing redundant fills call
+
+    // Advance timers by more than fillDebounceMs to confirm no trailing debounce was scheduled
+    await act(async () => {
+      vi.advanceTimersByTime(3000)
+    })
+    expect(fillsCalls).toBe(2)
+  })
 })
