@@ -141,7 +141,7 @@ describe('coinbase getOrderFills pagination', () => {
     assert.equal(fills[0].size, 0.1);
   });
 
-  it('does not loop forever when the API repeats the same cursor', async () => {
+  it('rejects with incompleteFills when the API repeats the same cursor and leaves manual import clean', async () => {
     const adapter = createCoinbaseAdapter(keysPath);
 
     // A stuck endpoint keeps returning the same non-empty cursor with has_next: true.
@@ -151,11 +151,162 @@ describe('coinbase getOrderFills pagination', () => {
       has_next: true,
     }));
 
-    const fills = await adapter.getOrderFills('ORDER-1');
+    await assert.rejects(
+      async () => adapter.getOrderFills('ORDER-1'),
+      (err) => {
+        assert.equal(err.incompleteFills, true);
+        assert.match(err.message, /repeated cursor STUCK/);
+        return true;
+      }
+    );
 
-    // First page (no cursor) → STUCK, second page (cursor=STUCK) repeats STUCK → stop.
-    assert.equal(calls.length, 2, 'should break once the cursor repeats');
-    assert.equal(fills.length, 2);
+    // First page (no cursor) → STUCK, second page (cursor=STUCK) repeats STUCK → rejects.
+    assert.equal(calls.length, 2, 'should reject once the cursor repeats');
+
+    // Real-importer assertion: failed scan publishes no rows, trade record or body
+    await withManualImporter(adapter, {
+      injectBody: async () => assert.fail('incomplete scan must not publish body'),
+    }, async ({ importer, ledger, store }) => {
+      const result = await importer.importBuy({ buyOrderId: 'ORDER-1' });
+      assert.equal(result.success, false);
+      assert.match(result.error, /repeated cursor STUCK/);
+      assert.equal(ledger.getFillCount(), 0, 'no ledger rows persisted');
+      assert.equal(store.getAll().length, 0, 'no trade record saved');
+    });
+  });
+
+  it('rejects with incompleteFills on an A/B cursor cycle without returning partial rows', async () => {
+    const adapter = createCoinbaseAdapter(keysPath);
+    const cursors = { '': 'CUR_A', 'CUR_A': 'CUR_B', 'CUR_B': 'CUR_A' };
+    const { calls } = installFetchMock((url) => {
+      const cursor = url.searchParams.get('cursor') || '';
+      return {
+        fills: [makeFill(calls.length, 0.1)],
+        cursor: cursors[cursor] || 'CUR_A',
+        has_next: true,
+      };
+    });
+
+    await assert.rejects(
+      async () => adapter.getOrderFills('ORDER-1'),
+      (err) => {
+        assert.equal(err.incompleteFills, true);
+        assert.match(err.message, /repeated cursor CUR_A/);
+        return true;
+      }
+    );
+    assert.equal(calls.length, 3, 'should reject on the third page when CUR_A repeats');
+  });
+
+  const malformedPages = [
+    ['missing fills', () => ({ has_next: false })],
+    ['non-array fills', () => ({ fills: 'invalid', has_next: false })],
+    ['invalid fill element', () => ({ fills: [null], has_next: false })],
+    ['invalid has_next flag', () => ({ fills: [makeFill(1, 0.1)], has_next: 'false' })],
+    ['null response', () => null],
+  ];
+  for (const [name, badPage] of malformedPages) {
+    it(`rejects with incompleteFills on a malformed page (${name})`, async () => {
+      const adapter = createCoinbaseAdapter(keysPath);
+      installFetchMock(() => badPage());
+      await assert.rejects(
+        async () => adapter.getOrderFills('ORDER-1'),
+        (err) => {
+          assert.equal(err.incompleteFills, true);
+          assert.match(err.message, /malformed fills page/);
+          return true;
+        }
+      );
+    });
+  }
+
+  it('rejects with incompleteFills when pagination exceeds page budget', async () => {
+    const adapter = createCoinbaseAdapter(keysPath);
+    const { calls } = installFetchMock((_url, calls) => ({
+      fills: [makeFill(calls.length, 0.01)],
+      cursor: `CUR_${calls.length}`,
+      has_next: true,
+    }));
+
+    await assert.rejects(
+      async () => adapter.getOrderFills('ORDER-1'),
+      (err) => {
+        assert.equal(err.incompleteFills, true);
+        assert.match(err.message, /exceeded 64-page budget/);
+        return true;
+      }
+    );
+    assert.equal(calls.length, 64, 'must attempt exactly 64 pages before rejecting');
+  });
+
+  const unfindableContinuations = [
+    ['missing cursor', () => ({ fills: [makeFill(1, 0.1)], has_next: true })],
+    ['blank cursor', () => ({ fills: [makeFill(1, 0.1)], cursor: '   ', has_next: true })],
+    ['empty cursor', () => ({ fills: [makeFill(1, 0.1)], cursor: '', has_next: true })],
+    ['non-string cursor', () => ({ fills: [makeFill(1, 0.1)], cursor: 12345, has_next: true })],
+  ];
+  for (const [name, badContinuation] of unfindableContinuations) {
+    it(`rejects with incompleteFills when has_next is true without usable continuation (${name})`, async () => {
+      const adapter = createCoinbaseAdapter(keysPath);
+      installFetchMock(() => badContinuation());
+      await assert.rejects(
+        async () => adapter.getOrderFills('ORDER-1'),
+        (err) => {
+          assert.equal(err.incompleteFills, true);
+          assert.match(err.message, /missing continuation cursor/);
+          return true;
+        }
+      );
+    });
+  }
+
+  it('terminates cleanly on has_next: false even when a cursor is echoed', async () => {
+    const adapter = createCoinbaseAdapter(keysPath);
+    const { calls } = installFetchMock(() => ({
+      fills: [makeFill(1, 0.1)],
+      cursor: 'ECHOED_CURSOR',
+      has_next: false,
+    }));
+    const fills = await adapter.getOrderFills('ORDER-1');
+    assert.equal(calls.length, 1);
+    assert.equal(fills.length, 1);
+    assert.equal(fills[0].size, 0.1);
+  });
+
+  it('an incomplete manual paired import leaves ledger and store untouched and remains retryable', async () => {
+    const adapter = createCoinbaseAdapter(keysPath);
+    let attempts = 0;
+    installFetchMock((url) => {
+      const orderId = url.searchParams.get('order_id');
+      if (orderId === 'BUY-1') {
+        if (attempts === 0) {
+          // Incomplete scan on first attempt (repeated cursor)
+          return { fills: [makeFill(1, 0.01, { order_id: 'BUY-1' })], cursor: 'STUCK', has_next: true };
+        }
+        // Successful scan on retry
+        return { fills: [makeFill(1, 0.01, { order_id: 'BUY-1' })], has_next: false };
+      }
+      if (orderId === 'SELL-1') {
+        return { fills: [makeFill(2, 0.01, { order_id: 'SELL-1', side: 'SELL' })], has_next: false };
+      }
+      return { fills: [], has_next: false };
+    });
+
+    await withManualImporter(adapter, {}, async ({ importer, ledger, store }) => {
+      // First attempt fails on buy leg
+      const failResult = await importer.importPair({ buyOrderId: 'BUY-1', sellOrderId: 'SELL-1' });
+      assert.equal(failResult.success, false);
+      assert.match(failResult.error, /repeated cursor STUCK/);
+      assert.equal(ledger.getFillCount(), 0, 'ledger must remain empty after failed buy leg');
+      assert.equal(store.getAll().length, 0, 'store must remain empty after failed buy leg');
+
+      // Retry after exchange endpoint recovers
+      attempts = 1;
+      const retryResult = await importer.importPair({ buyOrderId: 'BUY-1', sellOrderId: 'SELL-1' });
+      assert.equal(retryResult.success, true);
+      assert.equal(ledger.getFillCount(), 2, 'both legs ingested on clean retry');
+      assert.equal(store.getAll().length, 1, 'trade record created on clean retry');
+    });
   });
 
   it('counts overlapping page executions once when persisting an imported buy body', async () => {
@@ -193,7 +344,9 @@ describe('coinbase getOrderFills pagination', () => {
   it('sizes a recovery buy from unique sell executions when a page is redelivered', async () => {
     const adapter = createCoinbaseAdapter(keysPath);
     const sell = makeFill(1, 0.01, { side: 'SELL' });
-    installFetchMock(() => ({ fills: [sell], cursor: 'STUCK', has_next: true }));
+    installFetchMock((url) => url.searchParams.has('cursor')
+      ? { fills: [sell], has_next: false }
+      : { fills: [sell], cursor: 'PAGE2', has_next: true });
     const buys = [];
     adapter.placeLimitBuy = async (_product, size) => {
       buys.push(size);

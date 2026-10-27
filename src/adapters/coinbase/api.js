@@ -35,6 +35,16 @@ const RETRYABLE_HTTP_STATUSES = new Set([429, 502, 503, 504]);
 // Returned from the deadline-scoped request body to ask the attempt loop to retry.
 const HTTP_RETRY = Symbol('coinbase-http-retry');
 const CLIENT_ORDER_LOOKUP_MAX_PAGES = 64;
+const ORDER_FILLS_PAGE_LIMIT = 250;
+const ORDER_FILLS_MAX_PAGES = 64;
+
+/**
+ * Construct an incomplete-fills rejection error recognized across retry and recovery paths.
+ * @param {string} message
+ * @returns {Error & { incompleteFills: true }}
+ */
+const incompleteFillsError = (message) =>
+  Object.assign(new Error(message), { incompleteFills: true });
 
 /**
  * Parse a Retry-After header (delta-seconds or HTTP date) to milliseconds.
@@ -660,26 +670,56 @@ const createCoinbaseAdapter = (keysPath = null, { sleep = defaultSleep, random =
     // Coinbase paginates this endpoint (~100 fills/page by default). Loop on the
     // response cursor accumulating every page so high-fill-count orders aren't
     // truncated — a truncated set under-reports totalSize and corrupts cost-basis
-    // proration, holdback, and partial-fill detection downstream. Mirrors the
-    // cursor loop in getAccountBalance.
-    const PAGE_LIMIT = 250;
-    const basePath = `/api/v3/brokerage/orders/historical/fills?order_id=${orderId}&limit=${PAGE_LIMIT}`;
+    // proration, holdback, and partial-fill detection downstream.
+    // Guard against repeated cursors, cursor cycles, missing continuations,
+    // malformed pages, and runaway pagination: reject with incompleteFills rather
+    // than returning a partial or corrupted set to callers (#1801).
+    const basePath = `/api/v3/brokerage/orders/historical/fills?order_id=${encodeURIComponent(orderId)}&limit=${ORDER_FILLS_PAGE_LIMIT}`;
     let cursor = null;
+    const seenCursors = new Set();
     const allFills = [];
 
-    do {
+    for (let page = 0; page < ORDER_FILLS_MAX_PAGES; page++) {
       // Cursors are opaque tokens that may contain =, +, / — encode before interpolating.
       const apiPath = cursor ? `${basePath}&cursor=${encodeURIComponent(cursor)}` : basePath;
       const data = await makeRequest('GET', apiPath);
 
-      allFills.push(...(data.fills || []));
+      if (!data || typeof data !== 'object' || !Array.isArray(data.fills)
+        || (data.has_next !== undefined && typeof data.has_next !== 'boolean')
+        || data.fills.some(fill => !fill || typeof fill !== 'object' || Array.isArray(fill))) {
+        throw incompleteFillsError(`Coinbase order fills pagination failed for order ${orderId}: malformed fills page`);
+      }
 
-      // Terminate on Coinbase's documented has_next === false signal (the response
-      // can echo a non-empty cursor on the final page). Fall back to an empty/absent
-      // cursor, and guard against a stuck cursor that repeats to avoid an infinite loop.
-      const nextCursor = data.cursor;
-      cursor = (data.has_next !== false && nextCursor && nextCursor !== cursor) ? nextCursor : null;
-    } while (cursor);
+      allFills.push(...data.fills);
+
+      // Explicit has_next === false is terminal per Coinbase docs, even if cursor is echoed.
+      if (data.has_next === false) {
+        cursor = null;
+        break;
+      }
+
+      // Legacy final pages with no continuation indicators.
+      if (data.has_next !== true && (!data.cursor || typeof data.cursor !== 'string' || !data.cursor.trim())) {
+        cursor = null;
+        break;
+      }
+
+      const nextCursor = typeof data.cursor === 'string' ? data.cursor.trim() : '';
+      if (!nextCursor) {
+        throw incompleteFillsError(`Coinbase order fills pagination failed for order ${orderId}: missing continuation cursor`);
+      }
+
+      if (seenCursors.has(nextCursor)) {
+        throw incompleteFillsError(`Coinbase order fills pagination failed for order ${orderId}: repeated cursor ${nextCursor}`);
+      }
+
+      seenCursors.add(nextCursor);
+      cursor = nextCursor;
+    }
+
+    if (cursor) {
+      throw incompleteFillsError(`Coinbase order fills pagination failed for order ${orderId}: exceeded ${ORDER_FILLS_MAX_PAGES}-page budget`);
+    }
 
     const fillsByTradeId = new Map();
     return allFills.map(fill => {

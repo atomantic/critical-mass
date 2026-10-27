@@ -244,14 +244,15 @@ module.exports = (app, deps) => {
     const logger = settingsLogger('/api/backups/fund-state/:snapshotId/:exchange/:pair/restore');
     const { snapshotId, exchange, pair } = req.params;
     const filename = `${snapshotId}/${exchange}/${pair}`;
+    const acceptMissingPlacementIntents = req.body?.acceptMissingPlacementIntents === true;
     const { status, body } = await performRestore({
       filename,
       force: req.body?.force === true,
       exchangeIPCMap,
       configuredExchanges: getConfiguredExchanges().filter((name) => exchangeIPCMap[name]),
       // Refuse a missing or malformed snapshot before any engine is stopped (#1384).
-      preflight: () => checkFundStateRestorePreconditions(snapshotId, exchange, pair),
-      restore: () => restoreFundStateBackup(snapshotId, exchange, pair, { logger }),
+      preflight: () => checkFundStateRestorePreconditions(snapshotId, exchange, pair, { acceptMissingPlacementIntents }),
+      restore: () => restoreFundStateBackup(snapshotId, exchange, pair, { logger, acceptMissingPlacementIntents }),
       gatewayWriters: gatewayWriters(),
       drainPendingWrites,
       createRecoveryPoint,

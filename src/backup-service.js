@@ -57,6 +57,7 @@ const {
 const { isPerFundFile, normalizeExchangeTreeToPairs } = require('./migration');
 const { serializeFundState } = require('./dry-run-state');
 const { JOURNAL_FILENAME: DCA_IMPORT_JOURNAL_FILENAME } = require('./dca-conversion-transaction');
+const { PLACEMENT_INTENTS_FILENAME, parsePlacementIntentsDocument, assertPlacementIntentRows } = require('./placement-intent-document');
 
 const BACKUPS_DIR = BACKUP_DIR;
 
@@ -82,6 +83,12 @@ const FUND_STATE_SNAPSHOT_FILENAMES = [
   'manual-trades.json',
   'pending-corrective-buys.json',
 ];
+// Placement intents are safety metadata, not accounting: a missing file means
+// "no intents at snapshot time", never "erase the destination's blockers". They
+// are therefore copied and validated with the snapshot but kept out of
+// FUND_STATE_SNAPSHOT_FILENAMES, which drives absence operations and discovery
+// of restored funds in full archives.
+const FUND_STATE_CAPTURED_FILENAMES = [...FUND_STATE_SNAPSHOT_FILENAMES, PLACEMENT_INTENTS_FILENAME];
 
 // Bounds each zip/unzip child. The archive-creation path uses async spawn, so a
 // slow archive no longer blocks the gateway event loop or its shutdown drain;
@@ -966,7 +973,8 @@ const validateFundStateSnapshot = (snapshotDir, snapshotId, stagedManifest) => {
     if (!manifest || Array.isArray(manifest) || manifest.manifestVersion !== FUND_STATE_MANIFEST_VERSION
       || !isSafeFundStateSegment(manifest.snapshotId) || manifest.snapshotId !== snapshotId
       || typeof manifest.createdAt !== 'string' || !Number.isFinite(Date.parse(manifest.createdAt))
-      || !Array.isArray(manifest.funds) || manifest.funds.length === 0) {
+      || !Array.isArray(manifest.funds) || manifest.funds.length === 0
+      || (manifest.placementIntentsCaptured !== undefined && manifest.placementIntentsCaptured !== true)) {
       throw new Error(`${FUND_STATE_MANIFEST_FILENAME} is malformed or unsupported (check identity, creation time and funds)`);
     }
     const identities = new Set();
@@ -980,11 +988,16 @@ const validateFundStateSnapshot = (snapshotDir, snapshotId, stagedManifest) => {
       identities.add(identity);
       const filenames = new Set();
       for (const name of fund.files) {
-        if (!FUND_STATE_SNAPSHOT_FILENAMES.includes(name) || filenames.has(name)) {
+        if (!FUND_STATE_CAPTURED_FILENAMES.includes(name) || filenames.has(name)) {
           throw new Error(`Snapshot contains an unsupported or duplicate state file for ${identity}`);
         }
         filenames.add(name);
-        checkPath([fund.exchange, fund.pair, name]);
+        if (name === PLACEMENT_INTENTS_FILENAME) {
+          const file = `${identity}/${name}`;
+          assertPlacementIntentRows(parsePlacementIntentsDocument(checkPath([fund.exchange, fund.pair, name], false, true), file), file);
+        } else {
+          checkPath([fund.exchange, fund.pair, name]);
+        }
       }
     }
     return { ok: true, manifest };
@@ -1011,7 +1024,7 @@ const directorySizeBytes = (root) => {
 /**
  * List the hourly fund-state snapshots, newest first.
  * @param {{paths?: {dataDir?: string, baseConfigFile?: string}}} [options]
- * @returns {Array<{snapshotId: string, createdAt: string, funds: Array<Object>, sizeBytes: number}>}
+ * @returns {Array<{snapshotId: string, createdAt: string, funds: Array<Object>, placementIntentsCaptured: boolean, sizeBytes: number}>}
  */
 const listFundStateBackups = ({ paths: pathOverrides } = {}) => {
   const paths = resolvePaths(pathOverrides);
@@ -1029,6 +1042,8 @@ const listFundStateBackups = ({ paths: pathOverrides } = {}) => {
           snapshotId: manifest.snapshotId,
           createdAt: manifest.createdAt,
           funds: manifest.funds,
+          // Snapshots from before intents were captured cannot recover them.
+          placementIntentsCaptured: manifest.placementIntentsCaptured === true,
           sizeBytes: directorySizeBytes(snapshotDir),
         };
       } catch (_error) {
@@ -1154,7 +1169,7 @@ const createFundStateBackup = ({ paths: pathOverrides, now = new Date(), maxBack
     for (const { exchange, pair } of identities) {
       const sourceDir = path.join(paths.dataDir, exchange, pair);
       const copied = [];
-      for (const name of FUND_STATE_SNAPSHOT_FILENAMES) {
+      for (const name of FUND_STATE_CAPTURED_FILENAMES) {
         const source = path.join(sourceDir, name);
         if (!fs.existsSync(source)) continue;
         const stat = fs.lstatSync(source);
@@ -1186,6 +1201,7 @@ const createFundStateBackup = ({ paths: pathOverrides, now = new Date(), maxBack
       manifestVersion: FUND_STATE_MANIFEST_VERSION,
       snapshotId,
       createdAt,
+      placementIntentsCaptured: true,
       funds,
     }, null, 2), { mode: 0o600 });
     fsyncFile(path.join(stageDir, FUND_STATE_MANIFEST_FILENAME));
@@ -1256,20 +1272,59 @@ const resolveFundStateSnapshot = (snapshotId, exchange, pair, paths) => {
 };
 
 /**
+ * A snapshot taken before placement intents were captured cannot say whether the
+ * fund had an unresolved order POST, so presenting it as a complete
+ * placement-safe recovery point would be false. Restoring one is allowed only
+ * on an explicit acknowledgement; the destination's own intents are kept either way.
+ * @param {Object} manifest - Validated snapshot manifest
+ * @param {boolean} acceptMissingPlacementIntents
+ * @returns {{ok: true} | {ok: false, code: string, error: string}}
+ */
+const checkPlacementIntentEvidence = (manifest, acceptMissingPlacementIntents) => (
+  manifest.placementIntentsCaptured === true || acceptMissingPlacementIntents === true
+    ? { ok: true }
+    : {
+      ok: false,
+      code: 'placement-intents-not-captured',
+      error: 'This snapshot predates placement-intent capture, so it cannot recover an unresolved order POST the fund may have had. Check the exchange for open orders on this fund, then retry with acceptMissingPlacementIntents. Intents already on this machine are kept.',
+    }
+);
+
+/**
  * The checks `restoreFundStateBackup` makes before staging, run on their own so
  * a restore that would refuse does so before any engine is stopped (#1384).
  * @param {string} snapshotId
  * @param {string} exchange
  * @param {string} pair
- * @param {{paths?: {dataDir?: string, baseConfigFile?: string}}} [options]
- * @returns {{ok: true} | {ok: false, error: string}}
+ * @param {{paths?: {dataDir?: string, baseConfigFile?: string}, acceptMissingPlacementIntents?: boolean}} [options]
+ * @returns {{ok: true} | {ok: false, error: string, code?: string}}
  */
-const checkFundStateRestorePreconditions = (snapshotId, exchange, pair, { paths: pathOverrides } = {}) => {
+const checkFundStateRestorePreconditions = (snapshotId, exchange, pair, { paths: pathOverrides, acceptMissingPlacementIntents = false } = {}) => {
   const paths = resolvePaths(pathOverrides);
   const resolved = resolveFundStateSnapshot(snapshotId, exchange, pair, paths);
   if (!resolved.ok) return { ok: false, error: resolved.error };
   const pending = fundsWithPendingDcaImport(paths.dataDir, [{ exchange, pair }]);
-  return pending.length > 0 ? { ok: false, ...pendingDcaImportRefusal(pending, 'No files were changed.') } : { ok: true };
+  if (pending.length > 0) return { ok: false, ...pendingDcaImportRefusal(pending, 'No files were changed.') };
+  return checkPlacementIntentEvidence(resolved.manifest, acceptMissingPlacementIntents);
+};
+
+/**
+ * Merge a snapshot's intents into the destination's. Rows are never dropped:
+ * the union keeps every intent id from either side (the destination's row wins
+ * a shared id as the newer state), so a restore can add blockers but never
+ * clear one. An intent resolved after the snapshot returns and blocks until
+ * normal reconciliation proves its outcome again.
+ * @param {string} snapshotFile
+ * @param {string} destinationFile
+ * @returns {string} Serialized intents document
+ */
+const mergePlacementIntentsForRestore = (snapshotFile, destinationFile) => {
+  const snapshotRows = assertPlacementIntentRows(parsePlacementIntentsDocument(fs.readFileSync(snapshotFile, 'utf8'), snapshotFile), snapshotFile);
+  const destinationRows = fs.existsSync(destinationFile)
+    ? parsePlacementIntentsDocument(fs.readFileSync(destinationFile, 'utf8'), destinationFile)
+    : [];
+  const destinationIds = new Set(destinationRows.map((row) => row?.id));
+  return JSON.stringify({ version: 1, intents: [...snapshotRows.filter((row) => !destinationIds.has(row.id)), ...destinationRows] }, null, 2);
 };
 
 /**
@@ -1278,18 +1333,20 @@ const checkFundStateRestorePreconditions = (snapshotId, exchange, pair, { paths:
  * @param {string} snapshotId
  * @param {string} exchange
  * @param {string} pair
- * @param {{paths?: {dataDir?: string, baseConfigFile?: string}, logger?: Object}} [options]
- * @returns {{success: boolean, filesRestored?: number, error?: string, code?: string, rolledBack?: boolean, recovery?: Object}}
+ * @param {{paths?: {dataDir?: string, baseConfigFile?: string}, logger?: Object, acceptMissingPlacementIntents?: boolean}} [options]
+ * @returns {{success: boolean, filesRestored?: number, error?: string, code?: string, rolledBack?: boolean, recovery?: Object, warnings?: Array<string>}}
  */
-const restoreFundStateBackup = (snapshotId, exchange, pair, { paths: pathOverrides, logger = SILENT_LOGGER } = {}) => {
+const restoreFundStateBackup = (snapshotId, exchange, pair, { paths: pathOverrides, logger = SILENT_LOGGER, acceptMissingPlacementIntents = false } = {}) => {
   const paths = resolvePaths(pathOverrides);
   const resolved = resolveFundStateSnapshot(snapshotId, exchange, pair, paths);
   if (!resolved.ok) return { success: false, error: resolved.error };
-  const { snapshotDir } = resolved;
   // Repeated here: the restore would otherwise leave the destination's journal
   // to roll its import forward over the restored generation (#1809).
   const pending = fundsWithPendingDcaImport(paths.dataDir, [{ exchange, pair }]);
   if (pending.length > 0) return { success: false, ...pendingDcaImportRefusal(pending, 'No files were changed.') };
+  const evidence = checkPlacementIntentEvidence(resolved.manifest, acceptMissingPlacementIntents);
+  if (!evidence.ok) return { success: false, code: evidence.code, error: evidence.error };
+  const { snapshotDir } = resolved;
 
   const stageDir = fs.mkdtempSync(path.join(paths.dataDir, STAGE_PREFIX));
   let absent;
@@ -1300,7 +1357,12 @@ const restoreFundStateBackup = (snapshotId, exchange, pair, { paths: pathOverrid
       if (!sourceStat.isFile()) throw new Error(`Snapshot state file is not a regular file: ${name}`);
       const target = path.join(stageDir, exchange, pair, name);
       fs.mkdirSync(path.dirname(target), { recursive: true });
-      fs.copyFileSync(source, target);
+      if (name === PLACEMENT_INTENTS_FILENAME) {
+        // Staged with the accounting files so one journal commits or rolls back both.
+        fs.writeFileSync(target, mergePlacementIntentsForRestore(source, path.join(paths.dataDir, exchange, pair, name)));
+      } else {
+        fs.copyFileSync(source, target);
+      }
     }
     const sourceValidated = validateFundStateSnapshot(snapshotDir, snapshotId);
     if (!sourceValidated.ok) throw new Error(sourceValidated.error);
@@ -1322,6 +1384,9 @@ const restoreFundStateBackup = (snapshotId, exchange, pair, { paths: pathOverrid
     absent,
   });
   if (!applied.success && applied.rolledBack !== false) fs.rmSync(stageDir, { recursive: true, force: true });
+  if (applied.success && resolved.manifest.placementIntentsCaptured !== true) {
+    return { ...applied, warnings: [`Snapshot ${snapshotId} predates placement-intent capture: any unresolved order POST on ${exchange}/${pair} is NOT recovered. Check the exchange for open or duplicate orders before restarting this fund.`] };
+  }
   return applied;
 };
 
