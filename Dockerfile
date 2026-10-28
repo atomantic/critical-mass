@@ -21,6 +21,16 @@ RUN npm ci --omit=dev --prefix /opt/pm2
 ENV PATH="/opt/pm2/node_modules/.bin:${PATH}"
 # PM2 otherwise calls version.pm2.io daily with TLS verification disabled
 ENV PM2_DISABLE_VERSION_CHECK=1
+# Install rotation once at build time, outside persistent application mounts.
+# pm2-runtime loads modules from this writable home without network access.
+ENV PM2_HOME=/opt/pm2-home
+RUN pm2 install pm2-logrotate@3.0.0 \
+    && pm2 set pm2-logrotate:max_size 20M \
+    && pm2 set pm2-logrotate:retain 5 \
+    && pm2 set pm2-logrotate:compress true \
+    && pm2 set pm2-logrotate:rotateInterval '0 0 * * *' \
+    && pm2 kill \
+    && chown -R 1000:1000 /opt/pm2-home
 
 # zip/unzip are used by src/backup-service.js for archive create/restore
 RUN apk add --no-cache zip unzip

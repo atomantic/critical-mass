@@ -693,6 +693,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   // flow / trading behavior is unchanged; the placement/entry attempts still run
   // every cycle so the state recovers the moment it can.
   let lastTpNeedKey = null;            // sorted body-ids currently lacking a TP
+  const negativePnlLoggedPrice = new WeakMap(); // body -> last rejected TP price; no persisted state
   const dustWaitLoggedQty = new Map(); // bodyId -> last-logged sub-min rounded qty
   let lowBalancePauseLogged = false;   // true while inside an already-logged low-balance pause
 
@@ -5596,7 +5597,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     const finalEstProceeds = sellQty * tpPrice * (1 - feeRatePerSide);
     const finalEstPnl = finalEstProceeds - body.costBasis;
     if (finalEstPnl < 0.01) {
-      logger.info(`🚫 [${exchange}] Body ${body.id.slice(-8)} estimated PnL $${finalEstPnl.toFixed(4)} < $0.01 at TP ${fmtPrice(tpPrice)} (${finalTpPct.toFixed(3)}%), skipping to prevent negative P&L`);
+      if (negativePnlLoggedPrice.get(body) !== tpPrice) {
+        logger.info(`🚫 [${exchange}] Body ${body.id.slice(-8)} estimated PnL $${finalEstPnl.toFixed(4)} < $0.01 at TP ${fmtPrice(tpPrice)} (${finalTpPct.toFixed(3)}%), skipping to prevent negative P&L`);
+        negativePnlLoggedPrice.set(body, tpPrice);
+      }
       return false;
     }
 
@@ -6108,6 +6112,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * Log hourly summary
    */
   const logHourlySummary = () => {
+    const now = Date.now();
+    if (now - lastHourlySummaryEventAt < HOURLY_SUMMARY_EVENT_MS) return;
+    lastHourlySummaryEventAt = now;
     const regime = regimeDetector.getMode();
     const counts = orderExecutor.getPendingCounts();
     const riskSummary = riskManager.getSummary(positionState);
@@ -6118,12 +6125,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       `atr=${fmtPrice(marketState.atr1m)} vol=${marketState.realizedVol.toFixed(2)}%`
     );
 
-    const now = Date.now();
-    if (now - lastHourlySummaryEventAt >= HOURLY_SUMMARY_EVENT_MS) {
-      lastHourlySummaryEventAt = now;
-      const drawdown = (riskManager.getState().currentDrawdownPercent || 0).toFixed(1);
-      tradeEvents.regimeHourlySummary(exchange, regime, counts.entries, riskSummary, drawdown, fundEventData);
-    }
+    const drawdown = (riskManager.getState().currentDrawdownPercent || 0).toFixed(1);
+    tradeEvents.regimeHourlySummary(exchange, regime, counts.entries, riskSummary, drawdown, fundEventData);
   };
 
   // Set up dry-run callbacks now that all functions are defined

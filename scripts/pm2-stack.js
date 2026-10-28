@@ -23,12 +23,16 @@ function pm2(args, capture = false) {
   return result.stdout;
 }
 
-function processes() {
+function inventory() {
   let list;
   try { list = JSON.parse(pm2(['jlist'], true)); }
   catch { throw new Error('Unable to read PM2 process inventory; stack operation stopped.'); }
   if (!Array.isArray(list)) throw new Error('Invalid PM2 process inventory; stack operation stopped.');
-  const owned = list.filter(app => NAMES.includes(app?.name));
+  return list;
+}
+
+function processes() {
+  const owned = inventory().filter(app => NAMES.includes(app?.name));
   if (owned.some(app => !Number.isInteger(app.pm_id) || app.pm_id < 0)) {
     throw new Error('Invalid Critical Mass process ID; stack operation stopped.');
   }
@@ -51,6 +55,23 @@ function confirmOnline(names) {
   const running = processes();
   if (names.some(name => !running.some(app => app.name === name && app.pm2_env?.status === 'online' && app.pid > 0))) {
     throw new Error('PM2 did not report every requested Critical Mass process online; stack operation stopped without saving.');
+  }
+}
+
+function ensureLogRotation() {
+  // Installation may need the network. Logging must never prevent an otherwise
+  // healthy stack from starting, and inventory output must remain private.
+  try {
+    if (!inventory().some(app => app?.name === 'pm2-logrotate')) {
+      pm2(['install', 'pm2-logrotate@3.0.0'], true);
+    }
+    for (const [setting, value] of Object.entries({
+      max_size: '20M', retain: '5', compress: 'true', rotateInterval: '0 0 * * *',
+    })) {
+      pm2(['set', `pm2-logrotate:${setting}`, value], true);
+    }
+  } catch {
+    console.warn('Warning: PM2 log rotation could not be configured; retry npm run pm2:start when the module is available.');
   }
 }
 
@@ -80,6 +101,7 @@ function main(action = 'start') {
   confirmOnline(ENGINES);
   pm2(['start', 'ecosystem.config.cjs', '--only', [GATEWAY, UI].join(',')]);
   confirmOnline(NAMES);
+  ensureLogRotation();
   pm2(['save']);
 }
 

@@ -23,6 +23,7 @@ const makeHarness = (assetQty, baseMinSize = '0.29') => {
     costBasis: assetQty * 100, tpOrderId: null, sourceOrderIds: ['buy-1'],
   };
   const calls = [];
+  const logs = [];
   const events = [];
   const annotations = [];
   const inFlight = new Set();
@@ -31,10 +32,10 @@ const makeHarness = (assetQty, baseMinSize = '0.29') => {
     config, positionSizer, celestialHierarchy, floorToIncrement, roundAsset, roundPrice,
     productDetails: { baseMinSize, baseIncrement: '0.01' },
     priceIncrement: 0.01, calculateDynamicTpPercent: () => 1,
-    tpPlacementInFlight: inFlight, dustWaitLoggedQty: new Map(),
+    tpPlacementInFlight: inFlight, dustWaitLoggedQty: new Map(), negativePnlLoggedPrice: new WeakMap(),
     exchange: 'test', baseCurrency: 'TEST', fmtPrice: String,
     isDryRun: false, saveLiveStateGuarded: () => true,
-    logger: { info() {}, warn() {} },
+    logger: { info: message => logs.push(message), warn() {} },
     positionState: { celestialBodies: [body] },
     orderExecutor: {
       // The trailing options bag carries the ownership handoff, not order shape.
@@ -46,7 +47,7 @@ const makeHarness = (assetQty, baseMinSize = '0.29') => {
     fillLedger: { annotateFillsByOrderIds: (...args) => annotations.push(args) },
     tradeEvents: { emitTradeEvent: (...args) => events.push(args[3]) },
   });
-  return { body, calls, events, annotations, inFlight, placeBodyTp, positionSizer };
+  return { body, calls, logs, events, annotations, inFlight, placeBodyTp, positionSizer };
 };
 
 describe('body TP minimum rounding agrees with dust classification', () => {
@@ -96,4 +97,16 @@ describe('body TP minimum rounding agrees with dust classification', () => {
     assert.ok(h.events[0].holdbackQty > 0);
     assert.equal(floorToIncrement(h.calls[0][0], 0.01), 0.39);
   });
+});
+
+it('logs a rejected negative-PnL TP once per body and changed TP price', async () => {
+  const h = makeHarness(0.4);
+  h.body.costBasis = 1000;
+  assert.equal(await h.placeBodyTp(h.body), false);
+  assert.equal(await h.placeBodyTp(h.body), false);
+  assert.equal(h.logs.filter(line => line.includes('estimated PnL')).length, 1);
+  h.body.avgPrice = 101;
+  assert.equal(await h.placeBodyTp(h.body), false);
+  assert.equal(h.logs.filter(line => line.includes('estimated PnL')).length, 2);
+  assert.equal(h.calls.length, 0);
 });

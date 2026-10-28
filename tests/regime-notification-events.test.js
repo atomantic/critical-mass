@@ -212,6 +212,8 @@ describe('regime engine publishes advertised notification events (issue #1030)',
     const realNow = Date.now();
     let now = realNow;
     mock.method(Date, 'now', () => now);
+    const logs = [];
+    mock.method(console, 'log', message => logs.push(String(message)));
     t.after(() => mock.restoreAll());
 
     await eng._test.updateMetrics();
@@ -223,6 +225,10 @@ describe('regime engine publishes advertised notification events (issue #1030)',
     const hourly = ofType(events, 'regime_hourly');
     assert.equal(hourly.length, 1);
     assert.equal(typeof hourly[0].data.regime, 'string');
+    assert.equal(logs.filter(line => line.includes('Hour:')).length, 1, 'summary log shares the hourly event gate');
+    now += 60 * 60 * 1000;
+    await eng._test.updateMetrics();
+    assert.equal(logs.filter(line => line.includes('Hour:')).length, 2);
   });
 });
 
