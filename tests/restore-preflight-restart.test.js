@@ -522,6 +522,108 @@ describe('checkRestorePreconditions mirrors the applier refusals without extract
     assert.match(stateCheck.error, /regime-state.json did not parse to an object/);
   });
 
+  describe('placement intents in a full archive (#1843)', () => {
+    const intentsPath = (install) => path.join(install.dataDir, 'coinbase', 'ETH-USDC', 'placement-intents.json');
+    const intentsDoc = (...intents) => ({ version: 1, intents });
+    const intent = (id, status) => ({ id, status });
+
+    it('merges archived intents into the destination without clearing a live blocker', async () => {
+      const source = makeInstall('source', BASE);
+      writeJson(path.join(source.dataDir, 'coinbase', 'ETH-USDC', 'fill-ledger.json'), ledgerOf('t1'));
+      writeJson(intentsPath(source), intentsDoc(intent('intent-archived', 'unresolved')));
+      const created = await createBackup({ paths: source.paths });
+      assert.equal(created.success, true, created.error);
+      const dest = makeInstall('dest', BASE);
+      writeJson(path.join(dest.dataDir, 'coinbase', 'ETH-USDC', 'fill-ledger.json'), ledgerOf('working'));
+      writeJson(intentsPath(dest), intentsDoc(intent('intent-live-unresolved', 'unresolved')));
+      transfer(source, dest, created.filename);
+
+      const restored = restoreBackup(created.filename, { paths: dest.paths });
+      assert.equal(restored.success, true, restored.error);
+      const ids = JSON.parse(fs.readFileSync(intentsPath(dest), 'utf8')).intents.map((row) => row.id).sort();
+      assert.deepEqual(ids, ['intent-archived', 'intent-live-unresolved']);
+    });
+
+    it('keeps the live blocker when the archive holds an empty intents file', async () => {
+      const source = makeInstall('source', BASE);
+      writeJson(path.join(source.dataDir, 'coinbase', 'ETH-USDC', 'fill-ledger.json'), ledgerOf('t1'));
+      writeJson(intentsPath(source), intentsDoc());
+      const created = await createBackup({ paths: source.paths });
+      const dest = makeInstall('dest', BASE);
+      writeJson(intentsPath(dest), intentsDoc(intent('intent-live-unresolved', 'unresolved')));
+      transfer(source, dest, created.filename);
+
+      const restored = restoreBackup(created.filename, { paths: dest.paths });
+      assert.equal(restored.success, true, restored.error);
+      assert.deepEqual(JSON.parse(fs.readFileSync(intentsPath(dest), 'utf8')).intents, [intent('intent-live-unresolved', 'unresolved')]);
+    });
+
+    it('refuses a malformed intents document before stop-all and leaves the destination untouched', async () => {
+      const malformed = {
+        'invalid JSON': '{not valid json',
+        'a missing intents array': JSON.stringify({ version: 1 }),
+        'a row without a string status': JSON.stringify(intentsDoc({ id: 'x' })),
+      };
+      for (const [name, bytes] of Object.entries(malformed)) {
+        const source = makeInstall(`source-${name}`, BASE);
+        writeJson(path.join(source.dataDir, 'coinbase', 'ETH-USDC', 'fill-ledger.json'), ledgerOf('t1'));
+        fs.writeFileSync(intentsPath(source), bytes);
+        const created = await createBackup({ paths: source.paths });
+        assert.equal(created.success, true, created.error);
+        const dest = makeInstall(`dest-${name}`, BASE);
+        const destLedger = path.join(dest.dataDir, 'coinbase', 'ETH-USDC', 'fill-ledger.json');
+        writeJson(destLedger, ledgerOf('working'));
+        writeJson(intentsPath(dest), intentsDoc(intent('intent-live-unresolved', 'unresolved')));
+        transfer(source, dest, created.filename);
+        const intentsBefore = fs.readFileSync(intentsPath(dest), 'utf8');
+        const ledgerBefore = fs.readFileSync(destLedger, 'utf8');
+        const dirBefore = listDir(dest.dataDir);
+
+        const check = await checkRestorePreconditions(created.filename, { paths: dest.paths });
+        assert.equal(check.ok, false, name);
+        assert.equal(check.code, 'payload-incompatible');
+        assert.match(check.error, /placement-intents\.json/);
+        const calls = [];
+        const { status, body } = await performRestore({
+          filename: created.filename,
+          exchangeIPCMap: { coinbase: recordingIPC('coinbase', ['ETH-USDC'], calls) },
+          configuredExchanges: ['coinbase'],
+          preflight: () => checkRestorePreconditions(created.filename, { paths: dest.paths }),
+          restore: () => assert.fail('applier must not run'),
+          logger: silentLogger,
+        });
+        assert.equal(status, 400, name);
+        assert.deepEqual(calls, [], 'no engine maintenance or stop-all');
+        const applied = restoreBackup(created.filename, { paths: dest.paths });
+        assert.equal(applied.success, false, name);
+        assert.equal(applied.code, 'payload-incompatible');
+        assert.equal(fs.readFileSync(intentsPath(dest), 'utf8'), intentsBefore, 'live blocker preserved');
+        assert.equal(fs.readFileSync(destLedger, 'utf8'), ledgerBefore, 'accounting untouched');
+        assert.deepEqual(listDir(dest.dataDir), dirBefore, 'no staging or recovery generation left behind');
+      }
+    });
+
+    it('refuses without changing anything when the destination intents file is unreadable', async () => {
+      const source = makeInstall('source', BASE);
+      writeJson(path.join(source.dataDir, 'coinbase', 'ETH-USDC', 'fill-ledger.json'), ledgerOf('t1'));
+      writeJson(intentsPath(source), intentsDoc(intent('intent-archived', 'unresolved')));
+      const created = await createBackup({ paths: source.paths });
+      const dest = makeInstall('dest', BASE);
+      const destLedger = path.join(dest.dataDir, 'coinbase', 'ETH-USDC', 'fill-ledger.json');
+      writeJson(destLedger, ledgerOf('working'));
+      fs.writeFileSync(intentsPath(dest), '{corrupt');
+      transfer(source, dest, created.filename);
+      const dirBefore = listDir(dest.dataDir);
+
+      const result = restoreBackup(created.filename, { paths: dest.paths });
+      assert.equal(result.success, false);
+      assert.match(result.error, /No files were changed/);
+      assert.equal(fs.readFileSync(intentsPath(dest), 'utf8'), '{corrupt');
+      assert.deepEqual(JSON.parse(fs.readFileSync(destLedger, 'utf8')), ledgerOf('working'));
+      assert.deepEqual(listDir(dest.dataDir), dirBefore);
+    });
+  });
+
   it('still restores unversioned legacy ledgers and fee-only rows, leaving the bytes unchanged (#1811)', async () => {
     const source = makeInstall('source', BASE);
     const legacyRows = [{ tradeId: 'old-1', side: 'sell', size: 2, price: 50, quoteAmount: 100, fee: 0.4, timestamp: 5 }];

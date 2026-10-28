@@ -11,6 +11,7 @@
  */
 
 const { isFiniteNumber, isPlainObject } = require('./value-guards');
+const { PLACEMENT_INTENTS_FILENAME, parsePlacementIntentsDocument, assertPlacementIntentRows } = require('./placement-intent-document');
 
 /**
  * On-disk format revision of fill-ledger.json. Every persisted row carries it
@@ -143,7 +144,7 @@ const NON_FUND_DIRS = new Set(['backups', 'updown']);
 
 /**
  * Per-fund / UpDown accounting file kinds this module knows how to validate.
- * @typedef {'ledger' | 'fund-state' | 'updown-state'} PayloadKind
+ * @typedef {'ledger' | 'fund-state' | 'updown-state' | 'placement-intents'} PayloadKind
  */
 
 /**
@@ -159,6 +160,7 @@ const classifyPayloadPath = (relPath) => {
   const isFundLevel = (segments.length === 2 || segments.length === 3) && !NON_FUND_DIRS.has(segments[0]);
   if (isFundLevel && name === 'fill-ledger.json') return 'ledger';
   if (isFundLevel && (name === 'state.json' || name === 'regime-state.json')) return 'fund-state';
+  if (isFundLevel && name === PLACEMENT_INTENTS_FILENAME) return 'placement-intents';
   if (segments.length === 1 && name === 'updown-state.json') return 'updown-state';
   return null;
 };
@@ -201,6 +203,16 @@ const findIncompatiblePayloadReason = (kind, data) => {
 const validatePersistedPayload = (relPath, content) => {
   const kind = classifyPayloadPath(relPath);
   if (!kind) return { ok: true };
+  if (kind === 'placement-intents') {
+    // The live store throws on a corrupt or malformed document at startup, so a
+    // restore must refuse the same shapes rather than apply them.
+    try {
+      assertPlacementIntentRows(parsePlacementIntentsDocument(content.toString(), relPath), relPath);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  }
   let data;
   try {
     data = JSON.parse(content.toString());
