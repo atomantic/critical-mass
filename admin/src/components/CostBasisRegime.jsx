@@ -28,8 +28,9 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
     const controller = new AbortController()
     session.controller = controller
 
-    const read = async (endpoint, name) => {
-      const result = await apiGet(`/api/${exchange}/${endpoint}${pairQuery}`, { signal: controller.signal })
+    const read = async (endpoint, name, revision) => {
+      const conditionalQuery = revision ? `${pairQuery ? '&' : '?'}revision=${encodeURIComponent(revision)}` : ''
+      const result = await apiGet(`/api/${exchange}/${endpoint}${pairQuery}${conditionalQuery}`, { signal: controller.signal })
       if (!result.ok) throw new Error(result.status ? `${name} fetch failed: HTTP ${result.status}` : result.error)
       return result.data
     }
@@ -39,7 +40,7 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
       // cannot overlap a still-pending request from the failed batch.
       const results = await Promise.allSettled([
         read('regime/status', 'Status'),
-        read('regime/fills/cycles', 'Fill cycles'),
+        read('regime/fills/cycles', 'Fill cycles', session.aggregates?.revision),
         session.config ? Promise.resolve(session.config) : read('config', 'Config'),
       ])
       if (!session.active) return
@@ -47,12 +48,19 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
       if (failure) throw failure.reason
       const [statusData, fillsData, configData] = results.map(result => result.value)
 
+      if (fillsData.unchanged && (!session.aggregates || fillsData.revision !== session.aggregates.revision)) {
+        throw new Error('Fill cycles returned an invalid unchanged revision')
+      }
+
       // Commit a complete snapshot only while this fund still owns the read.
       session.config = configData
       session.hasSnapshot = true
       setStatus(statusData.status)
       setCurrentPrice(statusData.status?.market?.lastPrice || 0)
-      setFillAggregates(fillsData)
+      if (!fillsData.unchanged) {
+        session.aggregates = fillsData
+        setFillAggregates(fillsData)
+      }
       setProductId(configData.config?.productId || configData.productId || null)
       setError(null)
       setStale(false)
@@ -70,7 +78,7 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
   }, [exchange, pairQuery])
 
   useEffect(() => {
-    const session = { active: true, inFlight: false, hasSnapshot: false, config: null, controller: null }
+    const session = { active: true, inFlight: false, hasSnapshot: false, config: null, aggregates: null, controller: null }
     readState.current = session
     setStatus(null)
     setFillAggregates(null)

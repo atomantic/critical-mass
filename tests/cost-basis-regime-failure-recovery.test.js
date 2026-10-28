@@ -129,7 +129,7 @@ function createView(props = {}) {
     for (let i = 0; i < 4; i++) await new Promise(resolve => setImmediate(resolve))
     flushSync(() => {})
   }
-  async function respond({ fills = [], price = 100, failure, productId = currentProps.pair } = {}) {
+  async function respond({ fills = [], aggregate, price = 100, failure, productId = currentProps.pair } = {}) {
     const pending = requests.filter(request => !request.settled)
     for (const request of pending) {
       request.settled = true
@@ -141,7 +141,7 @@ function createView(props = {}) {
           if (failure?.endpoint === endpoint && failure.kind === 'parse') throw new Error('Invalid JSON')
           // Newly parsed object identities reproduce the original feedback loop.
           return endpoint === 'status' ? { status: { market: { lastPrice: price }, position: {} } }
-            : endpoint === 'fills' ? { fillCount: fills.length, cycles: fills.length ? [{
+            : endpoint === 'fills' ? aggregate || { fillCount: fills.length, cycles: fills.length ? [{
               cycleId: 'cycle-1', entryCount: fills.length, exitCount: 0,
               totalBought: fills.length * 0.001, totalSold: 0,
               totalCost: fills.length * 0.1, totalProceeds: 0,
@@ -203,6 +203,72 @@ describe('Cost Basis rendered polling and recovery (#853, #933)', () => {
       } finally { view.cleanup() }
     })
   }
+
+  it('conditionally polls 30,000 fills, refreshes prices, and recovers changed/restarted ledgers', async (t) => {
+    const { createTransactionsReadView } = require('../src/transactions-regime-query')
+    let fills = Array.from({ length: 30000 }, (_, i) => ({
+      tradeId: `trade-${i}`, orderId: `order-${i}`, side: i % 2 ? 'sell' : 'buy',
+      cycleId: `cycle-${Math.floor(i / 2)}`, timestamp: 1000 + i,
+      size: 0.01, price: 100, quoteAmount: 1, netFee: 0.01,
+      ...(i % 2 ? { bodyPnl: 0.1, bodyHoldbackAsset: 0.001 } : { sellOrderId: `order-${i + 1}` }),
+    }))
+    let revision = '11111111-1111-4111-8111-111111111111:0'
+    const ledger = createTransactionsReadView(() => fills, () => revision)
+    const view = createView()
+    const pendingFill = () => view.requests.find(request => !request.settled && request.url.includes('/regime/fills'))
+    const aggregateRead = () => ledger.aggregates({ revision: new URL(pendingFill().url, 'http://fixture').searchParams.get('revision') || undefined })
+    try {
+      assert.equal(new URL(pendingFill().url, 'http://fixture').searchParams.has('revision'), false)
+      const full = aggregateRead()
+      await view.respond({ aggregate: full })
+      const initialText = view.text()
+      for (let tick = 1; tick <= 2; tick++) {
+        view.tick()
+        assert.equal(new URL(pendingFill().url, 'http://fixture').searchParams.get('revision'), revision)
+        const unchanged = aggregateRead()
+        assert.deepEqual(unchanged, { unchanged: true, revision })
+        assert.ok(Buffer.byteLength(JSON.stringify(unchanged)) < 100)
+        await view.respond({ aggregate: unchanged, price: 100 + tick })
+        assert.match(view.text(), new RegExp(`\\$${100 + tick}`))
+        assert.match(view.text(), /latest 250 of 15000 cycles/)
+      }
+      t.diagnostic(`30,000-fill decoded HTTP aggregate bytes: full=${Buffer.byteLength(JSON.stringify({ success: true, exchange: 'coinbase', pair: 'BTC-USD', running: true, ...full }))}, unchanged=${Buffer.byteLength(JSON.stringify({ success: true, exchange: 'coinbase', pair: 'BTC-USD', running: true, ...ledger.aggregates({ revision }) }))}`)
+      // A new aggregate received in a failed batch must not replace the last
+      // complete snapshot or its revision; the explicit retry asks again.
+      fills = [...fills, { tradeId: 'added', orderId: 'added', side: 'buy', cycleId: 'cycle-15000', timestamp: 40000, size: 1, price: 100, quoteAmount: 100 }]
+      revision = '11111111-1111-4111-8111-111111111111:1'
+      view.tick()
+      await view.respond({ aggregate: aggregateRead(), failure: { endpoint: 'status', kind: 'transport' } })
+      assert.match(view.text(), /Data is stale/)
+      assert.match(view.text(), /latest 250 of 15000 cycles/)
+      view.click('Refresh Now')
+      assert.equal(new URL(pendingFill().url, 'http://fixture').searchParams.get('revision'), '11111111-1111-4111-8111-111111111111:0')
+      await view.respond({ aggregate: aggregateRead(), price: 200 })
+      assert.match(view.text(), /latest 250 of 15001 cycles/)
+      assert.doesNotMatch(view.text(), /Data is stale/)
+      revision = '22222222-2222-4222-8222-222222222222:0'
+      view.tick()
+      const restarted = aggregateRead()
+      assert.equal(restarted.unchanged, undefined)
+      await view.respond({ aggregate: restarted, price: 201 })
+      view.render({ pair: 'ETH-USD' })
+      await view.drain()
+      assert.equal(new URL(pendingFill().url, 'http://fixture').searchParams.has('revision'), false)
+      assert.notEqual(view.text(), initialText)
+    } finally { view.cleanup() }
+  })
+
+  it('rejects an unchanged response without an owned snapshot and retries a full read', async () => {
+    const view = createView()
+    try {
+      await view.respond({ aggregate: { unchanged: true, revision: 'unknown' } })
+      assert.match(view.text(), /Error: Fill cycles returned an invalid unchanged revision/)
+      view.click('Retry')
+      assert.ok(view.requests.filter(request => !request.settled).every(request => !request.url.includes('revision=')))
+      await view.respond()
+      assert.match(view.text(), /BTC Position/)
+    } finally { view.cleanup() }
+  })
 
   it('skips automatic ticks while a batch or failed batch remainder is in flight', async () => {
     const view = createView()
