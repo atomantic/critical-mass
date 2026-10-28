@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- Scope regime status realtime traffic to visible fund consumers. (#1865)
+
 - **[issue-1860] Restore the Overview status hook** — import the missing `useMemo` dependency and cover the real all-fund status hook's event subscription, status updates, and listener cleanup.
 - **[issue-1861] Bound the Transactions cycle selector** — opt-in searchable cycle pages cap each response at 100 options, with browsing and fixed All/Current controls preserving exact historical filtering. Legacy API callers retain the complete cycle list.
 

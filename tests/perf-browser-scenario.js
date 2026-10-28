@@ -71,7 +71,7 @@ async function runBrowserScenario({ browser, fixture, metrics, idleMs = 60000 })
   check('stable Transactions config read is not polled', configs.length === 1);
   check('page response cap and compact projection', metrics.pages.length >= 2 && metrics.pages.every(page => page.rows === 100 && page.total === 30000 && page.compact && page.bytes < 300 * 1024));
   check('no eager details requests', !metrics.collector.http.some(row => row.phase === 'transactions' && /details/.test(row.endpoint)));
-  check('Transactions receives real IPC websocket telemetry', Object.keys(transactions.ws).some(event => event === 'in regime:status'));
+  check('Transactions receives no unneeded regime status frames', !transactions.ws['in regime:status']);
 
   metrics.phase = 'config-load';
   const configStart = performance.now();
@@ -86,6 +86,7 @@ async function runBrowserScenario({ browser, fixture, metrics, idleMs = 60000 })
   await pause(idleMs);
   await metrics.flush();
   const config = aggregate(metrics.collector, metrics.phase, performance.now() - idleStart);
+  check('Config receives no unneeded regime status frames', !config.ws['in regime:status']);
   check('Config does not hydrate historical fills', ![...Object.keys(configLoad.http), ...Object.keys(config.http)].some(key => /\/fills/.test(key)));
   check('unmounted Transactions leaves no fills/open-orders polling', !Object.keys(config.http).some(key => /fills|open-orders|manual-trades/.test(key)));
   check('stable Config reference reads are not repeatedly transferred', !Object.keys(config.http).some(key => /\/config(?:\?|$)/.test(key)));
