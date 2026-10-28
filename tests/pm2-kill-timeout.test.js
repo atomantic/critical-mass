@@ -54,6 +54,10 @@ describe('PM2 kill_timeout ordering', () => {
     assert.match(read('.dockerignore'), /^!scripts\/pm2-stack\.js$/m);
   });
 
+  it('Dockerfile disables the PM2 daily version-check call-home', () => {
+    assert.match(read('Dockerfile'), /^ENV PM2_DISABLE_VERSION_CHECK=1$/m);
+  });
+
   for (const app of longRunning) {
     it(`${app.name}: kill_timeout > in-process deadline and < docker stop_grace_period`, () => {
       assert.ok(Number.isFinite(app.kill_timeout), 'kill_timeout must be set');
