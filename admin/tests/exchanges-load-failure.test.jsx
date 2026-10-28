@@ -7,6 +7,7 @@ import { BrowserRouter } from '../src/lib/router'
 
 vi.mock('../src/hooks/useTradeEvents', () => ({
   useTradeEvents: () => ({ latestEvent: null }),
+  useRealtimeConnection: () => false,
   useRegimeEvents: () => ({ connected: false }),
 }))
 

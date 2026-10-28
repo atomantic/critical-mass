@@ -5,6 +5,27 @@ import { EMPTY_SNAPSHOT, mergeRegimeStatus, stampRegimeStatus } from '../utils/r
 // Maximum events to keep in history
 const MAX_EVENTS = 50
 
+export function useRealtimeConnection() {
+  const [connected, setConnected] = useState(false)
+
+  useEffect(() => {
+    const socket = getRealtimeClient()
+    const handleConnect = () => setConnected(true)
+    const handleDisconnect = () => setConnected(false)
+
+    socket.on('connect', handleConnect)
+    socket.on('disconnect', handleDisconnect)
+    setConnected(socket.connected)
+
+    return () => {
+      socket.off('connect', handleConnect)
+      socket.off('disconnect', handleDisconnect)
+    }
+  }, [])
+
+  return connected
+}
+
 export function useTradeEvents(exchange = null) {
   const [events, setEvents] = useState([])
   const [connected, setConnected] = useState(false)
