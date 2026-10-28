@@ -48,8 +48,10 @@ unneeded status frames in the fixture; Dashboard and Overview each have one visi
 its corresponding subscription, including after reconnect. The shell no longer polls `/regime/status`:
 the gateway sends a compact `regime:state` frame (running, dry-run, lifecycle) to every socket only when
 a fund's state changes (or its engine connection is lost, which reports its running funds as stopped), and the
-shell re-reads status once per fund, on socket reconnect and when the tab becomes visible. The Config idle window asserts no status requests and at most one small state frame.
-Other events, protocol frames and the remaining HTTP polling can still contribute to idle traffic. Legacy clients that do not opt into scoped status continue
+shell re-reads status once per fund, on socket reconnect and when the tab becomes visible. Pages that read a fund's ledger, orders or summary (shell summary, Transactions, Cost Basis) re-read on a
+compact `regime:changed` frame the gateway derives from the status stream when a fund's orders or cycles
+change; Sentinel and UpDown pages re-read on their own events. The Config idle window asserts no HTTP reads
+at all and at most one small state frame. Other events and protocol frames can still contribute to idle traffic. Legacy clients that do not opt into scoped status continue
 to receive global status broadcasts. Synthetic engine reads/feed do not exercise exchange APIs, order
 execution, realistic market timing or production latency.
 

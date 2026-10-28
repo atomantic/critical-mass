@@ -281,7 +281,8 @@ it('reconciles status when the tab becomes visible and detaches its listeners on
   const page = mount()
   await screen.findByDisplayValue('111')
   await screen.findByRole('button', { name: 'Stop', exact: true })
-  expect(socket.count('regime:state')).toBe(1)
+  // The header state hook and the summary refresh each listen.
+  expect(socket.count('regime:state')).toBe(2)
   read.mockImplementation(url => url.includes('/regime/status') ? response(status(false)) : response({ config: config(111, true) }))
   await act(async () => { document.dispatchEvent(new Event('visibilitychange')) })
   await screen.findByRole('button', { name: 'Start', exact: true })

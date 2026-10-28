@@ -102,6 +102,11 @@ const createRealtimeBus = ({
    * @type {Map<string, {exchange: string, pair: string, isRunning: boolean, isDryRun: boolean, lifecycle: string}>}
    */
   const lastRegimeState = new Map();
+  /**
+   * Last fund-data signature seen per fund (orders, cycles, realized P&L).
+   * @type {Map<string, string>}
+   */
+  const lastRegimeData = new Map();
   /** @type {Set<import('./ipc/ws-server').WebSocketConnection>} */
   const live = new Set();
   let closing = false;
@@ -142,6 +147,39 @@ const createRealtimeBus = ({
       isDryRun: Boolean(status.isDryRun),
       lifecycle: status.lifecycle?.lifecycle || 'active',
     });
+  };
+
+  /**
+   * Tell every socket when a fund's stored data changes (an order placed,
+   * filled or cancelled, a cycle closed), so pages that read the ledger, open
+   * orders or summary re-read on this instead of a timer. The signature comes
+   * from fields the status stream already carries; price ticks do not change
+   * it. The first status seen after a gateway start only records a baseline:
+   * clients reconcile on reconnect anyway.
+   * @param {unknown} payload
+   */
+  const announceRegimeData = (payload) => {
+    const data = /** @type {{exchange?: unknown, pair?: unknown, status?: any} | null} */ (payload);
+    const status = data?.status;
+    if (typeof data?.exchange !== 'string' || typeof data?.pair !== 'string' || !status || typeof status !== 'object') return;
+    const position = status.position || {};
+    const orderIds = Array.isArray(status.pendingOrders)
+      ? status.pendingOrders.map((order) => order?.orderId ?? order?.id ?? '').join(',')
+      : '';
+    const signature = [
+      status.orders?.total, status.orders?.entries, status.orders?.takeProfits, status.orders?.bodies, orderIds,
+      position.cyclesCompleted, position.cycleBuys, position.realizedPnL, position.realizedAssetPnL,
+      // Held quantity and cost move on every fill, including a partial one that keeps its order id.
+      position.totalAsset, position.totalCostBasis, position.assetOnOrder, position.heldAssetCostBasis,
+      status.closedTradesSummary?.count, status.closedTradesSummary?.totalPnl,
+    ].join('|');
+    const key = `${data.exchange}::${data.pair}`;
+    const prev = lastRegimeData.get(key);
+    if (prev === signature) return;
+    lastRegimeData.set(key, signature);
+    if (prev === undefined) return;
+    const text = eventFrame('regime:changed', { exchange: data.exchange, pair: data.pair });
+    for (const socket of sockets.values()) sendRaw(socket, text);
   };
 
   const settleClose = () => {
@@ -354,7 +392,10 @@ const createRealtimeBus = ({
     /** @param {string} event @param {unknown} [payload] */
     emit: (event, payload) => {
       const text = eventFrame(event, payload);
-      if (event === 'regime:status') announceRegimeState(payload);
+      if (event === 'regime:status') {
+        announceRegimeState(payload);
+        announceRegimeData(payload);
+      }
       for (const socket of sockets.values()) {
         if (event === 'regime:status' && scopedStatusSockets.has(socket)) {
           const data = /** @type {{exchange?: string, pair?: string} | null} */ (payload);
@@ -398,6 +439,7 @@ const createRealtimeBus = ({
       if (closePromise) return closePromise;
       closing = true;
       lastRegimeState.clear();
+      lastRegimeData.clear();
       closePromise = new Promise((resolve) => { resolveClose = resolve; });
       for (const socket of [...sockets.values()]) socket.disconnect(1001, 'Gateway is shutting down');
       settleClose();
