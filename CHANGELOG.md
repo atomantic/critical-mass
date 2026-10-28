@@ -4,6 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- **[issue-1864] Defer transaction-row accounting until Transactions is read** — Dashboard, Charts and Cost Basis aggregate reads retain only the raw revision snapshot and aggregate result. Transactions builds complete-ledger P&L rows and cycle options once on demand; both caches expire together when the ledger revision changes.
 - Scope regime status realtime traffic to visible fund consumers. (#1865)
 
 - **[issue-1860] Restore the Overview status hook** — import the missing `useMemo` dependency and cover the real all-fund status hook's event subscription, status updates, and listener cleanup.
