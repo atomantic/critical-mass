@@ -95,9 +95,9 @@ const upgradeStatus = (host, headers = {}, pathname = '/realtime') => new Promis
  * Open a client and wait for the bus's `open` frame. Records every frame;
  * answers pings unless `pong: false`.
  */
-const connect = (t, host, { headers = {}, pong = true } = {}) => new Promise((resolve, reject) => {
+const connect = (t, host, { headers = {}, pong = true, scoped = false } = {}) => new Promise((resolve, reject) => {
   // @ts-ignore Node's WebSocket accepts { headers }
-  const ws = new WebSocket(`ws://${host}/realtime`, { headers });
+  const ws = new WebSocket(`ws://${host}/realtime${scoped ? "?scopedRegimeStatus=1" : ""}`, { headers });
   const client = { ws, frames: /** @type {any[]} */ ([]), id: null, closed: null };
   t.after(() => ws.close());
   ws.addEventListener('message', ({ data }) => {
@@ -127,6 +127,36 @@ const roundTrip = async (client) => {
   for (let i = 0; i < 200 && !events(client, 'test:synced').includes(marker); i++) await settle(5);
   assert.ok(events(client, 'test:synced').includes(marker), 'server echoed the sync marker');
 };
+
+describe('scoped regime statuses', () => {
+  it('preserves legacy broadcasts, isolates pairs and deduplicates overlapping rooms', async (t) => {
+    const { bus, hosts: [host] } = await startBus(t, { rooms: ['updown'] });
+    const legacy = await connect(t, host);
+    const config = await connect(t, host, { scoped: true });
+    const dashboard = await connect(t, host, { scoped: true });
+    const overview = await connect(t, host, { scoped: true });
+    send(dashboard, { t: 'sub', r: 'regime:status:gemini:BTCUSD' });
+    send(overview, { t: 'sub', r: 'regime:status:all' });
+    send(overview, { t: 'sub', r: 'regime:status:gemini:BTCUSD' });
+    await Promise.all([legacy, config, dashboard, overview].map(roundTrip));
+    const statuses = ['BTCUSD', 'ETHUSD'].map(pair => ({ exchange: 'gemini', pair, status: { running: true } }));
+    for (const status of statuses) bus.emit('regime:status', status);
+    bus.emit('trade:event', { id: 1 });
+    bus.emit('alert', { id: 2 });
+    await Promise.all([legacy, config, dashboard, overview].map(roundTrip));
+    assert.deepEqual(events(legacy, 'regime:status'), statuses);
+    assert.deepEqual(events(config, 'regime:status'), []);
+    assert.deepEqual(events(dashboard, 'regime:status'), [statuses[0]]);
+    assert.deepEqual(events(overview, 'regime:status'), statuses);
+    assert.deepEqual(events(config, 'trade:event'), [{ id: 1 }]);
+    assert.deepEqual(events(config, 'alert'), [{ id: 2 }]);
+    send(dashboard, { t: 'unsub', r: 'regime:status:gemini:BTCUSD' });
+    await roundTrip(dashboard);
+    bus.emit('regime:status', statuses[0]);
+    await roundTrip(dashboard);
+    assert.equal(events(dashboard, 'regime:status').length, 1);
+  });
+});
 
 describe('realtime bus: operator check at upgrade', () => {
   it('upgrades only with an operator session or bearer password from this origin', async (t) => {

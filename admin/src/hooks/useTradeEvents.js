@@ -2,6 +2,10 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import { getRealtimeClient } from '../lib/realtime'
 import { EMPTY_SNAPSHOT, mergeRegimeStatus, stampRegimeStatus } from '../utils/regimeStatusSnapshot.mjs'
 
+const statusRoom = (exchange, pair) => exchange && pair
+  ? `regime:status:${encodeURIComponent(exchange)}:${encodeURIComponent(pair)}`
+  : 'regime:status:all'
+
 // Maximum events to keep in history
 const MAX_EVENTS = 50
 
@@ -135,6 +139,8 @@ export function useRegimeEvents(exchange = null, pair = null) {
     socket.on('connect', handleConnect)
     socket.on('disconnect', handleDisconnect)
     socket.on('regime:status', handleStatusUpdate)
+    const room = statusRoom(exchange, pair)
+    socket.subscribe(room)
     socket.on('regime:change', handleRegimeChange)
     socket.on('regime:health', handleHealthChange)
     socket.on('regime:position', handlePositionUpdate)
@@ -145,6 +151,7 @@ export function useRegimeEvents(exchange = null, pair = null) {
       socket.off('connect', handleConnect)
       socket.off('disconnect', handleDisconnect)
       socket.off('regime:status', handleStatusUpdate)
+      socket.unsubscribe(room)
       socket.off('regime:change', handleRegimeChange)
       socket.off('regime:health', handleHealthChange)
       socket.off('regime:position', handlePositionUpdate)
@@ -200,6 +207,7 @@ export function useMultiRegimeStatuses() {
     socket.on('connect', handleConnect)
     socket.on('disconnect', handleDisconnect)
     socket.on('regime:status', handleStatusUpdate)
+    socket.subscribe('regime:status:all')
 
     setConnected(socket.connected)
 
@@ -207,6 +215,7 @@ export function useMultiRegimeStatuses() {
       socket.off('connect', handleConnect)
       socket.off('disconnect', handleDisconnect)
       socket.off('regime:status', handleStatusUpdate)
+      socket.unsubscribe('regime:status:all')
     }
   }, [])
 

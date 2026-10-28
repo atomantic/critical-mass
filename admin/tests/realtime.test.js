@@ -44,7 +44,7 @@ describe('realtime client', () => {
   it('connects to the page origin by default and reports the bus id once the gateway accepts it', () => {
     const created = []
     const client = connect({ createSocket: (url) => { created.push(url); return new FakeSocket(url) } })
-    expect(created).toEqual([`ws://${window.location.host}/realtime`])
+    expect(created).toEqual([`ws://${window.location.host}/realtime?scopedRegimeStatus=1`])
     const onConnect = vi.fn()
     client.on('connect', onConnect)
     expect(client.connected).toBe(false)

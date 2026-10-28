@@ -94,6 +94,8 @@ const createRealtimeBus = ({
   const connectionHandlers = new Set();
   /** @type {WeakMap<RealtimeSocket, (text: string) => void>} */
   const senders = new WeakMap();
+  /** @type {WeakSet<RealtimeSocket>} */
+  const scopedStatusSockets = new WeakSet();
   /** @type {Set<import('./ipc/ws-server').WebSocketConnection>} */
   const live = new Set();
   let closing = false;
@@ -128,6 +130,7 @@ const createRealtimeBus = ({
     /** @type {NodeJS.Timeout | null} */
     let pongTimer = null;
     let connected = true;
+    const scopedRegimeStatus = new URL(req.url || '/', 'http://localhost').searchParams.get('scopedRegimeStatus') === '1';
 
     /** @param {string} text */
     const send = (text) => {
@@ -229,7 +232,7 @@ const createRealtimeBus = ({
           return;
         case 'sub':
         case 'unsub':
-          if (refusing() || typeof msg.r !== 'string' || (joinable && !joinable.has(msg.r))) return;
+          if (refusing() || typeof msg.r !== 'string' || (joinable && !joinable.has(msg.r) && !/^regime:status:(?:all|[^:]{1,256}:[^:]{1,256})$/.test(msg.r))) return;
           if (msg.t === 'sub') socket.join(msg.r);
           else socket.leave(msg.r);
           return;
@@ -245,6 +248,7 @@ const createRealtimeBus = ({
 
     live.add(connection);
     sockets.set(id, socket);
+    if (scopedRegimeStatus) scopedStatusSockets.add(socket);
     senders.set(socket, send);
     connection.on('message', (data, isBinary) => {
       if (!connected) return;
@@ -314,7 +318,16 @@ const createRealtimeBus = ({
     /** @param {string} event @param {unknown} [payload] */
     emit: (event, payload) => {
       const text = eventFrame(event, payload);
-      for (const socket of sockets.values()) sendRaw(socket, text);
+      for (const socket of sockets.values()) {
+        if (event === 'regime:status' && scopedStatusSockets.has(socket)) {
+          const data = /** @type {{exchange?: string, pair?: string} | null} */ (payload);
+          const room = typeof data?.exchange === 'string' && typeof data?.pair === 'string'
+            ? `regime:status:${encodeURIComponent(data.exchange)}:${encodeURIComponent(data.pair)}`
+            : null;
+          if (!socket.rooms.has('regime:status:all') && !(room && socket.rooms.has(room))) continue;
+        }
+        sendRaw(socket, text);
+      }
     },
     /** @param {string} room */
     to: (room) => ({
