@@ -150,6 +150,16 @@ export default function UpDownDashboard() {
 
   const isRunning = status?.running || false
 
+  // Price freshness is derived at render time, and a stalled feed sends no
+  // events, so re-render while running to flip the header to "Price stale".
+  // Local clock only: no network traffic (#1880).
+  const [, setClock] = useState(0)
+  useEffect(() => {
+    if (!isRunning) return undefined
+    const timer = setInterval(() => setClock(n => n + 1), 2000)
+    return () => clearInterval(timer)
+  }, [isRunning])
+
   // Merge tick data with status for current price
   const now = Date.now()
   const tickFresh = isFreshTick(tick, now)

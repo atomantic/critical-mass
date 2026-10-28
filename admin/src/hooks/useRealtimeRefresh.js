@@ -22,7 +22,8 @@ export function useRealtimeRefresh({ events = [], rooms = [], enabled = true, mi
     const socket = getRealtimeClient()
     const eventNames = eventKey ? eventKey.split('|') : []
     const roomNames = roomKey ? roomKey.split('|') : []
-    let lastRun = 0
+    // The caller's first read happens at mount, so it counts against the interval.
+    let lastRun = Date.now()
     let timer = null
     const run = () => {
       clearTimeout(timer)

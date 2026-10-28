@@ -3,6 +3,9 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { cleanup, render, screen } from '@testing-library/react'
 import AlertBanner from '../src/components/sentinel/AlertBanner'
 
+vi.mock('../src/lib/realtime', () => ({
+  getRealtimeClient: () => ({ on: () => {}, off: () => {}, subscribe: () => {}, unsubscribe: () => {} }),
+}))
 vi.mock('../src/lib/router', () => ({ Link: ({ children, to, ...props }) => <a href={to} {...props}>{children}</a> }))
 vi.mock('../src/utils/apiClient', () => ({
   apiGet: vi.fn(async (url) => url.endsWith('/status')

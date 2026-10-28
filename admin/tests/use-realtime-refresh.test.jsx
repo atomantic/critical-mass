@@ -40,9 +40,10 @@ it('refreshes on listed events only, and subscribes and unsubscribes its rooms',
   expect(socket.listeners()).toBe(0)
 })
 
-it('throttles event bursts to one leading and one trailing refresh', () => {
+it('throttles event bursts to one leading and one trailing refresh, counting the mount-time read', () => {
   const onRefresh = vi.fn()
   render(<Probe events={['a:changed']} minIntervalMs={1000} onRefresh={onRefresh} />)
+  act(() => { vi.advanceTimersByTime(1000) })
   socket.fire('a:changed')
   socket.fire('a:changed')
   socket.fire('a:changed')
@@ -51,6 +52,15 @@ it('throttles event bursts to one leading and one trailing refresh', () => {
   expect(onRefresh).toHaveBeenCalledTimes(2)
   act(() => { vi.advanceTimersByTime(5000) })
   expect(onRefresh).toHaveBeenCalledTimes(2)
+})
+
+it('delays an event right after mount until the interval has passed', () => {
+  const onRefresh = vi.fn()
+  render(<Probe events={['a:changed']} minIntervalMs={1000} onRefresh={onRefresh} />)
+  socket.fire('a:changed')
+  expect(onRefresh).not.toHaveBeenCalled()
+  act(() => { vi.advanceTimersByTime(1000) })
+  expect(onRefresh).toHaveBeenCalledTimes(1)
 })
 
 it('reconciles on socket reconnect and when the tab becomes visible, and not while disabled', () => {
