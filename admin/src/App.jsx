@@ -42,7 +42,7 @@ const ScorecardAnalysis = lazy(() => import('./components/updown/ScorecardAnalys
 const SentinelDashboard = lazy(() => import('./components/sentinel/Dashboard'))
 import AlertBanner from './components/sentinel/AlertBanner'
 import { ToastProvider, useToast, tradeEventToToast } from './components/Toast'
-import { useTradeEvents, useRegimeEvents } from './hooks/useTradeEvents'
+import { useTradeEvents, useRealtimeConnection } from './hooks/useTradeEvents'
 import { pairQuery as buildPairQuery } from './utils/api'
 import { apiGet, apiPost, describeMutationFailure } from './utils/apiClient'
 import usePolling from './hooks/usePolling'
@@ -312,10 +312,7 @@ function AppContent() {
     actionFenceRef.current.actionGeneration === token.actionGeneration
 
   // WebSocket connection for regime strategy
-  const { connected: wsConnected } = useRegimeEvents(
-    currentStrategy === 'regime' ? currentExchange : null,
-    currentStrategy === 'regime' ? currentPair : null,
-  )
+  const wsConnected = useRealtimeConnection()
 
   // Get tabs based on current strategy
   const tabs = getTabsForStrategy(currentStrategy)

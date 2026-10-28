@@ -21,6 +21,17 @@ async function runBrowserScenario({ browser, fixture, metrics, idleMs = 60000 })
   const checks = [];
   const check = (name, ok) => checks.push({ name, ok: Boolean(ok) });
   const route = '/coinbase/BTC-USDC/transactions';
+  // Count commits from the real React root in this disposable browser fixture.
+  await browser.call('Page.addScriptToEvaluateOnNewDocument', { source: `
+    window.__perfRootCommits = 0;
+    window.__REACT_DEVTOOLS_GLOBAL_HOOK__ = {
+      supportsFiber: true,
+      renderers: new Map(),
+      inject(renderer) { const id = this.renderers.size + 1; this.renderers.set(id, renderer); return id; },
+      onCommitFiberRoot() { window.__perfRootCommits++; },
+      onCommitFiberUnmount() {},
+    };
+  ` });
   await browser.call('Page.navigate', { url: fixture.baseUrl + route });
   await waitFor(browser, `!!document.querySelector('#operator-password')`);
   await browser.evaluate(`(() => {
@@ -44,6 +55,18 @@ async function runBrowserScenario({ browser, fixture, metrics, idleMs = 60000 })
   await metrics.flush();
   const transactions = aggregate(metrics.collector, metrics.phase, performance.now() - coldStart);
   const txState = await browser.evaluate(state);
+  check('Transactions shell has no regime status listener', txState.statusListeners === 0);
+  const rootCommitsBeforeStatusWindow = await browser.evaluate('window.__perfRootCommits');
+  const statusWindowStarted = performance.now();
+  await pause(6500);
+  const rootCommitsAfterStatusWindow = await browser.evaluate('window.__perfRootCommits');
+  const statusCommitMeasurement = {
+    durationMs: Math.round(performance.now() - statusWindowStarted),
+    rootCommitsBefore: rootCommitsBeforeStatusWindow,
+    rootCommitsAfter: rootCommitsAfterStatusWindow,
+    rootCommitsDuringStatusWindow: rootCommitsAfterStatusWindow - rootCommitsBeforeStatusWindow,
+  };
+  check('status telemetry causes no Transactions root commits during 6.5 seconds', statusCommitMeasurement.rootCommitsDuringStatusWindow === 0);
   const configs = metrics.collector.http.filter(row => row.phase === 'transactions' && /\/config\?/.test(row.endpoint));
   check('stable Transactions config read is not polled', configs.length === 1);
   check('page response cap and compact projection', metrics.pages.length >= 2 && metrics.pages.every(page => page.rows === 100 && page.total === 30000 && page.compact && page.bytes < 300 * 1024));
@@ -66,9 +89,8 @@ async function runBrowserScenario({ browser, fixture, metrics, idleMs = 60000 })
   check('Config does not hydrate historical fills', ![...Object.keys(configLoad.http), ...Object.keys(config.http)].some(key => /\/fills/.test(key)));
   check('unmounted Transactions leaves no fills/open-orders polling', !Object.keys(config.http).some(key => /fills|open-orders|manual-trades/.test(key)));
   check('stable Config reference reads are not repeatedly transferred', !Object.keys(config.http).some(key => /\/config(?:\?|$)/.test(key)));
-  check('Transactions unmount preserves only shell websocket consumers', configState.statusListeners === txState.statusListeners && configState.tradeListeners === txState.tradeListeners);
-  // The shell intentionally keeps one status consumer and one toast consumer.
-  // A dashboard adds one fund consumer; Overview adds one all-fund consumer.
+  check('Transactions unmount preserves shell trade-event consumer', configState.tradeListeners === txState.tradeListeners);
+  // A dashboard adds one fund status consumer; Overview adds one all-fund consumer.
   metrics.phase = 'validation';
   check('gateway enforces the page cap on oversized requests', await browser.evaluate(`fetch('/api/coinbase/regime/fills?pair=BTC-USDC&paged=true&pageSize=99999').then(r => r.json()).then(data => data.fills?.length === 100)`));
   const edited = await browser.evaluate(`fetch('/api/coinbase/config?pair=BTC-USDC', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ totalAllocation: 12345 }) }).then(r => r.ok)`);
@@ -109,6 +131,6 @@ async function runBrowserScenario({ browser, fixture, metrics, idleMs = 60000 })
   await metrics.flush();
   check('completed HTTP reads succeeded', metrics.collector.http.every(row => row.status >= 200 && row.status < 400));
   check('no browser runtime exceptions', metrics.runtimeErrors === 0);
-  return { timeToUsefulMs, transactions, configLoad, config, checks, failedReads: metrics.collector.http.filter(row => row.status >= 400).map(row => ({ endpoint: row.endpoint, status: row.status, phase: row.phase })) };
+  return { timeToUsefulMs, transactions, configLoad, config, statusCommitMeasurement, checks, failedReads: metrics.collector.http.filter(row => row.status >= 400).map(row => ({ endpoint: row.endpoint, status: row.status, phase: row.phase })) };
 }
 module.exports = { runBrowserScenario, waitFor };

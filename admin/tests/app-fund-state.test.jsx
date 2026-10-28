@@ -9,6 +9,7 @@ import { BrowserRouter } from '../src/lib/router'
 // only mocked UI boundary: all HTTP below is synthetic and never leaves jsdom.
 vi.mock('../src/hooks/useTradeEvents', () => ({
   useTradeEvents: () => ({ latestEvent: null }),
+  useRealtimeConnection: () => true,
   useRegimeEvents: () => ({ connected: true }),
 }))
 
