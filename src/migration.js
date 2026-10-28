@@ -442,6 +442,9 @@ const PER_FUND_FILES = [
   'pending-corrective-buys.json',
   'regime-engine-running.json',
   'dry-run-state.json',
+  'closed-trades.json',
+  'manual-trades.json',
+  'placement-intents.json',
 ];
 
 /**
@@ -625,7 +628,13 @@ const normalizeLegacyRootToNamespace = ({ root, pair }) => {
  * exist the migration cannot know which generation is authoritative, so it
  * refuses rather than skip (issue #1399).
  */
-const PAIR_MIGRATION_CONFLICT_FILES = ['state.json', 'regime-state.json', 'fill-ledger.json'];
+const PAIR_MIGRATION_CONFLICT_FILES = [
+  'state.json',
+  'regime-state.json',
+  'fill-ledger.json',
+  'closed-trades.json',
+  'manual-trades.json',
+];
 
 /**
  * Detect whether the exchange's data directory is in legacy single-pair

@@ -40,6 +40,9 @@ const KNOWN_PER_FUND_FILES = [
   'pending-corrective-buys.json',
   'regime-engine-running.json',
   'dry-run-state.json',
+  'closed-trades.json',
+  'manual-trades.json',
+  'placement-intents.json',
 ];
 // Deliberately empty: every prefix that ever lived here named an exchange-level
 // cache and was removed (long-term-candles in #535, price caches in #565). The
