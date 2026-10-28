@@ -53,6 +53,18 @@ incomplete fixture/session, navigation timeout or a shortened idle window. Exter
 unsupported, so the runner cannot enroll, edit configuration or force reconnects on a live installation.
 A PASS applies only to the isolated fixture and this machine; it is not a production performance claim.
 
+## Read-only measurement in an existing operator session
+
+Live measurements require an already authorized operator session for the installation under study. Use the operator's existing browser tab and its built-in Network and Performance panels; do not sign in through the fixture runner, enroll an installation, edit configuration, or force a reconnect. If no authorized session is available, leave the live results **UNVERIFIED**. Do not attempt to obtain one by reusing credentials or changing the installation.
+
+1. In DevTools Network, enable **Preserve log** and **Disable cache**, clear the request list, then navigate to Transactions once. Start timing at navigation and stop when the useful content is visible and stable: record the first moment the transaction rows and their controls can be used. Do not include account-specific values in notes.
+2. Record request count and total transferred and decoded response bytes, grouped by redacted endpoint pattern and resource type. Replace identifiers and query values with placeholders (for example, `/api/funds/{id}/fills?page={n}`). Record overlapping requests as the maximum number in flight and the longest overlap interval. Use the Network summary for transfer size; use response sizes only as decoded-byte estimates when DevTools does not expose decoded totals.
+3. Navigate to Config and let its initial requests settle. Keep the session idle for at least 60 seconds. Record the same HTTP aggregates for the idle interval.
+4. For websocket traffic, record only frame direction/event pattern and aggregate payload bytes and frame counts during the idle interval. DevTools' websocket Messages view can be sampled manually; do not copy message contents. Separate inbound, outbound, and protocol/control frames where visible. Do not describe payload totals as wire bytes: framing, compression, and transport overhead are not included.
+5. Report the browser/version, date, route sequence, idle duration, cache setting, request counts, transfer/decoded totals by redacted endpoint pattern, maximum overlap, useful-content time, and websocket aggregate totals. Note missing metrics as **UNVERIFIED** and distinguish estimates from directly displayed totals. Never save or share HAR files, request/response bodies, headers, cookies, screenshots, or traces because they may contain credentials or private records.
+
+This procedure reports observations from one existing session; it does not make live changes or establish a production-wide baseline. The fixture runner above remains synthetic and cannot produce these live measurements. Recheck the current shell behavior before comparing idle traffic: concurrent changes such as #1863 may alter the consumers covered by the historical fixture description above.
+
 The older `node scripts/perf-route-audit.js` command is a supplemental protocol replay. It accepts an
 isolated miniature gateway or `CM_PERF_TOKEN` with `--base-url`, but does not render the shell or exercise
 real engine IPC. Even when its assertions succeed it now reports **UNVERIFIED** for end-to-end performance.
