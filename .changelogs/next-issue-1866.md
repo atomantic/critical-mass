@@ -1,1 +1,1 @@
-- **[issue-1866] Document read-only live route measurements** — add an existing-session procedure for collecting redacted HTTP and websocket aggregates; live measurements remain unverified until an authorized browser session is available.
+- **[issue-1866] Document read-only live route measurements** — add an existing-session procedure for collecting redacted HTTP and websocket aggregates, and describe scoped status subscriptions; live measurements remain unverified until captured with browser network tools.
