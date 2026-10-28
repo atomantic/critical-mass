@@ -62,7 +62,9 @@ function ensureLogRotation() {
   // Installation may need the network. Logging must never prevent an otherwise
   // healthy stack from starting, and inventory output must remain private.
   try {
-    if (!inventory().some(app => app?.name === 'pm2-logrotate')) {
+    const existing = inventory().find(app => app?.name === 'pm2-logrotate');
+    // 3.0.0 cannot compress with PMX's boolean configuration casting.
+    if (!existing || existing.pm2_env?.version === '3.0.0') {
       pm2(['install', 'pm2-logrotate@2.7.0'], true);
     }
     for (const [setting, value] of Object.entries({
@@ -70,6 +72,10 @@ function ensureLogRotation() {
     })) {
       pm2(['set', `pm2-logrotate:${setting}`, value], true);
     }
+    const online = () => inventory().some(app => app?.name === 'pm2-logrotate' &&
+      app.pm2_env?.status === 'online' && app.pid > 0);
+    if (!online()) pm2(['restart', 'pm2-logrotate'], true);
+    if (!online()) throw new Error('Log rotation module is not online.');
   } catch {
     console.warn('Warning: PM2 log rotation could not be configured; retry npm run pm2:start when the module is available.');
   }
