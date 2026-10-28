@@ -8,7 +8,7 @@ import { INDICATORS, INDICATOR_LABELS } from '../../../../shared/indicator-confi
 import StatCard from '../StatCard'
 import { TF_ORDER } from '../../utils/timeframes.mjs'
 import { createRequestOwner } from '../../utils/requestOwner.mjs'
-import usePolling from '../../hooks/usePolling'
+import useRealtimeRefresh from '../../hooks/useRealtimeRefresh'
 
 const RANGES = [
   { label: '1d', days: 1 },
@@ -78,9 +78,17 @@ export default function ScorecardAnalysis() {
   useEffect(() => {
     setError(null)
   }, [fetchData, owner])
-  usePolling(fetchData, 60000, {
-    deps: [fetchData, owner],
-    onCleanup: () => owner.invalidate(),
+  // One read per range, then re-read when the scorecard changes (a paper fill
+  // or signal), at most every 30 s, instead of polling every minute (#1880).
+  useEffect(() => {
+    fetchData()
+    return () => owner.invalidate()
+  }, [fetchData, owner])
+  useRealtimeRefresh({
+    events: ['updown:signal', 'updown:scorecard'],
+    rooms: ['updown'],
+    minIntervalMs: 30000,
+    onRefresh: fetchData,
   })
 
   const data = snapshot?.range === range ? snapshot.data : null

@@ -4,6 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- **[issue-1880] Sentinel and UpDown pages update on pushed changes instead of polling** — the alert banner, Sentinel dashboard, UpDown dashboard and scorecard analysis now refresh when the gateway reports a new alert, a dismissal, a signal, a paper fill or a service start/stop, and again when the connection returns or the tab becomes visible, rather than every 10 to 60 seconds. This is the first stage of removing all polling; an idle page no longer re-downloads the alert list every 30 seconds.
 - **[issue-1878] The app shell stops polling engine status every 5 seconds** — the fund header (Start/Stop, dry-run and draining badges) now follows a tiny change-only update pushed over the realtime connection, and re-reads status when the connection returns or the tab becomes visible. An idle Config page no longer fetches about 600 KB of status per minute.
 - **[issue-1864] Defer transaction-row accounting until Transactions is read** — Dashboard, Charts and Cost Basis aggregate reads retain only the raw revision snapshot and aggregate result. Transactions builds complete-ledger P&L rows and cycle options once on demand; both caches expire together when the ledger revision changes.
 - Scope regime status realtime traffic to visible fund consumers. (#1865)

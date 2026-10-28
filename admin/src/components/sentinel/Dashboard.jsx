@@ -2,10 +2,10 @@ import Button from '../ui/Button'
 import { useState, useEffect, useCallback, useRef } from 'react'
 import DestructiveConfirmation from '../DestructiveConfirmation'
 import useSentinelSocket from '../../hooks/useSentinelSocket'
+import useRealtimeRefresh from '../../hooks/useRealtimeRefresh'
 import { createRequestOwner } from '../../utils/requestOwner.mjs'
 import { completePagedItems } from '../../utils/pagedList.mjs'
 import { apiGet, apiPost, apiPut, apiDelete } from '../../utils/apiClient'
-import usePolling from '../../hooks/usePolling'
 import { useNotify } from '../Toast'
 
 const TOUCH_BTN = 'min-h-11 min-w-11 shrink-0 inline-flex items-center justify-center'
@@ -23,7 +23,7 @@ const SEVERITY_BADGES = {
 }
 
 export default function SentinelDashboard() {
-  const { connected, latestAlert } = useSentinelSocket()
+  const { connected } = useSentinelSocket()
   const [status, setStatus] = useState(null)
   const [statusError, setStatusError] = useState(null)
   // The alert list remembers which filter it answers, so a filter switch never
@@ -108,20 +108,21 @@ export default function SentinelDashboard() {
   useEffect(() => {
     setAlertsError(null)
   }, [fetchStatus, fetchAlerts, statusOwner, alertsOwner])
-  usePolling(() => { fetchStatus(); fetchAlerts() }, 15000, {
-    deps: [fetchStatus, fetchAlerts, statusOwner, alertsOwner],
-    onCleanup: () => {
+  // One read per filter/owner, then re-read when the gateway reports a new
+  // alert or a status change (poll finished, dismiss, clear) (#1880).
+  useEffect(() => {
+    fetchStatus()
+    fetchAlerts()
+    return () => {
       statusOwner.invalidate()
       alertsOwner.invalidate()
-    },
-  })
-
-  // Re-fetch alerts when new alert arrives via socket (status comes via socket already)
-  useEffect(() => {
-    if (latestAlert) {
-      fetchAlerts()
     }
-  }, [latestAlert, fetchAlerts])
+  }, [fetchStatus, fetchAlerts, statusOwner, alertsOwner])
+  useRealtimeRefresh({
+    events: ['sentinel:alert', 'sentinel:status'],
+    rooms: ['sentinel'],
+    onRefresh: () => { fetchStatus(); fetchAlerts() },
+  })
 
   const handleForcePoll = async () => {
     setPolling(true)

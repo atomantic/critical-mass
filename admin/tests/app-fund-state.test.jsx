@@ -19,6 +19,8 @@ const socket = vi.hoisted(() => {
   const handlers = new Map()
   return {
     handlers,
+    subscribe: () => {},
+    unsubscribe: () => {},
     on: (event, handler) => { handlers.set(event, [...(handlers.get(event) || []), handler]) },
     off: (event, handler) => { handlers.set(event, (handlers.get(event) || []).filter(h => h !== handler)) },
     fire: (event, payload) => (handlers.get(event) || []).forEach(h => h(payload)),
