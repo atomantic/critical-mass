@@ -4,6 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- **[issue-1878] The app shell stops polling engine status every 5 seconds** — the fund header (Start/Stop, dry-run and draining badges) now follows a tiny change-only update pushed over the realtime connection, and re-reads status when the connection returns or the tab becomes visible. An idle Config page no longer fetches about 600 KB of status per minute.
 - **[issue-1864] Defer transaction-row accounting until Transactions is read** — Dashboard, Charts and Cost Basis aggregate reads retain only the raw revision snapshot and aggregate result. Transactions builds complete-ledger P&L rows and cycle options once on demand; both caches expire together when the ledger revision changes.
 - Scope regime status realtime traffic to visible fund consumers. (#1865)
 

@@ -46,6 +46,7 @@ import { useTradeEvents, useRealtimeConnection } from './hooks/useTradeEvents'
 import { pairQuery as buildPairQuery } from './utils/api'
 import { apiGet, apiPost, describeMutationFailure } from './utils/apiClient'
 import usePolling from './hooks/usePolling'
+import useRegimeStateEvents from './hooks/useRegimeStateEvents'
 
 // Extract quote currency from product ID (e.g., "BTC-USDC" -> "USDC", "CRO_USD" -> "USD", "BTCUSD" -> "USD")
 export function getQuoteCurrency(productId) {
@@ -589,7 +590,26 @@ function AppContent() {
   useEffect(() => {
     if (!pollRegime) setRegimeRunning(false)
   }, [pollRegime])
-  usePolling(fetchRegimeStatus, 5000, { enabled: pollRegime, deps: [currentExchange, currentPair, currentStrategy] })
+  // One read per fund, then pushed `regime:state` events; reconciled on socket
+  // reconnect and tab visibility instead of a timer (#1878).
+  useEffect(() => {
+    if (pollRegime) fetchRegimeStatus()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pollRegime, currentExchange, currentPair, currentStrategy])
+  useRegimeStateEvents({
+    exchange: currentExchange,
+    pair: currentPair,
+    enabled: pollRegime,
+    onState: (state) => {
+      // The pushed state is newer than any read still in flight.
+      invalidateStatusRead()
+      setStatusError(null)
+      setRegimeRunning(state.isRunning)
+      setRegimeDryRun(Boolean(state.isDryRun))
+      setRegimeLifecycle(state.lifecycle || 'active')
+    },
+    onReconcile: fetchRegimeStatus,
+  })
 
   // Get the current sub-path (tab) without the exchange/pair prefix
   const getSubPath = () => {

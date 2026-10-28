@@ -96,6 +96,12 @@ const createRealtimeBus = ({
   const senders = new WeakMap();
   /** @type {WeakSet<RealtimeSocket>} */
   const scopedStatusSockets = new WeakSet();
+  /**
+   * Last `regime:state` sent per fund, so only a change in the header-level
+   * state (running, dry-run, lifecycle) is announced, not every status tick.
+   * @type {Map<string, string>}
+   */
+  const lastRegimeState = new Map();
   /** @type {Set<import('./ipc/ws-server').WebSocketConnection>} */
   const live = new Set();
   let closing = false;
@@ -107,6 +113,32 @@ const createRealtimeBus = ({
   const refusing = () => closing || isStopping();
   /** @param {RealtimeSocket} socket @param {string} text */
   const sendRaw = (socket, text) => senders.get(socket)?.(text);
+
+  /**
+   * Derive the compact `regime:state` notification from a full `regime:status`
+   * emit and broadcast it to every socket when it differs from the last one
+   * for that fund. The shell header needs only these three fields; this keeps
+   * it off a status poll and off the full status stream.
+   * @param {unknown} payload
+   */
+  const announceRegimeState = (payload) => {
+    const data = /** @type {{exchange?: unknown, pair?: unknown, status?: any} | null} */ (payload);
+    const status = data?.status;
+    if (typeof data?.exchange !== 'string' || typeof data?.pair !== 'string' || typeof status?.isRunning !== 'boolean') return;
+    const state = {
+      exchange: data.exchange,
+      pair: data.pair,
+      isRunning: status.isRunning,
+      isDryRun: Boolean(status.isDryRun),
+      lifecycle: status.lifecycle?.lifecycle || 'active',
+    };
+    const key = `${state.exchange}::${state.pair}`;
+    const signature = `${state.isRunning}|${state.isDryRun}|${state.lifecycle}`;
+    if (lastRegimeState.get(key) === signature) return;
+    lastRegimeState.set(key, signature);
+    const text = eventFrame('regime:state', state);
+    for (const socket of sockets.values()) sendRaw(socket, text);
+  };
 
   const settleClose = () => {
     if (resolveClose && live.size === 0) {
@@ -318,6 +350,7 @@ const createRealtimeBus = ({
     /** @param {string} event @param {unknown} [payload] */
     emit: (event, payload) => {
       const text = eventFrame(event, payload);
+      if (event === 'regime:status') announceRegimeState(payload);
       for (const socket of sockets.values()) {
         if (event === 'regime:status' && scopedStatusSockets.has(socket)) {
           const data = /** @type {{exchange?: string, pair?: string} | null} */ (payload);

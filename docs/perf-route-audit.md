@@ -45,8 +45,11 @@ hydration or Transactions polling after Config navigation, stable reference read
 listener recovery. The current admin uses client-side listeners and subscribes to per-fund or all-fund
 status rooms on the shared websocket. Transactions and Config have no status listeners and receive no
 unneeded status frames in the fixture; Dashboard and Overview each have one visible status listener and
-its corresponding subscription, including after reconnect. Other events, protocol frames and HTTP
-polling can still contribute to idle traffic. Legacy clients that do not opt into scoped status continue
+its corresponding subscription, including after reconnect. The shell no longer polls `/regime/status`:
+the gateway sends a compact `regime:state` frame (running, dry-run, lifecycle) to every socket only when
+a fund's state changes, and the shell re-reads status once per fund, on socket reconnect and when the tab
+becomes visible. The Config idle window asserts no status requests and at most one small state frame.
+Other events, protocol frames and the remaining HTTP polling can still contribute to idle traffic. Legacy clients that do not opt into scoped status continue
 to receive global status broadcasts. Synthetic engine reads/feed do not exercise exchange APIs, order
 execution, realistic market timing or production latency.
 

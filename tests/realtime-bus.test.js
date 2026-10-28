@@ -158,6 +158,30 @@ describe('scoped regime statuses', () => {
   });
 });
 
+describe('compact regime state notifications', () => {
+  it('announces header state to every socket only when it changes', async (t) => {
+    const { bus, hosts: [host] } = await startBus(t);
+    const legacy = await connect(t, host);
+    const config = await connect(t, host, { scoped: true });
+    const status = (isRunning, extra = {}) => ({ exchange: 'gemini', pair: 'BTCUSD', status: { isRunning, isDryRun: false, lifecycle: { lifecycle: 'active' }, big: 'x'.repeat(1000), ...extra } });
+    bus.emit('regime:status', status(true));
+    bus.emit('regime:status', status(true, { lastPrice: 2 }));
+    bus.emit('regime:status', status(true, { isDryRun: true }));
+    bus.emit('regime:status', status(false));
+    bus.emit('regime:status', { exchange: 'gemini', pair: 'BTCUSD', status: { regime: 'range' } });
+    bus.emit('regime:status', { exchange: 'gemini', status: { isRunning: true } });
+    await Promise.all([legacy, config].map(roundTrip));
+    const expected = [
+      { exchange: 'gemini', pair: 'BTCUSD', isRunning: true, isDryRun: false, lifecycle: 'active' },
+      { exchange: 'gemini', pair: 'BTCUSD', isRunning: true, isDryRun: true, lifecycle: 'active' },
+      { exchange: 'gemini', pair: 'BTCUSD', isRunning: false, isDryRun: false, lifecycle: 'active' },
+    ];
+    assert.deepEqual(events(config, 'regime:state'), expected);
+    assert.deepEqual(events(legacy, 'regime:state'), expected);
+    assert.deepEqual(events(config, 'regime:status'), [], 'the full status stays room-scoped');
+  });
+});
+
 describe('realtime bus: operator check at upgrade', () => {
   it('upgrades only with an operator session or bearer password from this origin', async (t) => {
     const { hosts: [host], bus } = await startBus(t, { auth: true });

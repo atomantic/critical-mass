@@ -11,6 +11,15 @@ vi.mock('../src/hooks/useTradeEvents', () => ({
   useRealtimeConnection: () => false,
   useRegimeEvents: () => ({ connected: false }),
 }))
+const socket = vi.hoisted(() => {
+  const handlers = new Map()
+  return {
+    on: (event, handler) => { handlers.set(event, [...(handlers.get(event) || []), handler]) },
+    off: (event, handler) => { handlers.set(event, (handlers.get(event) || []).filter(h => h !== handler)) },
+    fire: (event, payload) => (handlers.get(event) || []).forEach(h => h(payload)),
+  }
+})
+vi.mock('../src/lib/realtime', () => ({ getRealtimeClient: () => socket }))
 const lazyRoute = vi.hoisted(() => {
   let resolve
   const ready = new Promise(done => { resolve = done })
@@ -79,7 +88,6 @@ it('captures the selector as the dialog return target before the invoker unmount
 })
 
 it('hands mobile navigation focus to the committed loading landmark once, including same-route activation', async () => {
-  const intervals = vi.spyOn(globalThis, 'setInterval')
   render(<BrowserRouter><App /></BrowserRouter>)
   const toggle = screen.getByRole('button', { name: 'Toggle menu' })
   fireEvent.click(toggle)
@@ -107,9 +115,8 @@ it('hands mobile navigation focus to the committed loading landmark once, includ
 
   const destination = screen.getByRole('button', { name: 'Destination settings' })
   destination.focus()
-  // App's background status poll rerenders the shell without new nav intent.
-  const statusPoll = intervals.mock.calls.find(([, delay]) => delay === 5000)[0]
-  await act(async () => statusPoll())
+  // A pushed status change rerenders the shell without new nav intent.
+  await act(async () => socket.fire('regime:state', { exchange: 'coinbase', pair: 'BTC-USDC', isRunning: true, isDryRun: false, lifecycle: 'active' }))
   expect(document.activeElement).toBe(destination)
 })
 
