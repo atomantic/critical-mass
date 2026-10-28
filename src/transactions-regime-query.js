@@ -32,7 +32,21 @@ function parseFillsQuery(input = {}) {
     || (input.revision !== undefined && (typeof input.revision !== 'string' || input.revision.length > 100))) {
     return badQuery('Invalid fills sort, filter or revision');
   }
-  return { paged: true, page, pageSize: Math.min(pageSize, 100), sortField, sortDir, side, cycle, revision: input.revision };
+  let cycleOptions = {};
+  if (input.cycleOptionsPaged !== undefined && ![true, false, 'true', 'false'].includes(input.cycleOptionsPaged)) {
+    return badQuery('cycleOptionsPaged must be true or false');
+  }
+  if (input.cycleOptionsPaged === true || input.cycleOptionsPaged === 'true') {
+    const cycleOffset = integer(input.cycleOffset, 0);
+    const cycleLimit = integer(input.cycleLimit, 100);
+    const cycleSearch = input.cycleSearch ?? '';
+    if (!Number.isSafeInteger(cycleOffset) || cycleOffset < 0 || !Number.isSafeInteger(cycleLimit) || cycleLimit < 1
+      || typeof cycleSearch !== 'string' || cycleSearch.length > 200) {
+      return badQuery('Invalid cycle option offset, limit or search');
+    }
+    cycleOptions = { cycleOptionsPaged: true, cycleOffset, cycleLimit: Math.min(cycleLimit, 100), cycleSearch };
+  }
+  return { ...cycleOptions, paged: true, page, pageSize: Math.min(pageSize, 100), sortField, sortDir, side, cycle, revision: input.revision };
 }
 
 function compareCycles(a, b) {
@@ -79,7 +93,19 @@ function createTransactionsReadView(readFills, readRevision) {
         queries.set(key, result);
       }
       const { rows, ...pageInfo } = paginate(result.rows, query.page, query.pageSize);
-      return { fills: rows.map(projectPageRow), pageInfo, summary: { ...result.summary }, cycleIds: [...snapshot.cycleIds], revision };
+      let cycleIds = snapshot.cycleIds;
+      let cycleOptions = {};
+      if (query.cycleOptionsPaged) {
+        // All/Current are fixed UI controls. Search only changes available
+        // options, never the exact cycle filter or its accounting summary.
+        const search = query.cycleSearch.toLowerCase();
+        const matches = cycleIds.filter(id => id !== 'current' && id.toLowerCase().includes(search));
+        const offset = Math.min(query.cycleOffset, Math.max(0, Math.ceil(matches.length / query.cycleLimit) - 1) * query.cycleLimit);
+        cycleIds = matches.slice(offset, offset + query.cycleLimit);
+        cycleOptions = { cycleOptionsInfo: { offset, limit: query.cycleLimit, total: matches.length,
+          hasPrev: offset > 0, hasNext: offset + query.cycleLimit < matches.length } };
+      }
+      return { fills: rows.map(projectPageRow), pageInfo, summary: { ...result.summary }, cycleIds: [...cycleIds], ...cycleOptions, revision };
     },
     aggregates() {
       const current = currentSnapshot();

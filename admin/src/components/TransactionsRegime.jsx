@@ -23,6 +23,8 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState('all')
   const [cycleFilter, setCycleFilter] = useState('all')
+  const [cycleSearch, setCycleSearch] = useState('')
+  const [cycleOffset, setCycleOffset] = useState(0)
   const [sortField, setSortField] = useState('timestamp')
   const [sortDir, setSortDir] = useState('desc')
   const [productId, setProductId] = useState(null)
@@ -46,6 +48,8 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
     setOrdersError(null)
     setFillsError(null)
     setPage(0)
+    setCycleSearch('')
+    setCycleOffset(0)
     revision.current = null
     apiGet(`/api/${exchange}/config${pairQuery}`, { signal: controller.signal })
       .then(result => {
@@ -57,7 +61,7 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
   }, [exchange, pairQuery, fund])
 
   const fetchData = useCallback(async () => {
-    const query = new URLSearchParams({ paged: 'true', page: String(page), pageSize: '100', side: filter, cycle: cycleFilter, sortField, sortDir })
+    const query = new URLSearchParams({ paged: 'true', page: String(page), pageSize: '100', side: filter, cycle: cycleFilter, sortField, sortDir, cycleOptionsPaged: 'true', cycleSearch, cycleOffset: String(cycleOffset), cycleLimit: '100' })
     if (pair) query.set('pair', pair)
     if (revision.current) query.set('revision', revision.current)
     const { owned, data } = await reader.read({ exchange, pairQuery, query })
@@ -68,6 +72,7 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
         revision.current = fillsData.revision
         setSnapshot(fillsData)
         setPage(fillsData.pageInfo.page)
+        if (fillsData.cycleOptionsInfo) setCycleOffset(fillsData.cycleOptionsInfo.offset)
         setFillsError(null)
       } else setFillsError(fillsData?.error || `Transactions unavailable (HTTP ${fillsStatus})`)
       if (statusData?.status) {
@@ -84,7 +89,7 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
       setOrdersError('Open orders unavailable: request failed')
     }
     setLoading(false)
-  }, [exchange, pair, pairQuery, fund, page, filter, cycleFilter, sortField, sortDir, reader])
+  }, [exchange, pair, pairQuery, fund, page, filter, cycleFilter, cycleSearch, cycleOffset, sortField, sortDir, reader])
 
   // Only the first read gates the page. A page/filter/sort change or a poll
   // keeps the current view mounted: the gate would unmount Manual Trades and
@@ -97,7 +102,7 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
 
   const isDryRun = status?.isDryRun
   const baseCurrency = getBaseCurrency(productId || pair)
-  const { fills: displayFills, cycleIds, pageInfo, summary } = snapshot
+  const { fills: displayFills, cycleIds, cycleOptionsInfo, pageInfo, summary } = snapshot
   const { totalBuys, totalSells, totalAssetBought, totalBtcSold, totalFees, totalPnL, totalHoldbackBtc, totalHoldbackValue } = summary
   const handleSort = (field) => {
     setPage(0)
@@ -278,7 +283,7 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
           ))}
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <label htmlFor={cycleFilterId} className="text-sm text-gray-400">Cycle:</label>
           <select
             id={cycleFilterId}
@@ -288,10 +293,31 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
           >
             <option value="all">All Cycles</option>
             <option value="current">Current</option>
+            {cycleFilter !== 'all' && cycleFilter !== 'current' && !cycleIds.includes(cycleFilter) && (
+              <option value={cycleFilter}>{cycleFilter} (selected)</option>
+            )}
             {cycleIds.filter(id => id !== 'current').map(id => (
               <option key={id} value={id}>{id}</option>
             ))}
           </select>
+          <input
+            aria-label="Search cycles"
+            type="search"
+            maxLength={200}
+            value={cycleSearch}
+            onChange={e => { setCycleSearch(e.target.value); setCycleOffset(0) }}
+            placeholder="Search cycles"
+            className="px-2 py-1 bg-gray-700 border border-gray-600 rounded-sm text-sm text-white w-40"
+          />
+          {cycleOptionsInfo && (
+            <nav aria-label="Cycle options pagination" className="flex flex-wrap items-center gap-2 text-sm text-gray-400">
+              <Button type="button" variant="secondary" size="xs" disabled={!cycleOptionsInfo.hasPrev}
+                onClick={() => setCycleOffset(Math.max(0, cycleOptionsInfo.offset - cycleOptionsInfo.limit))}>Previous cycles</Button>
+              <span aria-live="polite">{cycleOptionsInfo.total === 0 ? 'No matching cycles' : `${cycleOptionsInfo.offset + 1}–${Math.min(cycleOptionsInfo.offset + cycleOptionsInfo.limit, cycleOptionsInfo.total)} of ${cycleOptionsInfo.total} cycles`}</span>
+              <Button type="button" variant="secondary" size="xs" disabled={!cycleOptionsInfo.hasNext}
+                onClick={() => setCycleOffset(cycleOptionsInfo.offset + cycleOptionsInfo.limit)}>Next cycles</Button>
+            </nav>
+          )}
         </div>
 
         <span className="ml-auto text-gray-400 text-sm">
