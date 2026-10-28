@@ -19,6 +19,8 @@ WORKDIR /app
 COPY docker/pm2/package.json docker/pm2/package-lock.json /opt/pm2/
 RUN npm ci --omit=dev --prefix /opt/pm2
 ENV PATH="/opt/pm2/node_modules/.bin:${PATH}"
+# PM2 otherwise calls version.pm2.io daily with TLS verification disabled
+ENV PM2_DISABLE_VERSION_CHECK=1
 
 # zip/unzip are used by src/backup-service.js for archive create/restore
 RUN apk add --no-cache zip unzip
