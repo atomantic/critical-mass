@@ -709,6 +709,44 @@ describe('backup-service — pruneBackups retention', () => {
     assert.deepEqual(survivorNames, [`backup-${prefix}-3.zip`, `backup-${prefix}-4.zip`].sort());
   });
 
+  const clearSeedBackups = () => {
+    for (const filePath of created.splice(0)) fs.rmSync(filePath, { force: true });
+  };
+
+  const makeTimestampedBackups = (mtimeForIndex) => {
+    const base = Date.UTC(2026, 0, 1, 0, 0, 0);
+    const names = [0, 1, 2].map((index) => `backup-2026-01-01T00-00-0${index + 1}-archive-${index}.zip`);
+    names.forEach((name, index) => makeBackup(name, mtimeForIndex(index, base)));
+    return { names, base };
+  };
+
+  it('orders, anchors and retains timestamped archives when copied mtimes are reversed', async () => {
+    clearSeedBackups();
+    const { names, base } = makeTimestampedBackups((index, timestamp) => timestamp + (2 - index) * 60_000);
+
+    const listed = await listBackups();
+    assert.deepEqual(listed.map((backup) => backup.filename), [...names].reverse());
+    assert.deepEqual(listed.map((backup) => Date.parse(backup.createdAt)), [base + 3_000, base + 2_000, base + 1_000]);
+    assert.equal(getNewestBackupTime(), base + 3_000);
+    assert.equal(await getNewestBackupTimeAsync(), base + 3_000);
+
+    const result = await pruneBackups(2);
+    assert.equal(result.pruned, 1);
+    assert.deepEqual((await listBackups()).map((backup) => backup.filename), names.slice(1).reverse());
+  });
+
+  it('uses deterministic filename ordering for equal archive timestamps and falls back for legacy names', async () => {
+    clearSeedBackups();
+    const { names } = makeTimestampedBackups((_index, timestamp) => timestamp);
+    const legacyName = `backup-${prefix}-legacy.zip`;
+    makeBackup(legacyName, Date.UTC(2025, 11, 31, 23, 59, 59));
+
+    const listed = await listBackups();
+    assert.deepEqual(listed.slice(0, 3).map((backup) => backup.filename), [...names].reverse());
+    assert.equal(Date.parse(listed.find((backup) => backup.filename === legacyName).createdAt), Date.UTC(2025, 11, 31, 23, 59, 59));
+    assert.equal(getNewestBackupTime(), Date.UTC(2026, 0, 1, 0, 0, 3));
+  });
+
   it('prunes nothing when the backup count is within the retention limit', async () => {
     const totalBackups = (await listBackups()).length;
     assert.equal(totalBackups, 5);
