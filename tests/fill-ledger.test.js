@@ -3642,13 +3642,20 @@ describe('Fill Ledger', () => {
       ledger.ingestFill(makeSellFill({ tradeId: 'page-sell', orderId: 'page-sell' }), null, { cycleId: null });
       const check = mutate => {
         const before = ledger.getFillPage({ paged: true });
+        const beforeAggregate = ledger.getFillAggregates();
+        assert.equal(beforeAggregate.revision, before.revision);
+        assert.equal(ledger.getFillAggregates(), beforeAggregate);
         const count = ledger._test.getTransactionsRecomputeCount();
         assert.deepEqual(ledger.getFillPage({ paged: true }), before);
         assert.equal(ledger._test.getTransactionsRecomputeCount(), count);
         mutate();
         const stale = ledger.getFillPage({ paged: true, revision: before.revision });
         assert.equal(stale.statusCode, 409);
+        const aggregate = ledger.getFillAggregates({ revision: before.revision });
+        assert.notEqual(aggregate, beforeAggregate);
+        assert.deepEqual(aggregate, { ...require('../shared/regime-fill-aggregates.mjs').aggregateRegimeFills(ledger.getAllFills()), revision: aggregate.revision });
         const after = ledger.getFillPage({ paged: true });
+        assert.equal(aggregate.revision, after.revision);
         assert.notEqual(after.revision, before.revision);
         assert.equal(ledger._test.getTransactionsRecomputeCount(), count + 1);
         assert.equal(after.pageInfo.total, ledger.getAllFills().length);

@@ -1,6 +1,9 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fixture = require('./helpers/regime-aggregate-fixture');
+const { aggregateRegimeFills } = require('../shared/regime-fill-aggregates.mjs');
+const { computeFillsWithPnL } = require('../shared/transactions-regime-pnl.mjs');
+const { summarizeFills } = require('../shared/transactions-regime-page.mjs');
 const { createTransactionsReadView } = require('../src/transactions-regime-query');
 
 test('cached aggregate parity with legacy dashboard, chart and cost-basis results', async () => {
@@ -136,4 +139,34 @@ test('cycle display count preserves the legacy same-body buy fallback', async ()
   assert.equal(aggregate.fillCycleGroups[0].buyCount, legacy.cycleGroups[0].buyCount);
   assert.equal(aggregate.fillCycleGroups[0].minTs, legacy.cycleGroups[0].minTs);
   assert.equal(aggregate.totalPnl, legacy.totalPnl);
+});
+
+for (const first of ['aggregates', 'query']) test(`${first}-first reads preserve accounting and invalidate both caches across revisions`, () => {
+  // Reverse ledger order intentionally: aggregate pairing must keep raw order,
+  // while transaction P&L enriches the complete chronological ledger.
+  let rows = fixture().reverse();
+  let revision = 'initial';
+  let reads = 0;
+  const view = createTransactionsReadView(() => { reads++; return rows; }, () => revision);
+  let previousAggregate;
+  for (const [index, transition] of ['initial', 'new-fill', 'reload', 'replacement'].entries()) {
+    if (transition === 'new-fill') rows.push({ tradeId: 'new', orderId: 'new', side: 'buy', cycleId: 'cycle-3', timestamp: 8000, size: 1, price: 10, quoteAmount: 10 });
+    if (transition === 'reload') rows = fixture().map(row => ({ ...row, cycleId: 'cycle-9' }));
+    if (transition === 'replacement') rows = [];
+    revision = transition;
+    const expectedAggregate = { ...aggregateRegimeFills(rows), revision };
+    const expectedSummary = summarizeFills(computeFillsWithPnL(rows));
+    if (first === 'aggregates') view.aggregates();
+    else view.query({ paged: true });
+    const aggregate = view.aggregates();
+    assert.deepEqual(aggregate, expectedAggregate, transition);
+    assert.notEqual(aggregate, previousAggregate);
+    assert.equal(view.aggregates(), aggregate, 'aggregate object is reused within the revision');
+    assert.deepEqual(view.query({ paged: true }).summary, expectedSummary, transition);
+    assert.deepEqual(view.query({ paged: true, sortField: 'pnl', side: 'sell' }).summary,
+      summarizeFills(computeFillsWithPnL(rows).filter(row => row.side === 'sell')), transition);
+    assert.deepEqual(view.aggregates({ revision }), { unchanged: true, revision });
+    assert.equal(reads, index + 1, 'both representations share one raw read per revision');
+    previousAggregate = aggregate;
+  }
 });

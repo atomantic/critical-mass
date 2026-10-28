@@ -1,5 +1,6 @@
-// Complete-ledger accounting is enriched once per revision before filtering
-// or paging. This owner never writes ledger rows or persists trading state.
+// Transaction rows are enriched lazily once per revision, using the complete
+// ledger before filtering or paging. Aggregates share only the raw snapshot.
+// This owner never writes ledger rows or persists trading state.
 const { computeFillsWithPnL } = require('../shared/transactions-regime-pnl.mjs');
 const { sortFills, summarizeFills, paginate } = require('../shared/transactions-regime-page.mjs');
 const { aggregateRegimeFills } = require('../shared/regime-fill-aggregates.mjs');
@@ -73,9 +74,7 @@ function createTransactionsReadView(readFills, readRevision) {
   const currentSnapshot = () => {
     const revision = readRevision();
     if (!snapshot || snapshot.revision !== revision) {
-      const fills = readFills();
-      const rows = computeFillsWithPnL(fills);
-      snapshot = { revision, rows, fills, cycleIds: [...new Set(rows.map(row => row.cycleId || 'current'))].sort(compareCycles), aggregates: null };
+      snapshot = { revision, fills: readFills(), rows: null, cycleIds: null, aggregates: null };
       queries.clear();
       recomputations++;
     }
@@ -90,6 +89,11 @@ function createTransactionsReadView(readFills, readRevision) {
         return { success: false, statusCode: 409, code: 'STALE_FILL_REVISION', revision, error: 'Fill history changed; reload page one' };
       }
       currentSnapshot();
+      if (!snapshot.rows) {
+        const rows = computeFillsWithPnL(snapshot.fills);
+        snapshot.cycleIds = [...new Set(rows.map(row => row.cycleId || 'current'))].sort(compareCycles);
+        snapshot.rows = rows;
+      }
       const key = JSON.stringify([query.side, query.cycle, query.sortField, query.sortDir]);
       let result = queries.get(key);
       if (!result) {

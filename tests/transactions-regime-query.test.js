@@ -8,6 +8,45 @@ const { sortFills, summarizeFills } = require('../shared/transactions-regime-pag
 const fills = count => Array.from({ length: count }, (_, i) => ({ tradeId: `trade-${String(i).padStart(5, '0')}`, orderId: `order-${i}`, timestamp: 1000 + Math.floor(i / 2), side: i % 3 ? 'buy' : 'sell', cycleId: `cycle-${i % 4}`, size: 0.01, price: 100 + i % 50, quoteAmount: 1 + (i % 50) / 100, netFee: 0.01, fee: 0.01 }));
 
 describe('regime fills paged query', () => {
+  it('does not enrich aggregate-only revisions and builds transaction rows once on demand', () => {
+    let copies = 0;
+    let reads = 0;
+    let revision = 'aggregate-only';
+    // Enrichment copies every raw row; aggregate projections read explicit
+    // fields instead. Observe that work without retaining private cache rows.
+    const tracked = count => fills(count).map(row => new Proxy(row, {
+      ownKeys(target) { copies++; return Reflect.ownKeys(target); },
+    }));
+    let history = tracked(30000);
+    const view = createTransactionsReadView(() => { reads++; return history; }, () => revision);
+    const aggregate = view.aggregates();
+    assert.equal(aggregate.fillCount, 30000);
+    assert.equal(view.aggregates(), aggregate);
+    assert.deepEqual(view.aggregates({ revision }), { unchanged: true, revision });
+    assert.equal(copies, 0, 'aggregate reads must not create transaction-enriched copies');
+    assert.equal(view.query({ paged: true, revision: 'stale' }).statusCode, 409);
+    assert.equal(view.query({ paged: false }).statusCode, 400);
+    assert.equal(copies, 0, 'rejected queries must not trigger enrichment');
+    const first = view.query({ paged: true });
+    assert.equal(copies, 30000, 'later Transactions query enriches the complete ledger once');
+    for (const input of [{ page: 1 }, { side: 'sell', sortField: 'pnl' },
+      { cycle: 'cycle-2', cycleOptionsPaged: true, cycleSearch: 'cycle-2' }]) {
+      view.query({ paged: true, ...input });
+    }
+    assert.equal(copies, 30000, 'page/filter/sort/option variants reuse enriched rows');
+    assert.equal(view.aggregates(), aggregate);
+    assert.equal(reads, 1);
+    history = tracked(2);
+    revision = 'reloaded';
+    assert.equal(view.aggregates().fillCount, 2);
+    assert.equal(copies, 30000, 'the new aggregate-only revision stays lazy');
+    const next = view.query({ paged: true });
+    assert.equal(copies, 30002);
+    assert.equal(next.pageInfo.total, 2);
+    assert.notDeepEqual(next.cycleIds, first.cycleIds, 'cycle options expire with rows');
+    assert.equal(reads, 2);
+  });
+
   it('reports net fees including full rebates in the whole-history summary', () => {
     const history = fills(3).map((row, i) => ({ ...row,
       fee: 2, netFee: [0, -0.5, undefined][i],
