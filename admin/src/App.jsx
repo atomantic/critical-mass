@@ -45,8 +45,8 @@ import { ToastProvider, useToast, tradeEventToToast } from './components/Toast'
 import { useTradeEvents, useRealtimeConnection } from './hooks/useTradeEvents'
 import { pairQuery as buildPairQuery } from './utils/api'
 import { apiGet, apiPost, describeMutationFailure } from './utils/apiClient'
-import usePolling from './hooks/usePolling'
 import useRegimeStateEvents from './hooks/useRegimeStateEvents'
+import useRealtimeRefresh from './hooks/useRealtimeRefresh'
 
 // Extract quote currency from product ID (e.g., "BTC-USDC" -> "USDC", "CRO_USD" -> "USD", "BTCUSD" -> "USD")
 export function getQuoteCurrency(productId) {
@@ -583,7 +583,19 @@ function AppContent() {
     if (urlExchange && urlExchange !== lastExchange) setLastExchange(urlExchange)
   }, [urlExchange, lastExchange])
 
-  usePolling(fetchData, 30000, { enabled: Boolean(currentExchange), deps: [currentExchange, currentPair] })
+  // Summary: one read per fund, then re-read when the gateway reports order,
+  // cycle, engine-state or trade activity for it (#1880).
+  useEffect(() => {
+    if (currentExchange) fetchData()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentExchange, currentPair])
+  useRealtimeRefresh({
+    events: ['regime:changed', 'regime:state', 'trade:event'],
+    filter: (event) => event?.exchange === currentExchange && (!event.pair || !currentPair || event.pair === currentPair),
+    enabled: Boolean(currentExchange),
+    minIntervalMs: 5000,
+    onRefresh: fetchData,
+  })
 
   // Fetch regime status when on regime strategy
   const pollRegime = currentStrategy === 'regime' && Boolean(currentExchange)

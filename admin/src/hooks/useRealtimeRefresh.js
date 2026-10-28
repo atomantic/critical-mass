@@ -8,12 +8,15 @@ import { getRealtimeClient } from '../lib/realtime'
  * `minIntervalMs`, with a trailing run so the last change is never dropped),
  * when the socket reconnects, and when the tab becomes visible again. Events
  * carry no replay, so those last two close the gaps a push cannot. The caller
- * owns the first read; `rooms` are subscribed for the hook's lifetime, and
- * callbacks are read through refs so only the lists restart it.
+ * owns the first read; `rooms` are subscribed for the hook's lifetime. An
+ * optional `filter(payload)` drops events for other funds. Callbacks are read
+ * through refs, so only the lists restart it.
  */
-export function useRealtimeRefresh({ events = [], rooms = [], enabled = true, minIntervalMs = 0, onRefresh }) {
+export function useRealtimeRefresh({ events = [], rooms = [], enabled = true, minIntervalMs = 0, filter, onRefresh }) {
   const refreshRef = useRef(onRefresh)
+  const filterRef = useRef(filter)
   refreshRef.current = onRefresh
+  filterRef.current = filter
   const eventKey = events.join('|')
   const roomKey = rooms.join('|')
 
@@ -31,7 +34,8 @@ export function useRealtimeRefresh({ events = [], rooms = [], enabled = true, mi
       lastRun = Date.now()
       refreshRef.current?.()
     }
-    const onEvent = () => {
+    const onEvent = (payload) => {
+      if (filterRef.current && !filterRef.current(payload)) return
       const wait = lastRun + minIntervalMs - Date.now()
       if (wait <= 0) run()
       else if (!timer) timer = setTimeout(run, wait)

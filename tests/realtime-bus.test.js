@@ -200,6 +200,36 @@ describe('compact regime state notifications', () => {
   });
 });
 
+describe('fund data change notifications', () => {
+  it('announces order and cycle changes per fund, not price ticks or the first baseline', async (t) => {
+    const { bus, hosts: [host] } = await startBus(t);
+    const client = await connect(t, host, { scoped: true });
+    const status = (pair, { price = 1, orders = ['a'], cycles = 1, pnl = 0 } = {}) => ({
+      exchange: 'gemini', pair,
+      status: {
+        isRunning: true, market: { lastPrice: price },
+        orders: { total: orders.length, entries: orders.length, takeProfits: 0, bodies: 0 },
+        pendingOrders: orders.map((orderId) => ({ orderId })),
+        position: { cyclesCompleted: cycles, cycleBuys: 1, realizedPnL: pnl, realizedAssetPnL: 0 },
+        closedTradesSummary: { count: cycles, totalPnl: pnl },
+      },
+    });
+    bus.emit('regime:status', status('BTCUSD'));
+    bus.emit('regime:status', status('ETHUSD'));
+    bus.emit('regime:status', status('BTCUSD', { price: 2 }));
+    bus.emit('regime:status', status('BTCUSD', { orders: ['a', 'b'] }));
+    bus.emit('regime:status', status('BTCUSD', { orders: ['a', 'b'], price: 3 }));
+    bus.emit('regime:status', status('BTCUSD', { orders: ['b'], cycles: 2, pnl: 5 }));
+    bus.emit('regime:status', status('ETHUSD'));
+    bus.emit('regime:status', { exchange: 'gemini', pair: 'BTCUSD' });
+    await roundTrip(client);
+    assert.deepEqual(events(client, 'regime:changed'), [
+      { exchange: 'gemini', pair: 'BTCUSD' },
+      { exchange: 'gemini', pair: 'BTCUSD' },
+    ]);
+  });
+});
+
 describe('realtime bus: operator check at upgrade', () => {
   it('upgrades only with an operator session or bearer password from this origin', async (t) => {
     const { hosts: [host], bus } = await startBus(t, { auth: true });

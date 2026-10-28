@@ -6,7 +6,8 @@ import { getBaseCurrency, getQuoteCurrency } from '../App'
 import { pairQuery as buildPairQuery } from '../utils/api'
 import { apiGet } from '../utils/apiClient'
 import { pnlColorClass, signedPrefix } from '../utils/pnlFormat.mjs'
-import usePolling from '../hooks/usePolling'
+import useRealtimeRefresh from '../hooks/useRealtimeRefresh'
+import { useRegimeEvents } from '../hooks/useTradeEvents'
 
 function CostBasisRegime({ exchange = 'coinbase', pair }) {
   const [status, setStatus] = useState(null)
@@ -23,7 +24,9 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
 
   const fetchData = useCallback(async () => {
     const session = readState.current
-    if (!session?.active || session.inFlight) return
+    if (!session?.active) return
+    // A change that lands mid-read must not be lost: read again once this one ends.
+    if (session.inFlight) { session.rerun = true; return }
     session.inFlight = true
     const controller = new AbortController()
     session.controller = controller
@@ -74,6 +77,10 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
     } finally {
       session.inFlight = false
       if (session.active) setLoading(false)
+      if (session.active && session.rerun) {
+        session.rerun = false
+        fetchData()
+      }
     }
   }, [exchange, pairQuery])
 
@@ -93,7 +100,22 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
     }
   }, [fetchData])
   // Declared after the reset effect so each restart reseeds the session first.
-  usePolling(fetchData, 10000, { deps: [fetchData] })
+  // One read, then re-read when this fund's orders, cycles or state change (#1880).
+  useEffect(() => {
+    fetchData()
+  }, [fetchData])
+  useRealtimeRefresh({
+    events: ['regime:changed', 'regime:state'],
+    filter: (event) => event?.exchange === exchange && (!pair || !event.pair || event.pair === pair),
+    minIntervalMs: 2000,
+    onRefresh: fetchData,
+  })
+  // The price follows the fund's live status stream instead of a read per poll.
+  const { status: liveStatus } = useRegimeEvents(exchange, pair)
+  const livePrice = liveStatus?.market?.lastPrice
+  useEffect(() => {
+    if (livePrice > 0) setCurrentPrice(livePrice)
+  }, [livePrice])
 
   if (error) {
     return (

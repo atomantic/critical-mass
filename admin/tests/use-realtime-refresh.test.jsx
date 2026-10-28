@@ -40,6 +40,15 @@ it('refreshes on listed events only, and subscribes and unsubscribes its rooms',
   expect(socket.listeners()).toBe(0)
 })
 
+it('ignores events the filter rejects', () => {
+  const onRefresh = vi.fn()
+  render(<Probe events={['a:changed']} filter={(p) => p.pair === 'X'} onRefresh={onRefresh} />)
+  socket.fire('a:changed', { pair: 'Y' })
+  expect(onRefresh).not.toHaveBeenCalled()
+  socket.fire('a:changed', { pair: 'X' })
+  expect(onRefresh).toHaveBeenCalledTimes(1)
+})
+
 it('throttles event bursts to one leading and one trailing refresh, counting the mount-time read', () => {
   const onRefresh = vi.fn()
   render(<Probe events={['a:changed']} minIntervalMs={1000} onRefresh={onRefresh} />)

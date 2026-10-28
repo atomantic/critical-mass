@@ -7,7 +7,7 @@ import ManualTrades from './ManualTrades'
 import { createTransactionsReader } from '../utils/transactionsRead.mjs'
 import { apiGet } from '../utils/apiClient'
 import { pnlColorClass, signedPrefix } from '../utils/pnlFormat.mjs'
-import usePolling from '../hooks/usePolling'
+import useRealtimeRefresh from '../hooks/useRealtimeRefresh'
 
 const EMPTY_SUMMARY = { totalBuys: 0, totalSells: 0, totalAssetBought: 0, totalBtcSold: 0, totalFees: 0, totalPnL: 0, totalHoldbackBtc: 0, totalHoldbackValue: 0 }
 const EMPTY_PAGE = { page: 0, pageCount: 1, total: 0, start: 0, end: 0, hasPrev: false, hasNext: false }
@@ -94,10 +94,17 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
   // Only the first read gates the page. A page/filter/sort change or a poll
   // keeps the current view mounted: the gate would unmount Manual Trades and
   // discard its scan results and any half-filled import or recovery form.
-  usePolling(fetchData, 10000, {
-    skipOverlap: true,
-    deps: [fetchData, reader],
-    onCleanup: () => reader.invalidate(),
+  // One read per page/filter/sort, then re-read when this fund's orders, cycles
+  // or engine state change on the gateway, not on a timer (#1880).
+  useEffect(() => {
+    fetchData()
+    return () => reader.invalidate()
+  }, [fetchData, reader])
+  useRealtimeRefresh({
+    events: ['regime:changed', 'regime:state'],
+    filter: (event) => event?.exchange === exchange && (!pair || !event.pair || event.pair === pair),
+    minIntervalMs: 2000,
+    onRefresh: fetchData,
   })
 
   const isDryRun = status?.isDryRun

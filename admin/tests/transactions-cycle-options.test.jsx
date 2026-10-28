@@ -4,13 +4,30 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import TransactionsRegime from '../src/components/TransactionsRegime'
 
+// The page re-reads on `regime:changed`; tests push it through this fake client.
+const socket = vi.hoisted(() => {
+  const handlers = new Map()
+  return {
+    on: (event, handler) => { handlers.set(event, [...(handlers.get(event) || []), handler]) },
+    off: (event, handler) => { handlers.set(event, (handlers.get(event) || []).filter(h => h !== handler)) },
+    subscribe: () => {},
+    unsubscribe: () => {},
+    fire: (event, payload) => (handlers.get(event) || []).forEach(h => h(payload)),
+  }
+})
+vi.mock('../src/lib/realtime', () => ({ getRealtimeClient: () => socket }))
+// Changes are throttled to one read per 2 s, counting the mount-time read.
+const pushChange = async () => {
+  await new Promise(resolve => setTimeout(resolve, 2100))
+  await act(async () => { socket.fire('regime:changed', { exchange: 'coinbase', pair: 'BTC-USDC' }) })
+}
+
 const require = createRequire(import.meta.url)
 const { createTransactionsReadView } = require('../../src/transactions-regime-query.js')
 const response = (body, status = 200) => ({ ok: status === 200, status, json: async () => body })
-afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals() })
+afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
-for (const cycles of [3000, 15000]) it(`keeps 30,000-fill requests and rendered options bounded at ${cycles} cycles, including polls and historical selection`, async () => {
-  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+for (const cycles of [3000, 15000]) it(`keeps 30,000-fill requests and rendered options bounded at ${cycles} cycles, including refreshes and historical selection`, async () => {
   const history = Array.from({ length: 30000 }, (_, i) => ({ tradeId: `trade-${i}`, orderId: `order-${i}`, timestamp: i + 1000,
     cycleId: `cycle-${i % cycles}`, side: 'buy', size: 0.01, price: i + 1, quoteAmount: (i + 1) / 100, fee: 0 }))
   let revision = 'r1'
@@ -36,8 +53,8 @@ for (const cycles of [3000, 15000]) it(`keeps 30,000-fill requests and rendered 
   expect(reads[0].query.cycleOptionsPaged).toBe('true')
   const initialBytes = reads[0].bytes
   const beforePoll = reads.length
-  await act(async () => { await vi.advanceTimersByTimeAsync(10000) })
-  expect(reads.length).toBe(beforePoll + 1)
+  await pushChange()
+  await waitFor(() => expect(reads.length).toBe(beforePoll + 1))
   expect(reads.at(-1).query.revision).toBe('r1')
   expect(reads.at(-1).bytes).toBe(initialBytes)
   expect(selector.options.length).toBe(102)
@@ -73,8 +90,8 @@ for (const cycles of [3000, 15000]) it(`keeps 30,000-fill requests and rendered 
   expect(reads.at(-1).query.cycle).toBe('cycle-0')
   revision = 'r2'
   const beforeRevision = reads.length
-  await act(async () => { await vi.advanceTimersByTimeAsync(10000) })
-  expect(reads.length).toBe(beforeRevision + 2)
+  await pushChange()
+  await waitFor(() => expect(reads.length).toBe(beforeRevision + 2))
   expect(reads.at(-2).body.code).toBe('STALE_FILL_REVISION')
   expect(reads.at(-1).query.page).toBe('0')
   expect(reads.at(-1).body.revision).toBe('r2')
