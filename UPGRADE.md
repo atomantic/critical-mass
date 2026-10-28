@@ -57,13 +57,13 @@ not understand version 2 journals.
 ### Recovery limits to check before restoring
 
 These file replacements do not rewind orders or fills at the exchange. Hourly
-snapshots contain only the seven accounting files listed above; they omit
-`placement-intents.json`, which records order submissions with an unresolved
-outcome. After loss of a fund directory, an hourly restore cannot recover those
-placement blockers. Full archives preserve that file, but neither recovery path
-establishes the current exchange outcome. Preserve available intent records and
-reconcile unresolved submissions against the exchange before resuming trading;
-do not treat an hourly snapshot as a complete placement-safe recovery point.
+snapshots made by this version capture `placement-intents.json` when present,
+and full archives preserve it too. Older hourly snapshots lack that evidence and
+cannot recover a lost fund's unresolved placement blockers; restoring one requires
+the acknowledgement described above. Neither recovery path establishes the current
+exchange outcome. Preserve available intent records and reconcile unresolved
+submissions against the exchange before resuming trading; do not treat any
+snapshot as proof of the current exchange state.
 See [issue #1810](https://github.com/atomantic/critical-mass/issues/1810).
 
 An interrupted DCA import is another recovery boundary. A pending
