@@ -42,12 +42,13 @@ response parsing retains only page counts, projection checks and config-invalida
 
 Assertions cover bounded page/DOM rows and compact projection, no eager detail transfer, no fill-history
 hydration or Transactions polling after Config navigation, stable reference reads, and exact visible consumer
-listener recovery. The actual hooks use client-side listeners on a shared websocket, rather than room
-subscriptions. After #1863, Transactions and Config expect zero status listeners, while Dashboard and
-Overview each expect one visible status listener, including after reconnect. The shell's trade/toast
-consumer and global engine broadcasts can still contribute to idle traffic; the fixture reports those
-baseline costs rather than asserting that traffic is zero. Synthetic engine reads/feed do not exercise
-exchange APIs, order execution, realistic market timing or production latency.
+listener recovery. The current admin uses client-side listeners and subscribes to per-fund or all-fund
+status rooms on the shared websocket. Transactions and Config have no status listeners and receive no
+unneeded status frames in the fixture; Dashboard and Overview each have one visible status listener and
+its corresponding subscription, including after reconnect. Other events, protocol frames and HTTP
+polling can still contribute to idle traffic. Legacy clients that do not opt into scoped status continue
+to receive global status broadcasts. Synthetic engine reads/feed do not exercise exchange APIs, order
+execution, realistic market timing or production latency.
 
 Exit codes: **0 PASS**, **1 FAIL** for assertion failures, **2 UNVERIFIED** for a missing browser, missing or
 incomplete fixture/session, navigation timeout or a shortened idle window. External/production URLs are

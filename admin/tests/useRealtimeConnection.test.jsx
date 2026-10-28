@@ -67,17 +67,24 @@ describe('useRealtimeConnection', () => {
     await act(async () => {})
     const startingCommits = commits.length
     const startedAt = performance.now()
+    const windowMs = 6500
     await new Promise(resolve => {
       const interval = setInterval(() => {
         socket.emit('regime:status', { exchange: 'coinbase', status: { isRunning: true } })
       }, 1000)
-      setTimeout(() => {
+      const finishAfterWindow = () => {
+        const remainingMs = windowMs - (performance.now() - startedAt)
+        if (remainingMs > 0) {
+          setTimeout(finishAfterWindow, Math.ceil(remainingMs))
+          return
+        }
         clearInterval(interval)
         resolve()
-      }, 6500)
+      }
+      setTimeout(finishAfterWindow, windowMs)
     })
 
-    expect(performance.now() - startedAt).toBeGreaterThanOrEqual(6500)
+    expect(performance.now() - startedAt).toBeGreaterThanOrEqual(windowMs)
     expect(startingCommits).toBe(2)
     expect(commits.length).toBe(startingCommits)
   }, 10000)
