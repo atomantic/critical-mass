@@ -1,6 +1,6 @@
 const { before, describe, it } = require('node:test')
 const { apiClientStub } = require('./api-client-harness')
-const { compileUsePollingCode, loadUsePolling } = require('./use-polling-harness')
+const { asHookModule } = require('./use-polling-harness')
 const assert = require('node:assert/strict')
 const path = require('node:path')
 const vm = require('node:vm')
@@ -10,7 +10,6 @@ const { pathToFileURL } = require('node:url')
 const adminRequire = createRequire(path.join(__dirname, '..', 'admin', 'package.json'))
 const React = adminRequire('react')
 let componentCode
-let pollingCode
 
 before(async () => {
   const { rolldown } = await import(pathToFileURL(adminRequire.resolve('rolldown')).href)
@@ -19,7 +18,6 @@ before(async () => {
     external: () => true,
     transform: { jsx: 'react' },
   })
-  pollingCode = await compileUsePollingCode()
   try { componentCode = (await bundle.generate({ format: 'cjs' })).output[0].code } finally { await bundle.close() }
 })
 
@@ -87,19 +85,26 @@ function createView(props = {}) {
   const { flushSync } = adminRequire('react-dom')
   const container = doc.createElement('div')
   const root = createRoot(container)
-  const timers = new Map()
   const requests = []
   let nextTimer = 0
-  let now = 0
   const fetchImpl = (url, options) => new Promise((resolve, reject) => { requests.push({ url, options, resolve, reject, settled: false }) })
-  const clock = {
-    setInterval: (callback, ms) => { assert.equal(ms, 10000); const id = ++nextTimer; timers.set(id, { callback, next: now + ms, ms }); return id },
-    clearInterval: id => timers.delete(id),
+  // Stand-in for useRealtimeRefresh: each mounted consumer registers a callback that
+  // `tick()` invokes, as if the gateway had pushed a change for this fund.
+  const registrations = new Map()
+  const useRealtimeRefresh = ({ onRefresh }) => {
+    const latest = React.useRef(onRefresh)
+    latest.current = onRefresh
+    React.useEffect(() => {
+      const id = ++nextTimer
+      registrations.set(id, { callback: () => latest.current() })
+      return () => registrations.delete(id)
+    }, [])
   }
   const stubs = {
     react: React,
     './ui/Button': ({ children, ...props }) => React.createElement('button', props, children),
-    '../hooks/usePolling': loadUsePolling(pollingCode, React, clock),
+    '../hooks/useRealtimeRefresh': asHookModule(useRealtimeRefresh),
+    '../hooks/useTradeEvents': { useRegimeEvents: () => ({ status: null }) },
     '../utils/apiClient': apiClientStub(fetchImpl),
     './charts/chartUtils': { formatCurrency: value => `$${value}`, formatPrice: value => `$${value}`, formatAsset: String },
     '../App': {
@@ -116,8 +121,6 @@ function createView(props = {}) {
     module: mod, exports: mod.exports, React, AbortController,
     require: name => { assert.ok(stubs[name], `unexpected import ${name}`); return stubs[name] },
     fetch: fetchImpl,
-    setInterval: (callback, ms) => { assert.equal(ms, 10000); const id = ++nextTimer; timers.set(id, { callback, next: now + ms, ms }); return id },
-    clearInterval: id => timers.delete(id),
   })
   let currentProps = { exchange: 'coinbase', pair: 'BTC-USD', ...props }
   function render(nextProps = {}) {
@@ -158,16 +161,7 @@ function createView(props = {}) {
     const key = Object.keys(button).find(key => key.startsWith('__reactProps$'))
     flushSync(() => button[key].onClick())
   }
-  function advance(ms) {
-    const end = now + ms
-    while (timers.size && Math.min(...Array.from(timers.values(), timer => timer.next)) <= end) {
-      now = Math.min(...Array.from(timers.values(), timer => timer.next))
-      for (const timer of timers.values()) {
-        if (timer.next === now) { timer.next += timer.ms; timer.callback() }
-      }
-    }
-    now = end
-  }
+  function tick() { for (const registration of [...registrations.values()]) registration.callback() }
   function unmount() { flushSync(() => root.unmount()) }
   function cleanup() {
     unmount()
@@ -177,12 +171,12 @@ function createView(props = {}) {
     else delete global.navigator
   }
   render()
-  return { requests, timers, render, drain, respond, click, unmount, cleanup, text: () => container.textContent, advance, tick: () => advance(10000) }
+  return { requests, timers: registrations, render, drain, respond, click, unmount, cleanup, text: () => container.textContent, tick }
 }
 
-describe('Cost Basis rendered polling and recovery (#853, #933)', () => {
+describe('Cost Basis rendered refresh and recovery (#853, #933, #1880)', () => {
   for (const count of [0, 30000]) {
-    it(`keeps successful ${count}-fill responses on the ten-second cadence`, async () => {
+    it(`re-reads successful ${count}-fill responses once per pushed change`, async () => {
       const view = createView()
       try {
         const fills = Array.from({ length: count }, (_, i) => ({ side: 'buy', size: 0.001, price: 100, cycleId: 'cycle-1', timestamp: i }))
@@ -190,10 +184,8 @@ describe('Cost Basis rendered polling and recovery (#853, #933)', () => {
         await view.respond({ fills })
         assert.equal(view.requests.length, 3, 'successful initial response must not trigger another batch')
         assert.equal(view.timers.size, 1)
-        view.advance(1000)
-        assert.equal(view.requests.length, 3, 'only the initial batch is sent in the first second')
         for (let tick = 1; tick <= 3; tick++) {
-          view.advance(tick === 1 ? 9000 : 10000)
+          view.tick()
           assert.equal(view.requests.length, 3 + tick * 2, 'config is loaded only once per fund')
           await view.respond({ fills, price: 100 + tick })
           assert.equal(view.requests.length, 3 + tick * 2)
@@ -204,7 +196,7 @@ describe('Cost Basis rendered polling and recovery (#853, #933)', () => {
     })
   }
 
-  it('conditionally polls 30,000 fills, refreshes prices, and recovers changed/restarted ledgers', async (t) => {
+  it('conditionally re-reads 30,000 fills on pushed changes, refreshes prices, and recovers changed/restarted ledgers', async (t) => {
     const { createTransactionsReadView } = require('../src/transactions-regime-query')
     let fills = Array.from({ length: 30000 }, (_, i) => ({
       tradeId: `trade-${i}`, orderId: `order-${i}`, side: i % 2 ? 'sell' : 'buy',
@@ -270,7 +262,7 @@ describe('Cost Basis rendered polling and recovery (#853, #933)', () => {
     } finally { view.cleanup() }
   })
 
-  it('skips automatic ticks while a batch or failed batch remainder is in flight', async () => {
+  it('queues one more read for changes during a batch or failed batch remainder, without releasing its reads', async () => {
     const view = createView()
     try {
       view.tick(); view.tick()
@@ -282,10 +274,10 @@ describe('Cost Basis rendered polling and recovery (#853, #933)', () => {
       assert.equal(view.requests.length, 3, 'a failed endpoint must not release the other pending reads')
       await view.respond()
       assert.match(view.text(), /Error: Offline/)
-      view.tick()
-      assert.equal(view.requests.length, 6)
+      assert.equal(view.requests.length, 6, 'the changes that arrived mid-batch trigger exactly one more batch')
       await view.respond()
       assert.doesNotMatch(view.text(), /Error:|Data is stale/)
+      assert.equal(view.requests.length, 6)
     } finally { view.cleanup() }
   })
 

@@ -68,9 +68,10 @@ describe('route audit against the synthetic fixture', () => {
 })
 
 describe('audit model stays aligned with the UI', () => {
-  it('polls Transactions every 10s with a 100-row page', () => {
+  it('re-reads Transactions on pushed fund changes, not a timer, with a 100-row page', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'admin', 'src', 'components', 'TransactionsRegime.jsx'), 'utf8')
-    assert.match(src, /usePolling\(\s*\w+,\s*10000\b/)
+    assert.match(src, /useRealtimeRefresh\(\{[^}]*'regime:changed'/s)
+    assert.doesNotMatch(src, /usePolling/)
     assert.match(src, /pageSize: '100'/)
     assert.match(src, /\/api\/\$\{exchange\}\/config/)
   })
