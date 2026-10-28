@@ -382,12 +382,15 @@ const createRealtimeBus = ({
     },
     /**
      * The gateway lost an exchange's engine: no status will follow, so announce
-     * its running funds as stopped (the next status re-announces them).
+     * its running funds as stopped, then forget its funds so the first status
+     * after recovery is announced again even when it matches what was sent.
      * @param {string} exchange
      */
     engineDown: (exchange) => {
-      for (const state of [...lastRegimeState.values()]) {
-        if (state.exchange === exchange && state.isRunning) announceState({ ...state, isRunning: false });
+      for (const [key, state] of [...lastRegimeState]) {
+        if (state.exchange !== exchange) continue;
+        if (state.isRunning) announceState({ ...state, isRunning: false });
+        lastRegimeState.delete(key);
       }
     },
     /** Refuse new upgrades and close every connection; resolves once all are gone. */

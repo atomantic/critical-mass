@@ -192,9 +192,10 @@ describe('compact regime state notifications', () => {
     bus.engineDown('gemini');
     bus.engineDown('cryptocom');
     bus.emit('regime:status', status('gemini', true));
+    bus.emit('regime:status', status('cryptocom', false));
     await roundTrip(client);
     assert.deepEqual(events(client, 'regime:state').map(({ exchange, isRunning }) => `${exchange}:${isRunning}`), [
-      'gemini:true', 'coinbase:true', 'cryptocom:false', 'gemini:false', 'gemini:true',
+      'gemini:true', 'coinbase:true', 'cryptocom:false', 'gemini:false', 'gemini:true', 'cryptocom:false',
     ]);
   });
 });
