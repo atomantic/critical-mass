@@ -53,3 +53,18 @@ it('says a key save may have been applied when no reply was read', async () => {
 
   expect((await screen.findAllByText(/may have reached the server/)).length).toBeGreaterThan(0)
 })
+
+it('App keys the route so a failed load on a new exchange shows no stale configured state', async () => {
+  const { default: appSource } = await import('../src/App.jsx?raw')
+  expect(appSource).toMatch(/<KeysConfig key=\{currentExchange\}/)
+
+  vi.stubGlobal('fetch', vi.fn(async url => url.includes('/gemini/')
+    ? { ok: true, json: async () => ({ configured: true, fields: {}, createdAt: '2026-01-01T00:00:00Z' }) }
+    : { ok: false, status: 500, json: async () => ({}) }))
+  const view = render(<KeysConfig key="gemini" exchange="gemini" funds={[]} />)
+  await screen.findByRole('button', { name: 'Test Connection' })
+  view.rerender(<KeysConfig key="kraken" exchange="kraken" funds={[]} />)
+  await screen.findByText(/Failed to load keys/)
+  expect(screen.queryByText(/Stored on/)).toBeNull()
+  expect(screen.queryByText('Configured')).toBeNull()
+})
