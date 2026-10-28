@@ -87,6 +87,8 @@ async function runBrowserScenario({ browser, fixture, metrics, idleMs = 60000 })
   await metrics.flush();
   const config = aggregate(metrics.collector, metrics.phase, performance.now() - idleStart);
   check('Config receives no unneeded regime status frames', !config.ws['in regime:status']);
+  check('Config idle does not poll regime status over HTTP', !Object.keys(config.http).some(key => /regime\/status/.test(key)));
+  check('Config idle receives only change-driven compact regime state frames', (config.ws['in regime:state']?.count || 0) <= 1 && (config.ws['in regime:state']?.bytes || 0) < 1024);
   check('Config does not hydrate historical fills', ![...Object.keys(configLoad.http), ...Object.keys(config.http)].some(key => /\/fills/.test(key)));
   check('unmounted Transactions leaves no fills/open-orders polling', !Object.keys(config.http).some(key => /fills|open-orders|manual-trades/.test(key)));
   check('stable Config reference reads are not repeatedly transferred', !Object.keys(config.http).some(key => /\/config(?:\?|$)/.test(key)));

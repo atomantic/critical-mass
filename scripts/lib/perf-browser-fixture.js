@@ -90,7 +90,7 @@ async function startBrowserFixture() {
       const viewFor = pair => views.get(`${exchange}:${pair || FUNDS.find(fund => fund[0] === exchange)[1]}`);
       engine.onRequest('regime:fills', (query, _exchange, pair) => query.paged ? viewFor(pair).query(query) : ({ fills: storedRows.get(`${exchange}:${pair || FUNDS.find(fund => fund[0] === exchange)[1]}`) }));
       engine.onRequest('regime:fills:cycles', (_query, _exchange, pair) => viewFor(pair).aggregates());
-      engine.onRequest('regime:status', () => ({ success: true, status: { running: false, isDryRun: true, market: { lastPrice: 50000 }, health: { mode: 'STOPPED' }, position: {} } }));
+      engine.onRequest('regime:status', () => ({ success: true, status: { isRunning: false, isDryRun: true, market: { lastPrice: 50000 }, health: { mode: 'STOPPED' }, position: {} } }));
       engine.onRequest('regime:open-orders', () => ({ success: true, orders: [] }));
       engine.onRequest('regime:manual-trades', () => ({ success: true, trades: [] }));
       await engine.start();

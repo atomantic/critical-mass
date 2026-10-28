@@ -13,6 +13,20 @@ vi.mock('../src/hooks/useTradeEvents', () => ({
   useRegimeEvents: () => ({ connected: true }),
 }))
 
+// The shell's status updates arrive as `regime:state` socket events; tests
+// drive them through this fake client.
+const socket = vi.hoisted(() => {
+  const handlers = new Map()
+  return {
+    handlers,
+    on: (event, handler) => { handlers.set(event, [...(handlers.get(event) || []), handler]) },
+    off: (event, handler) => { handlers.set(event, (handlers.get(event) || []).filter(h => h !== handler)) },
+    fire: (event, payload) => (handlers.get(event) || []).forEach(h => h(payload)),
+    count: (event) => (handlers.get(event) || []).length,
+  }
+})
+vi.mock('../src/lib/realtime', () => ({ getRealtimeClient: () => socket }))
+
 const response = (data, ok = true) => ({ ok, json: async () => data })
 const config = (baseSizeUsdc, dryRun = false) => ({ productId: 'BTC-USDC', dryRun, regime: { enabled: true, baseSizeUsdc } })
 const status = (isRunning, isDryRun = false, lifecycle = 'active') => ({ status: { isRunning, isDryRun, lifecycle: { lifecycle } } })
@@ -228,21 +242,48 @@ for (const lifecycle of ['draining', 'closed']) it(`clears the previous fund's $
   expectUnknownStatus()
 })
 
-it('invalidates known status on a failed poll for the same fund and recovers through Retry', async () => {
+it('invalidates known status on a failed reconnect read for the same fund and recovers through Retry', async () => {
+  mount()
+  await screen.findByDisplayValue('111')
+  await screen.findByRole('button', { name: 'Stop', exact: true })
+  read.mockImplementation(url => url.includes('/regime/status') ? response({}, false) : response({}))
+  await act(async () => socket.fire('connect'))
+  await screen.findByRole('button', { name: 'Retry engine status' })
+  expectUnknownStatus()
+  read.mockImplementation(() => response(status(false)))
+  fireEvent.click(screen.getByRole('button', { name: 'Retry engine status' }))
+  await screen.findByRole('button', { name: 'Start', exact: true })
+})
+
+it('follows pushed regime:state events for the current fund without polling status', async () => {
   const intervals = vi.spyOn(globalThis, 'setInterval')
   try {
     mount()
     await screen.findByDisplayValue('111')
     await screen.findByRole('button', { name: 'Stop', exact: true })
-    read.mockImplementation(url => url.includes('/regime/status') ? response({}, false) : response({}))
-    const poll = intervals.mock.calls.find(([, delay]) => delay === 5000)[0]
-    await act(async () => poll())
-    await screen.findByRole('button', { name: 'Retry engine status' })
-    expectUnknownStatus()
-    read.mockImplementation(() => response(status(false)))
-    fireEvent.click(screen.getByRole('button', { name: 'Retry engine status' }))
+    const statusReads = () => read.mock.calls.filter(([url]) => url.includes('/regime/status')).length
+    const before = statusReads()
+    expect(intervals.mock.calls.some(([, delay]) => delay === 5000)).toBe(false)
+    await act(async () => socket.fire('regime:state', { exchange: 'gemini', pair: 'BTC-USDC', isRunning: false, isDryRun: false, lifecycle: 'active' }))
+    expect(screen.getByRole('button', { name: 'Stop', exact: true })).toBeTruthy()
+    await act(async () => socket.fire('regime:state', { exchange: 'coinbase', pair: 'BTC-USDC', isRunning: false, isDryRun: false, lifecycle: 'draining' }))
     await screen.findByRole('button', { name: 'Start', exact: true })
+    await screen.findByText('DRAINING', { exact: true })
+    expect(statusReads()).toBe(before)
   } finally {
     intervals.mockRestore()
   }
+})
+
+it('reconciles status when the tab becomes visible and detaches its listeners on unmount', async () => {
+  const page = mount()
+  await screen.findByDisplayValue('111')
+  await screen.findByRole('button', { name: 'Stop', exact: true })
+  expect(socket.count('regime:state')).toBe(1)
+  read.mockImplementation(url => url.includes('/regime/status') ? response(status(false)) : response({ config: config(111, true) }))
+  await act(async () => { document.dispatchEvent(new Event('visibilitychange')) })
+  await screen.findByRole('button', { name: 'Start', exact: true })
+  page.unmount()
+  expect(socket.count('regime:state')).toBe(0)
+  expect(socket.count('connect')).toBe(0)
 })

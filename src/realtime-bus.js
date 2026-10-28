@@ -96,6 +96,12 @@ const createRealtimeBus = ({
   const senders = new WeakMap();
   /** @type {WeakSet<RealtimeSocket>} */
   const scopedStatusSockets = new WeakSet();
+  /**
+   * Last `regime:state` sent per fund, so only a change in the header-level
+   * state (running, dry-run, lifecycle) is announced, not every status tick.
+   * @type {Map<string, {exchange: string, pair: string, isRunning: boolean, isDryRun: boolean, lifecycle: string}>}
+   */
+  const lastRegimeState = new Map();
   /** @type {Set<import('./ipc/ws-server').WebSocketConnection>} */
   const live = new Set();
   let closing = false;
@@ -107,6 +113,36 @@ const createRealtimeBus = ({
   const refusing = () => closing || isStopping();
   /** @param {RealtimeSocket} socket @param {string} text */
   const sendRaw = (socket, text) => senders.get(socket)?.(text);
+
+  /** @param {{exchange: string, pair: string, isRunning: boolean, isDryRun: boolean, lifecycle: string}} state */
+  const announceState = (state) => {
+    const key = `${state.exchange}::${state.pair}`;
+    const prev = lastRegimeState.get(key);
+    if (prev && prev.isRunning === state.isRunning && prev.isDryRun === state.isDryRun && prev.lifecycle === state.lifecycle) return;
+    lastRegimeState.set(key, state);
+    const text = eventFrame('regime:state', state);
+    for (const socket of sockets.values()) sendRaw(socket, text);
+  };
+
+  /**
+   * Derive the compact `regime:state` notification from a full `regime:status`
+   * emit and broadcast it to every socket when it differs from the last one
+   * for that fund. The shell header needs only these three fields; this keeps
+   * it off a status poll and off the full status stream.
+   * @param {unknown} payload
+   */
+  const announceRegimeState = (payload) => {
+    const data = /** @type {{exchange?: unknown, pair?: unknown, status?: any} | null} */ (payload);
+    const status = data?.status;
+    if (typeof data?.exchange !== 'string' || typeof data?.pair !== 'string' || typeof status?.isRunning !== 'boolean') return;
+    announceState({
+      exchange: data.exchange,
+      pair: data.pair,
+      isRunning: status.isRunning,
+      isDryRun: Boolean(status.isDryRun),
+      lifecycle: status.lifecycle?.lifecycle || 'active',
+    });
+  };
 
   const settleClose = () => {
     if (resolveClose && live.size === 0) {
@@ -318,6 +354,7 @@ const createRealtimeBus = ({
     /** @param {string} event @param {unknown} [payload] */
     emit: (event, payload) => {
       const text = eventFrame(event, payload);
+      if (event === 'regime:status') announceRegimeState(payload);
       for (const socket of sockets.values()) {
         if (event === 'regime:status' && scopedStatusSockets.has(socket)) {
           const data = /** @type {{exchange?: string, pair?: string} | null} */ (payload);
@@ -343,10 +380,24 @@ const createRealtimeBus = ({
     disconnectSockets: (code = 1008, reason = 'Operator credentials changed') => {
       for (const socket of [...sockets.values()]) socket.disconnect(code, reason);
     },
+    /**
+     * The gateway lost an exchange's engine: no status will follow, so announce
+     * its running funds as stopped, then forget its funds so the first status
+     * after recovery is announced again even when it matches what was sent.
+     * @param {string} exchange
+     */
+    engineDown: (exchange) => {
+      for (const [key, state] of [...lastRegimeState]) {
+        if (state.exchange !== exchange) continue;
+        if (state.isRunning) announceState({ ...state, isRunning: false });
+        lastRegimeState.delete(key);
+      }
+    },
     /** Refuse new upgrades and close every connection; resolves once all are gone. */
     close: () => {
       if (closePromise) return closePromise;
       closing = true;
+      lastRegimeState.clear();
       closePromise = new Promise((resolve) => { resolveClose = resolve; });
       for (const socket of [...sockets.values()]) socket.disconnect(1001, 'Gateway is shutting down');
       settleClose();

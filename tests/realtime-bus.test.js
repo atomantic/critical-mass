@@ -158,6 +158,48 @@ describe('scoped regime statuses', () => {
   });
 });
 
+describe('compact regime state notifications', () => {
+  it('announces header state to every socket only when it changes', async (t) => {
+    const { bus, hosts: [host] } = await startBus(t);
+    const legacy = await connect(t, host);
+    const config = await connect(t, host, { scoped: true });
+    const status = (isRunning, extra = {}) => ({ exchange: 'gemini', pair: 'BTCUSD', status: { isRunning, isDryRun: false, lifecycle: { lifecycle: 'active' }, big: 'x'.repeat(1000), ...extra } });
+    bus.emit('regime:status', status(true));
+    bus.emit('regime:status', status(true, { lastPrice: 2 }));
+    bus.emit('regime:status', status(true, { isDryRun: true }));
+    bus.emit('regime:status', status(false));
+    bus.emit('regime:status', { exchange: 'gemini', pair: 'BTCUSD', status: { regime: 'range' } });
+    bus.emit('regime:status', { exchange: 'gemini', status: { isRunning: true } });
+    await Promise.all([legacy, config].map(roundTrip));
+    const expected = [
+      { exchange: 'gemini', pair: 'BTCUSD', isRunning: true, isDryRun: false, lifecycle: 'active' },
+      { exchange: 'gemini', pair: 'BTCUSD', isRunning: true, isDryRun: true, lifecycle: 'active' },
+      { exchange: 'gemini', pair: 'BTCUSD', isRunning: false, isDryRun: false, lifecycle: 'active' },
+    ];
+    assert.deepEqual(events(config, 'regime:state'), expected);
+    assert.deepEqual(events(legacy, 'regime:state'), expected);
+    assert.deepEqual(events(config, 'regime:status'), [], 'the full status stays room-scoped');
+  });
+
+  it('announces a lost engine\'s running funds as stopped and recovers on the next status', async (t) => {
+    const { bus, hosts: [host] } = await startBus(t);
+    const client = await connect(t, host, { scoped: true });
+    const status = (exchange, isRunning) => ({ exchange, pair: 'P', status: { isRunning, isDryRun: false } });
+    bus.emit('regime:status', status('gemini', true));
+    bus.emit('regime:status', status('coinbase', true));
+    bus.emit('regime:status', status('cryptocom', false));
+    bus.engineDown('gemini');
+    bus.engineDown('gemini');
+    bus.engineDown('cryptocom');
+    bus.emit('regime:status', status('gemini', true));
+    bus.emit('regime:status', status('cryptocom', false));
+    await roundTrip(client);
+    assert.deepEqual(events(client, 'regime:state').map(({ exchange, isRunning }) => `${exchange}:${isRunning}`), [
+      'gemini:true', 'coinbase:true', 'cryptocom:false', 'gemini:false', 'gemini:true', 'cryptocom:false',
+    ]);
+  });
+});
+
 describe('realtime bus: operator check at upgrade', () => {
   it('upgrades only with an operator session or bearer password from this origin', async (t) => {
     const { hosts: [host], bus } = await startBus(t, { auth: true });

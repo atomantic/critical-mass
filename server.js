@@ -312,7 +312,10 @@ const createExchangeIPC = (port, name) => {
       if (failure) throw failure;
     },
     onConnect: () => log('INFO', `🔗 Gateway connected to ${name} engine IPC`),
-    onDisconnect: () => log('INFO', `🔗 Gateway disconnected from ${name} engine IPC`),
+    onDisconnect: () => {
+      log('INFO', `🔗 Gateway disconnected from ${name} engine IPC`);
+      io.engineDown(name);
+    },
   });
   return client;
 };
