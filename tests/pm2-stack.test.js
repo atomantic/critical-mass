@@ -37,11 +37,26 @@ function run(t, command = 'start', scenario = '', initial = names) {
       process.exit(scenario === 'occupied-port' ? 0 : 1);
     }
     let state = JSON.parse(fs.readFileSync('state.json'));
+    for (const app of state.filter(app => app.name === 'pm2-logrotate')) {
+      app.pm2_env.version ||= scenario === 'rotation-v3' ? '3.0.0' : '2.7.0';
+      if (scenario.startsWith('rotation-stopped') && !app.restarted) { app.pid = 0; app.pm2_env.status = 'stopped'; }
+    }
     if (args[0] === 'jlist') {
       if (scenario === 'bad-inventory') { console.log('secret-fixture-value'); process.exit(0); }
       console.log(JSON.stringify(state)); process.exit(0);
     }
+    if (scenario === 'rotation-offline' && args[0] === 'install') { console.error('secret-fixture-value'); process.exit(2); }
     if (scenario === 'stop-failure' && args[0] === 'stop') process.exit(2);
+    if (args[0] === 'install') {
+      state = state.filter(app => app.name !== 'pm2-logrotate');
+      const pm_id = Math.max(-1, ...state.map(app => app.pm_id)) + 1;
+      state.push({ name:'pm2-logrotate',pm_id,pid:pm_id+100,pm2_env:{status:'online',version:'2.7.0'} });
+    }
+    if (args[0] === 'restart') {
+      if (scenario === 'rotation-stopped-restart-failure') process.exit(2);
+      const app = state.find(app => app.name === args[1]);
+      app.pid=app.pm_id+100; app.pm2_env.status='online'; app.restarted=true;
+    }
     if (args[0] === 'stop') {
       for (const app of state.filter(app => args.slice(1).includes(String(app.pm_id)))) {
         if (scenario === 'gateway-still-running' && app.name === 'critical-mass') continue;
@@ -86,6 +101,8 @@ test('npm start confirms gateway stop before engines, recreates in dependency or
     ['pm2', 'delete', '0', '1', '2', '3', '4'],
     ['pm2', 'start', 'ecosystem.config.cjs', '--only', names.slice(1, 4).join(',')],
     ['pm2', 'start', 'ecosystem.config.cjs', '--only', [names[0], names[4]].join(',')],
+    ['pm2', 'install', 'pm2-logrotate@2.7.0'],
+    ...[['max_size', '20M'], ['retain', '5'], ['compress', 'true'], ['rotateInterval', '0 0 * * *']].map(([key, value]) => ['pm2', 'set', `pm2-logrotate:${key}`, value]),
     ['pm2', 'save'],
   ]);
   assert.equal(result.state.find(app => app.name === 'unrelated-app').pid, 105);
@@ -138,5 +155,36 @@ test('occupied ports or failed starts cannot save a broken process list', { time
     assert.equal(result.calls.some(call => call[1] === 'save'), false);
     if (scenario === 'occupied-port') assert.equal(result.calls.some(call => call[1] === 'start'), false);
     if (scenario !== 'occupied-port') assert.equal(result.calls.filter(call => call[1] === 'start').length, 1);
+  }
+});
+
+test('log rotation skips an installed module and reasserts bounded settings', { timeout: TEST_TIMEOUT_MS }, t => {
+  const result = run(t, 'start', '', [...names, 'pm2-logrotate']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.calls.some(call => call[1] === 'install'), false);
+  assert.equal(result.calls.filter(call => call[1] === 'set').length, 4);
+  assert.equal(result.state.find(app => app.name === 'pm2-logrotate').pid, 105);
+});
+
+test('offline rotation installation warns without failing or leaking captured output', { timeout: TEST_TIMEOUT_MS }, t => {
+  const result = run(t, 'start', 'rotation-offline');
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /log rotation could not be configured/);
+  assert.equal((result.stdout + result.stderr).includes('secret-fixture-value'), false);
+  assert.equal(result.calls.some(call => call[1] === 'save'), true);
+});
+
+test('log rotation repairs stopped modules and migrates the broken compression release', { timeout: TEST_TIMEOUT_MS }, t => {
+  for (const scenario of ['rotation-stopped', 'rotation-v3', 'rotation-stopped-restart-failure']) {
+    const result = run(t, 'start', scenario, [...names, 'pm2-logrotate']);
+    assert.equal(result.status, 0, result.stderr);
+    if (scenario === 'rotation-v3') {
+      assert.equal(result.calls.some(call => call[1] === 'install'), true);
+      assert.equal(result.state.find(app => app.name === 'pm2-logrotate').pm2_env.version, '2.7.0');
+    } else {
+      assert.equal(result.calls.some(call => call[1] === 'restart' && call[2] === 'pm2-logrotate'), true);
+      if (scenario.endsWith('failure')) assert.match(result.stderr, /log rotation could not be configured/);
+      else assert.equal(result.state.find(app => app.name === 'pm2-logrotate').pm2_env.status, 'online');
+    }
   }
 });
