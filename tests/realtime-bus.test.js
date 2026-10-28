@@ -180,6 +180,23 @@ describe('compact regime state notifications', () => {
     assert.deepEqual(events(legacy, 'regime:state'), expected);
     assert.deepEqual(events(config, 'regime:status'), [], 'the full status stays room-scoped');
   });
+
+  it('announces a lost engine\'s running funds as stopped and recovers on the next status', async (t) => {
+    const { bus, hosts: [host] } = await startBus(t);
+    const client = await connect(t, host, { scoped: true });
+    const status = (exchange, isRunning) => ({ exchange, pair: 'P', status: { isRunning, isDryRun: false } });
+    bus.emit('regime:status', status('gemini', true));
+    bus.emit('regime:status', status('coinbase', true));
+    bus.emit('regime:status', status('cryptocom', false));
+    bus.engineDown('gemini');
+    bus.engineDown('gemini');
+    bus.engineDown('cryptocom');
+    bus.emit('regime:status', status('gemini', true));
+    await roundTrip(client);
+    assert.deepEqual(events(client, 'regime:state').map(({ exchange, isRunning }) => `${exchange}:${isRunning}`), [
+      'gemini:true', 'coinbase:true', 'cryptocom:false', 'gemini:false', 'gemini:true',
+    ]);
+  });
 });
 
 describe('realtime bus: operator check at upgrade', () => {

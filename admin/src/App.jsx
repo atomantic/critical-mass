@@ -601,6 +601,8 @@ function AppContent() {
     pair: currentPair,
     enabled: pollRegime,
     onState: (state) => {
+      // An event can land between a fund switch and the hook re-subscribing.
+      if (committedFundRef.current !== `${state.exchange}::${state.pair || currentPair}`) return
       // The pushed state is newer than any read still in flight.
       invalidateStatusRead()
       setStatusError(null)
