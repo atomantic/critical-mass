@@ -19,11 +19,30 @@ describe('classifyPayloadPath', () => {
     assert.equal(classifyPayloadPath('coinbase/fill-ledger.json'), 'ledger');
     assert.equal(classifyPayloadPath('coinbase/BTC-USDC/state.json'), 'fund-state');
     assert.equal(classifyPayloadPath('coinbase/BTC-USDC/regime-state.json'), 'fund-state');
+    assert.equal(classifyPayloadPath('coinbase/BTC-USDC/placement-intents.json'), 'placement-intents');
+    assert.equal(classifyPayloadPath('coinbase/BTC-USDC/placement-intents.json.lock'), null);
+    assert.equal(classifyPayloadPath('backups/fund-state/x/coinbase/BTC-USDC/placement-intents.json'), null);
     assert.equal(classifyPayloadPath('updown-state.json'), 'updown-state');
     assert.equal(classifyPayloadPath('backups/fund-state/x/coinbase/BTC-USDC/fill-ledger.json'), null);
     assert.equal(classifyPayloadPath('backups/fill-ledger.json'), null);
     assert.equal(classifyPayloadPath('updown/scorecard/state.json'), null);
     assert.equal(classifyPayloadPath('coinbase/BTC-USDC/closed-trades.json'), null);
+  });
+});
+
+describe('validatePersistedPayload — placement intents (#1843)', () => {
+  const file = 'coinbase/BTC-USDC/placement-intents.json';
+  it('accepts a valid envelope, including an empty one', () => {
+    assert.deepEqual(validatePersistedPayload(file, JSON.stringify({ version: 1, intents: [] })), { ok: true });
+    assert.deepEqual(validatePersistedPayload(file, JSON.stringify({ version: 1, intents: [{ id: 'a', status: 'unresolved' }] })), { ok: true });
+  });
+
+  it('rejects corrupt JSON, a missing envelope and malformed rows', () => {
+    for (const bad of ['{not valid json', '[]', JSON.stringify({ intents: [{ id: 'a' }] }), JSON.stringify({ intents: [null] })]) {
+      const result = validatePersistedPayload(file, bad);
+      assert.equal(result.ok, false, bad);
+      assert.match(String(result.error), /placement-intents\.json/);
+    }
   });
 });
 

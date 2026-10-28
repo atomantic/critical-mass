@@ -1433,6 +1433,23 @@ const mergePlacementIntentsForRestore = (snapshotFile, destinationFile) => {
 };
 
 /**
+ * Replace every staged fund's placement-intents.json with its union against the
+ * destination's, so a full-archive restore adds blockers but never clears one
+ * (the same rule restoreFundStateBackup applies). Throws on an unreadable
+ * destination document: guessing "empty" there is the double-placement the
+ * file exists to prevent.
+ * @param {string} stageDir - extracted, layout-translated staging tree
+ * @param {string} dataDir - destination data root
+ */
+const stageMergedPlacementIntents = (stageDir, dataDir) => {
+  for (const rel of listStagedPayloadPaths(stageDir)) {
+    if (classifyPayloadPath(rel) !== 'placement-intents') continue;
+    const staged = path.join(stageDir, ...rel.split('/'));
+    fs.writeFileSync(staged, mergePlacementIntentsForRestore(staged, path.join(dataDir, ...rel.split('/'))));
+  }
+};
+
+/**
  * Restore one fund from a rolling state snapshot through the same durable
  * transactional applier used by full archives.
  * @param {string} snapshotId
@@ -2007,6 +2024,11 @@ const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null
     // touched (#1811): this covers archives that changed after preflight.
     const compatible = checkPersistedPayloads(tempDir, listStagedPayloadPaths(tempDir));
     if (!compatible.ok) return abort(`Archive accounting is not readable by this build: ${compatible.error}. No files were changed.`, 'payload-incompatible');
+
+    // The archive's intents must never clear a blocker the destination holds
+    // (an unresolved order POST made after the archive was taken): merge them
+    // into the staged copy so the journal commits them with the accounting.
+    stageMergedPlacementIntents(tempDir, paths.dataDir);
 
     // From here applyStagedFiles owns the staging directory: it removes it on a
     // refusal or rollback, or leaves it for the rollback journal to recover.
