@@ -43,15 +43,28 @@ response parsing retains only page counts, projection checks and config-invalida
 Assertions cover bounded page/DOM rows and compact projection, no eager detail transfer, no fill-history
 hydration or Transactions polling after Config navigation, stable reference reads, and exact visible consumer
 listener recovery. The actual hooks use client-side listeners on a shared websocket, rather than room
-subscriptions. The shell intentionally retains one regime consumer and one trade/toast consumer across tabs;
-its five-second status and thirty-second summary refreshes, and global engine broadcasts, remain visible in
-the measured idle traffic. These baseline costs are reported, not hidden or asserted to be zero. Synthetic
-engine reads/feed do not exercise exchange APIs, order execution, realistic market timing or production latency.
+subscriptions. After #1863, Transactions and Config expect zero status listeners, while Dashboard and
+Overview each expect one visible status listener, including after reconnect. The shell's trade/toast
+consumer and global engine broadcasts can still contribute to idle traffic; the fixture reports those
+baseline costs rather than asserting that traffic is zero. Synthetic engine reads/feed do not exercise
+exchange APIs, order execution, realistic market timing or production latency.
 
 Exit codes: **0 PASS**, **1 FAIL** for assertion failures, **2 UNVERIFIED** for a missing browser, missing or
 incomplete fixture/session, navigation timeout or a shortened idle window. External/production URLs are
 unsupported, so the runner cannot enroll, edit configuration or force reconnects on a live installation.
 A PASS applies only to the isolated fixture and this machine; it is not a production performance claim.
+
+## Read-only measurement in an existing operator session
+
+Live measurements require an already authorized operator session for the installation under study. Use the operator's existing browser tab and its built-in Network and Performance panels; do not sign in through the fixture runner, enroll an installation, edit configuration, or force a reconnect. If no authorized session is available, leave the live results **UNVERIFIED**. Do not attempt to obtain one by reusing credentials or changing the installation.
+
+1. In DevTools Network, enable **Preserve log** and **Disable cache**, clear the request list, then navigate to Transactions once. Start timing at navigation and stop when the useful content is visible and stable: record the first moment the transaction rows and their controls can be used. Do not include account-specific values in notes.
+2. Record request count and total transferred and decoded response bytes, grouped by redacted endpoint pattern and resource type. Replace identifiers and query values with placeholders (for example, `/api/funds/{id}/fills?page={n}`). Record overlapping requests as the maximum number in flight and the longest overlap interval. Use the Network summary for transfer size; use response sizes only as decoded-byte estimates when DevTools does not expose decoded totals.
+3. Navigate to Config and let its initial requests settle. Keep the session idle for at least 60 seconds. Record the same HTTP aggregates for the idle interval.
+4. For websocket traffic, record only frame direction/event pattern and aggregate payload bytes and frame counts during the idle interval. DevTools' websocket Messages view can be sampled manually; do not copy message contents. Separate inbound, outbound, and protocol/control frames where visible. Do not describe payload totals as wire bytes: framing, compression, and transport overhead are not included.
+5. Report the browser/version, date, route sequence, idle duration, cache setting, request counts, transfer/decoded totals by redacted endpoint pattern, maximum overlap, useful-content time, and websocket aggregate totals. Note missing metrics as **UNVERIFIED** and distinguish estimates from directly displayed totals. Never save or share HAR files, request/response bodies, headers, cookies, screenshots, or traces because they may contain credentials or private records.
+
+This procedure reports observations from one existing session; it does not make live changes or establish a production-wide baseline. The fixture runner above remains synthetic and cannot produce these live measurements. Recheck route and listener behavior before comparing measurements across revisions.
 
 The older `node scripts/perf-route-audit.js` command is a supplemental protocol replay. It accepts an
 isolated miniature gateway or `CM_PERF_TOKEN` with `--base-url`, but does not render the shell or exercise
