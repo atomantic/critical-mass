@@ -48,6 +48,15 @@ test('release workflow passes only newly-created version tags to publication', (
   assert.equal((releaseWorkflow.match(/packages: write/g) || []).length, 1);
 });
 
+test('release and registry login use the runner CLIs instead of third-party actions', () => {
+  assert.doesNotMatch(releaseWorkflow, /softprops\//);
+  assert.match(releaseWorkflow, /- name: Create Release\n        if: steps\.tag-check\.outputs\.exists == 'false'\n        env:\n          GH_TOKEN: \$\{\{ secrets\.GITHUB_TOKEN \}\}\n          TAG: v\$\{\{ steps\.package-version\.outputs\.version \}\}\n          NOTES: \$\{\{ steps\.changelog\.outputs\.changelog \}\}\n        run: \|\n          gh release create "\$TAG" --title "\$TAG" --notes "\$NOTES" --target "\$GITHUB_SHA"/);
+  assert.doesNotMatch(releaseWorkflow, /gh release create[^\n]*(--draft|--prerelease)/);
+  assert.doesNotMatch(dockerWorkflow, /docker\/login-action/);
+  assert.match(dockerWorkflow, /REGISTRY_USER: \$\{\{ github\.repository_owner \}\}\n          REGISTRY_TOKEN: \$\{\{ secrets\.GITHUB_TOKEN \}\}\n        run: echo "\$REGISTRY_TOKEN" \| docker login ghcr\.io -u "\$REGISTRY_USER" --password-stdin/);
+  assert.ok(dockerWorkflow.indexOf('docker login ghcr.io') < dockerWorkflow.indexOf('docker/build-push-action'));
+});
+
 test('release documentation covers image recovery and source verification', () => {
   assert.match(releaseDocs, /docker buildx imagetools inspect/);
   assert.match(releaseDocs, /linux\/amd64/);
