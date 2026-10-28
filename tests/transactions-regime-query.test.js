@@ -24,6 +24,50 @@ describe('regime fills paged query', () => {
     }
   });
 
+  it('validates opt-in cycle options without changing legacy responses', () => {
+    for (const input of [{ cycleOptionsPaged: 'yes' }, { cycleOptionsPaged: true, cycleOffset: '-1' },
+      { cycleOptionsPaged: true, cycleLimit: 0 }, { cycleOptionsPaged: true, cycleSearch: [] },
+      { cycleOptionsPaged: true, cycleSearch: 'x'.repeat(201) }, { cycleOptionsPaged: true, cycleOffset: Number.MAX_SAFE_INTEGER + 1 }]) {
+      assert.equal(parseFillsQuery({ paged: true, ...input }).statusCode, 400);
+    }
+    assert.equal(parseFillsQuery({ paged: true, cycleOptionsPaged: true, cycleLimit: 999 }).cycleLimit, 100);
+    const view = createTransactionsReadView(() => [...fills(20), { ...fills(1)[0], cycleId: undefined }], () => 'r1');
+    const legacy = view.query({ paged: true });
+    assert.deepEqual(legacy.cycleIds, ['current', 'cycle-3', 'cycle-2', 'cycle-1', 'cycle-0']);
+    assert.equal('cycleOptionsInfo' in legacy, false);
+    assert.deepEqual(view.query({ paged: true, cycleOptionsPaged: false }), legacy);
+    const options = view.query({ paged: true, cycleOptionsPaged: true, cycleOffset: 999, cycleLimit: 2 });
+    assert.deepEqual(options.cycleIds, ['cycle-1', 'cycle-0']);
+    assert.deepEqual(options.cycleOptionsInfo, { offset: 2, limit: 2, total: 4, hasPrev: true, hasNext: false });
+    assert.equal(view.query({ paged: true, cycleOptionsPaged: true, cycleSearch: 'absent' }).cycleOptionsInfo.total, 0);
+  });
+
+  for (const cycles of [3000, 15000]) it(`bounds options and repeated response bytes for 30,000 fills / ${cycles} cycles`, () => {
+    let revision = 'r1';
+    const history = fills(30000).map((row, i) => ({ ...row, cycleId: `cycle-${i % cycles}` }));
+    const view = createTransactionsReadView(() => history, () => revision);
+    const legacy = view.query({ paged: true });
+    const query = { paged: true, cycleOptionsPaged: true };
+    const first = view.query(query);
+    const second = view.query({ ...query, revision: first.revision });
+    assert.equal(legacy.cycleIds.length, cycles);
+    assert.equal(first.cycleIds.length, 100);
+    assert.deepEqual(second, first);
+    assert.ok(Buffer.byteLength(JSON.stringify(second)) < 45000);
+    console.log(JSON.stringify({ cycles, fills: 30000, legacyBytes: Buffer.byteLength(JSON.stringify(legacy)), boundedBytes: Buffer.byteLength(JSON.stringify(first)), pollBytes: Buffer.byteLength(JSON.stringify(second)), options: first.cycleIds.length }));
+    const selected = view.query({ ...query, cycleSearch: 'CYCLE-1', cycleOffset: 0 });
+    assert.ok(selected.cycleIds.every(id => id.includes('cycle-1')));
+    const old = view.query({ ...query, cycleSearch: 'cycle-0', cycle: 'cycle-0', sortField: 'price', sortDir: 'asc' });
+    const expected = computeFillsWithPnL(history).filter(row => row.cycleId === 'cycle-0');
+    assert.deepEqual(old.cycleIds, ['cycle-0']);
+    assert.deepEqual(old.fills.map(row => row.tradeId), sortFills(expected, 'price', 'asc').map(row => row.tradeId));
+    assert.deepEqual(old.summary, summarizeFills(expected));
+    assert.equal(old.pageInfo.total, 30000 / cycles);
+    revision = 'r2';
+    assert.equal(view.query({ ...query, cycle: 'cycle-0', revision: old.revision }).statusCode, 409);
+    assert.deepEqual(view.query({ ...query, cycle: 'cycle-0' }).summary, old.summary);
+  });
+
   it('keeps large exchange metadata and ownership annotations out of page responses', () => {
     const history = fills(150).map(row => ({ ...row, rawExchangeResponse: 'x'.repeat(100000), consumedBy: [{ orderId: 'private-detail' }] }));
     const page = createTransactionsReadView(() => history, () => 'rev').query({ paged: true });

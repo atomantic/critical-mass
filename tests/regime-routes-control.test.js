@@ -674,6 +674,21 @@ describe('GET /regime/fills paging', () => {
     assert.equal(invalid.statusCode, 400);
     assert.equal(calls.length, 1);
   });
+  it('forwards opt-in cycle options and rejects malformed options before IPC', async () => {
+    const calls = [];
+    const app = setupApp((...args) => { calls.push(args); return Promise.resolve({ cycleIds: ['cycle-1'], cycleOptionsInfo: { total: 1 } }); });
+    const query = { pair: 'CRO_USD', paged: 'true', cycleOptionsPaged: 'true', cycleOffset: '100', cycleLimit: '999', cycleSearch: 'cycle-1', cycle: 'cycle-1' };
+    const response = await invoke(app, 'GET /api/:exchange/regime/fills', { params: { exchange: 'cryptocom' }, query });
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(response.body.cycleIds, ['cycle-1']);
+    assert.equal(calls[0][1].cycleLimit, 100);
+    assert.equal(calls[0][1].cycleOffset, 100);
+    assert.equal(calls[0][1].cycleSearch, 'cycle-1');
+    assert.equal(calls[0][1].cycle, 'cycle-1');
+    const invalid = await invoke(app, 'GET /api/:exchange/regime/fills', { params: { exchange: 'cryptocom' }, query: { ...query, cycleOffset: '-1' } });
+    assert.equal(invalid.statusCode, 400);
+    assert.equal(calls.length, 1);
+  });
   it('preserves the stale-revision 409 across IPC', async () => {
     const app = setupApp(() => Promise.resolve({ success: false, statusCode: 409, code: 'STALE_FILL_REVISION', revision: 'new' }));
     const response = await invoke(app, 'GET /api/:exchange/regime/fills', {

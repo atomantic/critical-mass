@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 - **[issue-1860] Restore the Overview status hook** — import the missing `useMemo` dependency and cover the real all-fund status hook's event subscription, status updates, and listener cleanup.
+- **[issue-1861] Bound the Transactions cycle selector** — opt-in searchable cycle pages cap each response at 100 options, with browsing and fixed All/Current controls preserving exact historical filtering. Legacy API callers retain the complete cycle list.
+
 - **[issue-1856] Full backup archives use their embedded creation time** — listing, retention and the scheduled-backup anchor sort valid archives by the UTC timestamp in their filename, with mtime and filename tie breakers. Legacy names still fall back to mtime, so copied archives retain their real restore dates and pruning keeps the newest recovery point.
 - **[issue-1855] Bound PM2 process logs** — native startup configures 20 MiB rotation with five compressed archives and daily rotation; Docker/Umbrel bake the module into a writable image-owned PM2 home. Hourly diagnostics now use the hourly gate, and repeated negative-PnL skips log only when the body TP price changes.
 - **[issue-1853] Drop the unused direct admin PostCSS dependency** — remove the redundant `postcss` devDependency while keeping its transitive installation through Vite and Tailwind.

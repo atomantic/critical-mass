@@ -309,6 +309,10 @@ describe('engine regime:fills paging', () => {
       assert.equal(h.getLedgerCreations(), stopped ? 1 : 0);
       const oversized = await read({ paged: true, pageSize: 1000 });
       assert.equal(oversized.fills.length, 100);
+      const options = await read({ paged: true, cycleOptionsPaged: true, cycleLimit: 1, cycleSearch: 'cycle' });
+      assert.ok(options.cycleIds.length <= 1);
+      assert.equal(options.cycleOptionsInfo.limit, 1);
+      assert.equal(options.revision, first.revision);
       const unpaged = await read({});
       assert.equal(unpaged.statusCode, 400);
       assert.equal(unpaged.error, 'paged=true required');
