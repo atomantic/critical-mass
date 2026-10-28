@@ -169,6 +169,8 @@ const createRealtimeBus = ({
     const signature = [
       status.orders?.total, status.orders?.entries, status.orders?.takeProfits, status.orders?.bodies, orderIds,
       position.cyclesCompleted, position.cycleBuys, position.realizedPnL, position.realizedAssetPnL,
+      // Held quantity and cost move on every fill, including a partial one that keeps its order id.
+      position.totalAsset, position.totalCostBasis, position.assetOnOrder, position.heldAssetCostBasis,
       status.closedTradesSummary?.count, status.closedTradesSummary?.totalPnl,
     ].join('|');
     const key = `${data.exchange}::${data.pair}`;
