@@ -33,7 +33,7 @@ describe('useMultiRegimeStatuses', () => {
     expect(socket.on.mock.calls.map(([event]) => event)).toEqual([
       'connect', 'disconnect', 'regime:status',
     ])
-    expect(socket.handlers.get('regime:status')).toHaveLength(1)
+    expect(socket.handlers.get('regime:status').size).toBe(1)
 
     const status = { isRunning: true, position: { totalCostBasis: 42 } }
     act(() => socket.emit('regime:status', { exchange: 'coinbase', pair: 'BTC-USDC', status }))
@@ -42,9 +42,9 @@ describe('useMultiRegimeStatuses', () => {
 
     unmount()
 
-    expect(socket.handlers.get('connect')).toHaveLength(0)
-    expect(socket.handlers.get('disconnect')).toHaveLength(0)
-    expect(socket.handlers.get('regime:status')).toHaveLength(0)
+    expect(socket.handlers.get('connect').size).toBe(0)
+    expect(socket.handlers.get('disconnect').size).toBe(0)
+    expect(socket.handlers.get('regime:status').size).toBe(0)
     expect(socket.off.mock.calls.map(([event]) => event)).toEqual([
       'connect', 'disconnect', 'regime:status',
     ])
