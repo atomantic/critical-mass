@@ -697,6 +697,23 @@ describe('GET /regime/fills paging', () => {
     assert.equal(response.statusCode, 409);
     assert.equal(response.body.code, 'STALE_FILL_REVISION');
   });
+  it('forwards conditional cycle revisions and small unchanged responses, validating before IPC', async () => {
+    const calls = [];
+    const app = setupApp((...args) => {
+      calls.push(args);
+      return Promise.resolve({ running: true, unchanged: true, revision: 'ledger:1' });
+    });
+    const req = { params: { exchange: 'cryptocom' }, query: { pair: 'CRO_USD', revision: 'ledger:1' } };
+    const response = await invoke(app, 'GET /api/:exchange/regime/fills/cycles', req);
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(response.body, { success: true, exchange: 'cryptocom', pair: 'CRO_USD', running: true, unchanged: true, revision: 'ledger:1' });
+    assert.deepEqual(calls[0], ['regime:fills:cycles', { revision: 'ledger:1' }, 'cryptocom', 'CRO_USD']);
+    for (const revision of ['', ['one', 'two'], {}, 'x'.repeat(101)]) {
+      const invalid = await invoke(app, 'GET /api/:exchange/regime/fills/cycles', { ...req, query: { ...req.query, revision } });
+      assert.equal(invalid.statusCode, 400);
+    }
+    assert.equal(calls.length, 1);
+  });
   it('routes the bounded cycle read through its own IPC channel', async () => {
     const calls = [];
     const app = setupApp((...args) => { calls.push(args); return Promise.resolve({ fillCount: 7, cycles: [], totalPnl: 42 }); });

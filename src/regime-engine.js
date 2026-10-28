@@ -7560,7 +7560,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     updatePosition,
     getFills,
     getFillPage: input => fillLedger.getFillPage(input),
-    getFillAggregates: () => fillLedger.getFillAggregates(),
+    getFillAggregates: input => fillLedger.getFillAggregates(input),
     getFillLedger: () => fillLedger,
     recalculateAndRefresh,
     getFillStats,

@@ -49,6 +49,14 @@ function parseFillsQuery(input = {}) {
   return { ...cycleOptions, paged: true, page, pageSize: Math.min(pageSize, 100), sortField, sortDir, side, cycle, revision: input.revision };
 }
 
+// Conditional aggregate reads accept only an opaque, bounded ledger revision.
+function parseAggregateQuery(input = {}) {
+  if (input.revision !== undefined && (typeof input.revision !== 'string' || !input.revision || input.revision.length > 100)) {
+    return badQuery('Invalid aggregate revision');
+  }
+  return input.revision === undefined ? {} : { revision: input.revision };
+}
+
 function compareCycles(a, b) {
   if (a === b) return 0;
   if (a === 'current') return -1;
@@ -107,7 +115,12 @@ function createTransactionsReadView(readFills, readRevision) {
       }
       return { fills: rows.map(projectPageRow), pageInfo, summary: { ...result.summary }, cycleIds: [...cycleIds], ...cycleOptions, revision };
     },
-    aggregates() {
+    aggregates(input = {}) {
+      const query = parseAggregateQuery(input);
+      if (query.success === false) return query;
+      const revision = readRevision();
+      // Check at the ledger owner, before enrichment or IPC serialization.
+      if (query.revision === revision) return { unchanged: true, revision };
       const current = currentSnapshot();
       if (!current.aggregates) current.aggregates = { ...aggregateRegimeFills(current.fills), revision: current.revision };
       return current.aggregates;
@@ -116,4 +129,4 @@ function createTransactionsReadView(readFills, readRevision) {
   };
 }
 
-module.exports = { parseFillsQuery, createTransactionsReadView };
+module.exports = { parseFillsQuery, parseAggregateQuery, createTransactionsReadView };

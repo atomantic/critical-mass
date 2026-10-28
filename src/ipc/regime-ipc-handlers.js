@@ -13,6 +13,7 @@
  */
 
 const { IPC_CHANNELS } = require('./ipc-protocol');
+const { parseAggregateQuery } = require('../transactions-regime-query');
 
 /**
  * @param {Object} ipcServer - IPC server exposing onRequest(channel, handler)
@@ -265,12 +266,14 @@ const registerRegimeIpcHandlers = (ipcServer, deps) => {
     return { running: true, ...engine.getFillPage(query) };
   });
 
-  ipcServer.onRequest(IPC_CHANNELS.REGIME_FILLS_CYCLES, async (_payload, exchange, pair) => {
+  ipcServer.onRequest(IPC_CHANNELS.REGIME_FILLS_CYCLES, async (payload, exchange, pair) => {
+    const query = parseAggregateQuery(payload);
+    if (query.success === false) return query;
     const resolvedPair = resolvePair(exchange, pair);
     const engine = regimeEngines.get(fundKey(exchange, resolvedPair));
-    if (engine) return { running: true, ...engine.getFillAggregates() };
+    if (engine) return { running: true, ...engine.getFillAggregates(query) };
     try {
-      return { running: false, ...getStandaloneLedger(exchange, resolvedPair).getFillAggregates() };
+      return { running: false, ...getStandaloneLedger(exchange, resolvedPair).getFillAggregates(query) };
     } catch (err) {
       return { running: false, success: false, error: err.message };
     }

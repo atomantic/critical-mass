@@ -11,7 +11,7 @@ const { resolvePlacementIntent } = require('../state-tracker');
 const { buildStoppedRegimeStatus } = require('../regime-status');
 const { createContextLogger } = require('../logger');
 const { readBooleanFlag } = require('../shared-utils');
-const { parseFillsQuery } = require('../transactions-regime-query');
+const { parseFillsQuery, parseAggregateQuery } = require('../transactions-regime-query');
 const {
   createIPCResolver, withConfiguredPair, asyncRoute, engineError, ipcFailureKind, sendIpcFailure, parsePaging,
 } = require('./route-utils');
@@ -366,7 +366,9 @@ module.exports = (app, deps) => {
   app.get('/api/:exchange/regime/fills/cycles', async (req, res) => {
     const { exchange } = req.params;
     const pair = getFundPair(req);
-    const result = await getIPC(exchange).request(IPC_CHANNELS.REGIME_FILLS_CYCLES, {}, exchange, pair).catch(engineError);
+    const query = parseAggregateQuery(req.query);
+    if (query.success === false) return res.status(400).json(query);
+    const result = await getIPC(exchange).request(IPC_CHANNELS.REGIME_FILLS_CYCLES, query, exchange, pair).catch(engineError);
     if (result.success === false) return sendIpcFailure(res, result);
     res.json({ success: true, exchange, pair, ...result });
   });
