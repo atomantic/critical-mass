@@ -1,7 +1,7 @@
 import Button from './ui/Button'
 import { useState, useEffect, useRef } from 'react'
 import { apiGet, apiPost, apiPut, describeMutationFailure } from '../utils/apiClient'
-import usePolling from '../hooks/usePolling'
+import useRealtimeRefresh from '../hooks/useRealtimeRefresh'
 import { useNotify } from './Toast'
 
 const EVENT_GROUPS = {
@@ -98,7 +98,17 @@ function NotificationsConfig() {
   useEffect(() => {
     fetchConfig()
   }, [])
-  usePolling(fetchStats, 10000)
+  // Counters change when a notification goes out, which follows a trade event or
+  // a Sentinel alert; re-read on those instead of every 10 s (#1880).
+  useEffect(() => {
+    fetchStats()
+  }, [])
+  useRealtimeRefresh({
+    events: ['trade:event', 'sentinel:alert'],
+    rooms: ['sentinel'],
+    minIntervalMs: 5000,
+    onRefresh: fetchStats,
+  })
 
   const handleSave = async () => {
     if (pendingSave.current) return

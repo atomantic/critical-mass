@@ -26,7 +26,7 @@ secret or password is inherited from the caller. Aggregate reads use the actual 
 
 The browser uses the real operator sign-in form with a randomly generated fixture-only password. After
 sign-in, a cache-disabled cold Transactions navigation measures time until 100 real DOM rows and pagination
-are ready, followed by two animation frames. The production ten-second polling interval runs at least once.
+are ready, followed by two animation frames. The status-telemetry window then holds Transactions open for 6.5 seconds.
 The scenario then clicks Config, settles its initial reads, and records at least 60 seconds of idle activity.
 It tests the oversized server page cap, edits synthetic config through the authenticated API and checks a
 remount reads the new value. It then visits a fund dashboard and Overview, forces a transport reconnect in
@@ -41,7 +41,7 @@ cookies, passwords, personal records, screenshots, traces or raw bodies are save
 response parsing retains only page counts, projection checks and config-invalidation booleans.
 
 Assertions cover bounded page/DOM rows and compact projection, no eager detail transfer, no fill-history
-hydration or Transactions polling after Config navigation, stable reference reads, and exact visible consumer
+hydration or Transactions reads after Config navigation, stable reference reads, and exact visible consumer
 listener recovery. The current admin uses client-side listeners and subscribes to per-fund or all-fund
 status rooms on the shared websocket. Transactions and Config have no status listeners and receive no
 unneeded status frames in the fixture; Dashboard and Overview each have one visible status listener and
@@ -72,7 +72,9 @@ Live measurements require an already authorized operator session for the install
 
 This procedure reports observations from one existing session; it does not make live changes or establish a production-wide baseline. The fixture runner above remains synthetic and cannot produce these live measurements. Recheck route and listener behavior before comparing measurements across revisions.
 
-The older `node scripts/perf-route-audit.js` command is a supplemental protocol replay. It accepts an
+The admin makes no timer-driven data reads (`tests/no-admin-polling.test.js` enforces this); the older
+`node scripts/perf-route-audit.js` replay still issues a periodic Transactions read (`--poll-seconds`) to model
+repeated reads, which no longer reflects the UI. It is a supplemental protocol replay. It accepts an
 isolated miniature gateway or `CM_PERF_TOKEN` with `--base-url`, but does not render the shell or exercise
 real engine IPC. Even when its assertions succeed it now reports **UNVERIFIED** for end-to-end performance.
 Its HTTP response timing must not be interpreted as useful-content paint time.

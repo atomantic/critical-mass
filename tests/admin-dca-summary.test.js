@@ -2,7 +2,7 @@
 // measured zero profit, while a real zero from regime accounting stays valid.
 const { before, it } = require('node:test')
 const assert = require('node:assert/strict')
-const { asHookModule } = require('./use-polling-harness')
+const { asHookModule } = require('./hook-module-harness')
 const path = require('node:path')
 const vm = require('node:vm')
 const { createRequire } = require('node:module')
@@ -35,7 +35,7 @@ before(async () => {
       '../utils/pnlFormat.mjs': { pnlColorClass: n => (n >= 0 ? 'text-green-400' : 'text-red-400'), signedPrefix: n => (n >= 0 ? '+' : '') },
       '../utils/actionFailure.mjs': { describeActionFailure: (status, body) => body?.error || body?.message || `HTTP ${status}` },
       // Static markup never runs effects; polling is inert here.
-      '../hooks/usePolling': asHookModule(() => {}),
+      '../hooks/useRealtimeRefresh': asHookModule(() => {}),
       '../utils/intervals.mjs': { getIntervalMs: () => 86400000 },
       '../utils/countdown.mjs': { formatCountdown },
       './StatCard': StatCard,

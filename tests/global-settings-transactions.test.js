@@ -1,6 +1,6 @@
 const { before, describe, it } = require('node:test')
 const assert = require('node:assert/strict')
-const { asHookModule } = require('./use-polling-harness')
+const { asHookModule } = require('./hook-module-harness')
 const path = require('node:path')
 const vm = require('node:vm')
 const { createRequire } = require('node:module')
@@ -97,7 +97,7 @@ function createView(name) {
           ),
         }
       }
-      if (name === '../hooks/usePolling') { const usePolling = (fn, ms, { immediate = true, enabled = true } = {}) => { hooks.useEffect(() => { if (enabled && immediate) fn() }) }; return asHookModule(usePolling) }
+      if (name === '../hooks/useRealtimeRefresh') return asHookModule(() => {})
       if (name === './ModalDialog') return ({ children }) => children
       if (name === './ui/Button') return 'button'
       if (name === './Toast') return { useNotify: () => (type, message) => { notices.push({ type, message }); return null }, useToast: () => ({ addToast: () => null, removeToast() {} }) }
