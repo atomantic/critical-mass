@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 - **[issue-1871] Wait for preset-save completion in the success test** — the pending input is disabled by its fieldset, so its own `.disabled` property is already false before the request completes. The test now verifies the effective lock and waits for the clean save button and unlocked fieldset before checking the confirmed snapshot.
+- Scope regime status realtime traffic to visible fund consumers. (#1865)
+
 - **[issue-1860] Restore the Overview status hook** — import the missing `useMemo` dependency and cover the real all-fund status hook's event subscription, status updates, and listener cleanup.
 - **[issue-1861] Bound the Transactions cycle selector** — opt-in searchable cycle pages cap each response at 100 options, with browsing and fixed All/Current controls preserving exact historical filtering. Legacy API callers retain the complete cycle list.
 

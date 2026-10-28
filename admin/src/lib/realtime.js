@@ -20,7 +20,7 @@ const OPEN = 1
 
 const defaultUrl = () => {
   const { protocol, host } = window.location
-  return `${protocol === 'https:' ? 'wss:' : 'ws:'}//${host}${REALTIME_PATH}`
+  return `${protocol === 'https:' ? 'wss:' : 'ws:'}//${host}${REALTIME_PATH}?scopedRegimeStatus=1`
 }
 
 export function connect({
