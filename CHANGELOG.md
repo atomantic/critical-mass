@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 - **[issue-1855] Bound PM2 process logs** — native startup configures 20 MiB rotation with five compressed archives and daily rotation; Docker/Umbrel bake the module into a writable image-owned PM2 home. Hourly diagnostics now use the hourly gate, and repeated negative-PnL skips log only when the body TP price changes.
+- **[issue-1853] Drop the unused direct admin PostCSS dependency** — remove the redundant `postcss` devDependency while keeping its transitive installation through Vite and Tailwind.
 
 - **[issue-1809] Pending DCA imports block snapshots and restores** — hourly fund-state snapshots refuse while a configured fund holds an interrupted `.dca-import-journal.json` (nothing published or pruned), and hourly and full restores refuse before any engine stop — and again before application — when a fund they would restore has one, or when the archive itself carries a journal. Journal and accounting bytes stay untouched; the operator finishes import recovery and retries, so a restored generation can no longer be rolled forward by the superseded import. Unrelated funds are not checked.
 
