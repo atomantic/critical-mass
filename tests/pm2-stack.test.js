@@ -87,7 +87,7 @@ test('npm start confirms gateway stop before engines, recreates in dependency or
     ['pm2', 'delete', '0', '1', '2', '3', '4'],
     ['pm2', 'start', 'ecosystem.config.cjs', '--only', names.slice(1, 4).join(',')],
     ['pm2', 'start', 'ecosystem.config.cjs', '--only', [names[0], names[4]].join(',')],
-    ['pm2', 'install', 'pm2-logrotate@3.0.0'],
+    ['pm2', 'install', 'pm2-logrotate@2.7.0'],
     ...[['max_size', '20M'], ['retain', '5'], ['compress', 'true'], ['rotateInterval', '0 0 * * *']].map(([key, value]) => ['pm2', 'set', `pm2-logrotate:${key}`, value]),
     ['pm2', 'save'],
   ]);

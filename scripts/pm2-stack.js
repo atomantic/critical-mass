@@ -63,7 +63,7 @@ function ensureLogRotation() {
   // healthy stack from starting, and inventory output must remain private.
   try {
     if (!inventory().some(app => app?.name === 'pm2-logrotate')) {
-      pm2(['install', 'pm2-logrotate@3.0.0'], true);
+      pm2(['install', 'pm2-logrotate@2.7.0'], true);
     }
     for (const [setting, value] of Object.entries({
       max_size: '20M', retain: '5', compress: 'true', rotateInterval: '0 0 * * *',
