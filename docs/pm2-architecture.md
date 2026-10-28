@@ -252,3 +252,28 @@ SIGTERM with exit code 0 (it fails if the entrypoint reverts to `exec pm2-runtim
 
 The gateway deadline bounds its own lifetime even
 when an exchange or transport hangs.
+
+## Process log rotation
+
+Native `npm run pm2:start` ensures `pm2-logrotate` (2.7.0 on first install)
+only after the application processes are online. Version 2.7.0 is pinned because
+3.0.0 fails to enable compression when PMX casts its configuration to booleans.
+Existing modules are reused except the broken 3.0.0 release, which is replaced
+with 2.7.0. Stopped or errored modules are restarted and checked online.
+Every start reapplies `max_size=20M`, `retain=5`, `compress=true` and
+`rotateInterval="0 0 * * *"` (daily, local timezone). Installation/configuration
+failure warns without failing startup; retry startup when network access is
+available. Rotation is a PM2-wide module and also covers other managed apps.
+
+Docker and Umbrel bake the same module and settings into `/opt/pm2-home`,
+owned by UID 1000 and selected by `PM2_HOME`. `pm2-runtime` starts the module
+from this home alongside the stack; startup requires no module download.
+Keep this image-owned home outside the persistent `data/` and `logs/` mounts.
+PM2 rotates the files in the mounted logs directory, keeping five compressed
+archives per log. The default size check runs every 30 seconds, so a burst can
+exceed 20 MiB before the next check; retention is a per-file bound, not a hard
+filesystem quota. Ordered gateway/engine shutdown is unchanged.
+
+Fund `Hour:` diagnostics share the persisted hourly event gate. Repeated
+negative-PnL placement skips log once per body at the same TP price; changing
+the price allows another diagnostic. Neither throttle changes order decisions.
