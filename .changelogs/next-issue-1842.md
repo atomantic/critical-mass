@@ -1,0 +1,1 @@
+- **[issue-1842] Migrate closed-trades, manual-trades and placement-intents into the pair directory** — Added the three files to the per-fund registry so legacy-layout restores and exchange migrations relocate them instead of deleting the destination copies; closed/manual trades are also conflict-guarded.
