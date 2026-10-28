@@ -12,6 +12,8 @@ import { useFundStatusFreshness } from '../src/hooks/useFundStatusFreshness'
 const handlers = new Map()
 const socket = {
   connected: true,
+  subscribe: () => {},
+  unsubscribe: () => {},
   on: (e, h) => { if (!handlers.has(e)) handlers.set(e, new Set()); handlers.get(e).add(h) },
   off: (e, h) => handlers.get(e)?.delete(h),
 }
