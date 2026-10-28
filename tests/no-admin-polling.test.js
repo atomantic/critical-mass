@@ -42,15 +42,62 @@ describe('admin has no polling (#1880)', () => {
     assert.deepEqual(offenders, [], 'refresh from a realtime event with useRealtimeRefresh instead of an interval')
   })
 
-  it('keeps allowlisted interval files free of network reads inside the timer callback', () => {
+  it('keeps allowlisted timer callbacks free of network reads', () => {
+    const network = /\b(?:apiGet|apiPost|apiPut|apiRequest|fetch)\b|\bfetch[A-Z]\w*\s*\(/
     for (const rel of UI_ONLY_INTERVALS.keys()) {
       const code = sources.find((source) => source.rel === rel)?.code
       assert.ok(code, `${rel} is allowlisted but missing`)
-      const callbacks = [...code.matchAll(/\b(?:window\.)?setInterval\s*\(\s*([A-Za-z_$][\w$]*|\(\s*\)\s*=>[^,]*)/g)].map((match) => match[1])
+      const callbacks = intervalCallbacks(code)
       assert.ok(callbacks.length > 0, `${rel} no longer starts an interval; drop it from the allowlist`)
       for (const callback of callbacks) {
-        assert.doesNotMatch(callback, /apiGet|apiPost|apiRequest|fetch/, `${rel} interval callback reads the network`)
+        const body = callback.kind === 'name' ? definitionBody(code, callback.text) : callback.text
+        assert.ok(body, `${rel}: could not resolve the body of timer callback ${callback.text}`)
+        assert.doesNotMatch(body, network, `${rel}: timer callback ${callback.kind === 'name' ? callback.text : 'inline'} reads the network`)
       }
     }
   })
 })
+
+// Text of the matching bracket group that opens at `open`.
+function balanced(code, open) {
+  const pairs = { '{': '}', '(': ')', '[': ']' }
+  const stack = []
+  for (let i = open; i < code.length; i++) {
+    const char = code[i]
+    if (pairs[char]) stack.push(pairs[char])
+    else if (char === stack[stack.length - 1]) {
+      stack.pop()
+      if (stack.length === 0) return code.slice(open, i + 1)
+    }
+  }
+  return ''
+}
+
+// The first argument of every setInterval(...) call, as a name or inline source.
+function intervalCallbacks(code) {
+  const found = []
+  for (const match of code.matchAll(/\b(?:window\.)?setInterval\s*\(/g)) {
+    const open = match.index + match[0].length - 1
+    const args = balanced(code, open).slice(1, -1)
+    let depth = 0
+    let end = args.length
+    for (let i = 0; i < args.length; i++) {
+      if ('({['.includes(args[i])) depth++
+      else if (')}]'.includes(args[i])) depth--
+      else if (args[i] === ',' && depth === 0) { end = i; break }
+    }
+    const first = args.slice(0, end).trim()
+    if (/^[A-Za-z_$][\w$]*$/.test(first)) found.push({ kind: 'name', text: first })
+    else if (first) found.push({ kind: 'inline', text: first })
+  }
+  return found
+}
+
+// Body of `const name = ...` / `function name(...)`, from its first brace.
+function definitionBody(code, name) {
+  const definition = new RegExp(`(?:const|let|function)\\s+${name}\\b`).exec(code)
+  if (!definition) return ''
+  const brace = code.indexOf('{', code.indexOf('=>', definition.index) >= 0 && (code.indexOf('=>', definition.index) < code.indexOf('{', definition.index) || code.indexOf('{', definition.index) < 0)
+    ? code.indexOf('=>', definition.index) : definition.index)
+  return brace < 0 ? '' : balanced(code, brace)
+}
