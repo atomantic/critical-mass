@@ -781,6 +781,32 @@ const createBackup = async ({ includePriceCache = false, paths: pathOverrides } 
 };
 
 /**
+ * Recover an archive's creation time from its stable filename timestamp.
+ * Legacy or hand-named archives retain their filesystem time fallback.
+ * @param {string} filename
+ * @param {import('fs').Stats} stats
+ * @returns {number}
+ */
+const archiveCreatedAtMs = (filename, stats) => {
+  const match = /^backup-(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-/.exec(filename);
+  if (!match) return stats.mtimeMs;
+
+  const [, date, hours, minutes, seconds] = match;
+  const iso = `${date}T${hours}:${minutes}:${seconds}.000Z`;
+  const timestamp = Date.parse(iso);
+  // Date.parse accepts some out-of-range dates by normalizing them. Require an
+  // exact round-trip so malformed names safely use their filesystem time.
+  if (!Number.isFinite(timestamp) || new Date(timestamp).toISOString() !== iso) return stats.mtimeMs;
+  return timestamp;
+};
+
+/** Newest-first archive ordering with stable tie breakers. */
+const compareArchivesNewestFirst = (a, b) =>
+  b.createdAtMs - a.createdAtMs
+  || b.mtimeMs - a.mtimeMs
+  || b.filename.localeCompare(a.filename);
+
+/**
  * List all backups sorted newest-first
  * @returns {Promise<Array<{ filename: string, createdAt: string, sizeBytes: number }>>}
  */
@@ -808,9 +834,10 @@ const listBackups = async () => {
   // unzip -tq per retained archive at once.
   for (const { filename, filePath, stats } of candidates) {
     if (!(await isArchiveListableAsync(filePath, stats))) continue;
-    backups.push({ filename, createdAt: stats.mtime.toISOString(), sizeBytes: stats.size });
+    const createdAtMs = archiveCreatedAtMs(filename, stats);
+    backups.push({ filename, createdAtMs, mtimeMs: stats.mtimeMs, createdAt: new Date(createdAtMs).toISOString(), sizeBytes: stats.size });
   }
-  return backups.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  return backups.sort(compareArchivesNewestFirst).map(({ filename, createdAt, sizeBytes }) => ({ filename, createdAt, sizeBytes }));
 };
 
 /**
@@ -1170,13 +1197,13 @@ const getNewestBackupTime = () => {
     if (!filename.startsWith('backup-') || !filename.endsWith('.zip')) continue;
     const filePath = path.join(BACKUPS_DIR, filename);
     const stats = fs.lstatSync(filePath);
-    if (stats.isFile()) candidates.push({ filePath, stats, mtimeMs: Math.round(stats.mtimeMs) });
+    if (stats.isFile()) candidates.push({ filename, filePath, stats, createdAtMs: archiveCreatedAtMs(filename, stats), mtimeMs: stats.mtimeMs });
   }
-  candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  candidates.sort(compareArchivesNewestFirst);
   // Only the newest candidates are integrity-tested (not every retained ZIP), and
   // verdicts are cached so a corrupt partial never anchors the schedule nor re-tests.
-  for (const { filePath, stats, mtimeMs } of candidates) {
-    if (isArchiveListable(filePath, stats)) return mtimeMs;
+  for (const { filePath, stats, createdAtMs } of candidates) {
+    if (isArchiveListable(filePath, stats)) return Math.round(createdAtMs);
   }
   return null;
 };
@@ -1194,11 +1221,11 @@ const getNewestBackupTimeAsync = async () => {
     if (!filename.startsWith('backup-') || !filename.endsWith('.zip')) continue;
     const filePath = path.join(BACKUPS_DIR, filename);
     const stats = fs.lstatSync(filePath);
-    if (stats.isFile()) candidates.push({ filePath, stats, mtimeMs: Math.round(stats.mtimeMs) });
+    if (stats.isFile()) candidates.push({ filename, filePath, stats, createdAtMs: archiveCreatedAtMs(filename, stats), mtimeMs: stats.mtimeMs });
   }
-  candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
-  for (const { filePath, stats, mtimeMs } of candidates) {
-    if (await isArchiveListableAsync(filePath, stats)) return mtimeMs;
+  candidates.sort(compareArchivesNewestFirst);
+  for (const { filePath, stats, createdAtMs } of candidates) {
+    if (await isArchiveListableAsync(filePath, stats)) return Math.round(createdAtMs);
   }
   return null;
 };
