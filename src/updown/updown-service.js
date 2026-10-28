@@ -624,6 +624,7 @@ const createUpDownService = (io, deps) => {
     const nextVersion = (contract.version || 0) + 1;
     contract = { ...contract, ...config, version: nextVersion };
     persistState();
+    io.to('updown').emit('updown:changed', { field: 'contract' });
     updownLogger.info(`ℹ️ 📊 UpDown contract updated expiry=${contract.expiry} direction=${contract.direction}`, {
       action: 'set-contract',
       expiry: contract.expiry,
@@ -643,6 +644,7 @@ const createUpDownService = (io, deps) => {
   const setPosition = (pos) => {
     position = { ...pos, entryTime: pos.entryTime || Date.now() };
     persistState();
+    io.to('updown').emit('updown:changed', { field: 'position' });
     updownLogger.info(`ℹ️ 📊 UpDown position set entry=$${pos.entryPrice} contracts=${pos.contracts} direction=${pos.direction}`, {
       action: 'set-position',
       entryPrice: pos.entryPrice,
@@ -695,6 +697,7 @@ const createUpDownService = (io, deps) => {
   const clearPosition = () => {
     position = null;
     persistState();
+    io.to('updown').emit('updown:changed', { field: 'position' });
     updownLogger.info('ℹ️ 📊 UpDown position cleared', { action: 'clear-position' });
   };
 

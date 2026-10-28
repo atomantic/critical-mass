@@ -27,6 +27,7 @@ const {
   createBackup,
   createFundStateBackup,
   restoreBackup,
+  inspectBackup,
   checkRestorePreconditions,
   checkFundStateRestorePreconditions,
   restoreFundStateBackup,
@@ -499,6 +500,75 @@ describe('checkRestorePreconditions mirrors the applier refusals without extract
       assert.equal(applied.code, 'payload-incompatible');
       assert.equal(fs.readFileSync(destLedger, 'utf8'), before, 'working ledger preserved');
       assert.deepEqual(listDir(dest.dataDir), dirBefore, 'no staging or recovery generation left behind');
+    }
+  });
+
+  it('refuses conflicting legacy and per-fund placement intents before stopping engines', async () => {
+    const dest = makeInstall('dest-duplicate-intents', BASE);
+    const staging = path.join(root, 'duplicate-intents-archive');
+    const legacy = 'coinbase/placement-intents.json';
+    const fund = 'coinbase/ETH-USDC/placement-intents.json';
+    writeJson(path.join(staging, legacy), { version: 1, intents: [{ id: 'uncertain-order', status: 'unresolved' }] });
+    writeJson(path.join(staging, fund), { version: 1, intents: [] });
+    const backups = path.join(dest.dataDir, 'backups');
+    fs.mkdirSync(backups);
+    const filename = 'backup-duplicate-intents.zip';
+    assert.equal(spawnSync('zip', ['-q', path.join(backups, filename), legacy, fund], { cwd: staging }).status, 0);
+    const options = { paths: dest.paths, acceptLegacyWithoutBase: true };
+    const inspection = inspectBackup(filename, { paths: dest.paths });
+    assert.deepEqual(inspection.layoutConflicts, [{ artifact: legacy, existing: fund }]);
+    const check = await checkRestorePreconditions(filename, options);
+    assert.equal(check.code, 'legacy-layout-placement-intents-conflict');
+    assert.match(check.error, /preserve both.*reconcile/i);
+    const calls = [];
+    const result = await performRestore({
+      filename,
+      exchangeIPCMap: { coinbase: recordingIPC('coinbase', ['ETH-USDC'], calls) },
+      configuredExchanges: ['coinbase'],
+      preflight: () => checkRestorePreconditions(filename, options),
+      restore: () => assert.fail('applier must not run'),
+      logger: silentLogger,
+    });
+    assert.equal(result.status, 400);
+    assert.equal(result.body.code, check.code);
+    assert.deepEqual(calls, []);
+    const applied = restoreBackup(filename, options);
+    assert.equal(applied.code, check.code);
+    assert.equal(fs.existsSync(path.join(dest.dataDir, fund)), false);
+  });
+
+  it('validates translated root state before stopping engines for a legacy restore', async () => {
+    const dest = makeInstall('dest-root-state', BASE);
+    const staging = path.join(root, 'root-state-archive');
+    fs.mkdirSync(staging);
+    const backups = path.join(dest.dataDir, 'backups');
+    fs.mkdirSync(backups);
+
+    for (const [name, contents] of [['invalid-json', '{bad'], ['non-object', '[1]'], ['valid', '{"orders":[]}']]) {
+      fs.writeFileSync(path.join(staging, 'state.json'), contents);
+      const filename = `backup-root-state-${name}.zip`;
+      assert.equal(spawnSync('zip', ['-q', path.join(backups, filename), 'state.json'], { cwd: staging }).status, 0);
+      const options = { paths: dest.paths, acceptLegacyWithoutBase: true };
+      const check = await checkRestorePreconditions(filename, options);
+      if (name === 'valid') {
+        assert.deepEqual(check, { ok: true });
+        continue;
+      }
+      assert.equal(check.code, 'payload-incompatible', name);
+      assert.match(check.error, /coinbase\/ETH-USDC\/state\.json/);
+      const calls = [];
+      const result = await performRestore({
+        filename,
+        exchangeIPCMap: { coinbase: recordingIPC('coinbase', ['ETH-USDC'], calls) },
+        configuredExchanges: ['coinbase'],
+        preflight: () => checkRestorePreconditions(filename, options),
+        restore: () => assert.fail('applier must not run'),
+        logger: silentLogger,
+      });
+      assert.equal(result.status, 400);
+      assert.equal(result.body.code, 'payload-incompatible');
+      assert.deepEqual(calls, [], 'no engine maintenance or stop-all');
+      assert.equal(restoreBackup(filename, options).code, 'payload-incompatible');
     }
   });
 

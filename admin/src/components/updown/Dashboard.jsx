@@ -13,7 +13,7 @@ import TimeframeGrid from './TimeframeGrid'
 import TradeHistory from './TradeHistory'
 import ScorecardPanel from './ScorecardPanel'
 import TimeWarningBanner, { parseExpiry } from './TimeWarningBanner'
-import { isFreshTick } from './position-tracker-math'
+import { calculateManualPositionPnl, isFreshTick } from './position-tracker-math'
 import { labelHistoryActions } from '../../constants/signals'
 import { formatCurrencyIntl as formatCurrency } from '../charts/chartUtils'
 import { createRequestOwner } from '../../utils/requestOwner.mjs'
@@ -74,14 +74,14 @@ export default function UpDownDashboard() {
     setLoading(false)
   }, [statusOwner])
 
-  // One read, then re-read on a signal, a paper fill (scorecard) or a service
-  // start/stop instead of every 10 s (#1880).
+  // One read, then re-read on signals, paper fills, service changes, and saved
+  // contract/position changes instead of every 10 s (#1880).
   useEffect(() => {
     fetchStatus()
     return () => statusOwner.invalidate()
   }, [fetchStatus, statusOwner])
   useRealtimeRefresh({
-    events: ['updown:signal', 'updown:scorecard', 'updown:state'],
+    events: ['updown:signal', 'updown:scorecard', 'updown:state', 'updown:changed'],
     rooms: ['updown'],
     minIntervalMs: 2000,
     onRefresh: fetchStatus,
@@ -170,7 +170,19 @@ export default function UpDownDashboard() {
   const priceFresh = tickFresh || statusPriceFresh
   const currentPrice = tickFresh ? tick.price : (statusPriceFresh ? status.lastPrice : null)
   const liveIndicators = isRunning && priceFresh ? rawIndicators : null
-  const timeRemaining = tick?.timeRemaining
+  // A tick can predate a saved contract or position, even when its price is
+  // still fresh. Do not let its old countdown or P&L override the new status.
+  const timeRemaining = tickFresh && tick?.contract?.expiry === status?.contract?.expiry
+    ? tick?.timeRemaining : null
+  const trackedPosition = status?.position
+  const contractPnl = trackedPosition && priceFresh
+    ? calculateManualPositionPnl({
+      currentPrice,
+      entryPrice: trackedPosition.entryPrice,
+      contracts: trackedPosition.contracts,
+      direction: trackedPosition.direction === 'down' ? 'Down' : 'Up',
+    })?.pnl ?? null
+    : null
 
   // Time remaining for signal banner
   const expiryMs = parseExpiry(status?.contract?.expiry)
@@ -335,7 +347,7 @@ export default function UpDownDashboard() {
           <PositionTracker
             initialPosition={status?.position}
             currentPrice={currentPrice}
-            contractPnl={tickFresh ? tick?.pnl?.pnl : null}
+            contractPnl={contractPnl}
             priceFresh={priceFresh}
           />
         </div>

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef } from 'react'
 import { getRealtimeClient } from '../lib/realtime'
 import { EMPTY_SNAPSHOT, mergeRegimeStatus, stampRegimeStatus } from '../utils/regimeStatusSnapshot.mjs'
 
@@ -82,6 +82,10 @@ export function useTradeEvents(exchange = null) {
 export function useRegimeEvents(exchange = null, pair = null) {
   // { status, seq }: seq orders this snapshot against HTTP reads (#1388).
   const [snapshot, setSnapshot] = useState(EMPTY_SNAPSHOT)
+  // A hook can remain mounted while its caller selects a different fund.
+  const fundKey = JSON.stringify([exchange, pair])
+  const committedFundKey = useRef(fundKey)
+  useLayoutEffect(() => { committedFundKey.current = fundKey }, [fundKey])
   const [regimeState, setRegimeState] = useState(null)
   const [healthState, setHealthState] = useState(null)
   const [positionState, setPositionState] = useState(null)
@@ -108,7 +112,10 @@ export function useRegimeEvents(exchange = null, pair = null) {
       if (!matchesFund(data) || !data.status) return
       // A stopped payload or a running-state change replaces the snapshot;
       // only running -> running emits merge (#1388).
-      setSnapshot(prev => stampRegimeStatus(mergeRegimeStatus(prev.status, data.status)))
+      setSnapshot(prev => committedFundKey.current !== fundKey ? prev : ({
+        ...stampRegimeStatus(mergeRegimeStatus(prev.fundKey === fundKey ? prev.status : null, data.status)),
+        fundKey,
+      }))
     }
 
     const handleRegimeChange = (data) => {
@@ -156,15 +163,18 @@ export function useRegimeEvents(exchange = null, pair = null) {
       socket.off('regime:health', handleHealthChange)
       socket.off('regime:position', handlePositionUpdate)
     }
-  }, [exchange, pair])
+  }, [exchange, pair, fundKey])
 
   const clearEvents = useCallback(() => setEvents([]), [])
   // Action responses carry a full snapshot: replace, stamped as newest.
-  const setStatus = useCallback(status => setSnapshot(stampRegimeStatus(status)), [])
+  const setStatus = useCallback(status => setSnapshot(prev => committedFundKey.current !== fundKey
+    ? prev
+    : { ...stampRegimeStatus(status), fundKey }), [fundKey])
+  const currentSnapshot = snapshot.fundKey === fundKey ? snapshot : EMPTY_SNAPSHOT
 
   return {
-    status: snapshot.status,
-    statusSeq: snapshot.seq,
+    status: currentSnapshot.status,
+    statusSeq: currentSnapshot.seq,
     setStatus,
     regimeState,
     healthState,

@@ -44,6 +44,7 @@ function NotificationsConfig() {
   const configRequest = useRef(0)
   const draftVersion = useRef(0)
   const dirty = useRef(false)
+  const statsRequest = useRef(0)
   // Rendered mirror of `dirty`: Send Test uses the saved settings, so it must
   // not run (and report success) while unsaved edits are on screen.
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
@@ -91,21 +92,21 @@ function NotificationsConfig() {
 
   const fetchStats = async () => {
     // A failed stats fetch is ignored so it never blocks the page.
+    const request = ++statsRequest.current
     const result = await apiGet('/api/notifications/stats')
-    if (result.ok) setStats(result.data)
+    if (request === statsRequest.current && result.ok) setStats(result.data)
   }
 
   useEffect(() => {
     fetchConfig()
   }, [])
-  // Counters change when a notification goes out, which follows a trade event or
-  // a Sentinel alert; re-read on those instead of every 10 s (#1880).
+  // Delivery and queue changes can occur long after the originating trade event.
   useEffect(() => {
     fetchStats()
+    return () => { statsRequest.current += 1 }
   }, [])
   useRealtimeRefresh({
-    events: ['trade:event', 'sentinel:alert'],
-    rooms: ['sentinel'],
+    events: ['notifications:stats'],
     minIntervalMs: 5000,
     onRefresh: fetchStats,
   })

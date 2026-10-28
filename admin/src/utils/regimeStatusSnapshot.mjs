@@ -214,7 +214,8 @@ export function createFundStatusOwner({
     if (disposed || !newStatus) return
     const incomingSeq = seq ?? nextRegimeStatusSeq()
 
-    if (latestSnapshot.status && incomingSeq < latestSnapshot.seq) return
+    // A cached copy of an already-accepted event is not fresh evidence.
+    if (latestSnapshot.status && incomingSeq <= latestSnapshot.seq) return
 
     const merged = isSocket
       ? mergeRegimeStatus(latestSnapshot.status, newStatus)

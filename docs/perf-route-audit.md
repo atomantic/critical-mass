@@ -72,7 +72,7 @@ Live measurements require an already authorized operator session for the install
 
 This procedure reports observations from one existing session; it does not make live changes or establish a production-wide baseline. The fixture runner above remains synthetic and cannot produce these live measurements. Recheck route and listener behavior before comparing measurements across revisions.
 
-The admin makes no timer-driven data reads (`tests/no-admin-polling.test.js` enforces this); the older
+The admin makes no timer-driven data reads (`tests/no-admin-polling.test.js` restricts interval callbacks to reviewed UI-only timers); the older
 `node scripts/perf-route-audit.js` replay still issues a periodic Transactions read (`--poll-seconds`) to model
 repeated reads, which no longer reflects the UI. It is a supplemental protocol replay. It accepts an
 isolated miniature gateway or `CM_PERF_TOKEN` with `--base-url`, but does not render the shell or exercise

@@ -128,7 +128,7 @@ const io = createRealtimeBus({
 });
 
 // Notification system
-const notifier = createNotifier();
+const notifier = createNotifier({ onStatsChanged: () => io.emit('notifications:stats', {}) });
 
 // Callbacks resolve their owners only when shutdown is requested, after startup.
 let schedulerTimer = null;

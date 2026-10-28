@@ -459,6 +459,21 @@ const rootCollisionEntries = ({ entries, rootTranslation }) => {
   });
 };
 
+// Two placement-intent generations cannot be discarded during layout
+// translation: either can contain an unresolved exchange order.
+const findLegacyIntentCollisions = ({ entries, translations }) => {
+  const present = new Set(entries);
+  return translations.flatMap(({ exchange, pair }) => {
+    const artifact = `${exchange}/placement-intents.json`;
+    const existing = `${exchange}/${pair}/placement-intents.json`;
+    return present.has(artifact) && present.has(existing) ? [{ artifact, existing }] : [];
+  });
+};
+
+const intentCollisionError = (conflicts) =>
+  `This archive contains both legacy and per-fund placement intents (${conflicts.map(({ artifact, existing }) => `${artifact} and ${existing}`).join(', ')}). `
+  + 'Preserve both copies and reconcile all unresolved placement intents against the exchange before restoring. No files were changed.';
+
 /**
  * List an archive's entry paths without extracting it.
  * @param {string} zipPath
@@ -491,14 +506,14 @@ const describeLayoutTranslation = ({ zipPath, snapshot, destinationConfig }) => 
     snapshot,
     destinationConfig,
   });
-  const layoutConflicts = findRootCollisions({
+  const layoutConflicts = [...findLegacyIntentCollisions({ entries, translations }), ...findRootCollisions({
     entries,
     rootTranslation,
     readEntry: (entry) => {
       const result = spawnSync('unzip', ['-p', zipPath, entry], { timeout: SPAWN_TIMEOUT_MS, maxBuffer: ROOT_COMPARE_MAX_BYTES });
       return result.error || result.status !== 0 ? null : result.stdout;
     },
-  });
+  })];
   return {
     legacyLayout: translations.length > 0 || unresolvable.length > 0 || rootTranslation !== null,
     layoutTranslations: translations,
@@ -1863,18 +1878,26 @@ const checkRestorePreconditions = async (filename, { paths: pathOverrides, legac
   if (conflicts.length > 0) {
     return { ok: false, code: 'legacy-layout-ambiguous-generations', error: ambiguousLayoutError(conflicts) };
   }
+  const intentConflicts = findLegacyIntentCollisions({ entries, translations: layout.translations });
+  if (intentConflicts.length > 0) {
+    return { ok: false, code: 'legacy-layout-placement-intents-conflict', error: intentCollisionError(intentConflicts) };
+  }
   const pending = fundsWithPendingDcaImport(paths.dataDir, archiveEntryFunds(entries, snapshot, layout.translations, layout.rootTranslation));
   if (pending.length > 0) return { ok: false, ...pendingDcaImportRefusal(pending, 'No files were changed.') };
 
   // Business-format compatibility of the accounting payloads (#1811): the
   // archive is intact, but the readers must be able to cold-start from it.
+  // Old root-level files are read at their archive names but validated at the
+  // translated paths where restore will place them.
+  const rootTargets = new Map((layout.rootTranslation?.files || []).map(({ name, target }) => [name, target]));
   for (const entry of entries) {
-    if (entry.endsWith('/') || !classifyPayloadPath(entry)) continue;
+    const target = rootTargets.get(entry) || entry;
+    if (entry.endsWith('/') || !classifyPayloadPath(target)) continue;
     const read = await spawnAsync('unzip', ['-p', zipPath, entry]);
     if (read.error || read.status !== 0) {
       return { ok: false, code: 'archive-corrupt', error: `Unable to read ${entry} from the archive. No files were changed.` };
     }
-    const checked = validatePersistedPayload(entry, read.stdout);
+    const checked = validatePersistedPayload(target, read.stdout);
     if (!checked.ok) return { ok: false, code: 'payload-incompatible', error: `Archive accounting is not readable by this build: ${checked.error}. No files were changed.` };
   }
   return { ok: true };
@@ -2016,6 +2039,10 @@ const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null
     });
     if (layout.unresolvable.length > 0) {
       return abort(unresolvableLayoutError(layout.unresolvable), 'legacy-layout-unresolvable-pair');
+    }
+    const intentConflicts = findLegacyIntentCollisions({ entries: listTreeFiles(tempDir), translations: layout.translations });
+    if (intentConflicts.length > 0) {
+      return abort(intentCollisionError(intentConflicts), 'legacy-layout-placement-intents-conflict');
     }
     // The oldest layout kept state at the data root. Translate it first, in the
     // staging tree and with the destination never consulted, so it lands exactly

@@ -48,6 +48,7 @@ function Overview() {
 
   const { snapshots: wsSnapshots, statuses: wsStatuses, connected } = useMultiRegimeStatuses()
   const ownersRef = useRef(new Map())
+  const fallbackStatusesRef = useRef(new Map())
 
   const refreshExchanges = async () => {
     // A failed read leaves the existing exchange list as-is; caller UI isn't gated on this.
@@ -116,6 +117,7 @@ function Overview() {
         if (!activeKeys.has(key)) {
           owner.dispose()
           ownersRef.current.delete(key)
+          fallbackStatusesRef.current.delete(key)
         }
       }
 
@@ -158,7 +160,7 @@ function Overview() {
           const { key, status, seq, state } = entry
           const current = next[key]
           // If a newer snapshot already arrived (e.g. from socket while HTTP was in flight), keep it
-          if (current && current.seq > seq) continue
+          if (current && current.seq >= seq) continue
           if (state === 'error') {
             if (!current?.status) {
               next[key] = { status: null, seq }
@@ -180,10 +182,7 @@ function Overview() {
           if (!entry) continue
           const { key, seq, state } = entry
           const currentSnap = snapshotMapRef.current[key]
-          if (currentSnap && currentSnap.seq > seq) {
-            if (currentSnap.status) next[key] = 'ok'
-            continue
-          }
+          if (currentSnap && currentSnap.seq >= seq) continue
           next[key] = state
         }
         return next
@@ -208,6 +207,7 @@ function Overview() {
         owner.dispose()
       }
       ownersRef.current.clear()
+      fallbackStatusesRef.current.clear()
     }
   }, [])
 
@@ -236,6 +236,7 @@ function Overview() {
       // Fallback for tests or mocks providing only wsStatuses
       for (const [key, status] of Object.entries(wsStatuses)) {
         if (!status) continue
+        if (fallbackStatusesRef.current.get(key) === status) continue
         let owner = ownersRef.current.get(key)
         if (!owner) {
           const ex = exchanges.find(e => fundKey(e) === key)
@@ -243,44 +244,10 @@ function Overview() {
         }
         if (owner) {
           owner.acceptSnapshot(status, nextRegimeStatusSeq(), { isSocket: true })
+          fallbackStatusesRef.current.set(key, status)
         }
       }
     }
-
-    setSnapshotMap(prev => {
-      const next = { ...prev }
-      if (hasSnapshots) {
-        for (const [key, snap] of Object.entries(wsSnapshots)) {
-          if (!snap?.status) continue
-          const current = next[key]
-          if (current && current.seq > snap.seq) continue
-          const merged = mergeRegimeStatus(current?.status, snap.status)
-          next[key] = { status: merged, seq: snap.seq }
-        }
-      } else {
-        // Fallback for tests or mocks providing only wsStatuses
-        for (const [key, status] of Object.entries(wsStatuses)) {
-          if (!status) continue
-          const current = next[key]
-          if (current?.status === status) continue
-          const nextSeq = nextRegimeStatusSeq()
-          const merged = mergeRegimeStatus(current?.status, status)
-          next[key] = { status: merged, seq: nextSeq }
-        }
-      }
-      return next
-    })
-
-    setStatusState(prev => {
-      const next = { ...prev }
-      const source = hasSnapshots ? wsSnapshots : wsStatuses
-      for (const [key, val] of Object.entries(source)) {
-        if (hasSnapshots ? val?.status : val) {
-          next[key] = 'ok'
-        }
-      }
-      return next
-    })
   }, [wsSnapshots, wsStatuses, exchanges, getOrCreateOwner])
 
   // Build card data from exchanges + statuses

@@ -757,8 +757,9 @@ function BackupRestore() {
               )}
               {compatibility.layoutConflicts?.length > 0 && (
                 <p className="text-xs text-red-200 mt-2">
-                  The archive holds two different generations of {compatibility.layoutConflicts.map(c => `${c.artifact} (vs ${c.existing})`).join(', ')} —
-                  the restore would be refused before any file is written. Remove the stale copy from the archive.
+                  The archive holds conflicting copies of {compatibility.layoutConflicts.map(c => `${c.artifact} (vs ${c.existing})`).join(', ')} —
+                  the restore would be refused before any file is written. Preserve the copies and reconcile them before retrying;
+                  check unresolved placement intents against the exchange.
                 </p>
               )}
               {compatibility.unresolvableLayoutExchanges?.length > 0 && (

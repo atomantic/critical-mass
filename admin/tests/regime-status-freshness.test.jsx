@@ -442,7 +442,7 @@ describe('shared per-fund status owner and freshness hook (#1816)', () => {
       fetchStatus: async ({ signal }) => {
         probes++
         signal?.addEventListener('abort', () => { signalAborted = true })
-        return { status: stoppedStatus() }
+        return new Promise(() => {})
       },
     })
 
@@ -451,16 +451,15 @@ describe('shared per-fund status owner and freshness hook (#1816)', () => {
     expect(probes).toBe(0)
 
     // Switch to running, then dispose mid-probe
-    owner.acceptSnapshot(runningStatus(), 2, { isSocket: true })
-    let hangProbe = true
-    owner.probe = async () => {
-      // simulate probe start
-    }
+    owner.acceptSnapshot(runningStatus(), undefined, { isSocket: true })
+    await act(async () => { vi.advanceTimersByTime(STATUS_STALE_MS) })
+    expect(probes).toBe(1)
     owner.dispose()
     expect(owner.isDisposed).toBe(true)
+    expect(signalAborted).toBe(true)
 
     await act(async () => { vi.advanceTimersByTime(STATUS_STALE_MS * 2) })
-    expect(probes).toBe(0)
+    expect(probes).toBe(1)
   })
 
   it('useFundStatusFreshness hook recovers upon fresh socket emit without remounting', async () => {

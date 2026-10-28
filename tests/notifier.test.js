@@ -328,6 +328,25 @@ describe('createNotifier() integration (fs-mocked config, stubbed fetch)', () =>
   const emit = (type, message, exchange = 'coinbase') =>
     tradeEvents.emit('trade', { type, exchange, message, data: {}, timestamp: new Date().toISOString() });
 
+  for (const success of [true, false]) {
+    it(`announces queued and settled stats after a ${success ? 'successful' : 'failed'} delivery`, async (t) => {
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      setupFsMocks(RUNNING_CONFIG);
+      stubFetch(async () => ({
+        ok: success, status: success ? 200 : 400, statusText: 'Bad Request', json: async () => ({}),
+      }));
+      const updates = [];
+      notifier = createNotifier({ onStatsChanged: () => updates.push(notifier.getStats()) });
+      notifier.start();
+      emit('buy_filled', 'queued');
+      assert.ok(updates.some(s => s.queueDepth === 1 && s.sent === 0 && s.errors === 0));
+      t.mock.timers.tick(RUNNING_CONFIG.rateLimitMs);
+      await flushMicrotasks();
+      await flushMicrotasks();
+      assert.ok(updates.some(s => s.queueDepth === 0 && s.sent === (success ? 1 : 0) && s.errors === (success ? 0 : 1)));
+    });
+  }
+
   it('multiple events inside one rateLimitMs window produce exactly one fetch call', (t) => {
     t.mock.timers.enable({ apis: ['setTimeout'] });
     setupFsMocks(RUNNING_CONFIG);

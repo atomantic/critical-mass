@@ -83,6 +83,50 @@ describe('UpDown stale-price and lifecycle safety', () => {
     assert.deepEqual(states.slice(0, 2), [['updown', { running: true }], ['updown', { running: false }]])
   })
 
+  it('announces saved contract and position changes after persistence even while stopped', () => {
+    const calls = []
+    const service = createUpDownService({ to: room => ({ emit: (event, payload) => {
+      calls.push({ room, event, payload })
+    } }) }, {
+      readJSON: () => null,
+      writeJSON: (_path, state) => calls.push({ persisted: structuredClone(state) }),
+      DATA_DIR: '/tmp/updown-service-change-events',
+      candleCache,
+      createSignalEngine: engineFactory(() => signalResult('HOLD')),
+      createScorecard: () => scorecardStub(),
+    })
+
+    service.setContract({ expiry: 1234, target: 105 })
+    service.setPosition({ entryPrice: 100, contracts: 2, direction: 'up', entryTime: 1 })
+    service.clearPosition()
+
+    assert.equal(service.getStatus().running, false)
+    assert.equal(calls.length, 6)
+    assert.equal(calls[0].persisted.contract.target, 105)
+    assert.deepEqual(calls[1], { room: 'updown', event: 'updown:changed', payload: { field: 'contract' } })
+    assert.equal(calls[2].persisted.position.contracts, 2)
+    assert.deepEqual(calls[3], { room: 'updown', event: 'updown:changed', payload: { field: 'position' } })
+    assert.equal(calls[4].persisted.position, null)
+    assert.deepEqual(calls[5], { room: 'updown', event: 'updown:changed', payload: { field: 'position' } })
+  })
+
+  it('does not announce contract or position changes when persistence fails', () => {
+    const events = []
+    const service = createUpDownService({ to: room => ({ emit: (event, payload) => events.push({ room, event, payload }) }) }, {
+      readJSON: () => null,
+      writeJSON: () => { throw new Error('disk unavailable') },
+      DATA_DIR: '/tmp/updown-service-failed-change-events',
+      candleCache,
+      createSignalEngine: engineFactory(() => signalResult('HOLD')),
+      createScorecard: () => scorecardStub(),
+    })
+
+    assert.throws(() => service.setContract({ target: 105 }), /disk unavailable/)
+    assert.throws(() => service.setPosition({ entryPrice: 100, contracts: 1, direction: 'up' }), /disk unavailable/)
+    assert.throws(() => service.clearPosition(), /disk unavailable/)
+    assert.deepEqual(events, [])
+  })
+
   it('pauses predictions and paper fills until a stale feed becomes fresh again', async (t) => {
     const startedAt = Date.UTC(2026, 0, 1)
     t.mock.timers.enable({ apis: ['Date', 'setInterval'], now: startedAt })

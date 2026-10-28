@@ -443,4 +443,36 @@ describe('Overview status freshness and silent engine expiration', () => {
     // Coinbase is still running and healthy
     expect(screen.getAllByText('Running').length).toBe(1)
   })
+
+  it('does not treat another fund update as fresh evidence for a cached silent fund', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    let geminiReads = 0
+    fetch.mockImplementation(async (url) => {
+      if (url === '/api/exchanges') return { ok: true, json: async () => ({ exchanges: exchangeList }) }
+      if (url.includes('/coinbase/')) return { ok: true, json: async () => ({ status: status(100, 7) }) }
+      if (url.includes('/gemini/')) {
+        if (++geminiReads > 1) return { ok: false, status: 503, json: async () => ({}) }
+        return { ok: true, json: async () => ({ status: status(900, 90) }) }
+      }
+      return { ok: true, json: async () => ({}) }
+    })
+    const { rerender } = render(<Overview />)
+    await screen.findByText('$1,000.00')
+    const silent = { status: status(900, 90), seq: nextRegimeStatusSeq() }
+    fixture.snapshots = {
+      'coinbase::BTC-USDC': { status: status(100, 7), seq: nextRegimeStatusSeq() },
+      'gemini::ETH-USDC': silent,
+    }
+    rerender(<Overview />)
+    await act(async () => { vi.advanceTimersByTime(15000) })
+    fixture.snapshots = { ...fixture.snapshots, 'coinbase::BTC-USDC': { status: status(105, 8), seq: nextRegimeStatusSeq() } }
+    rerender(<Overview />)
+    await act(async () => { vi.advanceTimersByTime(15000) })
+    expect(await screen.findByText('Status stale')).toBeTruthy()
+    expect(geminiReads).toBe(2)
+    fixture.snapshots = { ...fixture.snapshots, 'coinbase::BTC-USDC': { status: status(106, 8), seq: nextRegimeStatusSeq() } }
+    rerender(<Overview />)
+    expect(screen.getByText('Status stale')).toBeTruthy()
+    expect(screen.getByText('1 fund unavailable; excluded from totals.')).toBeTruthy()
+  })
 })

@@ -621,12 +621,9 @@ const normalizeLegacyRootToNamespace = ({ root, pair }) => {
 };
 
 /**
- * Per-fund files whose skip on a both-copies collision would leave the fund
- * trading on the wrong accounting: a missing fund-level ledger loads as a
- * fresh install (empty realized P&L and consumption records), and a state
- * file decides which bodies and orders the engine resumes. When both copies
- * exist the migration cannot know which generation is authoritative, so it
- * refuses rather than skip (issue #1399).
+ * Per-fund files whose skip on a both-copies collision could lose accounting
+ * or unresolved placement blockers. When both copies exist the migration
+ * cannot safely choose one, so it refuses rather than skip (issue #1399).
  */
 const PAIR_MIGRATION_CONFLICT_FILES = [
   'state.json',
@@ -634,6 +631,7 @@ const PAIR_MIGRATION_CONFLICT_FILES = [
   'fill-ledger.json',
   'closed-trades.json',
   'manual-trades.json',
+  'placement-intents.json',
 ];
 
 /**
@@ -1062,18 +1060,21 @@ const migrateExchangeToPairs = (exchange) => {
   // directory is rejected BEFORE anything is created on disk.
   const fundDir = resolveFundPath(exchangeDir, defaultPair);
 
-  // Both generations of a ledger/state file on disk: refuse before moving
+  // Both generations of a guarded fund file on disk: refuse before moving
   // anything, naming both paths, so the engine does not start on whichever
-  // copy happened to win (issue #1399). Nothing is moved, so the operator's
-  // fix (remove or archive one copy) resumes the migration on the next start.
+  // copy happened to win (issue #1399). Placement intents need reconciliation
+  // against the exchange; dropping either copy can lose unresolved blockers.
   const conflicts = findPairMigrationConflicts(exchangeDir, fundDir);
   if (conflicts.length > 0) {
     const detail = conflicts.map((c) => `${c.exchangePath} and ${c.fundPath}`).join('; ');
+    const guidance = conflicts.some((c) => c.name === 'placement-intents.json')
+      ? 'preserve both copies and reconcile all unresolved placement intents against the exchange before restarting'
+      : 'keep the authoritative copy, move the other out of data/, then restart';
     return {
       migrated: false,
       defaultPair,
       movedFiles: 0,
-      reason: `Both legacy and per-fund copies exist (${detail}) — keep the authoritative copy, move the other out of data/, then restart`,
+      reason: `Both legacy and per-fund copies exist (${detail}) — ${guidance}`,
       conflicts,
       repairedFiles,
       skippedRepairFiles,
