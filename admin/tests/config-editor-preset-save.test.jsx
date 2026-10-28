@@ -43,6 +43,9 @@ describe('ConfigEditor preset save lifecycle', () => {
 
     const factor = screen.getByLabelText('k Factor')
     expect(factor.matches(':disabled')).toBe(true)
+    // The input is disabled by its fieldset, so its own disabled property is
+    // already false while the save is still pending.
+    expect(factor.disabled).toBe(false)
     expect(screen.getByRole('button', { name: 'Reset' }).matches(':disabled')).toBe(true)
     expect(screen.getByLabelText('Min Order Size ($)').matches(':disabled')).toBe(false)
     fireEvent.click(screen.getByRole('button', { name: 'Saving...' }))
@@ -54,9 +57,12 @@ describe('ConfigEditor preset save lifecycle', () => {
 
     const confirmed = { ...initialPresets, conservative: { kFactor: 1.1 } }
     save.resolve(response(200, { presets: confirmed }))
-    await waitFor(() => expect(screen.getByLabelText('k Factor').disabled).toBe(false))
+    await waitFor(() => {
+      const saveButton = screen.getByRole('button', { name: 'Save Presets' })
+      expect(saveButton.disabled).toBe(true)
+      expect(screen.getByLabelText('k Factor').matches(':disabled')).toBe(false)
+    })
     expect(screen.getByLabelText('k Factor').value).toBe('1.1')
-    expect(screen.getByRole('button', { name: 'Save Presets' }).disabled).toBe(true)
     expect(screen.queryByRole('button', { name: 'Reset' })).toBeNull()
   })
 
