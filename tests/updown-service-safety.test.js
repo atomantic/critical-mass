@@ -66,6 +66,23 @@ describe('UpDown stale-price and lifecycle safety', () => {
     assert.equal(scorecardStops, 1)
   })
 
+  it('announces start and stop to the updown room so pages refresh without polling', async (t) => {
+    const states = []
+    const recordingIo = { to: (room) => ({ emit: (event, payload) => { if (event === 'updown:state') states.push([room, payload]) } }) }
+    const service = createUpDownService(recordingIo, {
+      readJSON: () => null,
+      writeJSON: () => {},
+      DATA_DIR: '/tmp/updown-service-state-events',
+      candleCache,
+      createSignalEngine: engineFactory(() => signalResult('HOLD')),
+      createScorecard: () => scorecardStub(),
+    })
+    t.after(() => service.stop())
+    await service.start()
+    service.stop()
+    assert.deepEqual(states.slice(0, 2), [['updown', { running: true }], ['updown', { running: false }]])
+  })
+
   it('pauses predictions and paper fills until a stale feed becomes fresh again', async (t) => {
     const startedAt = Date.UTC(2026, 0, 1)
     t.mock.timers.enable({ apis: ['Date', 'setInterval'], now: startedAt })

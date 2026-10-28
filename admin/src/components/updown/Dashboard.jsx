@@ -18,7 +18,7 @@ import { labelHistoryActions } from '../../constants/signals'
 import { formatCurrencyIntl as formatCurrency } from '../charts/chartUtils'
 import { createRequestOwner } from '../../utils/requestOwner.mjs'
 import { apiPost, describeMutationFailure } from '../../utils/apiClient'
-import usePolling from '../../hooks/usePolling'
+import useRealtimeRefresh from '../../hooks/useRealtimeRefresh'
 import { useNotify } from '../Toast'
 
 export default function UpDownDashboard() {
@@ -74,9 +74,17 @@ export default function UpDownDashboard() {
     setLoading(false)
   }, [statusOwner])
 
-  usePolling(fetchStatus, 10000, {
-    deps: [fetchStatus, statusOwner],
-    onCleanup: () => statusOwner.invalidate(),
+  // One read, then re-read on a signal, a paper fill (scorecard) or a service
+  // start/stop instead of every 10 s (#1880).
+  useEffect(() => {
+    fetchStatus()
+    return () => statusOwner.invalidate()
+  }, [fetchStatus, statusOwner])
+  useRealtimeRefresh({
+    events: ['updown:signal', 'updown:scorecard', 'updown:state'],
+    rooms: ['updown'],
+    minIntervalMs: 2000,
+    onRefresh: fetchStatus,
   })
 
   // Track signal changes for chart annotations + audio alerts
@@ -141,6 +149,16 @@ export default function UpDownDashboard() {
   }
 
   const isRunning = status?.running || false
+
+  // Price freshness is derived at render time, and a stalled feed sends no
+  // events, so re-render while running to flip the header to "Price stale".
+  // Local clock only: no network traffic (#1880).
+  const [, setClock] = useState(0)
+  useEffect(() => {
+    if (!isRunning) return undefined
+    const timer = setInterval(() => setClock(n => n + 1), 2000)
+    return () => clearInterval(timer)
+  }, [isRunning])
 
   // Merge tick data with status for current price
   const now = Date.now()

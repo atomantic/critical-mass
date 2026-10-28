@@ -499,6 +499,7 @@ const createUpDownService = (io, deps) => {
     loadState();
 
     running = true;
+    io.to('updown').emit('updown:state', { running });
     lastTickAt = 0;
     tickBuffer.length = 0;
 
@@ -538,6 +539,7 @@ const createUpDownService = (io, deps) => {
     }).catch((err) => {
       if (generation === lifecycleGeneration) {
         running = false;
+        io.to('updown').emit('updown:state', { running });
         if (signalInterval) {
           clearInterval(signalInterval);
           signalInterval = null;
@@ -556,6 +558,7 @@ const createUpDownService = (io, deps) => {
    */
   const stop = () => {
     running = false;
+    io.to('updown').emit('updown:state', { running });
     lifecycleGeneration++;
     startPromise = null;
     if (signalInterval) {

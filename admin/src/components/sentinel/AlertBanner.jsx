@@ -3,7 +3,7 @@ import Button from '../ui/Button'
 import { Link } from '../../lib/router'
 import { apiGet } from '../../utils/apiClient'
 import { completePagedItems } from '../../utils/pagedList.mjs'
-import usePolling from '../../hooks/usePolling'
+import useRealtimeRefresh from '../../hooks/useRealtimeRefresh'
 
 /**
  * Compact alert banner shown globally when critical/warning sentinel alerts are active.
@@ -17,6 +17,7 @@ export default function AlertBanner() {
   const alertSnapshot = useRef({ initialized: false, alerts: [] })
   const bannerRef = useRef(null)
   const pending = useRef(false)
+  const rerun = useRef(false)
   const [loading, setLoading] = useState(false)
   const visible = activeAlerts.length > 0 || !!loadError
 
@@ -30,7 +31,8 @@ export default function AlertBanner() {
   }, [visible])
 
   const fetchAlerts = async () => {
-    if (pending.current) return
+    // A change that lands mid-read must not be lost: re-read once this one ends.
+    if (pending.current) { rerun.current = true; return }
     pending.current = true
     setLoading(true)
     try {
@@ -98,9 +100,19 @@ export default function AlertBanner() {
     } finally {
       pending.current = false
       setLoading(false)
+      if (rerun.current) {
+        rerun.current = false
+        fetchAlerts()
+      }
     }
   }
-  usePolling(fetchAlerts, 30000)
+  // Initial read, then re-read when the gateway reports a new alert or a status
+  // change (dismiss, clear) rather than on a timer (#1880).
+  useEffect(() => {
+    fetchAlerts()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+  useRealtimeRefresh({ events: ['sentinel:alert', 'sentinel:status'], rooms: ['sentinel'], onRefresh: fetchAlerts })
 
   // The slot is always rendered as a zero-height anchor so alerts that arrive
   // after the first paint never push <main> down. The banner itself is fixed
