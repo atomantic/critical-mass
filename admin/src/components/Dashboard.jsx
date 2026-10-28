@@ -18,7 +18,7 @@ import { runDashboardAction } from '../utils/dashboardAction.mjs'
 import { formatCountdown } from '../utils/countdown.mjs'
 import ToggleSwitch from './ToggleSwitch'
 import DcaHoldingsSummary from './dca/DcaHoldingsSummary'
-import usePolling from '../hooks/usePolling'
+import useRealtimeRefresh from '../hooks/useRealtimeRefresh'
 
 function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
   const convertTitleId = useId()
@@ -93,9 +93,17 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
     }
   }
 
-  usePolling(fetchLive, 10000, {
-    deps: [fetchLive],
-    onCleanup: () => liveOwnerRef.current.invalidate(),
+  // One read, then re-read when the exchange reports trade activity (a buy,
+  // fill or placement) instead of every 10 s (#1880).
+  useEffect(() => {
+    fetchLive()
+    return () => liveOwnerRef.current.invalidate()
+  }, [fetchLive])
+  useRealtimeRefresh({
+    events: ['trade:event'],
+    filter: (event) => event?.exchange === exchange,
+    minIntervalMs: 5000,
+    onRefresh: fetchLive,
   })
 
   // Live countdown timer

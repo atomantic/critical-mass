@@ -5,7 +5,7 @@ import { getBaseCurrency } from '../App'
 import { pairQuery as buildPairQuery } from '../utils/api'
 import { apiGet } from '../utils/apiClient'
 import { pnlColorClass, signedPrefix } from '../utils/pnlFormat.mjs'
-import usePolling from '../hooks/usePolling'
+import useRealtimeRefresh from '../hooks/useRealtimeRefresh'
 
 function CostBasisDCA({ summary, quoteCurrency = 'USDC', exchange = 'coinbase', pair }) {
   const baseCurrency = getBaseCurrency(summary?.config?.productId)
@@ -41,9 +41,18 @@ function CostBasisDCA({ summary, quoteCurrency = 'USDC', exchange = 'coinbase', 
     setCurrentPrice(null)
     setPriceError(null)
   }, [exchange, pairQuery, retryKey])
-  usePolling(fetchPrice, 10000, {
-    deps: [exchange, pairQuery, retryKey],
-    onCleanup: () => priceController.current?.abort(),
+  // One read per fund, then re-read on the exchange's trade activity instead of
+  // every 10 s. DCA funds have no live price feed (#1880).
+  useEffect(() => {
+    fetchPrice()
+    return () => priceController.current?.abort()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [exchange, pairQuery, retryKey])
+  useRealtimeRefresh({
+    events: ['trade:event'],
+    filter: (event) => event?.exchange === exchange,
+    minIntervalMs: 5000,
+    onRefresh: fetchPrice,
   })
 
   if (!summary?.costBasis) {

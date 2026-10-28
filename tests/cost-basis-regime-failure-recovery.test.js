@@ -1,6 +1,6 @@
 const { before, describe, it } = require('node:test')
 const { apiClientStub } = require('./api-client-harness')
-const { asHookModule } = require('./use-polling-harness')
+const { asHookModule } = require('./hook-module-harness')
 const assert = require('node:assert/strict')
 const path = require('node:path')
 const vm = require('node:vm')
