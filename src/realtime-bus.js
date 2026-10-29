@@ -98,8 +98,8 @@ const createRealtimeBus = ({
   const scopedStatusSockets = new WeakSet();
   /**
    * Last `regime:state` sent per fund, so only a change in the header-level
-   * state (running, dry-run, lifecycle) is announced, not every status tick.
-   * @type {Map<string, {exchange: string, pair: string, isRunning: boolean, isDryRun: boolean, lifecycle: string}>}
+   * state (running, dry-run, lifecycle, connectivity) is announced, not every status tick.
+   * @type {Map<string, {exchange: string, pair: string, isRunning: boolean, isDryRun: boolean, lifecycle: string, engineDown?: boolean}>}
    */
   const lastRegimeState = new Map();
   /**
@@ -119,11 +119,11 @@ const createRealtimeBus = ({
   /** @param {RealtimeSocket} socket @param {string} text */
   const sendRaw = (socket, text) => senders.get(socket)?.(text);
 
-  /** @param {{exchange: string, pair: string, isRunning: boolean, isDryRun: boolean, lifecycle: string}} state */
+  /** @param {{exchange: string, pair: string, isRunning: boolean, isDryRun: boolean, lifecycle: string, engineDown?: boolean}} state */
   const announceState = (state) => {
     const key = `${state.exchange}::${state.pair}`;
     const prev = lastRegimeState.get(key);
-    if (prev && prev.isRunning === state.isRunning && prev.isDryRun === state.isDryRun && prev.lifecycle === state.lifecycle) return;
+    if (prev && prev.isRunning === state.isRunning && prev.isDryRun === state.isDryRun && prev.lifecycle === state.lifecycle && Boolean(prev.engineDown) === Boolean(state.engineDown)) return;
     lastRegimeState.set(key, state);
     const text = eventFrame('regime:state', state);
     for (const socket of sockets.values()) sendRaw(socket, text);
@@ -146,6 +146,7 @@ const createRealtimeBus = ({
       isRunning: status.isRunning,
       isDryRun: Boolean(status.isDryRun),
       lifecycle: status.lifecycle?.lifecycle || 'active',
+      ...(status.engineDown === true ? { engineDown: true } : {}),
     });
   };
 
@@ -423,14 +424,14 @@ const createRealtimeBus = ({
     },
     /**
      * The gateway lost an exchange's engine: no status will follow, so announce
-     * its running funds as stopped, then forget its funds so the first status
+     * its funds as unreachable, then forget them so the first status
      * after recovery is announced again even when it matches what was sent.
      * @param {string} exchange
      */
     engineDown: (exchange) => {
       for (const [key, state] of [...lastRegimeState]) {
         if (state.exchange !== exchange) continue;
-        if (state.isRunning) announceState({ ...state, isRunning: false });
+        announceState({ ...state, isRunning: false, engineDown: true });
         lastRegimeState.delete(key);
       }
     },

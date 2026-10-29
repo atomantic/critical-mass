@@ -277,6 +277,37 @@ it('follows pushed regime:state events for the current fund without polling stat
   }
 })
 
+it('hides fund controls while the engine is unreachable and restores them on recovery', async () => {
+  mount()
+  await screen.findByRole('button', { name: 'Stop', exact: true })
+  await act(async () => socket.fire('regime:state', {
+    exchange: 'coinbase', pair: 'BTC-USDC', isRunning: false, isDryRun: false,
+    lifecycle: 'active', engineDown: true,
+  }))
+  await screen.findByText('Engine unreachable')
+  expectUnknownStatus()
+  read.mockImplementation(url => url.includes('/regime/status')
+    ? response({ ...status(false), engineDown: true })
+    : response({ config: config(111, true) }))
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Retry engine status' })) })
+  await waitFor(() => expect(screen.getByText('Engine unreachable')).toBeTruthy())
+  expectUnknownStatus()
+  await act(async () => socket.fire('regime:state', {
+    exchange: 'coinbase', pair: 'BTC-USDC', isRunning: false, isDryRun: false, lifecycle: 'active',
+  }))
+  await screen.findByRole('button', { name: 'Start', exact: true })
+  expect(screen.queryByText('Engine unreachable')).toBeNull()
+})
+
+it('treats an offline status payload as unreachable on the initial read', async () => {
+  read.mockImplementation(url => url.includes('/regime/status')
+    ? response({ status: { isRunning: false, engineDown: true } })
+    : response({ config: config(111, true) }))
+  mount()
+  await screen.findByText('Engine unreachable')
+  expectUnknownStatus()
+})
+
 it('reconciles status when the tab becomes visible and detaches its listeners on unmount', async () => {
   const page = mount()
   await screen.findByDisplayValue('111')

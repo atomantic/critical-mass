@@ -168,6 +168,8 @@ describe('compact regime state notifications', () => {
     bus.emit('regime:status', status(true, { lastPrice: 2 }));
     bus.emit('regime:status', status(true, { isDryRun: true }));
     bus.emit('regime:status', status(false));
+    bus.emit('regime:status', status(false, { engineDown: true }));
+    bus.emit('regime:status', status(false));
     bus.emit('regime:status', { exchange: 'gemini', pair: 'BTCUSD', status: { regime: 'range' } });
     bus.emit('regime:status', { exchange: 'gemini', status: { isRunning: true } });
     await Promise.all([legacy, config].map(roundTrip));
@@ -175,13 +177,15 @@ describe('compact regime state notifications', () => {
       { exchange: 'gemini', pair: 'BTCUSD', isRunning: true, isDryRun: false, lifecycle: 'active' },
       { exchange: 'gemini', pair: 'BTCUSD', isRunning: true, isDryRun: true, lifecycle: 'active' },
       { exchange: 'gemini', pair: 'BTCUSD', isRunning: false, isDryRun: false, lifecycle: 'active' },
+      { exchange: 'gemini', pair: 'BTCUSD', isRunning: false, isDryRun: false, lifecycle: 'active', engineDown: true },
+      { exchange: 'gemini', pair: 'BTCUSD', isRunning: false, isDryRun: false, lifecycle: 'active' },
     ];
     assert.deepEqual(events(config, 'regime:state'), expected);
     assert.deepEqual(events(legacy, 'regime:state'), expected);
     assert.deepEqual(events(config, 'regime:status'), [], 'the full status stays room-scoped');
   });
 
-  it('announces a lost engine\'s running funds as stopped and recovers on the next status', async (t) => {
+  it('announces every lost fund as unreachable and recovers on the next status', async (t) => {
     const { bus, hosts: [host] } = await startBus(t);
     const client = await connect(t, host, { scoped: true });
     const status = (exchange, isRunning) => ({ exchange, pair: 'P', status: { isRunning, isDryRun: false } });
@@ -194,8 +198,9 @@ describe('compact regime state notifications', () => {
     bus.emit('regime:status', status('gemini', true));
     bus.emit('regime:status', status('cryptocom', false));
     await roundTrip(client);
-    assert.deepEqual(events(client, 'regime:state').map(({ exchange, isRunning }) => `${exchange}:${isRunning}`), [
-      'gemini:true', 'coinbase:true', 'cryptocom:false', 'gemini:false', 'gemini:true', 'cryptocom:false',
+    assert.deepEqual(events(client, 'regime:state').map(({ exchange, isRunning, engineDown }) => `${exchange}:${isRunning}:${Boolean(engineDown)}`), [
+      'gemini:true:false', 'coinbase:true:false', 'cryptocom:false:false',
+      'gemini:false:true', 'cryptocom:false:true', 'gemini:true:false', 'cryptocom:false:false',
     ]);
   });
 });
