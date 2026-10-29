@@ -58,7 +58,8 @@ function FailedSellPlacements({ failedSells = [], placementIntents = [], baseCur
                   {order.sellPlacementUnresolved && (
                     <div className="text-yellow-300 mt-1">
                       Earlier sell outcome unknown (intent <span className="font-mono">{order.sellPlacementUnresolved.intentId}</span>
-                      {order.sellPlacementUnresolved.clientOrderId && <>, client order <span className="font-mono">{order.sellPlacementUnresolved.clientOrderId}</span></>}) — reconcile before retrying.
+                      {order.sellPlacementUnresolved.clientOrderId && <>, client order <span className="font-mono">{order.sellPlacementUnresolved.clientOrderId}</span></>}
+                      {order.sellPlacementUnresolved.orderId && <>, accepted as exchange order <span className="font-mono">{order.sellPlacementUnresolved.orderId}</span></>}) — reconcile before retrying.
                     </div>
                   )}
                   {order.sellFailedAt && <div className="text-gray-400 mt-1">{formatTimestamp(order.sellFailedAt)}</div>}

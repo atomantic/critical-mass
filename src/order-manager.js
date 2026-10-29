@@ -621,6 +621,27 @@ const executeDailyBuy = async (config, usdcAmount, adapter = null, scope = null,
 };
 
 /**
+ * Give a reconciled sell placement the shape of a normal placement success.
+ * A reconciled placement only carries orderId/clientOrderId (the exchange
+ * lookup that adopted it doesn't echo back the limit price/size we requested),
+ * so the locally-known request parameters are filled in. Callers such as
+ * state-tracker's attachSellOrder read sellOrder.limitPrice for accounting, and
+ * an accepted-sell handoff sees the placement before it is returned, so this
+ * runs before either (issue #1886). Mutates and returns the placement.
+ * @param {Object} placement - Accepted sell placement
+ * @param {number} sellQuantity - Requested base size
+ * @param {number} sellPrice - Requested limit price
+ * @returns {Object} The same placement
+ */
+const withRequestedSellShape = (placement, sellQuantity, sellPrice) => {
+  if (placement?.reconciled) {
+    placement.baseSize = sellQuantity;
+    placement.limitPrice = sellPrice;
+  }
+  return placement;
+};
+
+/**
  * Place a post-only sell order
  * @param {ExchangeConfig} config - Configuration
  * @param {BuyResult} buyDetails - Buy order fill details
@@ -655,15 +676,7 @@ const placeSellOrder = async (config, buyDetails, adapter = null, scope = null) 
     throw placementFailure('Limit sell', sellResult);
   }
 
-  // A reconciled placement only carries orderId/clientOrderId (the exchange
-  // lookup that adopted it doesn't echo back the limit price/size we
-  // requested) — fill in the locally-known request parameters so callers
-  // (e.g. state-tracker's attachSellOrder, which reads sellOrder.limitPrice
-  // for accounting) see the same shape as a normal placement success.
-  if (sellResult.reconciled) {
-    sellResult.baseSize = sellQuantity;
-    sellResult.limitPrice = sellPrice;
-  }
+  withRequestedSellShape(sellResult, sellQuantity, sellPrice);
 
   logger.info(`ℹ️ Sell order placed: ${sellResult.orderId}`, {
     orderId: sellResult.orderId,
@@ -734,13 +747,21 @@ const checkFilledOrders = async (pendingOrders, adapter = null) => {
  * re-covered passes its persisted `sellQuantity` instead: its holdback was
  * already credited to reserves at booking, so a later holdbackPercent change
  * must not move the sell size away from that accounting (issue #1035).
+ *
+ * `onAccepted` hands an accepted sell (ordinary or reconciled, already carrying
+ * its requested size/price) to its owner BEFORE the dispatch intent is released
+ * (issue #1886), exactly as executeDailyBuy does for buys. A handoff failure
+ * keeps the intent blocking and throws a pending `handoffFailed` error — it is
+ * never retried as a rejection, so no second sell is placed.
  * @param {ExchangeConfig} config - Configuration
  * @param {BuyResult & {sellQuantity?: number}} buyDetails - Buy order fill details
  * @param {ExchangeAdapter|null} [adapter] - Exchange adapter (optional)
  * @param {number} [maxRetries] - Maximum retry attempts
+ * @param {{exchange: string, pair?: string}|null} [scope] - Fund the placement belongs to, enabling durable placement intents (#472)
+ * @param {{onAccepted?: ((sellOrder: SellOrder) => void|Promise<void>)|null}} [options] - Accepted-sell handoff
  * @returns {Promise<SellOrder>} Sell order result
  */
-const placeSellOrderWithRetry = async (config, buyDetails, adapter = null, maxRetries = 3, scope = null) => {
+const placeSellOrderWithRetry = async (config, buyDetails, adapter = null, maxRetries = 3, scope = null, { onAccepted = null } = {}) => {
   adapter = adapter || getAdapter('coinbase');
   const logger = orderLogger(adapter, config.productId);
   let lastError;
@@ -780,22 +801,24 @@ const placeSellOrderWithRetry = async (config, buyDetails, adapter = null, maxRe
       adapter,
       config.productId,
       () => adapter.placeLimitSell(config.productId, sellQuantity, sellPrice),
-      { intent: fundIntent(scope, 'dca_sell_retry', 'sell', { price: sellPrice, size: sellQuantity }) }
+      {
+        intent: fundIntent(scope, 'dca_sell_retry', 'sell', { price: sellPrice, size: sellQuantity }),
+        onAccepted: typeof onAccepted === 'function'
+          ? (accepted) => onAccepted(withRequestedSellShape(accepted, sellQuantity, sellPrice))
+          : null,
+      }
     );
 
-    // A pending (unresolved) outcome must never fall through to the retry loop
-    // below — that loop is exactly the "place a second order" behaviour the
-    // durable intent exists to stop.
+    // A pending (unresolved) outcome — including an accepted sell whose
+    // handoff failed — must never fall through to the retry loop below — that
+    // loop is exactly the "place a second order" behaviour the durable intent
+    // exists to stop.
     if (sellResult.pending) {
       throw placementFailure('Limit sell', sellResult);
     }
 
     if (sellResult.success) {
-      if (sellResult.reconciled) {
-        sellResult.baseSize = sellQuantity;
-        sellResult.limitPrice = sellPrice;
-      }
-      return sellResult;
+      return withRequestedSellShape(sellResult, sellQuantity, sellPrice);
     }
 
     lastError = sellResult.errorMessage;

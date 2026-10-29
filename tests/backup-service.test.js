@@ -912,3 +912,106 @@ it('full restore resets a configured fund that had no accounting files yet (#170
   assert.deepEqual(fs.readdirSync(fundDir), ['dry-run-state.json']);
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(fundDir, 'dry-run-state.json'), 'utf8')), { version: 1, state: null });
 });
+
+// #1885: a full archive restore would refuse must not be published as a recovery
+// point, and one that already exists must not displace a usable archive.
+describe('backup-service — unrestorable archives never displace usable recovery points (#1885)', () => {
+  const { ledgerOf } = require('./helpers/ledger-fixture');
+  const baseConfigFile = path.join(DATA_DIR, '__base_1885__.json');
+  const paths = { dataDir: DATA_DIR, baseConfigFile };
+  const fundDir = path.join(DATA_DIR, 'coinbase', 'BTC-USDC');
+  const ledgerFile = path.join(fundDir, 'fill-ledger.json');
+  const journalFile = path.join(fundDir, '.dca-import-journal.json');
+  const archives = () => fs.readdirSync(BACKUP_DIR).filter((name) => name.endsWith('.zip')).sort();
+
+  beforeEach(() => {
+    fs.rmSync(BACKUP_DIR, { recursive: true, force: true });
+    fs.mkdirSync(fundDir, { recursive: true });
+    fs.writeFileSync(baseConfigFile, JSON.stringify({ exchanges: { coinbase: { pairs: { 'BTC-USDC': { productId: 'BTC-USDC' } } } } }));
+    fs.writeFileSync(ledgerFile, JSON.stringify(ledgerOf('t1')));
+  });
+  afterEach(() => {
+    fs.rmSync(path.join(DATA_DIR, 'coinbase'), { recursive: true, force: true });
+    fs.rmSync(baseConfigFile, { force: true });
+    fs.rmSync(BACKUP_DIR, { recursive: true, force: true });
+  });
+
+  /** Rename to an older stable timestamp so later archives sort newer. */
+  const makeUsable = async () => {
+    const created = await createBackup({ paths });
+    assert.equal(created.success, true, created.error);
+    const older = 'backup-2020-01-01T00-00-00-usable.zip';
+    fs.renameSync(path.join(BACKUP_DIR, created.filename), path.join(BACKUP_DIR, older));
+    return older;
+  };
+
+  /** A newer archive whose members are overwritten after validated creation. */
+  const makeUnrestorable = async (members) => {
+    const created = await createBackup({ paths });
+    assert.equal(created.success, true, created.error);
+    const staging = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-1885-plant-'));
+    try {
+      for (const [rel, bytes] of Object.entries(members)) {
+        fs.mkdirSync(path.dirname(path.join(staging, rel)), { recursive: true });
+        fs.writeFileSync(path.join(staging, rel), bytes);
+      }
+      assert.equal(spawnSync('zip', ['-q', path.join(BACKUP_DIR, created.filename), ...Object.keys(members)], { cwd: staging }).status, 0);
+    } finally { fs.rmSync(staging, { recursive: true, force: true }); }
+    return created.filename;
+  };
+
+  it('refuses to publish a backup carrying an unresolved DCA import, leaving journal and accounting untouched', async () => {
+    const usable = await makeUsable();
+    fs.writeFileSync(journalFile, JSON.stringify({ version: 1, status: 'publishing', entries: [] }));
+    const journalBefore = fs.readFileSync(journalFile);
+    const ledgerBefore = fs.readFileSync(ledgerFile);
+
+    const result = await createBackup({ paths });
+    assert.equal(result.success, false);
+    assert.match(result.error, /DCA import was unresolved/);
+    assert.deepEqual(archives(), [usable], 'no archive or temp file left behind');
+    assert.deepEqual(fs.readFileSync(journalFile), journalBefore);
+    assert.deepEqual(fs.readFileSync(ledgerFile), ledgerBefore);
+    assert.equal((await pruneBackups(1)).pruned, 0);
+    assert.deepEqual(archives(), [usable]);
+  });
+
+  it('refuses to publish a backup whose accounting payload restore would reject', async () => {
+    const usable = await makeUsable();
+    fs.writeFileSync(ledgerFile, '{"fills":[]}');
+    const result = await createBackup({ paths });
+    assert.equal(result.success, false);
+    assert.match(result.error, /Archive accounting is not readable by this build/);
+    assert.deepEqual(archives(), [usable]);
+    assert.equal(fs.readFileSync(ledgerFile, 'utf8'), '{"fills":[]}');
+  });
+
+  it('preserves existing unrestorable archives without letting them consume retention or the schedule anchor', async () => {
+    const usable = await makeUsable();
+    const journaled = await makeUnrestorable({ 'coinbase/BTC-USDC/.dca-import-journal.json': '{"version":1}' });
+    const badLedger = await makeUnrestorable({ 'coinbase/BTC-USDC/fill-ledger.json': '{"fills":[]}' });
+
+    assert.deepEqual((await listBackups()).map((b) => b.filename), [usable]);
+    assert.equal(getNewestBackupTime(), Date.UTC(2020, 0, 1));
+    assert.equal(await getNewestBackupTimeAsync(), Date.UTC(2020, 0, 1));
+    const pruned = await pruneBackups(1);
+    assert.equal(pruned.pruned, 0);
+    assert.deepEqual(archives(), [usable, journaled, badLedger].sort(), 'invalid archives kept for inspection');
+  });
+
+  it('keeps valid current and legacy root-layout archives eligible, and rejects an incompatible legacy state file', async () => {
+    const legacy = (name, state) => {
+      const source = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-1885-legacy-'));
+      try {
+        fs.writeFileSync(path.join(source, 'state.json'), state);
+        fs.mkdirSync(BACKUP_DIR, { recursive: true });
+        assert.equal(spawnSync('zip', ['-q', path.join(BACKUP_DIR, name), 'state.json'], { cwd: source }).status, 0);
+      } finally { fs.rmSync(source, { recursive: true, force: true }); }
+    };
+    const current = await makeUsable();
+    legacy('backup-2021-01-01T00-00-00-legacy-ok.zip', '{"orders":[]}');
+    legacy('backup-2022-01-01T00-00-00-legacy-bad.zip', '[1]');
+    assert.deepEqual((await listBackups()).map((b) => b.filename),
+      ['backup-2021-01-01T00-00-00-legacy-ok.zip', current]);
+  });
+});
