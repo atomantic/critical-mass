@@ -1,9 +1,21 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useLayoutEffect, useMemo, useCallback, useRef } from 'react'
 import {
   createFundStatusOwner,
   nextRegimeStatusSeq,
   STATUS_STALE_MS,
 } from '../utils/regimeStatusSnapshot.mjs'
+
+const EMPTY_FRESHNESS = Object.freeze({
+  status: null,
+  rawStatus: null,
+  seq: 0,
+  isRunning: false,
+  isSilent: false,
+  isStale: false,
+  probeInFlight: false,
+  probeFailed: false,
+  probeError: null,
+})
 
 /**
  * React hook bridging a fund's socket and HTTP statuses with the
@@ -20,67 +32,64 @@ export function useFundStatusFreshness({
 } = {}) {
   const fetchStatusRef = useRef(fetchStatus)
   fetchStatusRef.current = fetchStatus
-
+  const initialStatusRef = useRef(initialStatus)
+  initialStatusRef.current = initialStatus
   const ownerRef = useRef(null)
-  const currentKey = `${exchange}::${pair || ''}`
-  const keyRef = useRef(currentKey)
+  // A new visit to the same fund has a distinct identity, fencing callbacks
+  // from an earlier visit even after navigating A -> B -> A.
+  const selection = useMemo(() => ({}), [exchange, pair])
+  const [snapshotState, setSnapshotState] = useState(null)
 
-  if (!ownerRef.current || keyRef.current !== currentKey) {
-    ownerRef.current?.dispose()
-    keyRef.current = currentKey
-    ownerRef.current = createFundStatusOwner({
+  useLayoutEffect(() => {
+    const owner = createFundStatusOwner({
       exchange,
       pair,
-      initialStatus,
+      initialStatus: initialStatusRef.current,
       staleMs,
       fetchStatus: fetchStatusRef.current ? (args) => fetchStatusRef.current(args) : undefined,
     })
-  }
-
-  const [snapshotState, setSnapshotState] = useState(() => ownerRef.current.getSnapshot())
-
-  useEffect(() => {
-    const owner = ownerRef.current
-    if (!owner) return
+    ownerRef.current = { selection, owner }
     const unsubscribe = owner.subscribe((snap) => {
-      setSnapshotState(snap)
+      setSnapshotState({ selection, owner, snap })
     })
-    // Sync current snapshot
-    setSnapshotState(owner.getSnapshot())
+    setSnapshotState({ selection, owner, snap: owner.getSnapshot() })
     return () => {
       unsubscribe()
+      owner.dispose()
+      if (ownerRef.current?.owner === owner) ownerRef.current = null
     }
-  }, [currentKey])
-
-  useEffect(() => {
-    return () => {
-      ownerRef.current?.dispose()
-      ownerRef.current = null
-    }
-  }, [])
+  }, [selection, exchange, pair, staleMs])
 
   // Accept socket updates
   useEffect(() => {
-    if (socketStatus && ownerRef.current && !ownerRef.current.isDisposed) {
-      ownerRef.current.acceptSnapshot(socketStatus, socketSeq ?? nextRegimeStatusSeq(), { isSocket: true })
+    const active = ownerRef.current
+    if (socketStatus && active?.selection === selection && !active.owner.isDisposed) {
+      active.owner.acceptSnapshot(socketStatus, socketSeq ?? nextRegimeStatusSeq(), { isSocket: true })
     }
-  }, [socketStatus, socketSeq, currentKey])
+  }, [socketStatus, socketSeq, selection, staleMs])
 
   const acceptSnapshot = useCallback((status, seq, options) => {
-    if (ownerRef.current && !ownerRef.current.isDisposed) {
-      return ownerRef.current.acceptSnapshot(status, seq, options)
+    const active = ownerRef.current
+    if (active?.selection === selection && !active.owner.isDisposed) {
+      return active.owner.acceptSnapshot(status, seq, options)
     }
-  }, [])
+  }, [selection])
 
   const retry = useCallback(() => {
-    return ownerRef.current?.retry()
-  }, [])
+    const active = ownerRef.current
+    if (active?.selection === selection) return active.owner.retry()
+  }, [selection])
+
+  const active = ownerRef.current
+  const snapshot = snapshotState?.selection === selection && snapshotState.owner === active?.owner
+    ? snapshotState.snap
+    : EMPTY_FRESHNESS
 
   return {
-    ...snapshotState,
+    ...snapshot,
     acceptSnapshot,
     retry,
-    owner: ownerRef.current,
+    owner: active?.selection === selection ? active.owner : null,
   }
 }
 

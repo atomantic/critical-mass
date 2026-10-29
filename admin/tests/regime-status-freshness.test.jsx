@@ -318,6 +318,43 @@ describe('mutation/socket status ordering', () => {
 })
 
 describe('shared per-fund status owner and freshness hook (#1816)', () => {
+  it('keeps a single working watchdog after StrictMode replays its effects', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const fetchStatus = vi.fn(async () => { throw new Error('Engine unreachable') })
+    const wrapper = ({ children }) => <React.StrictMode>{children}</React.StrictMode>
+    const { result, rerender } = renderHook(
+      ({ socketStatus, socketSeq }) => useFundStatusFreshness({
+        exchange: 'coinbase', pair: 'BTC-USDC', initialStatus: runningStatus(50000),
+        socketStatus, socketSeq, fetchStatus,
+      }),
+      { wrapper, initialProps: { socketStatus: null, socketSeq: undefined } },
+    )
+    expect(result.current.isRunning).toBe(true)
+    await act(async () => { vi.advanceTimersByTime(STATUS_STALE_MS) })
+    expect(fetchStatus).toHaveBeenCalledTimes(1)
+    expect(result.current.probeFailed).toBe(true)
+    rerender({ socketStatus: runningStatus(52000), socketSeq: nextRegimeStatusSeq() })
+    expect(result.current.probeFailed).toBe(false)
+    expect(result.current.status.market.lastPrice).toBe(52000)
+  })
+
+  it('does not accept an earlier visit callback after switching funds and returning', () => {
+    const { result, rerender } = renderHook(
+      ({ pair }) => useFundStatusFreshness({ exchange: 'coinbase', pair }),
+      { initialProps: { pair: 'BTC-USDC' } },
+    )
+    const oldAccept = result.current.acceptSnapshot
+    act(() => oldAccept(runningStatus(50000), nextRegimeStatusSeq()))
+    rerender({ pair: 'ETH-USDC' })
+    expect(result.current.status).toBeNull()
+    act(() => result.current.acceptSnapshot(runningStatus(3000), nextRegimeStatusSeq()))
+    rerender({ pair: 'BTC-USDC' })
+    expect(result.current.status).toBeNull()
+    act(() => result.current.acceptSnapshot(runningStatus(52000), nextRegimeStatusSeq()))
+    act(() => oldAccept(runningStatus(50000), nextRegimeStatusSeq()))
+    expect(result.current.status.market.lastPrice).toBe(52000)
+  })
+
   it('does not promote a redelivered socket snapshot above a newer HTTP snapshot', () => {
     const socketSeq = nextRegimeStatusSeq()
     const { result, rerender } = renderHook(
