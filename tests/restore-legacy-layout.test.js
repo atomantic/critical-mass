@@ -593,10 +593,12 @@ describe('restore refuses exchange-level and per-fund copies of guarded files (i
 
   for (const file of PAIR_MIGRATION_CONFLICT_FILES) {
     for (const identical of [false, true]) {
+      const empty = file === 'fill-ledger.json' ? '[]' : file === 'placement-intents.json' ? '{"intents":[]}' : '{}';
+      const populated = file === 'fill-ledger.json' ? '[ ]' : file === 'placement-intents.json' ? '{"intents": []}' : '{"generation":"pair"}';
       it(`refuses both ${file} copies${identical ? ' with equal bytes' : ''} at inspection, preflight and apply`, async () => {
         const { source, filename } = await makeLegacyLayoutArchive(configWith({ coinbase: 'BTC-USDC' }), {
-          [`coinbase/${file}`]: '{}',
-          [`coinbase/BTC-USDC/${file}`]: identical ? '{}' : '{"generation":"pair"}',
+          [`coinbase/${file}`]: empty,
+          [`coinbase/BTC-USDC/${file}`]: identical ? empty : populated,
         });
         const dest = makeInstall('dest', configWith({ coinbase: 'BTC-USDC' }));
         write(path.join(dest.dataDir, 'coinbase', 'BTC-USDC', 'state.json'), '{"generation":"live"}');
