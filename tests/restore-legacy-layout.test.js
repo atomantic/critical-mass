@@ -519,7 +519,7 @@ describe('restoreBackup translates the pre-exchange-namespace root layout (issue
     assert.equal(report.rootTranslation, null);
     assert.deepEqual(report.unresolvableLayoutExchanges, ['coinbase']);
 
-    const conflicting = await legacyRootArchive({ 'state.json': 'a', 'coinbase/BTC-USDC/state.json': 'b' });
+    const conflicting = await legacyRootArchive({ 'state.json': '{"a":1}', 'coinbase/BTC-USDC/state.json': '{"b":1}' });
     const dest = makeInstall('dest', configWith({ coinbase: 'BTC-USDC' }));
     transferArchive(conflicting.source, dest, conflicting.filename);
     const conflictReport = inspectBackup(conflicting.filename, { paths: dest.paths });
