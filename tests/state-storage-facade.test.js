@@ -36,7 +36,7 @@ describe('state storage facade compatibility', () => {
   it('retains every existing public export and re-exports storage functions directly', () => {
     const expected = [
       'LIFECYCLE', 'closeDrainedEmptyPosition', 'loadState', 'saveState', 'createInitialState', 'migrateState',
-      'checkAllocationRemaining', 'checkIfRanThisInterval', 'recordBuyFill', 'attachSellOrder',
+      'checkAllocationRemaining', 'checkIfRanThisInterval', 'recordBuyFill', 'findAwaitingSellOrder', 'attachSellOrder',
       'markSellPlacementFailed', 'getFailedSellOrders', 'reopenFailedSell', 'updateAfterBuy', 'updateAfterSellFill',
       'updateAfterConsolidation', 'applyConsolidationRecovery', 'getPendingOrders', 'getStateFile',
       'initFibonacciState', 'updateAfterFibBuy', 'recordPendingDcaBuy', 'notePendingDcaBuyCheck',

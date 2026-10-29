@@ -22,7 +22,7 @@ const path = require('node:path');
 
 const migration = require('../src/migration');
 const stateTracker = require('../src/state-tracker');
-const { placeWithUnknownReconcile } = require('../src/order-manager');
+const { placeWithUnknownReconcile, placeSellOrderWithRetry } = require('../src/order-manager');
 const { createOrderExecutor } = require('../src/order-executor');
 
 const EXCHANGE = 'coinbase';
@@ -648,6 +648,85 @@ describe('placeWithUnknownReconcile accepted-order handoff (issue #963)', () => 
     assert.equal(result.success, false);
     assert.equal(called, false);
     assert.deepEqual(readIntents(), []);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// issue #1886 — placeSellOrderWithRetry forwards the accepted-order handoff, so
+// a fixed-DCA sell's owner is saved before its intent is released. The handoff
+// always sees the requested size/price, including for a reconciled adoption.
+// ---------------------------------------------------------------------------
+describe('placeSellOrderWithRetry accepted-sell handoff (issue #1886)', () => {
+  const sellConfig = { productId: PRODUCT, sellMarkupPercent: 5, holdbackPercent: 10 };
+  const buyDetails = { orderId: 'buy-1', assetAmount: 1, price: 100 };
+  const fund = { exchange: EXCHANGE, pair: PAIR };
+
+  /** @param {(size: number, price: number) => Promise<Object>} placeLimitSell */
+  const sellAdapter = (placeLimitSell, extra = {}) => {
+    const calls = [];
+    return {
+      calls,
+      adapter: {
+        name: EXCHANGE,
+        getCurrentPrice: async () => 100,
+        placeLimitSell: async (_productId, size, price) => {
+          calls.push({ size, price });
+          return placeLimitSell(size, price);
+        },
+        ...extra,
+      },
+    };
+  };
+
+  it('hands an ordinary acceptance to its owner while the intent is on disk, then clears it', async () => {
+    const { adapter } = sellAdapter(async (size, price) => ({ success: true, orderId: 'sell-1', clientOrderId: 'coid-1', baseSize: size, limitPrice: price }));
+    const seen = [];
+    const result = await placeSellOrderWithRetry(sellConfig, buyDetails, adapter, 3, fund, {
+      onAccepted: (sellOrder) => { seen.push({ orderId: sellOrder.orderId, limitPrice: sellOrder.limitPrice, intents: readIntents().length }); },
+    });
+
+    assert.equal(result.orderId, 'sell-1');
+    assert.deepEqual(seen, [{ orderId: 'sell-1', limitPrice: 105, intents: 1 }]);
+    assert.deepEqual(readIntents(), []);
+  });
+
+  it('hands a reconciled adoption off with the requested size and price', async () => {
+    const { adapter } = sellAdapter(async () => { throw unknownError('coid-sell'); }, {
+      findOrderByClientOrderId: async () => ({ orderId: 'adopted-sell', status: 'OPEN' }),
+    });
+    const seen = [];
+    const result = await placeSellOrderWithRetry(sellConfig, buyDetails, adapter, 3, fund, {
+      onAccepted: (sellOrder) => { seen.push({ ...sellOrder }); },
+    });
+
+    assert.equal(result.reconciled, true);
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].orderId, 'adopted-sell');
+    assert.ok(Math.abs(seen[0].baseSize - 0.9) < 1e-12, 'size known before the owner records it');
+    assert.equal(seen[0].limitPrice, 105);
+    assert.deepEqual(readIntents(), []);
+  });
+
+  it('a failed handoff keeps the intent blocking and never retries the accepted sell', async () => {
+    const { adapter, calls } = sellAdapter(async (size, price) => ({ success: true, orderId: 'sell-1', clientOrderId: 'coid-1', baseSize: size, limitPrice: price }));
+
+    await assert.rejects(
+      () => placeSellOrderWithRetry(sellConfig, buyDetails, adapter, 3, fund, {
+        onAccepted: () => { throw new Error('ENOSPC'); },
+      }),
+      (err) => {
+        assert.equal(err.handoffFailed, true);
+        assert.equal(err.placementPending, true);
+        assert.equal(err.orderId, 'sell-1');
+        assert.ok(err.intentId);
+        return true;
+      },
+    );
+    assert.equal(calls.length, 1, 'no second sell after an accepted one');
+    const [row] = readIntents();
+    assert.equal(row.status, 'unresolved');
+    assert.equal(row.orderId, 'sell-1');
+    assert.equal(stateTracker.getBlockingPlacementIntents(EXCHANGE, PAIR).length, 1);
   });
 });
 

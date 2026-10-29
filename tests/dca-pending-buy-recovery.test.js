@@ -145,12 +145,16 @@ beforeEach(() => {
   adapters.getAdapter = () => exchange.adapter;
 
   // Sells are not under test; the buy-side money move and its accounting are.
-  orderManager.placeSellOrderWithRetry = async (_config, buyDetails) => ({
-    orderId: `sell-for-${buyDetails.orderId}`,
-    success: true,
-    baseSize: buyDetails.assetAmount * 0.9,
-    limitPrice: buyDetails.price * 1.02,
-  });
+  orderManager.placeSellOrderWithRetry = async (_config, buyDetails, _adapter, _retries, _scope, options) => {
+    const sellOrder = {
+      orderId: `sell-for-${buyDetails.orderId}`,
+      success: true,
+      baseSize: buyDetails.assetAmount * 0.9,
+      limitPrice: buyDetails.price * 1.02,
+    };
+    await options?.onAccepted?.(sellOrder);
+    return sellOrder;
+  };
   orderManager.placeFibonacciSellOrder = async (_config, cumulativeAsset, avgCostBasis) => ({
     sellOrder: { orderId: 'fib-sell-1', success: true, baseSize: cumulativeAsset * 0.9, limitPrice: avgCostBasis * 1.02 },
     sellQuantity: cumulativeAsset * 0.9,

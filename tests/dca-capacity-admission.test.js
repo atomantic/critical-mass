@@ -378,8 +378,10 @@ describe('DCA operation capacity and admission bounds (issue #1814)', () => {
     });
 
     let placements = 0;
-    mock.method(manager, 'placeSellOrderWithRetry', async () => {
-      return { orderId: `retry-sell-${++placements}`, baseSize: 1, limitPrice: 102 };
+    mock.method(manager, 'placeSellOrderWithRetry', async (_config, _buy, _adapter, _retries, _scope, options) => {
+      const sellOrder = { orderId: `retry-sell-${++placements}`, baseSize: 1, limitPrice: 102 };
+      await options?.onAccepted?.(sellOrder);
+      return sellOrder;
     });
 
     // 1. Start sync (takes fund lock and runs checkFilledOrders)
