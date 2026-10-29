@@ -892,6 +892,9 @@ const placeSellOrderWithRetry = async (config, buyDetails, adapter = null, maxRe
   throw new Error(`Failed to place sell order after ${maxRetries} attempts: ${lastError}`);
 };
 
+/** Message of any caught value; an adapter may reject with null/undefined or a non-Error. */
+const caughtMessage = (err) => err?.message ?? String(err);
+
 /**
  * Cancel sequentially and partition orders by their post-cancel fill state.
  * @param {TrackedOrder[]} eligibleOrders
@@ -926,8 +929,9 @@ const cancelOrdersForConsolidation = async (eligibleOrders, skippedOrderIds, ada
         return { cancelledOrders, cancelledOrderIds, filledDuringCancelOrderIds, abortError: `Failed to cancel order ${order.orderId}` };
       }
     } catch (err) {
-      logger.error(`❌ Cancel of order ${order.orderId} threw — outcome unknown: ${err.message}`, { orderId: order.orderId, error: err.message });
-      return { cancelledOrders, cancelledOrderIds, filledDuringCancelOrderIds, abortError: `Failed to cancel order ${order.orderId}: ${err.message}` };
+      const message = caughtMessage(err);
+      logger.error(`❌ Cancel of order ${order.orderId} threw — outcome unknown: ${message}`, { orderId: order.orderId, error: message });
+      return { cancelledOrders, cancelledOrderIds, filledDuringCancelOrderIds, abortError: `Failed to cancel order ${order.orderId}: ${message}` };
     }
 
     // Re-fetch may return null/undefined for a just-cancelled or not-found order.
@@ -938,8 +942,9 @@ const cancelOrdersForConsolidation = async (eligibleOrders, skippedOrderIds, ada
     try {
       postCancel = await adapter.getOrder(order.orderId);
     } catch (err) {
-      logger.error(`❌ Status read for order ${order.orderId} failed after cancel — outcome unknown: ${err.message}`, { orderId: order.orderId, error: err.message });
-      return { cancelledOrders, cancelledOrderIds, filledDuringCancelOrderIds, abortError: `Failed to confirm cancellation of order ${order.orderId}: ${err.message}` };
+      const message = caughtMessage(err);
+      logger.error(`❌ Status read for order ${order.orderId} failed after cancel — outcome unknown: ${message}`, { orderId: order.orderId, error: message });
+      return { cancelledOrders, cancelledOrderIds, filledDuringCancelOrderIds, abortError: `Failed to confirm cancellation of order ${order.orderId}: ${message}` };
     }
     if (!postCancel || postCancel.completionPercentage > 0 || postCancel.status === 'FILLED') {
       // Filled (fully or partially) during the cancel window, or indeterminate —

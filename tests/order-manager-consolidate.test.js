@@ -367,6 +367,20 @@ describe('consolidatePendingOrders — ordered public contracts', () => {
     });
   }
 
+  it('restores the prefix even when the aborting cancel rejects with a nullish value', async () => {
+    const script = scriptedAdapter([
+      getStep('a'), getStep('b'), cancelStep('a'), getStep('a'),
+      placeStep(1, 100, { success: true, orderId: 'restored-a' }),
+    ]);
+    const adapter = { ...script.adapter, cancelOrder: async (id) => {
+      if (id === 'b') throw undefined; // eslint-disable-line no-throw-literal
+      return script.adapter.cancelOrder(id);
+    } };
+    const result = await consolidatePendingOrders(baseConfig(), [order('a', 1, 100), order('b', 2, 250)], adapter);
+    assert.equal(result.error, 'Failed to cancel order b: undefined');
+    assert.deepEqual(result.restoredOrders, [{ oldOrderId: 'a', newOrderId: 'restored-a' }]);
+  });
+
   it('reports restore failures for the aborted prefix and places nothing when the first cancel fails', async () => {
     const failing = scriptedAdapter([
       getStep('a'), getStep('b'), getStep('c'), cancelStep('a'), getStep('a'), cancelStep('b'), getStep('b'),
