@@ -387,6 +387,27 @@ const applyRestoreUnderLock = async ({
     drainedWriters.push(writer);
   }
 
+  // The initial drain only joined work admitted before the engines settled;
+  // a producer that was still live (e.g. an UpDown scorecard append that already
+  // owns the maintenance lock) may have registered since. Join it now that every
+  // gateway-local producer is stopped, before anything is archived or replaced.
+  if (drainPendingWrites) {
+    const lateDrain = await drainPendingWrites(drainTimeoutMs);
+    if (!lateDrain.drained) {
+      unconfirmed.push({
+        exchange: 'gateway',
+        reason: 'pending-writes-in-flight',
+        error: `Still running after ${drainTimeoutMs}ms once gateway writers stopped: ${lateDrain.pending.map((w) => w.label).join(', ')}`,
+        pendingWrites: lateDrain.pending,
+      });
+      if (force) {
+        logger.warn(`⚠️ 💾 Restore FORCED past late pending writes (${lateDrain.pending.map((w) => w.label).join(', ')})`, {
+          action: 'restore-backup', filename, force: true,
+        });
+      }
+    }
+  }
+
   const proceed = unconfirmed.length === 0 || force;
   const recoveryPoint = proceed ? await saveRecoveryPoint(createRecoveryPoint, logger, filename) : null;
   if (recoveryPoint && 'error' in recoveryPoint) {
