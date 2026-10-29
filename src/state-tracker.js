@@ -20,7 +20,7 @@ const {
  * @typedef {import('./types').RegimeState} RegimeState
  */
 
-const { createInitialFibState, resetFibState, getUncoveredFibBuys, getAverageCostBasis } = require('./fibonacci-utils');
+const { createInitialFibState, resetFibState, getUncoveredFibBuys, getAverageCostBasis, getLegacyFibCycleSoldAsset } = require('./fibonacci-utils');
 const { migrateFromLegacy, createInitialCelestialState } = require('./celestial-hierarchy');
 const { loadRawConfig } = require('./config-utils');
 const { createContextLogger } = require('./logger');
@@ -138,6 +138,13 @@ const migrateState = (state) => {
   }
   if (state.assetReserves === undefined) state.assetReserves = 0;
   if (state.outstandingOrdersAsset === undefined) state.outstandingOrdersAsset = 0;
+
+  // A Fibonacci cycle saved before the cycle-wide sold quantity was tracked
+  // recovers it from its sell's coverage, so the next replacement does not
+  // re-sell asset an earlier partial already sold (issue #1890).
+  if (state.fibCycleSoldAsset === undefined && state.fibActiveSellOrderId) {
+    state.fibCycleSoldAsset = getLegacyFibCycleSoldAsset(state);
+  }
 
   // Migrate order-level BTC fields
   if (state.orders) {

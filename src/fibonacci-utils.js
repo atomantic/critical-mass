@@ -123,6 +123,23 @@ const getUncoveredFibBuys = (state) => {
 };
 
 /**
+ * Asset the active Fibonacci sell's cycle already sold through earlier partial
+ * sells, recovered from a state saved before fibCycleSoldAsset existed (issue
+ * #1890). Each (re-)consolidated sell is sized as its covered asset less the
+ * pending holdback less what already sold, so the persisted coverage snapshot,
+ * holdback and outstanding remainder give back the sold quantity. No active
+ * sell, or no coverage snapshot (legacy fully-covered state), means nothing
+ * sold; dust and negative remainders read as zero.
+ * @param {Partial<import('./types').BotState>} state - Persisted Fibonacci fields
+ * @returns {number} Asset already sold in the active cycle
+ */
+const getLegacyFibCycleSoldAsset = (state) => {
+  if (!state.fibActiveSellOrderId || state.fibSellOrderCoveredAsset === undefined) return 0;
+  const sold = state.fibSellOrderCoveredAsset - (state.fibPendingHoldback || 0) - (state.outstandingOrdersAsset || 0);
+  return sold > 1e-8 ? sold : 0;
+};
+
+/**
  * Reset Fibonacci state after a cycle completes
  * @returns {Object} Reset Fibonacci state
  */
@@ -150,4 +167,5 @@ module.exports = {
   createInitialFibState,
   resetFibState,
   getUncoveredFibBuys,
+  getLegacyFibCycleSoldAsset,
 };

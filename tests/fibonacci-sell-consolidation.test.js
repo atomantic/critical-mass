@@ -11,6 +11,8 @@ const {
   updateAfterFibSellFill,
   settleFibSellAndCarryUncoveredBuys,
   updateAfterFibBuy,
+  getFibonacciCycleInfo,
+  migrateState,
 } = require('../src/state-tracker');
 const { getFibonacciSellQuantity, createInitialFibState } = require('../src/fibonacci-utils');
 
@@ -775,4 +777,172 @@ describe('completed Fibonacci sell carry contract', () => {
 
 it('keeps the legacy settlement export as the same function', () => {
   assert.equal(updateAfterFibSellFill, settleFibSellAndCarryUncoveredBuys);
+});
+
+// ===========================================================================
+// issue #1890 — every partial sale in a cycle shrinks every later replacement,
+// across intervals and JSON save/reload
+// ===========================================================================
+describe('Fibonacci replacements across intervals (issue #1890)', () => {
+  /**
+   * A scripted order book: placed sells rest OPEN until a test executes part
+   * (or all) of them; cancel leaves the executed portion on a CANCELLED order.
+   */
+  const makeBook = () => {
+    const orders = new Map();
+    let seq = 0;
+    const adapter = {
+      getOrder: async (orderId) => ({ ...orders.get(orderId) }),
+      cancelOrder: async (orderId) => {
+        orders.get(orderId).status = 'CANCELLED';
+        return { success: true };
+      },
+      getOrderFillSummary: async () => noFees(),
+      getCurrentPrice: async () => 100,
+      placeLimitSell: async (productId, qty, price) => {
+        const orderId = `sell-${++seq}`;
+        orders.set(orderId, { status: 'OPEN', filledSize: 0, filledValue: 0, averageFilledPrice: 0, qty });
+        return { success: true, orderId, baseSize: qty, limitPrice: price };
+      },
+    };
+    const execute = (orderId, size, price = 105) => {
+      const order = orders.get(orderId);
+      order.filledSize += size;
+      order.filledValue += size * price;
+      order.averageFilledPrice = price;
+      if (Math.abs(order.filledSize - order.qty) < 1e-12) order.status = 'FILLED';
+    };
+    return { adapter, execute, orders };
+  };
+
+  /** One interval's buy-then-consolidate, in the engine's order (dca-engine bookAndCoverBuy). */
+  const buyAndConsolidate = async (state, config, adapter, assetAmount, price = 100) => {
+    updateAfterFibBuy(state, { orderId: `buy-${state.fibPosition || 0}`, assetAmount, usdcAmount: assetAmount * price, price }, config, 'run');
+    const cycleInfo = getFibonacciCycleInfo(state);
+    const result = await placeFibonacciSellOrder(config, cycleInfo.cumulativeAsset, cycleInfo.avgCostBasis, state.fibActiveSellOrderId, adapter, null, getFibCycleSold(state));
+    assert.equal(result.alreadyFilled, false);
+    if (result.prevFill) creditFibPartialSell(state, result.prevFill);
+    updateAfterFibSellOrder(state, result.sellOrder, result.sellQuantity, result.holdbackAsset);
+    return result.sellQuantity;
+  };
+
+  /** Save and reload the way state storage does: JSON round trip, then migrateState. */
+  const saveAndReload = (state) => migrateState(JSON.parse(JSON.stringify(state)));
+
+  const freshState = () => ({
+    usdcFundSize: 10000, totalAllocated: 0, totalIntervalsRun: 0, assetReserves: 0,
+    outstandingOrdersAsset: 0, outstandingOrdersUSDC: 0, totalFees: 0, totalRebates: 0, netFees: 0,
+    ...createInitialFibState(),
+  });
+  const close = (actual, expected, message) => assert.ok(Math.abs(actual - expected) < 1e-9, `${message}: ${actual} != ${expected}`);
+  const zeroHoldback = () => ({ ...baseConfig(), holdbackPercent: 0 });
+
+  it('three buys and two replacements sell 1, 1.5, then 2.5 — not 3 — after a save/reload', async () => {
+    const config = zeroHoldback();
+    const { adapter, execute } = makeBook();
+    let state = freshState();
+
+    close(await buyAndConsolidate(state, config, adapter, 1), 1, 'first sell');
+    execute(state.fibActiveSellOrderId, 0.5);
+    close(await buyAndConsolidate(state, config, adapter, 1), 1.5, 'first replacement');
+    close(state.usdcFundSize, 10000 - 200 + 52.5, 'partial proceeds credited once');
+
+    state = saveAndReload(state);
+    close(await buyAndConsolidate(state, config, adapter, 1), 2.5, 'second replacement');
+    close(state.fibCumulativeAsset, 3, 'gross cycle buys stay intact');
+    close(state.outstandingOrdersAsset, 2.5, 'outstanding is the unsold remainder');
+    close(state.fibCycleSoldAsset, 0.5, 'cycle sold');
+    close(state.usdcFundSize, 10000 - 300 + 52.5, 'no second credit');
+  });
+
+  it('subtracts every partial exactly once across reloads and a second partial replacement, then settles the holdback', async () => {
+    const config = { ...baseConfig(), holdbackPercent: 10 };
+    const { adapter, execute } = makeBook();
+    let state = freshState();
+
+    close(await buyAndConsolidate(state, config, adapter, 1), 0.9, 'first sell');
+    execute(state.fibActiveSellOrderId, 0.5);
+    state = saveAndReload(state);
+    close(await buyAndConsolidate(state, config, adapter, 1), 1.8 - 0.5, 'first replacement');
+
+    state = saveAndReload(state);
+    execute(state.fibActiveSellOrderId, 0.7);
+    close(await buyAndConsolidate(state, config, adapter, 1), 2.7 - 1.2, 'second (partial) replacement');
+    state = saveAndReload(state);
+    close(await buyAndConsolidate(state, config, adapter, 1), 3.6 - 1.2, 'third replacement');
+    close(state.fibPendingHoldback, 0.4, 'holdback stays on the full cycle allocation');
+    close(state.fibCycleSoldAsset, 1.2, 'cycle sold');
+    assert.equal(state.assetReserves, 0, 'holdback is not realized by partials');
+
+    state = saveAndReload(state);
+    const finalSellId = state.fibActiveSellOrderId;
+    execute(finalSellId, 2.4);
+    const fill = await checkFibonacciSellFill(finalSellId, adapter);
+    settleFibSellAndCarryUncoveredBuys(state, fill);
+    close(state.assetReserves, 0.4, 'holdback credited on final settlement');
+    close(0.5 + 0.7 + fill.filledSize, 3.6, 'the cycle sold its target exactly once');
+    close(state.usdcFundSize, 10000 - 400 + 3.6 * 105, 'all proceeds credited once');
+    assert.equal(state.fibCycleSoldAsset, 0);
+    assert.equal(state.fibCumulativeAsset, 0);
+    close(state.outstandingOrdersAsset, 0, 'nothing outstanding');
+  });
+
+  it('a no-partial replacement still re-covers the whole cycle', async () => {
+    const config = { ...baseConfig(), holdbackPercent: 10 };
+    const { adapter } = makeBook();
+    let state = freshState();
+    await buyAndConsolidate(state, config, adapter, 1);
+    state = saveAndReload(state);
+    close(await buyAndConsolidate(state, config, adapter, 1), 1.8, 'replacement');
+    assert.equal(state.fibCycleSoldAsset, 0);
+  });
+
+  describe('a cycle saved before fibCycleSoldAsset existed', () => {
+    /** Strip the cycle-wide sold fields, as a pre-#1887 save would have. */
+    const asLegacy = (state) => {
+      const legacy = JSON.parse(JSON.stringify(state));
+      delete legacy.fibCycleSoldAsset;
+      delete legacy.fibCreditedSellOrderIds;
+      return legacy;
+    };
+
+    for (const holdbackPercent of [0, 10]) {
+      it(`recovers the earlier partial sale from its coverage (holdback ${holdbackPercent}%)`, async () => {
+        const config = { ...baseConfig(), holdbackPercent };
+        const { adapter, execute } = makeBook();
+        let state = freshState();
+        await buyAndConsolidate(state, config, adapter, 1);
+        execute(state.fibActiveSellOrderId, 0.5);
+        await buyAndConsolidate(state, config, adapter, 1);
+
+        state = migrateState(asLegacy(state));
+        close(state.fibCycleSoldAsset, 0.5, 'recovered sold');
+        const keep = 1 - holdbackPercent / 100;
+        close(await buyAndConsolidate(state, config, adapter, 1), 3 * keep - 0.5, 'replacement');
+      });
+    }
+
+    it('keeps a live partial of the current sell counted once', async () => {
+      const config = zeroHoldback();
+      const { adapter, execute } = makeBook();
+      let state = freshState();
+      await buyAndConsolidate(state, config, adapter, 1);
+      execute(state.fibActiveSellOrderId, 0.5);
+      await buyAndConsolidate(state, config, adapter, 1);
+      execute(state.fibActiveSellOrderId, 0.25);
+
+      state = migrateState(asLegacy(state));
+      close(state.fibCycleSoldAsset, 0.5, 'only the credited partial is recovered');
+      close(await buyAndConsolidate(state, config, adapter, 1), 3 - 0.75, 'replacement');
+      close(state.fibCycleSoldAsset, 0.75, 'both partials, once each');
+    });
+
+    it('reads nothing sold without an active sell, without a coverage snapshot, or with only dust', () => {
+      assert.equal(migrateState({ fibCumulativeAsset: 1, fibActiveSellOrderId: null, outstandingOrdersAsset: 0 }).fibCycleSoldAsset, undefined);
+      assert.equal(migrateState({ fibCumulativeAsset: 1, fibActiveSellOrderId: 's', outstandingOrdersAsset: 1 }).fibCycleSoldAsset, 0);
+      assert.equal(migrateState({ fibActiveSellOrderId: 's', fibSellOrderCoveredAsset: 2, fibPendingHoldback: 0.2, outstandingOrdersAsset: 1.8 + 1e-9 }).fibCycleSoldAsset, 0);
+      assert.equal(migrateState({ fibActiveSellOrderId: 's', fibSellOrderCoveredAsset: 2, fibPendingHoldback: 0, outstandingOrdersAsset: 2.5 }).fibCycleSoldAsset, 0);
+      assert.equal(migrateState({ fibActiveSellOrderId: 's', fibSellOrderCoveredAsset: 2, fibCycleSoldAsset: 0.1, outstandingOrdersAsset: 1 }).fibCycleSoldAsset, 0.1, 'a tracked value is never re-derived');
+    });
+  });
 });
