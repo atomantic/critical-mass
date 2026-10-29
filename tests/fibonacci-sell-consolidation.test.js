@@ -48,6 +48,20 @@ const makeAdapter = ({ getOrder, cancelOrder, getOrderFillSummary, currentPrice 
   },
 });
 
+/**
+ * getOrder stub for a live sell that gets cancelled: serves `pre` until the
+ * adapter's cancelOrder has been called (tracked through the shared `calls`
+ * log), then each entry of `post` in turn (the last one repeats). Models the
+ * post-cancel status read (issue #1889).
+ */
+const cancelAware = (calls, pre, ...post) => () => {
+  const cancelIndex = calls.findIndex(c => c.method === 'cancelOrder');
+  if (cancelIndex < 0) return pre;
+  const postReads = calls.slice(cancelIndex).filter(c => c.method === 'getOrder').length;
+  return post[Math.min(postReads, post.length) - 1];
+};
+const noFees = () => ({ totalFees: 0, totalRebates: 0, netFees: 0 });
+
 // ===========================================================================
 // placeFibonacciSellOrder — prev-sell dispatch (Bug B)
 // ===========================================================================
@@ -90,7 +104,9 @@ describe('placeFibonacciSellOrder — partially-filled previous sell (Bug B)', (
     // Prev cycle sell for 1.0 ETH, 40% executed (0.4 ETH) at 2000, still live.
     const adapter = makeAdapter({
       calls,
-      getOrder: () => ({ status: 'PARTIALLY_FILLED', filledSize: 0.4, filledValue: 800, averageFilledPrice: 2000 }),
+      getOrder: cancelAware(calls,
+        { status: 'PARTIALLY_FILLED', filledSize: 0.4, filledValue: 800, averageFilledPrice: 2000 },
+        { status: 'CANCELLED', filledSize: 0.4, filledValue: 800, averageFilledPrice: 2000 }),
       cancelOrder: () => ({ success: true }),
       getOrderFillSummary: () => ({ totalFees: 1.6, totalRebates: 0.2, netFees: 1.4 }),
     });
@@ -122,7 +138,9 @@ describe('placeFibonacciSellOrder — partially-filled previous sell (Bug B)', (
     // Coinbase labels a live partial as OPEN with a non-zero filled_size.
     const adapter = makeAdapter({
       calls,
-      getOrder: () => ({ status: 'OPEN', filledSize: 0.4, filledValue: 820, averageFilledPrice: 2050 }),
+      getOrder: cancelAware(calls,
+        { status: 'OPEN', filledSize: 0.4, filledValue: 820, averageFilledPrice: 2050 },
+        { status: 'CANCELLED', filledSize: 0.4, filledValue: 820, averageFilledPrice: 2050 }),
       cancelOrder: () => ({ success: true }),
       getOrderFillSummary: () => ({ totalFees: 2.0, totalRebates: 0, netFees: 2.0 }),
     });
@@ -160,7 +178,9 @@ describe('placeFibonacciSellOrder — fully-open previous sell (cancel and repla
     const config = baseConfig();
     const adapter = makeAdapter({
       calls,
-      getOrder: () => ({ status: 'OPEN', filledSize: 0, filledValue: 0, averageFilledPrice: 0 }),
+      getOrder: cancelAware(calls,
+        { status: 'OPEN', filledSize: 0, filledValue: 0, averageFilledPrice: 0 },
+        { status: 'CANCELLED', filledSize: 0, filledValue: 0, averageFilledPrice: 0 }),
       cancelOrder: () => ({ success: true }),
       getOrderFillSummary: () => ({ totalFees: 0, totalRebates: 0, netFees: 0 }),
     });
@@ -257,7 +277,9 @@ describe('placeFibonacciSellOrder — fully-open previous sell (cancel and repla
     const config = baseConfig();
     const adapter = makeAdapter({
       calls,
-      getOrder: () => ({ status: 'OPEN', filledSize: 0, filledValue: 0, averageFilledPrice: 0 }),
+      getOrder: cancelAware(calls,
+        { status: 'OPEN', filledSize: 0, filledValue: 0, averageFilledPrice: 0 },
+        { status: 'CANCELLED', filledSize: 0, filledValue: 0, averageFilledPrice: 0 }),
       cancelOrder: () => ({ success: true }),
       getOrderFillSummary: () => ({ totalFees: 0, totalRebates: 0, netFees: 0 }),
     });
@@ -298,6 +320,161 @@ describe('placeFibonacciSellOrder — fully-open previous sell (cancel and repla
     const result = await placeFibonacciSellOrder(baseConfig(), 1.05, 1900, 'open-raced', adapter);
     assert.equal(result.alreadyFilled, true);
     assert.ok(!calls.some(c => c.method === 'placeLimitSell'));
+  });
+});
+
+// ===========================================================================
+// issue #1889 — executions that land while the cancel is in flight
+// ===========================================================================
+describe('placeFibonacciSellOrder — execution during cancellation (issue #1889)', () => {
+  const OPEN0 = { status: 'OPEN', filledSize: 0, filledValue: 0, averageFilledPrice: 0 };
+  const config2 = () => ({ ...baseConfig(), holdbackPercent: 0 });
+  const placed = (calls) => calls.filter(c => c.method === 'placeLimitSell');
+
+  it('0 -> positive: a fill that lands during cancel of a zero-fill sell is credited and shrinks the replacement', async () => {
+    const calls = [];
+    const adapter = makeAdapter({
+      calls,
+      getOrder: cancelAware(calls, OPEN0, { status: 'CANCELLED', filledSize: 0.3, filledValue: 31.5, averageFilledPrice: 105 }),
+      cancelOrder: () => ({ success: true }),
+      getOrderFillSummary: () => ({ totalFees: 0.1, totalRebates: 0, netFees: 0.1 }),
+    });
+
+    const result = await placeFibonacciSellOrder(config2(), 2, 100, 'zero-then-fill', adapter);
+
+    assert.equal(result.alreadyFilled, false);
+    assert.equal(result.prevFill.filledSize, 0.3);
+    assert.equal(result.prevFill.fillValue, 31.5);
+    assert.ok(Math.abs(result.prevFill.netProceeds - 31.4) < 1e-9);
+    assert.equal(placed(calls).length, 1);
+    assert.ok(Math.abs(placed(calls)[0].qty - 1.7) < 1e-9, `replacement submitted ${placed(calls)[0].qty}`);
+  });
+
+  it('positive -> larger: the confirmed final execution, not the pre-cancel read, is credited and sized, once', async () => {
+    const calls = [];
+    const adapter = makeAdapter({
+      calls,
+      getOrder: cancelAware(calls,
+        { status: 'PARTIALLY_FILLED', filledSize: 0.2, filledValue: 21, averageFilledPrice: 105 },
+        { status: 'CANCELLED', filledSize: 0.5, filledValue: 52.5, averageFilledPrice: 105 }),
+      cancelOrder: () => ({ success: true }),
+      getOrderFillSummary: () => ({ totalFees: 0.2, totalRebates: 0, netFees: 0.2 }),
+    });
+
+    const result = await placeFibonacciSellOrder(config2(), 2, 100, 'partial-then-more', adapter);
+
+    assert.equal(result.prevFill.filledSize, 0.5);
+    assert.equal(result.prevFill.fillValue, 52.5);
+    assert.ok(Math.abs(result.prevFill.netProceeds - 52.3) < 1e-9);
+    assert.equal(placed(calls).length, 1);
+    assert.ok(Math.abs(placed(calls)[0].qty - 1.5) < 1e-9, `replacement submitted ${placed(calls)[0].qty}`);
+    assert.equal(calls.filter(c => c.method === 'cancelOrder').length, 1);
+  });
+
+  it('a redelivered final snapshot already credited to the cycle is not subtracted or handed back twice', async () => {
+    const calls = [];
+    const adapter = makeAdapter({
+      calls,
+      getOrder: cancelAware(calls,
+        { status: 'PARTIALLY_FILLED', filledSize: 0.2, filledValue: 21, averageFilledPrice: 105 },
+        { status: 'CANCELLED', filledSize: 0.5, filledValue: 52.5, averageFilledPrice: 105 }),
+      cancelOrder: () => ({ success: true }),
+      getOrderFillSummary: noFees,
+    });
+
+    const result = await placeFibonacciSellOrder(config2(), 2, 100, 'credited-1', adapter, null, { soldAsset: 0.5, creditedSellOrderIds: ['credited-1'] });
+
+    assert.equal(result.prevFill, null);
+    assert.ok(Math.abs(placed(calls)[0].qty - 1.5) < 1e-9, 'the 0.5 is subtracted exactly once');
+  });
+
+  it('full execution during cancel of a zero-fill sell routes to the completed-cycle path without a replacement', async () => {
+    const calls = [];
+    const adapter = makeAdapter({
+      calls,
+      getOrder: cancelAware(calls, OPEN0, { status: 'FILLED', filledSize: 2, filledValue: 210, averageFilledPrice: 105 }),
+      cancelOrder: () => ({ success: true }),
+      getOrderFillSummary: noFees,
+    });
+
+    const result = await placeFibonacciSellOrder(config2(), 2, 100, 'zero-then-full', adapter);
+
+    assert.equal(result.alreadyFilled, true);
+    assert.equal(result.sellOrder, null);
+    assert.equal(placed(calls).length, 0, 'a fully-sold cycle is never sold again');
+  });
+
+  it('full execution during cancel of a partial sell routes to the completed-cycle path without a replacement', async () => {
+    const calls = [];
+    const adapter = makeAdapter({
+      calls,
+      getOrder: cancelAware(calls,
+        { status: 'PARTIALLY_FILLED', filledSize: 0.2, filledValue: 21, averageFilledPrice: 105 },
+        { status: 'FILLED', filledSize: 2, filledValue: 210, averageFilledPrice: 105 }),
+      cancelOrder: () => ({ success: true }),
+      getOrderFillSummary: noFees,
+    });
+
+    const result = await placeFibonacciSellOrder(config2(), 2, 100, 'partial-then-full', adapter);
+
+    assert.equal(result.alreadyFilled, true);
+    assert.equal(placed(calls).length, 0);
+  });
+
+  for (const [label, pre] of [
+    ['zero-fill', OPEN0],
+    ['partial', { status: 'PARTIALLY_FILLED', filledSize: 0.2, filledValue: 21, averageFilledPrice: 105 }],
+  ]) {
+    for (const post of ['OPEN', 'PENDING', 'PARTIALLY_FILLED', 'UNKNOWN']) {
+      it(`asynchronous cancel of a ${label} sell still reading ${post} keeps the old identity: no credit, no replacement`, async () => {
+        const calls = [];
+        const adapter = makeAdapter({
+          calls,
+          getOrder: cancelAware(calls, pre, { status: post, filledSize: 0.2, filledValue: 21, averageFilledPrice: 105 }),
+          cancelOrder: () => ({ success: true }),
+          getOrderFillSummary: noFees,
+        });
+
+        await assert.rejects(
+          () => placeFibonacciSellOrder(config2(), 2, 100, 'async-cancel', adapter),
+          /not confirmed terminal/
+        );
+
+        assert.equal(placed(calls).length, 0, 'an order that may still execute is never replaced');
+        assert.ok(!calls.some(c => c.method === 'getOrderFillSummary'), 'nothing is credited from an unconfirmed snapshot');
+      });
+    }
+
+    it(`a failed post-cancel read of a ${label} sell propagates and submits no replacement`, async () => {
+      const calls = [];
+      const adapter = makeAdapter({
+        calls,
+        getOrder: (...args) => {
+          const out = cancelAware(calls, pre, null)(...args);
+          if (out === null) throw new Error('exchange unavailable');
+          return out;
+        },
+        cancelOrder: () => ({ success: true }),
+        getOrderFillSummary: noFees,
+      });
+
+      await assert.rejects(() => placeFibonacciSellOrder(config2(), 2, 100, 'read-fails', adapter), /exchange unavailable/);
+      assert.equal(placed(calls).length, 0);
+    });
+  }
+
+  it('an ambiguous cancel response still submits nothing and defers to the fill check', async () => {
+    const calls = [];
+    const adapter = makeAdapter({
+      calls,
+      getOrder: () => OPEN0,
+      cancelOrder: () => ({ success: undefined }),
+      getOrderFillSummary: noFees,
+    });
+
+    const result = await placeFibonacciSellOrder(config2(), 2, 100, 'ambiguous-cancel', adapter);
+    assert.equal(result.alreadyFilled, true);
+    assert.equal(placed(calls).length, 0);
   });
 });
 

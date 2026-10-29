@@ -1386,6 +1386,34 @@ const consolidatePendingOrders = async (config, pendingOrders, adapter, scope = 
 };
 
 /**
+ * Read a Fibonacci sell's final state after a cancel was accepted (issue #1889).
+ * Cancellation can be asynchronous and an execution can land between the
+ * pre-cancel status read and the cancel taking effect, so the pre-cancel
+ * snapshot is never trusted for credited proceeds or replacement sizing.
+ * Returns `{ filled: true }` when the order completed during the cancel (the
+ * caller routes it through the completed-cycle settlement path), or
+ * `{ prevFill }` (null when nothing executed) once it is confirmed terminal.
+ * Anything else (still live, UNKNOWN) throws so the previous order identity
+ * is kept and no replacement is submitted; a failed read propagates likewise.
+ */
+const confirmFibSellAfterCancel = async (adapter, orderId, logger) => {
+  const finalStatus = await adapter.getOrder(orderId);
+
+  if (finalStatus.status === 'FILLED') {
+    logger.warn(`⚠️ Fibonacci sell ${orderId} completed while its cancel was in flight - treating as fully filled`, { orderId });
+    return { filled: true, prevFill: null };
+  }
+
+  if (!isCancelledStatus(finalStatus) && finalStatus.status !== 'REJECTED') {
+    throw new Error(`Cancelled Fibonacci sell ${orderId} is not confirmed terminal (status ${finalStatus.status}); keeping it as the cycle's sell until the cancellation resolves`);
+  }
+
+  const executed = Number(finalStatus.filledSize) || 0;
+  if (executed <= 0) return { filled: false, prevFill: null };
+  return { filled: false, prevFill: await sellFillDetails(adapter, orderId, finalStatus, { cancelled: true }) };
+};
+
+/**
  * Place or update a Fibonacci cycle consolidated sell order
  * Cancels previous sell order if exists and not filled, then places new order
  * @param {ExchangeConfig} config - Configuration
@@ -1462,8 +1490,11 @@ const placeFibonacciSellOrder = async (config, cumulativeAsset, avgCostBasis, pr
         return { sellOrder: null, sellQuantity: 0, holdbackAsset: 0, alreadyFilled: true };
       }
 
-      // Gather the executed-portion details so the caller can book the proceeds.
-      prevFill = await sellFillDetails(adapter, prevOrderId, prevOrderStatus);
+      // Book the executed portion from the confirmed post-cancel snapshot, not
+      // the pre-cancel read: more may have executed while the cancel landed.
+      const confirmed = await confirmFibSellAfterCancel(adapter, prevOrderId, logger);
+      if (confirmed.filled) return { sellOrder: null, sellQuantity: 0, holdbackAsset: 0, alreadyFilled: true };
+      prevFill = confirmed.prevFill;
     } else if (isTerminal && filledSize > 0) {
       // Already off the book after executing part of its size: nothing to
       // cancel, but the executed portion is sold. Credit it and shrink the
@@ -1491,6 +1522,12 @@ const placeFibonacciSellOrder = async (config, cumulativeAsset, avgCostBasis, pr
         });
         return { sellOrder: null, sellQuantity: 0, holdbackAsset: 0, alreadyFilled: true };
       }
+
+      // Nothing had executed at the first read, but a fill may have landed
+      // before the cancel took effect (issue #1889).
+      const confirmed = await confirmFibSellAfterCancel(adapter, prevOrderId, logger);
+      if (confirmed.filled) return { sellOrder: null, sellQuantity: 0, holdbackAsset: 0, alreadyFilled: true };
+      prevFill = confirmed.prevFill;
     }
   }
 
