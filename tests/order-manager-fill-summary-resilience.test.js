@@ -10,18 +10,18 @@
 // entire fill record for an order whose funds had already moved — the same
 // "money moved, engine recorded nothing" leak class as issue #208A.
 //
-// order-manager.js now routes every such call through safeGetOrderFillSummary,
-// which degrades to a $0-fee stub instead of losing the fill. These tests
-// assert the degraded path still returns the core price/size/value record
-// (sourced from adapter.getOrder, unaffected by the throw) rather than
-// rejecting the whole call.
+// order-manager.js routes every such call through safeGetOrderFillSummary.
+// When detailed fills stay unavailable it falls back to an authoritative
+// non-zero order-level fee, and otherwise reports the fee as UNAVAILABLE
+// (issue #1892) so callers keep the order pending instead of finalizing an
+// invented, never-repaired zero fee.
 // ---------------------------------------------------------------------------
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
   waitForBuyFill, checkFilledOrders, checkFibonacciSellFill, placeFibonacciSellOrder,
-  safeGetOrderFillSummary,
+  safeGetOrderFillSummary, isFeeDetailUnavailable,
 } = require('../src/order-manager');
 const { getFibonacciSellQuantity } = require('../src/fibonacci-utils');
 
@@ -47,21 +47,54 @@ describe('safeGetOrderFillSummary — bounded retry before degrading (issue #679
     assert.deepEqual(summary.fills, [{ tradeId: 't1' }]);
   });
 
-  it('degrades to a $0-fee stub only after every retry is exhausted', async () => {
+  it('throws a feeDetailUnavailable error (never a zero stub) after every retry is exhausted', async () => {
     let calls = 0;
     const adapter = {
       getOrderFillSummary: async () => { calls++; throw incompleteFillsError('order-y'); },
     };
 
-    const summary = await safeGetOrderFillSummary(adapter, 'order-y', { retries: 2, retryDelayMs: 1 });
+    await assert.rejects(
+      safeGetOrderFillSummary(adapter, 'order-y', { retries: 2, retryDelayMs: 1 }),
+      (err) => isFeeDetailUnavailable(err) && err.orderId === 'order-y',
+    );
+    assert.equal(calls, 3, 'must attempt the initial call plus every retry');
+  });
 
-    assert.equal(calls, 3, 'must attempt the initial call plus every retry before degrading');
-    assert.deepEqual(summary, { totalFees: 0, totalRebates: 0, netFees: 0, fills: [] });
+  it('uses a signed non-zero order-level fee when fill history is down', async () => {
+    const adapter = { name: 'coinbase', getOrderFillSummary: async () => { throw incompleteFillsError('o'); } };
+    const fee = await safeGetOrderFillSummary(adapter, 'o', { retries: 0, orderStatus: { totalFees: 2 } });
+    assert.deepEqual([fee.totalFees, fee.totalRebates, fee.netFees], [2, 0, 2]);
+    const rebate = await safeGetOrderFillSummary(adapter, 'o', { retries: 0, orderStatus: { totalFees: -0.4 } });
+    assert.deepEqual([rebate.totalFees, rebate.totalRebates, rebate.netFees], [0, 0.4, -0.4]);
+  });
+
+  it('does not treat a zero status fee, or Gemini\'s placeholder, as authoritative', async () => {
+    const down = async () => { throw incompleteFillsError('o'); };
+    await assert.rejects(
+      safeGetOrderFillSummary({ name: 'coinbase', getOrderFillSummary: down }, 'o', { retries: 0, orderStatus: { totalFees: 0 } }),
+      isFeeDetailUnavailable,
+    );
+    await assert.rejects(
+      safeGetOrderFillSummary({ name: 'gemini', getOrderFillSummary: down }, 'o', { retries: 0, orderStatus: { totalFees: 3 } }),
+      isFeeDetailUnavailable,
+    );
   });
 });
 
 describe('order-manager fee/fill-summary resilience (issue #679 follow-up)', () => {
-  it('waitForBuyFill still returns the fill when getOrderFillSummary rejects', async () => {
+  it('waitForBuyFill keeps the accepted buy pending when getOrderFillSummary rejects and no fee is authoritative', async () => {
+    const adapter = {
+      getOrder: async (orderId) => ({ orderId, status: 'FILLED', filledSize: 0.01, filledValue: 500, averageFilledPrice: 50000 }),
+      getOrderFillSummary: async (orderId) => { throw incompleteFillsError(orderId); },
+    };
+
+    await assert.rejects(
+      waitForBuyFill('order-0', adapter, 1, 1),
+      (err) => err.buyFillPending === true && err.orderId === 'order-0' && /fee detail unavailable/.test(err.reason),
+    );
+  });
+
+  it('waitForBuyFill still returns the fill when getOrderFillSummary rejects but the status carries a fee', async () => {
     const adapter = {
       getOrder: async (orderId) => ({
         orderId,
@@ -70,6 +103,7 @@ describe('order-manager fee/fill-summary resilience (issue #679 follow-up)', () 
         filledValue: 500,
         averageFilledPrice: 50000,
         completionPercentage: 100,
+        totalFees: 1.25,
       }),
       getOrderFillSummary: async (orderId) => { throw incompleteFillsError(orderId); },
     };
@@ -80,15 +114,15 @@ describe('order-manager fee/fill-summary resilience (issue #679 follow-up)', () 
     assert.equal(result.assetAmount, 0.01);
     assert.equal(result.usdcAmount, 500);
     assert.equal(result.price, 50000);
-    // Degraded fee detail, not a lost fill.
-    assert.equal(result.fees, 0);
+    // Order-level fee, not a lost fill and not an invented zero.
+    assert.equal(result.fees, 1.25);
     assert.equal(result.rebates, 0);
-    assert.equal(result.netFees, 0);
-    assert.equal(result.actualCost, 500);
+    assert.equal(result.netFees, 1.25);
+    assert.equal(result.actualCost, 501.25);
     assert.deepEqual(result.fills, []);
   });
 
-  it('waitForBuyFill still records a partially-filled CANCELLED order when getOrderFillSummary rejects', async () => {
+  it('waitForBuyFill keeps a partially-filled CANCELLED order pending when its fees are unavailable', async () => {
     const adapter = {
       getOrder: async (orderId) => ({
         orderId,
@@ -101,22 +135,36 @@ describe('order-manager fee/fill-summary resilience (issue #679 follow-up)', () 
       getOrderFillSummary: async (orderId) => { throw incompleteFillsError(orderId); },
     };
 
-    const result = await waitForBuyFill('order-2', adapter, 1, 1);
+    await assert.rejects(waitForBuyFill('order-2', adapter, 1, 1), (err) => err.buyFillPending === true);
 
+    // Once the fill history returns, the same order is finalized with real fees.
+    adapter.getOrderFillSummary = async () => ({ totalFees: 0.3, totalRebates: 0, netFees: 0.3, fills: [] });
+    const result = await waitForBuyFill('order-2', adapter, 1, 1);
     assert.equal(result.status, 'CANCELLED');
     assert.equal(result.assetAmount, 0.004);
-    assert.equal(result.fees, 0);
+    assert.equal(result.fees, 0.3);
   });
 
-  it('checkFilledOrders still reports a fill when getOrderFillSummary rejects', async () => {
+  it('checkFilledOrders leaves a fill pending when getOrderFillSummary rejects and no fee is authoritative', async () => {
     const adapter = {
       name: 'gemini',
+      getOrder: async (orderId) => ({ orderId, status: 'FILLED', filledSize: 1.2, filledValue: 3000, averageFilledPrice: 2500, totalFees: 0 }),
+      getOrderFillSummary: async (orderId) => { throw incompleteFillsError(orderId); },
+    };
+
+    assert.deepEqual(await checkFilledOrders([{ orderId: 'sell-0' }], adapter), []);
+  });
+
+  it('checkFilledOrders credits the status fee (105 value, 2 fee -> 103) when getOrderFillSummary rejects', async () => {
+    const adapter = {
+      name: 'coinbase',
       getOrder: async (orderId) => ({
         orderId,
         status: 'FILLED',
         filledSize: 1.2,
-        filledValue: 3000,
-        averageFilledPrice: 2500,
+        filledValue: 105,
+        averageFilledPrice: 87.5,
+        totalFees: 2,
       }),
       getOrderFillSummary: async (orderId) => { throw incompleteFillsError(orderId); },
     };
@@ -126,11 +174,24 @@ describe('order-manager fee/fill-summary resilience (issue #679 follow-up)', () 
     assert.equal(filled.length, 1);
     assert.equal(filled[0].orderId, 'sell-1');
     assert.equal(filled[0].filledSize, 1.2);
-    assert.equal(filled[0].fees, 0);
-    assert.equal(filled[0].netProceeds, 3000);
+    assert.equal(filled[0].fees, 2);
+    assert.equal(filled[0].netProceeds, 103);
   });
 
-  it('checkFibonacciSellFill still reports a fill when getOrderFillSummary rejects', async () => {
+  it('checkFibonacciSellFill reports nothing settled while fees are unavailable, then the fill once they return', async () => {
+    const adapter = {
+      name: 'cryptocom',
+      getOrder: async (orderId) => ({ orderId, status: 'FILLED', filledSize: 0.5, filledValue: 1000, averageFilledPrice: 2000 }),
+      getOrderFillSummary: async (orderId) => { throw incompleteFillsError(orderId); },
+    };
+    assert.equal(await checkFibonacciSellFill('sell-fib-0', adapter), null);
+
+    adapter.getOrderFillSummary = async () => ({ totalFees: 3, totalRebates: 0, netFees: 3, fills: [] });
+    const fill = await checkFibonacciSellFill('sell-fib-0', adapter);
+    assert.equal(fill?.netProceeds, 997);
+  });
+
+  it('checkFibonacciSellFill reports a fill with the status fee when getOrderFillSummary rejects', async () => {
     const adapter = {
       name: 'cryptocom',
       getOrder: async (orderId) => ({
@@ -139,6 +200,7 @@ describe('order-manager fee/fill-summary resilience (issue #679 follow-up)', () 
         filledSize: 0.5,
         filledValue: 1000,
         averageFilledPrice: 2000,
+        totalFees: 4,
       }),
       getOrderFillSummary: async (orderId) => { throw incompleteFillsError(orderId); },
     };
@@ -147,18 +209,18 @@ describe('order-manager fee/fill-summary resilience (issue #679 follow-up)', () 
 
     assert.ok(fill);
     assert.equal(fill.filledSize, 0.5);
-    assert.equal(fill.fees, 0);
-    assert.equal(fill.netProceeds, 1000);
+    assert.equal(fill.fees, 4);
+    assert.equal(fill.netProceeds, 996);
   });
 
-  it('placeFibonacciSellOrder still credits a partially-filled, cancelled previous sell when getOrderFillSummary rejects', async () => {
+  it('placeFibonacciSellOrder credits a partially-filled, cancelled previous sell at its status fee when getOrderFillSummary rejects', async () => {
     // Prev cycle sell for 1.0 ETH, 40% executed (0.4 ETH) at 2000, still live —
     // mirrors tests/fibonacci-sell-consolidation.test.js's Bug-B "PARTIALLY_FILLED"
     // case, but with a rejecting getOrderFillSummary instead of a stubbed one.
     const config = { productId: 'ETH-USD', holdbackPercent: 15, sellMarkupPercent: 5 };
     let cancelled = false;
     const adapter = {
-      getOrder: async () => ({ status: cancelled ? 'CANCELLED' : 'PARTIALLY_FILLED', filledSize: 0.4, filledValue: 800, averageFilledPrice: 2000 }),
+      getOrder: async () => ({ status: cancelled ? 'CANCELLED' : 'PARTIALLY_FILLED', filledSize: 0.4, filledValue: 800, averageFilledPrice: 2000, totalFees: 1.5 }),
       cancelOrder: async () => { cancelled = true; return { success: true }; },
       getOrderFillSummary: async (orderId) => { throw incompleteFillsError(orderId); },
       getCurrentPrice: async () => 2000,
@@ -172,10 +234,9 @@ describe('order-manager fee/fill-summary resilience (issue #679 follow-up)', () 
     assert.ok(result.prevFill, 'the executed portion of the cancelled prev sell must still be credited');
     assert.equal(result.prevFill.filledSize, 0.4);
     assert.equal(result.prevFill.fillValue, 800);
-    assert.equal(result.prevFill.fees, 0);
-    assert.equal(result.prevFill.netFees, 0);
-    // netProceeds = fillValue - netFees, degraded netFees is 0.
-    assert.equal(result.prevFill.netProceeds, 800);
+    assert.equal(result.prevFill.fees, 1.5);
+    assert.equal(result.prevFill.netFees, 1.5);
+    assert.equal(result.prevFill.netProceeds, 798.5);
     // New sell still correctly shrunk by the already-sold 0.4, independent of
     // the degraded fee detail.
     const target = getFibonacciSellQuantity(cumulativeAsset, config.holdbackPercent);

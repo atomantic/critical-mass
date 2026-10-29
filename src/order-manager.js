@@ -44,32 +44,64 @@ const orderLogger = (adapter, productId) => createContextLogger({
 });
 
 /**
- * Fetch fee/fill detail for an already-filled order, degrading to a $0-fee
- * stub instead of losing the whole fill record when the underlying scan
- * throws. `getOrderFills`/`getOrderFillSummary` now reject when the
- * order-detail/status lookup fails or the matched fills fall short of the
- * exchange's own filled quantity (issue #679), rather than silently
- * returning a partial set. Every call site here already has the order's
- * price/size/value from `adapter.getOrder` (unaffected by that change) —
- * only fee/rebate detail and the raw fills list come from this call — so a
- * failure here must not cost the caller a fill it already knows happened:
- * funds moved, and losing the record risks a duplicate re-buy/re-sell and an
- * untracked exchange position (the same "money moved, engine recorded
- * nothing" leak issue #208A guards against elsewhere in this file).
- *
- * A short bounded retry runs first: the most common cause of a rejection
- * right after a fill is the exchange's own trade-history eventual
- * consistency (the fill just landed and hasn't propagated to the trades
- * endpoint yet), which normally clears within a couple of seconds. Only
- * after retries are exhausted does this degrade to the $0-fee stub — a
- * silently-wrong-but-permanent fee/proceeds figure is worse than a brief
- * delay, so the retry exists to make the degraded path the rare case.
+ * Typed marker for "fee detail could not be established yet" (issue #1892).
+ * An order whose fills are known to have happened but whose fees are not must
+ * stay owned by its pending path and be retried; it must never be finalized
+ * with an invented zero fee.
+ */
+const FEE_DETAIL_UNAVAILABLE = 'feeDetailUnavailable';
+
+/**
+ * Whether an error is the unavailable-fee marker.
+ * @param {any} err - Caught value
+ * @returns {boolean} True for a fee-detail-unavailable error
+ */
+const isFeeDetailUnavailable = (err) => err?.[FEE_DETAIL_UNAVAILABLE] === true;
+
+/**
+ * Build a fee summary from a signed order-level fee total (positive = fee,
+ * negative = rebate). Used only when the detailed fill history is unavailable.
+ * @param {number} signedFee - Signed total fee
+ * @returns {{totalFees: number, totalRebates: number, netFees: number, fills: Array<Object>, source: string}} Summary
+ */
+const summaryFromOrderFee = (signedFee) => ({
+  totalFees: signedFee > 0 ? signedFee : 0,
+  totalRebates: signedFee < 0 ? -signedFee : 0,
+  netFees: signedFee,
+  fills: [],
+  source: 'order-status',
+});
+
+/**
+ * An authoritative order-level fee read from a normalized getOrder result, or
+ * null. Zero never qualifies: adapters default a missing fee to 0, and Gemini
+ * reports a hard-coded placeholder 0 (its real fees live only in the trade
+ * history), so a zero status cannot prove the actual fee is zero.
+ * @param {ExchangeAdapter} adapter - Exchange adapter
+ * @param {{totalFees?: number}|null} [orderStatus] - Normalized getOrder result
+ * @returns {number|null} Signed non-zero fee, or null when not authoritative
+ */
+const authoritativeOrderFee = (adapter, orderStatus) => {
+  if (adapter?.name === 'gemini') return null;
+  const fee = Number(orderStatus?.totalFees);
+  return Number.isFinite(fee) && fee !== 0 ? fee : null;
+};
+
+/**
+ * Fetch fee/fill detail for an already-filled order. A short bounded retry runs
+ * first: the most common cause of a rejection right after a fill is the
+ * exchange's trade-history eventual consistency, which normally clears within
+ * a couple of seconds. If the detailed read still fails, a non-zero order-level
+ * fee from `orderStatus` (when the adapter reports one authoritatively) is
+ * used. Otherwise the fee is UNKNOWN: this THROWS a `feeDetailUnavailable`
+ * error rather than inventing a zero fee that no later sync would repair
+ * (issue #1892). Callers keep the order owned (pending) and retry it.
  * @param {ExchangeAdapter} adapter - Exchange adapter
  * @param {string} orderId - Order ID whose fee/fill detail to fetch
- * @param {{retries?: number, retryDelayMs?: number}} [opts] - Retry tuning (tests only; defaults 2 retries / 500ms)
+ * @param {{retries?: number, retryDelayMs?: number, orderStatus?: Object|null}} [opts] - Retry tuning (tests only; defaults 2 retries / 500ms) and the order's status
  * @returns {Promise<{totalFees: number, totalRebates: number, netFees: number, fills: Array<Object>}>}
  */
-const safeGetOrderFillSummary = async (adapter, orderId, { retries = 2, retryDelayMs = 500 } = {}) => {
+const safeGetOrderFillSummary = async (adapter, orderId, { retries = 2, retryDelayMs = 500, orderStatus = null } = {}) => {
   let lastErr;
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
@@ -81,11 +113,22 @@ const safeGetOrderFillSummary = async (adapter, orderId, { retries = 2, retryDel
       }
     }
   }
+  const orderFee = authoritativeOrderFee(adapter, orderStatus);
+  if (orderFee !== null) {
+    orderLogger(adapter).warn(
+      `⚠️ Fill detail for ${orderId} unavailable after ${retries + 1} attempt(s): ${lastErr.message} — using the order-level fee ${orderFee}`,
+      { orderId, error: lastErr.message, orderFee }
+    );
+    return summaryFromOrderFee(orderFee);
+  }
   orderLogger(adapter).warn(
-    `⚠️ Could not fetch fee/fill detail for ${orderId} after ${retries + 1} attempt(s): ${lastErr.message} — recording the fill with $0 fees; reconcile fees manually`,
+    `⚠️ Could not fetch fee/fill detail for ${orderId} after ${retries + 1} attempt(s): ${lastErr.message} — fee unknown, leaving the order pending for retry`,
     { orderId, error: lastErr.message, incompleteFills: lastErr.incompleteFills === true, attempts: retries + 1 }
   );
-  return { totalFees: 0, totalRebates: 0, netFees: 0, fills: [] };
+  const err = /** @type {any} */ (new Error(`Fee detail for order ${orderId} unavailable: ${lastErr.message}`));
+  err[FEE_DETAIL_UNAVAILABLE] = true;
+  err.orderId = orderId;
+  throw err;
 };
 
 /**
@@ -104,7 +147,7 @@ const sellFillDetails = async (adapter, orderId, orderStatus, { cancelled = fals
   const fillValue = Number(orderStatus.filledValue) || 0;
   const fillSummary = cancelled && filledSize <= 0
     ? { totalFees: 0, totalRebates: 0, netFees: 0 }
-    : await safeGetOrderFillSummary(adapter, orderId);
+    : await safeGetOrderFillSummary(adapter, orderId, { orderStatus });
   return {
     orderId,
     filledSize,
@@ -153,6 +196,36 @@ const toBuyResult = (orderId, order, fillSummary, status) => ({
 });
 
 /**
+ * Fee summary for a buy, or null when its fees are not yet known.
+ * @param {ExchangeAdapter} adapter - Exchange adapter
+ * @param {string} orderId - Buy order id
+ * @param {Object} order - Exchange order status
+ * @returns {Promise<Object|null>} Fee summary, or null if unavailable
+ */
+const buyFeeSummary = async (adapter, orderId, order) => {
+  try {
+    return await safeGetOrderFillSummary(adapter, orderId, { orderStatus: order });
+  } catch (err) {
+    if (isFeeDetailUnavailable(err)) return null;
+    throw err;
+  }
+};
+
+/**
+ * The unresolved outcome for a buy that executed but whose fees are unknown:
+ * the caller keeps owning the accepted order and re-polls it (issue #1892).
+ * @param {string} orderId - Buy order id
+ * @param {Object} order - Exchange order status
+ * @returns {{outcome: 'unresolved', reason: string, lastStatus: string|null, statusReadFailures: number}} Outcome
+ */
+const unresolvedFees = (orderId, order) => ({
+  outcome: 'unresolved',
+  reason: `fee detail unavailable for filled order ${orderId}`,
+  lastStatus: order?.status ?? null,
+  statusReadFailures: 0,
+});
+
+/**
  * Poll an accepted market buy until its outcome is KNOWN, without ever
  * throwing on a status-read failure.
  *
@@ -191,7 +264,8 @@ const awaitBuyOutcome = async (orderId, adapter, { maxAttempts = BUY_FILL_POLL.m
 
     if (isFilledStatus(order)) {
       // Get detailed fill info with fees/rebates
-      const fillSummary = await safeGetOrderFillSummary(adapter, orderId);
+      const fillSummary = await buyFeeSummary(adapter, orderId, order);
+      if (!fillSummary) return unresolvedFees(orderId, order);
       return { outcome: 'filled', fill: toBuyResult(orderId, order, fillSummary, 'FILLED') };
     }
 
@@ -202,7 +276,8 @@ const awaitBuyOutcome = async (orderId, adapter, { maxAttempts = BUY_FILL_POLL.m
       // executed. Funds moved, so record the fill instead of throwing it away
       // as a "money moved, engine recorded nothing" leak (issue #208A follow-up).
       if (order.filledSize > 0) {
-        const fillSummary = await safeGetOrderFillSummary(adapter, orderId);
+        const fillSummary = await buyFeeSummary(adapter, orderId, order);
+        if (!fillSummary) return unresolvedFees(orderId, order);
         return { outcome: 'filled', fill: toBuyResult(orderId, order, fillSummary, order.status) };
       }
       return { outcome: 'unfilled', status: order.status };
@@ -744,8 +819,26 @@ const checkFilledOrders = async (pendingOrders, adapter = null) => {
   for (const pendingOrder of realOrders) {
     const orderStatus = await adapter.getOrder(pendingOrder.orderId);
 
-    if (isCancelledStatus(orderStatus)) {
-      const executed = await sellFillDetails(adapter, pendingOrder.orderId, orderStatus, { cancelled: true });
+    // Unknown fees leave the sell pending so the next sync retries the same
+    // order; a fill is never finalized with an invented zero fee (issue #1892).
+    let executed = null;
+    let fillSummary = null;
+    try {
+      if (isCancelledStatus(orderStatus)) {
+        executed = await sellFillDetails(adapter, pendingOrder.orderId, orderStatus, { cancelled: true });
+      } else if (orderStatus.status === 'FILLED') {
+        fillSummary = await safeGetOrderFillSummary(adapter, pendingOrder.orderId, { orderStatus });
+      }
+    } catch (err) {
+      if (!isFeeDetailUnavailable(err)) throw err;
+      logger.warn(`⏸️ Sell order ${pendingOrder.orderId} left the book but its fees are unavailable — leaving it pending for the next sync`, {
+        orderId: pendingOrder.orderId,
+        status: orderStatus.status,
+      });
+      continue;
+    }
+
+    if (executed) {
       filledOrders.push({ ...executed, status: orderStatus.status, originalOrder: pendingOrder });
       logger.warn(`⚠️ Sell order ${pendingOrder.orderId} ended ${orderStatus.status} after executing ${executed.filledSize} of ${pendingOrder.sellQuantity}`, {
         orderId: pendingOrder.orderId,
@@ -756,10 +849,7 @@ const checkFilledOrders = async (pendingOrders, adapter = null) => {
       continue;
     }
 
-    if (orderStatus.status === 'FILLED') {
-      // Get detailed fill info with fees/rebates
-      const fillSummary = await safeGetOrderFillSummary(adapter, pendingOrder.orderId);
-
+    if (fillSummary) {
       filledOrders.push({
         orderId: pendingOrder.orderId,
         filledSize: orderStatus.filledSize,
@@ -892,13 +982,16 @@ const placeSellOrderWithRetry = async (config, buyDetails, adapter = null, maxRe
   throw new Error(`Failed to place sell order after ${maxRetries} attempts: ${lastError}`);
 };
 
+/** Message of any caught value; an adapter may reject with null/undefined or a non-Error. */
+const caughtMessage = (err) => err?.message ?? String(err);
+
 /**
  * Cancel sequentially and partition orders by their post-cancel fill state.
  * @param {TrackedOrder[]} eligibleOrders
  * @param {string[]} skippedOrderIds
  * @param {ExchangeAdapter} adapter
  * @param {ReturnType<typeof orderLogger>} logger
- * @returns {Promise<{failure: ConsolidationResult} | {failure?: undefined, cancelledOrders: TrackedOrder[], cancelledOrderIds: string[], filledDuringCancelOrderIds: string[]}>}
+ * @returns {Promise<{cancelledOrders: TrackedOrder[], cancelledOrderIds: string[], filledDuringCancelOrderIds: string[], abortError?: string}>} `abortError` is set when a cancel was rejected/threw or a post-cancel status read failed; the lists then hold only the work completed before it. The aborting order is deliberately in none of them: its outcome is unknown, so it is neither restored nor counted as filled (issue #1891).
  */
 const cancelOrdersForConsolidation = async (eligibleOrders, skippedOrderIds, adapter, logger) => {
   const cancelledOrders = [];
@@ -913,18 +1006,22 @@ const cancelOrdersForConsolidation = async (eligibleOrders, skippedOrderIds, ada
   // a double-sell. Partition into confirmed-cancelled (still 0% filled) vs
   // filled-during-cancel; only the confirmed set feeds the consolidated quantity.
   logger.info(`ℹ️ Cancelling ${eligibleOrders.length} orders...`, { orderCount: eligibleOrders.length });
+  // The cancel or the status read can reject or throw part-way through. Earlier
+  // orders are then already cancelled on the exchange, so the loop never
+  // returns early: it reports the completed prefix with `abortError` and the
+  // caller restores that prefix (issue #1891). The aborting order itself may
+  // still be live (or cancelled, or filled), so it joins no list.
   for (const order of eligibleOrders) {
-    const cancelResult = await adapter.cancelOrder(order.orderId);
-    if (!cancelResult.success) {
-      // Abort consolidation if any cancel fails
-      return {
-        failure: {
-          success: false,
-          error: `Failed to cancel order ${order.orderId}`,
-          cancelledOrderIds,
-          skippedOrderIds,
-        },
-      };
+    let postCancel;
+    try {
+      const cancelResult = await adapter.cancelOrder(order.orderId);
+      if (!cancelResult?.success) {
+        return { cancelledOrders, cancelledOrderIds, filledDuringCancelOrderIds, abortError: `Failed to cancel order ${order.orderId}` };
+      }
+    } catch (err) {
+      const message = caughtMessage(err);
+      logger.error(`❌ Cancel of order ${order.orderId} threw — outcome unknown: ${message}`, { orderId: order.orderId, error: message });
+      return { cancelledOrders, cancelledOrderIds, filledDuringCancelOrderIds, abortError: `Failed to cancel order ${order.orderId}: ${message}` };
     }
 
     // Re-fetch may return null/undefined for a just-cancelled or not-found order.
@@ -932,7 +1029,13 @@ const cancelOrdersForConsolidation = async (eligibleOrders, skippedOrderIds, ada
     // conservative choice: re-selling an order that may have filled is the
     // double-sell we're guarding against, whereas excluding a cleanly-cancelled
     // order only frees its asset for the engine's normal reconciliation to re-cover.
-    const postCancel = await adapter.getOrder(order.orderId);
+    try {
+      postCancel = await adapter.getOrder(order.orderId);
+    } catch (err) {
+      const message = caughtMessage(err);
+      logger.error(`❌ Status read for order ${order.orderId} failed after cancel — outcome unknown: ${message}`, { orderId: order.orderId, error: message });
+      return { cancelledOrders, cancelledOrderIds, filledDuringCancelOrderIds, abortError: `Failed to confirm cancellation of order ${order.orderId}: ${message}` };
+    }
     if (!postCancel || postCancel.completionPercentage > 0 || postCancel.status === 'FILLED') {
       // Filled (fully or partially) during the cancel window, or indeterminate —
       // any filled quantity is already sold on the exchange. Exclude the WHOLE
@@ -1119,8 +1222,29 @@ const consolidatePendingOrders = async (config, pendingOrders, adapter, scope = 
   }
 
   const cancellation = await cancelOrdersForConsolidation(eligibleOrders, skippedOrderIds, adapter, logger);
-  if (cancellation.failure) return cancellation.failure;
-  const { cancelledOrders, cancelledOrderIds, filledDuringCancelOrderIds } = cancellation;
+  const { cancelledOrders, cancelledOrderIds, filledDuringCancelOrderIds, abortError } = cancellation;
+
+  if (abortError) {
+    // Cancelling stopped part-way, so the already-confirmed-cancelled sells
+    // are no longer resting. Restore them through the same path a failed
+    // consolidated placement uses and report its recovery fields, so the
+    // caller re-points or flags every one of them (issue #1891). Orders after
+    // the aborting one were never touched; the aborting one is not restored
+    // because it may still be live.
+    logger.error(`❌ ${abortError} — restoring ${cancelledOrders.length} already-cancelled sell(s)`, {
+      error: abortError,
+      cancelledOrderIds,
+    });
+    const recovery = await restoreCancelledSellOrders(config.productId, cancelledOrders, adapter, logger, scope);
+    return {
+      success: false,
+      error: abortError,
+      cancelledOrderIds,
+      skippedOrderIds,
+      filledDuringCancelOrderIds,
+      ...recovery,
+    };
+  }
 
   if (cancelledOrders.length === 0) {
     // Every eligible order filled during its cancel window — nothing left to
@@ -1484,7 +1608,8 @@ const placeFibonacciSellOrder = async (config, cumulativeAsset, avgCostBasis, pr
  * CANCELLED/EXPIRED/FAILED returns `cancelled: true` with whatever it executed
  * (possibly zero) — that portion is sold and must be credited, but the cycle
  * is not complete, so callers must not settle it as a full fill (issue #1887).
- * A live or UNKNOWN order returns null.
+ * A live or UNKNOWN order returns null, as does one whose fees are not yet
+ * known (it stays the cycle's active sell and is re-checked; issue #1892).
  * @param {string} orderId - Order ID to check
  * @param {ExchangeAdapter} adapter - Exchange adapter
  * @returns {Promise<(FibonacciFillDetails & {cancelled: boolean})|null>} Fill details once off the book, null otherwise
@@ -1492,9 +1617,16 @@ const placeFibonacciSellOrder = async (config, cumulativeAsset, avgCostBasis, pr
 const checkFibonacciSellFill = async (orderId, adapter) => {
   const orderStatus = await adapter.getOrder(orderId);
 
-  if (orderStatus.status === 'FILLED') return sellFillDetails(adapter, orderId, orderStatus);
-  if (isCancelledStatus(orderStatus)) return sellFillDetails(adapter, orderId, orderStatus, { cancelled: true });
-  return null;
+  const cancelled = orderStatus.status !== 'FILLED' && isCancelledStatus(orderStatus);
+  if (orderStatus.status !== 'FILLED' && !cancelled) return null;
+  try {
+    return await sellFillDetails(adapter, orderId, orderStatus, { cancelled });
+  } catch (err) {
+    // Fees unknown: report "not settled yet" so the cycle keeps owning the sell
+    // and re-checks it, rather than settling with an invented zero (#1892).
+    if (isFeeDetailUnavailable(err)) return null;
+    throw err;
+  }
 };
 
 module.exports = {
@@ -1515,4 +1647,5 @@ module.exports = {
   // Exported for direct unit coverage of its retry/degrade behavior
   // (issue #679 follow-up) — not part of the adapter's public surface.
   safeGetOrderFillSummary,
+  isFeeDetailUnavailable,
 };

@@ -852,6 +852,119 @@ describe('retryFailedSell (issue #1035)', () => {
       assert.ok(Math.abs(after.usdcFundSize - (booked.usdcFundSize + value - 0.5)) < 1e-9, 'credited once');
     });
 
+    describe('unavailable fee detail is never a permanent zero (issue #1892)', () => {
+      const failFees = (orderId) => { throw Object.assign(new Error(`fills incomplete for ${orderId}`), { incompleteFills: true }); };
+
+      it('fixed DCA: the status fee credits 103 of a 105 sell even when fill history is down, once', async () => {
+        const row = await buyWithRestingSell();
+        const booked = readState();
+        ex.adapter.getOrderFillSummary = async (id) => { feeLookups.push(id); failFees(id); };
+        sellStatus[row.orderId] = { orderId: row.orderId, status: 'FILLED', filledSize: row.sellQuantity, filledValue: 105, averageFilledPrice: row.sellPrice, totalFees: 2 };
+
+        assert.equal((await engine.syncFundOrders(EXCHANGE, PAIR)).filledOrders.length, 1);
+        await engine.syncFundOrders(EXCHANGE, PAIR);
+        const after = readState();
+        assert.equal(after.orders[0].status, 'filled');
+        assert.equal(after.orders[0].sellNetFees, 2);
+        assert.equal(after.orders[0].netProceeds, 103);
+        assert.ok(Math.abs(after.usdcFundSize - (booked.usdcFundSize + 103)) < 1e-9);
+      });
+
+      it('fixed DCA: with no authoritative fee the sell stays pending until history recovers, then finalizes once', async () => {
+        const row = await buyWithRestingSell();
+        const booked = readState();
+        let historyUp = false;
+        ex.adapter.getOrderFillSummary = async (id) => {
+          feeLookups.push(id);
+          if (!historyUp) failFees(id);
+          return { totalFees: 2, totalRebates: 0, netFees: 2, fills: [] };
+        };
+        // Zero in the status is the adapter default/placeholder, not proof of a zero fee.
+        sellStatus[row.orderId] = { orderId: row.orderId, status: 'FILLED', filledSize: row.sellQuantity, filledValue: 105, averageFilledPrice: row.sellPrice, totalFees: 0 };
+
+        assert.equal((await engine.syncFundOrders(EXCHANGE, PAIR)).filledOrders.length, 0);
+        assert.deepEqual(readState(), booked, 'nothing is finalized or credited while fees are unknown');
+        assert.equal(readState().orders[0].status, 'pending');
+
+        historyUp = true;
+        restartEngine();
+        assert.equal((await engine.syncFundOrders(EXCHANGE, PAIR)).filledOrders.length, 1);
+        assert.equal((await engine.syncFundOrders(EXCHANGE, PAIR)).filledOrders.length, 0);
+        const after = readState();
+        assert.equal(after.orders[0].status, 'filled');
+        assert.equal(after.orders[0].netProceeds, 103);
+        assert.ok(Math.abs(after.usdcFundSize - (booked.usdcFundSize + 103)) < 1e-9, 'credited exactly once');
+        assert.equal(ex.placedBuys, 1, 'no replacement order');
+      });
+
+      it('fixed DCA: a cancelled partial with unknown fees stays pending, then books once', async () => {
+        const row = await buyWithRestingSell();
+        const booked = readState();
+        let historyUp = false;
+        ex.adapter.getOrderFillSummary = async (id) => {
+          if (!historyUp) failFees(id);
+          return { totalFees: 0.5, totalRebates: 0, netFees: 0.5, fills: [] };
+        };
+        const executed = row.sellQuantity * 0.4;
+        sellStatus[row.orderId] = { orderId: row.orderId, status: 'CANCELLED', filledSize: executed, filledValue: executed * row.sellPrice, averageFilledPrice: row.sellPrice };
+
+        assert.equal((await engine.syncFundOrders(EXCHANGE, PAIR)).filledOrders.length, 0);
+        assert.deepEqual(readState(), booked);
+        historyUp = true;
+        assert.equal((await engine.syncFundOrders(EXCHANGE, PAIR)).filledOrders.length, 1);
+        assert.equal((await engine.syncFundOrders(EXCHANGE, PAIR)).filledOrders.length, 0);
+        assert.equal(readState().orders[0].status, 'sell_failed');
+      });
+
+      it('genuine zero fees and signed rebates are still honored', async () => {
+        ex.adapter.getOrderFillSummary = async () => ({ totalFees: 0, totalRebates: 0, netFees: 0, fills: [] });
+        const row = await buyWithRestingSell();
+        sellStatus[row.orderId] = { orderId: row.orderId, status: 'FILLED', filledSize: row.sellQuantity, filledValue: 105, averageFilledPrice: row.sellPrice };
+        await engine.syncFundOrders(EXCHANGE, PAIR);
+        assert.equal(readState().orders[0].netProceeds, 105);
+
+        const rebateOrders = await orderManager.checkFilledOrders([{ orderId: 'rb' }], {
+          name: EXCHANGE,
+          getOrder: async () => ({ status: 'FILLED', filledSize: 1, filledValue: 105, averageFilledPrice: 105, totalFees: -0.4 }),
+          getOrderFillSummary: async () => { throw new Error('down'); },
+        });
+        assert.equal(rebateOrders[0].netFees, -0.4);
+        assert.equal(rebateOrders[0].rebates, 0.4);
+        assert.equal(rebateOrders[0].netProceeds, 105.4);
+      });
+
+      it('Fibonacci: a filled sell with unknown fees is not settled or replaced until fees return', async () => {
+        fundConfig.dcaStrategy = 'fibonacci';
+        fundConfig.fibBaseAmount = 100;
+        ex.sellMode = 'accept';
+        const nextInterval = () => writeState({ ...readState(), lastRunId: 'an-earlier-interval' });
+        assert.equal((await engine.runIntervalCycle(EXCHANGE, PAIR)).status, 'success');
+        const first = readState();
+        const sellId = first.fibActiveSellOrderId;
+        let historyUp = false;
+        ex.adapter.getOrderFillSummary = async (id) => {
+          if (!historyUp) failFees(id);
+          return { totalFees: 0.5, totalRebates: 0, netFees: 0.5, fills: [] };
+        };
+        sellStatus[sellId] = { orderId: sellId, status: 'FILLED', filledSize: first.outstandingOrdersAsset, filledValue: 105, averageFilledPrice: 52000 };
+
+        nextInterval();
+        await engine.runIntervalCycle(EXCHANGE, PAIR);
+        const stuck = readState();
+        assert.equal(stuck.fibActiveSellOrderId, sellId, 'the filled sell stays the cycle\'s owned sell');
+        assert.equal(stuck.fibCreditedSellOrderIds?.length ?? 0, 0);
+
+        historyUp = true;
+        restartEngine();
+        nextInterval();
+        const attempts = ex.sellAttempts.length;
+        await engine.runIntervalCycle(EXCHANGE, PAIR);
+        const settledState = readState();
+        assert.notEqual(settledState.fibActiveSellOrderId, sellId);
+        assert.ok(ex.sellAttempts.length > attempts);
+      });
+    });
+
     it('Fibonacci: an expired partial is credited once, keeps its cycle and holdback, and shrinks every replacement', async () => {
       fundConfig.dcaStrategy = 'fibonacci';
       fundConfig.fibBaseAmount = 100;
@@ -904,6 +1017,191 @@ describe('retryFailedSell (issue #1035)', () => {
       assert.equal((await engine.runIntervalCycle(EXCHANGE, PAIR)).status, 'sell_placement_failed');
       assert.equal(ex.sellAttempts.length, attempts, 'no second sell beside a possibly-live one');
       assert.equal(readState().fibActiveSellOrderId, owned);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // issue #1891 — consolidation aborts while cancelling (a cancel is rejected
+  // or throws, or a post-cancel status read fails). The earlier sells are
+  // already cancelled on the exchange, so the public engine caller must
+  // restore them and persist the outcome rather than leave state claiming
+  // they are still resting.
+  // -------------------------------------------------------------------------
+  describe('consolidation aborted mid-cancel (issue #1891)', () => {
+    /** @type {Record<string, 'cancelled'|'filled'>} */
+    let remote;
+    /** @type {string[]} */
+    let cancelCalls;
+    /** @type {Record<string, 'false'|'throw'>} */
+    let cancelFault;
+    /** @type {Record<string, boolean>} */
+    let statusFault;
+    /** @type {Set<string>} */
+    let fillOnCancel;
+
+    beforeEach(() => {
+      fillOnCancel = new Set();
+      remote = {};
+      cancelCalls = [];
+      cancelFault = {};
+      statusFault = {};
+      ex.adapter.cancelOrder = async (orderId) => {
+        cancelCalls.push(orderId);
+        if (cancelFault[orderId] === 'throw') throw new Error('cancel 503');
+        if (cancelFault[orderId] === 'false') return { success: false };
+        remote[orderId] = fillOnCancel.has(orderId) ? 'filled' : 'cancelled';
+        return { success: true };
+      };
+      const buyStatus = ex.adapter.getOrder;
+      ex.adapter.getOrder = async (orderId) => {
+        if (orderId.startsWith('buy-')) return buyStatus(orderId);
+        if (remote[orderId] && statusFault[orderId]) throw new Error('status 503');
+        if (remote[orderId] === 'filled') return { orderId, status: 'FILLED', completionPercentage: 100 };
+        return { orderId, status: remote[orderId] ? 'CANCELLED' : 'OPEN', completionPercentage: 0 };
+      };
+    });
+
+    /** Run one real cycle, then clone its resting sell into `count` tracked sells. */
+    const restingSells = async (count) => {
+      ex.sellMode = 'accept';
+      assert.equal((await engine.runIntervalCycle(EXCHANGE, PAIR)).status, 'success');
+      const state = readState();
+      const [first] = state.orders;
+      const ids = [first.orderId];
+      for (let i = 2; i <= count; i++) {
+        const id = `live-${i}`;
+        ids.push(id);
+        state.orders.push({ ...first, orderId: id, buyOrderId: `buy-extra-${i}` });
+      }
+      state.outstandingOrdersAsset = first.sellQuantity * count;
+      state.outstandingOrdersUSDC = first.sellQuantity * first.sellPrice * count;
+      writeState(state);
+      restartEngine();
+      return { ids, size: first.sellQuantity, price: first.sellPrice };
+    };
+
+    const rowFor = (state, buyOrderId) => state.orders.find(o => o.buyOrderId === buyOrderId);
+
+    const faults = [
+      { name: 'a later cancel returns false', arm: (id) => { cancelFault[id] = 'false'; }, reason: /Failed to cancel order live-2/ },
+      { name: 'a later cancel throws', arm: (id) => { cancelFault[id] = 'throw'; }, reason: /Failed to cancel order live-2: cancel 503/ },
+      { name: 'a later status read fails', arm: (id) => { statusFault[id] = true; }, reason: /Failed to confirm cancellation of order live-2: status 503/ },
+    ];
+
+    for (const fault of faults) {
+      it(`${fault.name}: the earlier cancelled sell is restored and durably replaced; the uncertain and untouched sells are left alone`, async () => {
+        const { ids, size } = await restingSells(3);
+        const [a, b, c] = ids;
+        const before = readState();
+        const buyOfA = before.orders[0].buyOrderId;
+        fault.arm(b);
+        ex.sellMode = 'accept';
+        const placed = ex.sellAttempts.length;
+
+        const result = await engine.executeConsolidation(EXCHANGE, PAIR);
+
+        assert.equal(result.success, false);
+        assert.match(result.error, fault.reason);
+        assert.deepEqual(cancelCalls, [a, b], 'the sell after the failing one is never touched');
+        assert.deepEqual(result.cancelledOrderIds, [a]);
+        assert.deepEqual(result.restoredOrders, [{ oldOrderId: a, newOrderId: 'sell-2' }]);
+        assert.deepEqual(result.failedRestoreOrderIds, []);
+        assert.deepEqual(result.unresolvedRestoreOrderIds, []);
+        assert.equal(ex.sellAttempts.length - placed, 1, 'exactly one restore sell: the uncertain order is not re-placed');
+        assert.ok(Math.abs(ex.sellAttempts.at(-1).size - size) < 1e-12);
+
+        // Cold reload: the restored id is durable; nothing else changed.
+        restartEngine();
+        const after = readState();
+        assert.equal(rowFor(after, buyOfA).orderId, 'sell-2');
+        assert.equal(rowFor(after, buyOfA).restoredFrom, a);
+        assert.equal(rowFor(after, buyOfA).status, 'pending');
+        assert.deepEqual(after.orders.slice(1).map(o => o.orderId), [b, c]);
+        assert.ok(after.orders.every(o => o.status === 'pending'));
+        assert.equal(after.outstandingOrdersAsset, before.outstandingOrdersAsset);
+        assert.equal(after.outstandingOrdersUSDC, before.outstandingOrdersUSDC);
+        assert.deepEqual(readIntents(), []);
+        const status = await engine.checkStatus(EXCHANGE, PAIR);
+        assert.equal(status.state.pendingOrders, 3);
+        assert.equal(status.state.failedSells.length, 0);
+      });
+    }
+
+    it('a definitively failed restore is flagged sell_failed and persisted with its exposure removed', async () => {
+      const { ids, size, price } = await restingSells(3);
+      const [a, b, c] = ids;
+      const before = readState();
+      cancelFault[b] = 'false';
+      ex.sellMode = 'reject';
+
+      const result = await engine.executeConsolidation(EXCHANGE, PAIR);
+
+      assert.deepEqual(result.failedRestoreOrderIds, [a]);
+      assert.deepEqual(result.restoredOrders, []);
+      restartEngine();
+      const after = readState();
+      assert.equal(after.orders[0].status, 'sell_failed');
+      assert.match(after.orders[0].sellFailedReason, /could not be re-placed/);
+      assert.deepEqual(after.orders.slice(1).map(o => [o.orderId, o.status]), [[b, 'pending'], [c, 'pending']]);
+      assert.ok(Math.abs(after.outstandingOrdersAsset - (before.outstandingOrdersAsset - size)) < 1e-12);
+      assert.ok(Math.abs(after.outstandingOrdersUSDC - (before.outstandingOrdersUSDC - size * price)) < 1e-9);
+      const status = await engine.checkStatus(EXCHANGE, PAIR);
+      assert.equal(status.state.pendingOrders, 2);
+      assert.equal(status.state.failedSells.length, 1, 'the unrestored sell stays visible');
+    });
+
+    it('an unresolved restore is flagged unknown and its placement intent keeps blocking the fund', async () => {
+      const { ids } = await restingSells(2);
+      const [a, b] = ids;
+      cancelFault[b] = 'throw';
+      ex.sellMode = 'unknown';
+      ex.lookup = 'throw';
+
+      const result = await engine.executeConsolidation(EXCHANGE, PAIR);
+
+      assert.deepEqual(result.unresolvedRestoreOrderIds, [a]);
+      assert.deepEqual(result.restoredOrders, []);
+      restartEngine();
+      const after = readState();
+      assert.equal(after.orders[0].status, 'sell_failed');
+      assert.match(after.orders[0].sellFailedReason, /may already be resting live/);
+      assert.equal(after.orders[1].orderId, b);
+      assert.equal(after.orders[1].status, 'pending');
+      assert.equal(stateTracker.getBlockingPlacementIntents(EXCHANGE, PAIR).length, 1);
+    });
+
+    it('a sell that filled during its cancel window is not restored; the other earlier sell is', async () => {
+      const { ids } = await restingSells(3);
+      const [a, b, c] = ids;
+      fillOnCancel.add(a);
+      cancelFault[c] = 'false';
+      ex.sellMode = 'accept';
+      const placed = ex.sellAttempts.length;
+
+      const result = await engine.executeConsolidation(EXCHANGE, PAIR);
+
+      assert.deepEqual(result.filledDuringCancelOrderIds, [a]);
+      assert.deepEqual(result.cancelledOrderIds, [b]);
+      assert.deepEqual(result.restoredOrders, [{ oldOrderId: b, newOrderId: 'sell-2' }]);
+      assert.equal(ex.sellAttempts.length - placed, 1, 'the filled sell is never re-sold');
+      restartEngine();
+      const after = readState();
+      assert.deepEqual(after.orders.map(o => o.orderId), [a, 'sell-2', c], 'the filled sell is left for normal fill reconciliation');
+    });
+
+    it('a first-order failure cancels nothing, restores nothing and changes no state', async () => {
+      const { ids } = await restingSells(2);
+      cancelFault[ids[0]] = 'false';
+      const before = readState();
+      const placed = ex.sellAttempts.length;
+
+      const result = await engine.executeConsolidation(EXCHANGE, PAIR);
+
+      assert.equal(result.success, false);
+      assert.deepEqual(result.cancelledOrderIds, []);
+      assert.deepEqual(result.restoredOrders, []);
+      assert.equal(ex.sellAttempts.length, placed);
+      assert.deepEqual(readState(), before);
     });
   });
 });
