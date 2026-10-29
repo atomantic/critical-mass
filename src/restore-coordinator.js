@@ -391,7 +391,9 @@ const applyRestoreUnderLock = async ({
   // a producer that was still live (e.g. an UpDown scorecard append that already
   // owns the maintenance lock) may have registered since. Join it now that every
   // gateway-local producer is stopped, before anything is archived or replaced.
-  if (drainPendingWrites) {
+  // Skip when the initial drain already gave up: that refusal is recorded and a
+  // second full timeout would only repeat it.
+  if (drainPendingWrites && drain.drained) {
     const lateDrain = await drainPendingWrites(drainTimeoutMs);
     if (!lateDrain.drained) {
       unconfirmed.push({

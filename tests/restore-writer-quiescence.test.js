@@ -784,7 +784,8 @@ describe('restore joins writes admitted after the initial drain (#1894)', () => 
     const { status, body } = await run;
     assert.equal(status, 200);
     assert.equal(body.forced, true);
-    assert.ok(body.unconfirmed.some((u) => u.reason === 'pending-writes-in-flight'));
+    assert.deepEqual(order, ['apply']);
+    assert.equal(body.unconfirmed.filter((u) => u.reason === 'pending-writes-in-flight').length, 1);
     h.releaseAppend();
     await h.settled;
   });
