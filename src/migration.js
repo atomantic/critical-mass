@@ -1157,6 +1157,7 @@ module.exports = {
   getFundDataDir,
   needsPairMigration,
   PAIR_MIGRATION_CONFLICT_FILES,
+  findPairMigrationConflicts,
   resolveFundDataDir,
   resolveFundPath,
   withFundDataDirOverride,
