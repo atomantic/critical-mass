@@ -14,6 +14,7 @@ export function useFundStatusFreshness({
   pair,
   initialStatus = null,
   socketStatus = null,
+  socketSeq,
   staleMs = STATUS_STALE_MS,
   fetchStatus,
 } = {}) {
@@ -61,9 +62,9 @@ export function useFundStatusFreshness({
   // Accept socket updates
   useEffect(() => {
     if (socketStatus && ownerRef.current && !ownerRef.current.isDisposed) {
-      ownerRef.current.acceptSnapshot(socketStatus, nextRegimeStatusSeq(), { isSocket: true })
+      ownerRef.current.acceptSnapshot(socketStatus, socketSeq ?? nextRegimeStatusSeq(), { isSocket: true })
     }
-  }, [socketStatus])
+  }, [socketStatus, socketSeq, currentKey])
 
   const acceptSnapshot = useCallback((status, seq, options) => {
     if (ownerRef.current && !ownerRef.current.isDisposed) {

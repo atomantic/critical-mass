@@ -72,6 +72,22 @@ it('delays an event right after mount until the interval has passed', () => {
   expect(onRefresh).toHaveBeenCalledTimes(1)
 })
 
+it('coalesces reconnect and visibility refreshes within the same interval', () => {
+  const onRefresh = vi.fn()
+  render(<Probe events={['a:changed']} minIntervalMs={1000} onRefresh={onRefresh} />)
+  Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' })
+  socket.fire('connect')
+  document.dispatchEvent(new Event('visibilitychange'))
+  socket.fire('a:changed')
+  expect(onRefresh).not.toHaveBeenCalled()
+  act(() => { vi.advanceTimersByTime(1000) })
+  expect(onRefresh).toHaveBeenCalledTimes(1)
+  socket.fire('connect')
+  socket.fire('connect')
+  act(() => { vi.advanceTimersByTime(1000) })
+  expect(onRefresh).toHaveBeenCalledTimes(2)
+})
+
 it('reconciles on socket reconnect and when the tab becomes visible, and not while disabled', () => {
   const onRefresh = vi.fn()
   const view = render(<Probe events={['a:changed']} onRefresh={onRefresh} />)

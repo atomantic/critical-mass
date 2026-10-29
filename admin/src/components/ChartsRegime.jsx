@@ -72,7 +72,6 @@ function ChartsRegime({ exchange = 'coinbase', pair, fillDebounceMs = 1500 }) {
   } = useFundStatusFreshness({
     exchange,
     pair,
-    initialStatus: localSnapshot.status,
     socketStatus,
     socketSeq,
   })

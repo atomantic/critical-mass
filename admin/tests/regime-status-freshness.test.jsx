@@ -6,7 +6,7 @@ import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } 
 import RegimeDashboard from '../src/components/RegimeDashboard'
 import useRegimeDashboardData from '../src/components/regime/useRegimeDashboardData'
 import useRegimeDashboardActions from '../src/components/regime/useRegimeDashboardActions'
-import { mergeRegimeStatus, STATUS_STALE_MS, toUnreachableStatus, createFundStatusOwner } from '../src/utils/regimeStatusSnapshot.mjs'
+import { mergeRegimeStatus, STATUS_STALE_MS, toUnreachableStatus, createFundStatusOwner, nextRegimeStatusSeq } from '../src/utils/regimeStatusSnapshot.mjs'
 import { useFundStatusFreshness } from '../src/hooks/useFundStatusFreshness'
 
 const handlers = new Map()
@@ -318,6 +318,20 @@ describe('mutation/socket status ordering', () => {
 })
 
 describe('shared per-fund status owner and freshness hook (#1816)', () => {
+  it('does not promote a redelivered socket snapshot above a newer HTTP snapshot', () => {
+    const socketSeq = nextRegimeStatusSeq()
+    const { result, rerender } = renderHook(
+      props => useFundStatusFreshness({ exchange: 'coinbase', pair: 'BTC-USDC', ...props }),
+      { initialProps: { socketStatus: runningStatus(50000), socketSeq } },
+    )
+    expect(result.current.status.market.lastPrice).toBe(50000)
+    act(() => result.current.acceptSnapshot(runningStatus(51000), nextRegimeStatusSeq()))
+    rerender({ socketStatus: runningStatus(50000), socketSeq })
+    expect(result.current.status.market.lastPrice).toBe(51000)
+    rerender({ socketStatus: runningStatus(52000), socketSeq: nextRegimeStatusSeq() })
+    expect(result.current.status.market.lastPrice).toBe(52000)
+  })
+
   it('arms watchdog only for running status, marks silent after STATUS_STALE_MS and probes', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     let probeCalled = 0

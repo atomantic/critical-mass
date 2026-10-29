@@ -668,7 +668,7 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
 
   // Process live ticks into source candles and buckets (ref mutation only — no re-render per tick)
   useEffect(() => {
-    if (tickPrice == null) return
+    if (!Number.isFinite(tickPrice) || tickPrice <= 0) return
 
     // Avoid updating canonical source candles when only display dependencies change without a new tick observation
     const isNewTick = lastProcessedTickRef.current.price !== tickPrice ||
