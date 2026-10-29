@@ -56,14 +56,21 @@ not understand version 2 journals.
 
 ### Recovery limits to check before restoring
 
+Archive restore refuses symbolic links, unsafe member paths, and ambiguous path
+aliases before extraction. Member names must be valid UTF-8; multi-disk ZIPs and
+Unicode-path metadata that disagrees with the stored name are unsupported. Keep
+the original archive and reconcile any such entries on an isolated copy before
+retrying the restore. Restore also stages a stable copy of the archive, so allow
+temporary space for that copy as well as the extracted files.
+
 These file replacements do not rewind orders or fills at the exchange. Hourly
-snapshots contain only the seven accounting files listed above; they omit
-`placement-intents.json`, which records order submissions with an unresolved
-outcome. After loss of a fund directory, an hourly restore cannot recover those
-placement blockers. Full archives preserve that file, but neither recovery path
-establishes the current exchange outcome. Preserve available intent records and
-reconcile unresolved submissions against the exchange before resuming trading;
-do not treat an hourly snapshot as a complete placement-safe recovery point.
+snapshots made by this version capture `placement-intents.json` when present,
+and full archives preserve it too. Older hourly snapshots lack that evidence and
+cannot recover a lost fund's unresolved placement blockers; restoring one requires
+the acknowledgement described above. Neither recovery path establishes the current
+exchange outcome. Preserve available intent records and reconcile unresolved
+submissions against the exchange before resuming trading; do not treat any
+snapshot as proof of the current exchange state.
 See [issue #1810](https://github.com/atomantic/critical-mass/issues/1810).
 
 An interrupted DCA import is another recovery boundary. A pending
@@ -235,7 +242,7 @@ The system now treats a "fund" as a `(exchange, pair)` tuple instead of an `exch
 
 For each configured exchange (`coinbase`, `gemini`, `cryptocom`):
 
-1. Detects the legacy layout by looking for `data/<exchange>/state.json` or `data/<exchange>/regime-state.json`.
+1. Detects the legacy layout by looking for per-fund files at `data/<exchange>/`.
 2. Reads the exchange's `productId` from `config.json` to determine the default pair name (e.g. `BTC-USDC` for coinbase, `BTCUSD` for gemini, `CRO_USD` for cryptocom).
 3. Moves these per-fund files into `data/<exchange>/<defaultPair>/`:
     - `state.json`, `regime-state.json`, `fill-ledger.json`
@@ -243,6 +250,7 @@ For each configured exchange (`coinbase`, `gemini`, `cryptocom`):
     - `optimizer-cache.json`, `pending-corrective-buys.json`
     - `regime-engine-running.json` (the auto-resume flag — moves so resume still works)
     - `dry-run-state.json`
+    - `closed-trades.json`, `manual-trades.json`, and `placement-intents.json`
     - All `.backup-*` files associated with the above
 4. Migration is idempotent — running it twice is a no-op.
 
@@ -258,7 +266,7 @@ Separately, an earlier release of this same multi-pair migration moved `transact
 
 - Each engine claims its configured local IPC port before it runs recovery or the migration, so a second engine process for the same exchange on that port fails without touching fund data. This is exclusion by configured port only. The migration does not check for other writers (for example an engine configured on a different port, or a manual script), so follow the stop order above to make sure nothing else is writing the data directory.
 - If the migration fails for any reason, the engine process logs an error and `process.exit(1)` — it will NOT silently continue with mixed-layout state.
-- The migration uses `fs.renameSync` (atomic move) and refuses to overwrite existing files at the target path. If it sees a conflict (e.g. you started the new code, generated a partial new layout, then tried to restart with old files still around), it logs the conflict and skips that specific file rather than clobbering anything — except for `state.json`, `regime-state.json` and `fill-ledger.json`: with both an exchange-level and a per-fund copy of any of those, the engine refuses to start (moving nothing) and logs both paths. Keep the authoritative copy, move the other out of `data/`, and restart.
+- The migration uses `fs.renameSync` (atomic move) and refuses to overwrite existing files at the target path. Most conflicts are skipped, but if `state.json`, `regime-state.json`, `fill-ledger.json`, `closed-trades.json`, `manual-trades.json`, or `placement-intents.json` exists at both the exchange and fund levels, the engine refuses to start and names both paths. For accounting files, preserve the copies and identify the authoritative generation before restarting. For placement intents, stop the engine, preserve both copies and reconcile every unresolved submission against the exchange. Prepare one verified per-fund document retaining all unresolved blockers before restarting; selecting just one copy could discard a blocker.
 - The migration resumes after an interruption: it runs whenever any per-fund file is still at the exchange level, so a crash after the state files moved but before `fill-ledger.json` did finishes moving the ledger on the next start instead of leaving the fund on an empty ledger.
 - It also cleans up empty pair subdirectories that the API server might have accidentally created before the engine ran (e.g. from gateway requests using `?pair=` before migration completed).
 
@@ -276,6 +284,7 @@ Backup archives store data files at the paths they had on the source machine, so
 - The pair comes from the archive's own configuration manifest when it carries one, and from this machine's default fund for a manifest-less data-only restore.
 - If neither names a fund for an exchange the archive carries, the restore is **refused before any destination is touched** (`legacy-layout-unresolvable-pair`) rather than applying a half-translated tree. Configure the fund, then retry.
 - The translation is part of the same all-or-nothing transaction as every other replacement, so a rollback reverts the relocated files too.
+- An archive with both exchange-level and per-fund placement-intent files is refused before stopping engines. Preserve the original archive and both copies, reconcile unresolved submissions against the exchange, and prepare a corrected archive with one verified per-fund intent document retaining all unresolved blockers before restoring.
 - The restore confirmation screen (Settings → Backups) discloses the `exchange → pair` mapping it would apply before you commit to it.
 
 An archive already in the per-fund layout restores exactly as it does today.

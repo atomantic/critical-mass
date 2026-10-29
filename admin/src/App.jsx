@@ -443,6 +443,13 @@ function AppContent() {
         setStatusError('Failed to fetch engine status')
         return
       }
+      if (data.engineDown === true || data.status.engineDown === true) {
+        setRegimeRunning(null)
+        setRegimeDryRun(null)
+        setRegimeLifecycle(null)
+        setStatusError('Engine unreachable')
+        return
+      }
       setStatusError(null)
       setRegimeRunning(data.status?.isRunning || false)
       setRegimeDryRun(data.status?.isDryRun || false)
@@ -617,6 +624,13 @@ function AppContent() {
       if (committedFundRef.current !== `${state.exchange}::${state.pair || currentPair}`) return
       // The pushed state is newer than any read still in flight.
       invalidateStatusRead()
+      if (state.engineDown === true) {
+        setRegimeRunning(null)
+        setRegimeDryRun(null)
+        setRegimeLifecycle(null)
+        setStatusError('Engine unreachable')
+        return
+      }
       setStatusError(null)
       setRegimeRunning(state.isRunning)
       setRegimeDryRun(Boolean(state.isDryRun))

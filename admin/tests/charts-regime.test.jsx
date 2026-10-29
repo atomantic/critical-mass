@@ -904,7 +904,7 @@ describe('ChartsRegime silent engine status expiration', () => {
     expect(screen.getByText('Engine Running')).toBeTruthy()
   })
 
-  it('stopped snapshots do not repeatedly probe, and unmount releases timers', async () => {
+  it('stopped snapshots do not repeatedly probe', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     let statusCalls = 0
     vi.stubGlobal('fetch', vi.fn(async url => {
@@ -930,6 +930,24 @@ describe('ChartsRegime silent engine status expiration', () => {
     await act(async () => {
       vi.advanceTimersByTime(STATUS_STALE_MS)
     })
+    expect(statusCalls).toBe(1)
+  })
+
+  it('unmounting a running fund cancels the active freshness watchdog', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    let statusCalls = 0
+    vi.stubGlobal('fetch', vi.fn(async url => {
+      if (url.includes('/regime/status')) {
+        statusCalls++
+        return { ok: true, json: async () => ({ status: { isRunning: true, market: { lastPrice: 50000 } } }) }
+      }
+      return { ok: true, json: async () => ({ config: {}, buyCount: 0, sellCount: 0, pnlPoints: [], candles: [] }) }
+    }))
+    const { unmount } = render(<ChartsRegime exchange="coinbase" pair="BTC-USDC" />)
+    expect(await screen.findByText('Engine Running')).toBeTruthy()
+    expect(statusCalls).toBe(1)
+    unmount()
+    await act(async () => { vi.advanceTimersByTime(STATUS_STALE_MS * 2) })
     expect(statusCalls).toBe(1)
   })
 })

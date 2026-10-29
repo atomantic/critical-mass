@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef } from 'react'
 import { getRealtimeClient } from '../lib/realtime'
 import { EMPTY_SNAPSHOT, mergeRegimeStatus, stampRegimeStatus } from '../utils/regimeStatusSnapshot.mjs'
 
@@ -82,6 +82,18 @@ export function useTradeEvents(exchange = null) {
 export function useRegimeEvents(exchange = null, pair = null) {
   // { status, seq }: seq orders this snapshot against HTTP reads (#1388).
   const [snapshot, setSnapshot] = useState(EMPTY_SNAPSHOT)
+  // A hook can remain mounted while its caller selects a different fund.
+  const fundKey = JSON.stringify([exchange, pair])
+  // Give each committed selection its own identity, including when navigating
+  // back to a fund visited earlier. Old callbacks must not revive that visit.
+  const [selection, setSelection] = useState(() => ({ fundKey }))
+  let currentSelection = selection
+  if (selection.fundKey !== fundKey) {
+    currentSelection = { fundKey }
+    setSelection(currentSelection)
+  }
+  const committedSelection = useRef(currentSelection)
+  useLayoutEffect(() => { committedSelection.current = currentSelection }, [currentSelection])
   const [regimeState, setRegimeState] = useState(null)
   const [healthState, setHealthState] = useState(null)
   const [positionState, setPositionState] = useState(null)
@@ -108,7 +120,10 @@ export function useRegimeEvents(exchange = null, pair = null) {
       if (!matchesFund(data) || !data.status) return
       // A stopped payload or a running-state change replaces the snapshot;
       // only running -> running emits merge (#1388).
-      setSnapshot(prev => stampRegimeStatus(mergeRegimeStatus(prev.status, data.status)))
+      setSnapshot(prev => committedSelection.current !== currentSelection ? prev : ({
+        ...stampRegimeStatus(mergeRegimeStatus(prev.selection === currentSelection ? prev.status : null, data.status)),
+        selection: currentSelection,
+      }))
     }
 
     const handleRegimeChange = (data) => {
@@ -156,15 +171,18 @@ export function useRegimeEvents(exchange = null, pair = null) {
       socket.off('regime:health', handleHealthChange)
       socket.off('regime:position', handlePositionUpdate)
     }
-  }, [exchange, pair])
+  }, [exchange, pair, currentSelection])
 
   const clearEvents = useCallback(() => setEvents([]), [])
   // Action responses carry a full snapshot: replace, stamped as newest.
-  const setStatus = useCallback(status => setSnapshot(stampRegimeStatus(status)), [])
+  const setStatus = useCallback(status => setSnapshot(prev => committedSelection.current !== currentSelection
+    ? prev
+    : { ...stampRegimeStatus(status), selection: currentSelection }), [currentSelection])
+  const currentSnapshot = snapshot.selection === currentSelection ? snapshot : EMPTY_SNAPSHOT
 
   return {
-    status: snapshot.status,
-    statusSeq: snapshot.seq,
+    status: currentSnapshot.status,
+    statusSeq: currentSnapshot.seq,
     setStatus,
     regimeState,
     healthState,

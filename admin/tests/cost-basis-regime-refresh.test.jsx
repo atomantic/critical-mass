@@ -1,6 +1,6 @@
 import React from 'react'
 import { afterEach, expect, it, vi } from 'vitest'
-import { act, cleanup, render, waitFor } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import CostBasisRegime from '../src/components/CostBasisRegime'
 
 // Cost basis re-reads on `regime:changed` for its own fund, not on a timer.
@@ -11,11 +11,11 @@ const socket = vi.hoisted(() => {
     off: (event, handler) => { handlers.set(event, (handlers.get(event) || []).filter(h => h !== handler)) },
     subscribe: () => {},
     unsubscribe: () => {},
+    listeners: (event) => [...(handlers.get(event) || [])],
     fire: (event, payload) => (handlers.get(event) || []).forEach(h => h(payload)),
   }
 })
 vi.mock('../src/lib/realtime', () => ({ getRealtimeClient: () => socket }))
-vi.mock('../src/hooks/useTradeEvents', () => ({ useRegimeEvents: () => ({ status: { market: { lastPrice: 123 } } }) }))
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
@@ -51,4 +51,60 @@ it('re-reads for its own fund only, once per throttle window, and rereads a chan
   hold = false
   await act(async () => { release() })
   await waitFor(() => expect(reads()).toBe(3), { timeout: 4000 })
+})
+
+it('keeps a newer socket price when an older HTTP batch settles later', async () => {
+  let releaseFills
+  vi.stubGlobal('fetch', vi.fn(async url => {
+    url = String(url)
+    if (url.includes('/regime/fills/cycles')) {
+      await new Promise(resolve => { releaseFills = resolve })
+    }
+    return { ok: true, status: 200, json: async () => body(url) }
+  }))
+  render(<CostBasisRegime exchange="coinbase" pair="BTC-USDC" />)
+  await waitFor(() => expect(releaseFills).toBeTypeOf('function'))
+  await act(async () => {
+    socket.fire('regime:status', { exchange: 'coinbase', pair: 'BTC-USDC', status: { isRunning: true, market: { lastPrice: 110 } } })
+  })
+  await act(async () => { releaseFills() })
+  expect(await screen.findByText('$110.00')).toBeTruthy()
+  await act(async () => {
+    socket.fire('regime:status', { exchange: 'coinbase', pair: 'BTC-USDC', status: { isRunning: true, market: { lastPrice: 110 } } })
+  })
+  expect(screen.getByText('$110.00')).toBeTruthy()
+})
+
+it('ignores a delayed prior-fund socket callback during a new fund read', async () => {
+  let releaseNewFills
+  vi.stubGlobal('fetch', vi.fn(async url => {
+    url = String(url)
+    const isNewFund = url.includes('ETH-USDC')
+    if (isNewFund && url.includes('/regime/fills/cycles')) {
+      await new Promise(resolve => { releaseNewFills = resolve })
+    }
+    const data = url.includes('/regime/status')
+      ? { status: { isRunning: true, position: {}, market: { lastPrice: isNewFund ? 200 : 100 } } }
+      : url.includes('/regime/fills/cycles') ? { cycles: [], revision: 'r1' } : { config: { productId: isNewFund ? 'ETH-USDC' : 'BTC-USDC' } }
+    return { ok: true, status: 200, json: async () => data }
+  }))
+  const { rerender } = render(<CostBasisRegime exchange="coinbase" pair="BTC-USDC" />)
+  expect(await screen.findByText('$100.00')).toBeTruthy()
+  await act(async () => {
+    socket.fire('regime:status', { exchange: 'coinbase', pair: 'BTC-USDC', status: { isRunning: true, market: { lastPrice: 110 } } })
+  })
+  expect(screen.getByText('$110.00')).toBeTruthy()
+  const oldHandler = socket.listeners('regime:status')[0]
+  rerender(<CostBasisRegime exchange="coinbase" pair="ETH-USDC" />)
+  await waitFor(() => expect(releaseNewFills).toBeTypeOf('function'))
+  await act(async () => {
+    oldHandler({ exchange: 'coinbase', pair: 'BTC-USDC', status: { isRunning: true, market: { lastPrice: 120 } } })
+    releaseNewFills()
+  })
+  expect(await screen.findByText('$200.00')).toBeTruthy()
+  expect(screen.queryByText('$120.00')).toBeNull()
+  await act(async () => {
+    socket.fire('regime:status', { exchange: 'coinbase', pair: 'ETH-USDC', status: { isRunning: true, market: { lastPrice: 210 } } })
+  })
+  expect(screen.getByText('$210.00')).toBeTruthy()
 })

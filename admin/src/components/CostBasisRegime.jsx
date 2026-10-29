@@ -21,6 +21,9 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
   const pairQuery = buildPairQuery(pair)
 
   const readState = useRef(null)
+  const { status: liveStatus } = useRegimeEvents(exchange, pair)
+  const liveStatusRef = useRef(liveStatus)
+  liveStatusRef.current = liveStatus
 
   const fetchData = useCallback(async () => {
     const session = readState.current
@@ -28,6 +31,7 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
     // A change that lands mid-read must not be lost: read again once this one ends.
     if (session.inFlight) { session.rerun = true; return }
     session.inFlight = true
+    const liveStatusAtStart = liveStatusRef.current
     const controller = new AbortController()
     session.controller = controller
 
@@ -59,7 +63,10 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
       session.config = configData
       session.hasSnapshot = true
       setStatus(statusData.status)
-      setCurrentPrice(statusData.status?.market?.lastPrice || 0)
+      // A newer socket price may have arrived while this batch was in flight.
+      if (liveStatusRef.current === liveStatusAtStart || !(liveStatusRef.current?.market?.lastPrice > 0)) {
+        setCurrentPrice(statusData.status?.market?.lastPrice || 0)
+      }
       if (!fillsData.unchanged) {
         session.aggregates = fillsData
         setFillAggregates(fillsData)
@@ -111,7 +118,6 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
     onRefresh: fetchData,
   })
   // The price follows the fund's live status stream instead of a read per poll.
-  const { status: liveStatus } = useRegimeEvents(exchange, pair)
   const livePrice = liveStatus?.market?.lastPrice
   useEffect(() => {
     if (livePrice > 0) setCurrentPrice(livePrice)

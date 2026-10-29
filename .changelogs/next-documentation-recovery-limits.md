@@ -1,1 +1,1 @@
-- **Clarify recovery limits** — describe hourly snapshots' missing placement intents and pending DCA import hazards, distinguish restoring simulation bytes from the seven-day resume limit, and correct the renamed legacy credential fallback path.
+- **Clarify recovery limits** — describe placement-intent capture and the limits of older hourly snapshots, explain pending DCA import hazards, distinguish restoring simulation bytes from the seven-day resume limit, and correct the renamed legacy credential fallback path.

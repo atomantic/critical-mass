@@ -222,9 +222,10 @@ const computeDailySummaryDelay = (hour, now = new Date()) => {
  * Create a notifier instance
  * @param {Object} [options]
  * @param {(ms: number) => Promise<void>} [options.sleep] - Retry-delay wait; injectable so tests need not really sleep
+ * @param {() => void} [options.onStatsChanged] - Notify observers after a stats change
  * @returns {Object} Notifier instance
  */
-const createNotifier = ({ sleep = defaultSleep } = {}) => {
+const createNotifier = ({ sleep = defaultSleep, onStatsChanged = () => {} } = {}) => {
   let config = getNotificationConfig();
   let queue = [];
   // Messages evicted from `queue` by the cap since the last flush
@@ -261,6 +262,10 @@ const createNotifier = ({ sleep = defaultSleep } = {}) => {
     dailySent: 0,
     dailyErrors: 0,
     dailyResetAt: Date.now(),
+  };
+  // A disconnected or failing observer must never interrupt notification delivery.
+  const notifyStatsChanged = () => {
+    try { onStatsChanged(); } catch { /* delivery owns its own result */ }
   };
 
   /**
@@ -351,6 +356,7 @@ const createNotifier = ({ sleep = defaultSleep } = {}) => {
         stats.sent++;
         stats.dailySent++;
         stats.lastSentAt = new Date().toISOString();
+        notifyStatsChanged();
         return true;
       }
 
@@ -390,6 +396,7 @@ const createNotifier = ({ sleep = defaultSleep } = {}) => {
   const recordSendFailure = (result) => {
     stats.errors++;
     stats.dailyErrors++;
+    notifyStatsChanged();
     notifierLogger.error(`❌ 📨 Telegram send failed (${result.status}): ${result.desc}`, {
       transport: 'telegram',
       status: result.status,
@@ -415,9 +422,11 @@ const createNotifier = ({ sleep = defaultSleep } = {}) => {
     }
     inFlightMessages += messages.length;
     stats.queueDepth = queue.length + inFlightMessages;
+    notifyStatsChanged();
     const settled = () => {
       inFlightMessages -= messages.length;
       stats.queueDepth = queue.length + inFlightMessages;
+      notifyStatsChanged();
     };
 
     // Combine into batches respecting max length
@@ -477,6 +486,7 @@ const createNotifier = ({ sleep = defaultSleep } = {}) => {
       queue.splice(0, queue.length - MAX_QUEUED_MESSAGES);
     }
     stats.queueDepth = queue.length + inFlightMessages;
+    notifyStatsChanged();
 
     if (!flushTimer) armFlushTimer();
   };
@@ -573,6 +583,7 @@ const createNotifier = ({ sleep = defaultSleep } = {}) => {
     stats.dailySent = 0;
     stats.dailyErrors = 0;
     stats.dailyResetAt = Date.now();
+    notifyStatsChanged();
 
     sendTelegram(lines.join('\n'));
   };
@@ -604,6 +615,7 @@ const createNotifier = ({ sleep = defaultSleep } = {}) => {
     // Subscribe to trade events
     tradeHandler = handleTradeEvent;
     tradeEvents.on('trade', tradeHandler);
+    notifyStatsChanged();
 
     // Schedule daily summary
     scheduleDailySummary();
@@ -619,6 +631,7 @@ const createNotifier = ({ sleep = defaultSleep } = {}) => {
     if (tradeHandler) {
       tradeEvents.removeListener('trade', tradeHandler);
       tradeHandler = null;
+      notifyStatsChanged();
     }
 
     if (dailySummaryTimer) {
@@ -679,6 +692,7 @@ const createNotifier = ({ sleep = defaultSleep } = {}) => {
       // otherwise sit unused until the process restarts (issue #426).
       scheduleDailySummary();
     }
+    notifyStatsChanged();
   };
 
   /**

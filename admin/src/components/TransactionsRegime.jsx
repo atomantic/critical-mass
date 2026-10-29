@@ -24,6 +24,7 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
   const [filter, setFilter] = useState('all')
   const [cycleFilter, setCycleFilter] = useState('all')
   const [cycleSearch, setCycleSearch] = useState('')
+  const [searchQuery, setSearchQuery] = useState({ selection: null, value: '' })
   const [cycleOffset, setCycleOffset] = useState(0)
   const [sortField, setSortField] = useState('timestamp')
   const [sortDir, setSortDir] = useState('desc')
@@ -32,9 +33,22 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
   const reader = useMemo(() => createTransactionsReader(), [])
   const revision = useRef(null)
   const fund = `${exchange}:${pair || ''}`
+  const selection = useMemo(() => ({}), [fund])
+  const settledCycleSearch = searchQuery.selection === selection ? searchQuery.value : ''
   const activeFund = useRef(fund)
   activeFund.current = fund
   const pairQuery = buildPairQuery(pair)
+
+  // Coalesce typing before reading the ledger; a new fund never inherits an
+  // earlier fund's settled search or a pending search timer.
+  useEffect(() => {
+    if (cycleSearch === settledCycleSearch) return undefined
+    const timer = setTimeout(() => {
+      setSearchQuery({ selection, value: cycleSearch })
+      setCycleOffset(0)
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [cycleSearch, settledCycleSearch, selection])
 
   // Config is stable between edits. Leaving/re-entering Config remounts this
   // route, and a fund change explicitly invalidates it; polling never fetches it.
@@ -61,7 +75,7 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
   }, [exchange, pairQuery, fund])
 
   const fetchData = useCallback(async () => {
-    const query = new URLSearchParams({ paged: 'true', page: String(page), pageSize: '100', side: filter, cycle: cycleFilter, sortField, sortDir, cycleOptionsPaged: 'true', cycleSearch, cycleOffset: String(cycleOffset), cycleLimit: '100' })
+    const query = new URLSearchParams({ paged: 'true', page: String(page), pageSize: '100', side: filter, cycle: cycleFilter, sortField, sortDir, cycleOptionsPaged: 'true', cycleSearch: settledCycleSearch, cycleOffset: String(cycleOffset), cycleLimit: '100' })
     if (pair) query.set('pair', pair)
     if (revision.current) query.set('revision', revision.current)
     const { owned, data } = await reader.read({ exchange, pairQuery, query })
@@ -89,7 +103,7 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
       setOrdersError('Open orders unavailable: request failed')
     }
     setLoading(false)
-  }, [exchange, pair, pairQuery, fund, page, filter, cycleFilter, cycleSearch, cycleOffset, sortField, sortDir, reader])
+  }, [exchange, pair, pairQuery, fund, page, filter, cycleFilter, settledCycleSearch, cycleOffset, sortField, sortDir, reader])
 
   // Only the first read gates the page. A page/filter/sort change or a poll
   // keeps the current view mounted: the gate would unmount Manual Trades and
@@ -312,7 +326,7 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
             type="search"
             maxLength={200}
             value={cycleSearch}
-            onChange={e => { setCycleSearch(e.target.value); setCycleOffset(0) }}
+            onChange={e => setCycleSearch(e.target.value)}
             placeholder="Search cycles"
             className="px-2 py-1 bg-gray-700 border border-gray-600 rounded-sm text-sm text-white w-40"
           />

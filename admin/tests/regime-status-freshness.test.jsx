@@ -6,7 +6,7 @@ import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } 
 import RegimeDashboard from '../src/components/RegimeDashboard'
 import useRegimeDashboardData from '../src/components/regime/useRegimeDashboardData'
 import useRegimeDashboardActions from '../src/components/regime/useRegimeDashboardActions'
-import { mergeRegimeStatus, STATUS_STALE_MS, toUnreachableStatus, createFundStatusOwner } from '../src/utils/regimeStatusSnapshot.mjs'
+import { mergeRegimeStatus, STATUS_STALE_MS, toUnreachableStatus, createFundStatusOwner, nextRegimeStatusSeq } from '../src/utils/regimeStatusSnapshot.mjs'
 import { useFundStatusFreshness } from '../src/hooks/useFundStatusFreshness'
 
 const handlers = new Map()
@@ -318,6 +318,57 @@ describe('mutation/socket status ordering', () => {
 })
 
 describe('shared per-fund status owner and freshness hook (#1816)', () => {
+  it('keeps a single working watchdog after StrictMode replays its effects', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const fetchStatus = vi.fn(async () => { throw new Error('Engine unreachable') })
+    const wrapper = ({ children }) => <React.StrictMode>{children}</React.StrictMode>
+    const { result, rerender } = renderHook(
+      ({ socketStatus, socketSeq }) => useFundStatusFreshness({
+        exchange: 'coinbase', pair: 'BTC-USDC', initialStatus: runningStatus(50000),
+        socketStatus, socketSeq, fetchStatus,
+      }),
+      { wrapper, initialProps: { socketStatus: null, socketSeq: undefined } },
+    )
+    expect(result.current.isRunning).toBe(true)
+    await act(async () => { vi.advanceTimersByTime(STATUS_STALE_MS) })
+    expect(fetchStatus).toHaveBeenCalledTimes(1)
+    expect(result.current.probeFailed).toBe(true)
+    rerender({ socketStatus: runningStatus(52000), socketSeq: nextRegimeStatusSeq() })
+    expect(result.current.probeFailed).toBe(false)
+    expect(result.current.status.market.lastPrice).toBe(52000)
+  })
+
+  it('does not accept an earlier visit callback after switching funds and returning', () => {
+    const { result, rerender } = renderHook(
+      ({ pair }) => useFundStatusFreshness({ exchange: 'coinbase', pair }),
+      { initialProps: { pair: 'BTC-USDC' } },
+    )
+    const oldAccept = result.current.acceptSnapshot
+    act(() => oldAccept(runningStatus(50000), nextRegimeStatusSeq()))
+    rerender({ pair: 'ETH-USDC' })
+    expect(result.current.status).toBeNull()
+    act(() => result.current.acceptSnapshot(runningStatus(3000), nextRegimeStatusSeq()))
+    rerender({ pair: 'BTC-USDC' })
+    expect(result.current.status).toBeNull()
+    act(() => result.current.acceptSnapshot(runningStatus(52000), nextRegimeStatusSeq()))
+    act(() => oldAccept(runningStatus(50000), nextRegimeStatusSeq()))
+    expect(result.current.status.market.lastPrice).toBe(52000)
+  })
+
+  it('does not promote a redelivered socket snapshot above a newer HTTP snapshot', () => {
+    const socketSeq = nextRegimeStatusSeq()
+    const { result, rerender } = renderHook(
+      props => useFundStatusFreshness({ exchange: 'coinbase', pair: 'BTC-USDC', ...props }),
+      { initialProps: { socketStatus: runningStatus(50000), socketSeq } },
+    )
+    expect(result.current.status.market.lastPrice).toBe(50000)
+    act(() => result.current.acceptSnapshot(runningStatus(51000), nextRegimeStatusSeq()))
+    rerender({ socketStatus: runningStatus(50000), socketSeq })
+    expect(result.current.status.market.lastPrice).toBe(51000)
+    rerender({ socketStatus: runningStatus(52000), socketSeq: nextRegimeStatusSeq() })
+    expect(result.current.status.market.lastPrice).toBe(52000)
+  })
+
   it('arms watchdog only for running status, marks silent after STATUS_STALE_MS and probes', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     let probeCalled = 0
@@ -442,7 +493,7 @@ describe('shared per-fund status owner and freshness hook (#1816)', () => {
       fetchStatus: async ({ signal }) => {
         probes++
         signal?.addEventListener('abort', () => { signalAborted = true })
-        return { status: stoppedStatus() }
+        return new Promise(() => {})
       },
     })
 
@@ -451,16 +502,15 @@ describe('shared per-fund status owner and freshness hook (#1816)', () => {
     expect(probes).toBe(0)
 
     // Switch to running, then dispose mid-probe
-    owner.acceptSnapshot(runningStatus(), 2, { isSocket: true })
-    let hangProbe = true
-    owner.probe = async () => {
-      // simulate probe start
-    }
+    owner.acceptSnapshot(runningStatus(), undefined, { isSocket: true })
+    await act(async () => { vi.advanceTimersByTime(STATUS_STALE_MS) })
+    expect(probes).toBe(1)
     owner.dispose()
     expect(owner.isDisposed).toBe(true)
+    expect(signalAborted).toBe(true)
 
     await act(async () => { vi.advanceTimersByTime(STATUS_STALE_MS * 2) })
-    expect(probes).toBe(0)
+    expect(probes).toBe(1)
   })
 
   it('useFundStatusFreshness hook recovers upon fresh socket emit without remounting', async () => {

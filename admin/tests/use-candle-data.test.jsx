@@ -26,6 +26,27 @@ const makeFetchMock = (candlesMap = {}) => vi.fn(async (url, opts) => {
 })
 
 describe('useCandleData display limit and live candle preservation', () => {
+  it('ignores invalid prices without corrupting live candle extrema', async () => {
+    vi.stubGlobal('fetch', makeFetchMock({ '1m': [
+      { timestamp: 0, open: 100, high: 105, low: 95, close: 100, volume: 10 },
+    ] }))
+    let props = { tickPrice: null, tickTimestamp: null }
+    const { result, rerender } = renderHook(() =>
+      useCandleData('coinbase', props.tickPrice, props.tickTimestamp, { defaultInterval: '1m' })
+    )
+    await vi.waitFor(() => expect(result.current.chartData.length).toBe(1))
+
+    props = { tickPrice: 110, tickTimestamp: 60_000 }; rerender()
+    for (const tickPrice of [0, -1, NaN, Infinity]) {
+      props = { tickPrice, tickTimestamp: 60_010 }; rerender()
+    }
+    props = { tickPrice: 120, tickTimestamp: 120_000 }; rerender()
+
+    expect(result.current.chartData.find(c => c.time === 60_000)).toMatchObject({
+      high: 110, low: 110, price: 110,
+    })
+  })
+
   it('retains all relevant completed live candles when maxBucketsOverride changes (Auto/100/300)', async () => {
     const historical = [
       { timestamp: 0, open: 100, high: 105, low: 95, close: 100, volume: 10 },

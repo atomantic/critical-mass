@@ -27,6 +27,63 @@ const { createTransactionsReadView } = require('../../src/transactions-regime-qu
 const response = (body, status = 200) => ({ ok: status === 200, status, json: async () => body })
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
+it('coalesces a burst of cycle-search edits into one ledger read', async () => {
+  const view = createTransactionsReadView(() => [], () => 'r1')
+  const searches = []
+  vi.stubGlobal('fetch', vi.fn(async url => {
+    url = String(url)
+    if (url.includes('/regime/fills?')) {
+      const query = Object.fromEntries(new URL(url, 'http://localhost').searchParams)
+      searches.push(query.cycleSearch)
+      return response(view.query(query))
+    }
+    if (url.includes('/regime/status')) return response({ status: { isDryRun: false } })
+    if (url.includes('/regime/open-orders')) return response({ orders: [] })
+    if (url.includes('/manual-trades')) return response({ success: true, trades: [] })
+    return response({ config: { productId: 'BTC-USDC' } })
+  }))
+  render(<TransactionsRegime exchange="coinbase" pair="BTC-USDC" />)
+  const input = await screen.findByRole('searchbox', { name: 'Search cycles' })
+  const before = searches.length
+  for (const value of ['c', 'cy', 'cycle']) fireEvent.change(input, { target: { value } })
+  expect(searches.length).toBe(before)
+  await waitFor(() => expect(searches).toEqual(['', 'cycle']))
+})
+
+it('does not carry a pending cycle search to a newly selected fund', async () => {
+  const view = createTransactionsReadView(() => [], () => 'r1')
+  const searches = []
+  vi.stubGlobal('fetch', vi.fn(async url => {
+    url = String(url)
+    if (url.includes('/regime/fills?')) {
+      const query = Object.fromEntries(new URL(url, 'http://localhost').searchParams)
+      searches.push({ pair: query.pair, search: query.cycleSearch })
+      return response(view.query(query))
+    }
+    if (url.includes('/regime/status')) return response({ status: { isDryRun: false } })
+    if (url.includes('/regime/open-orders')) return response({ orders: [] })
+    if (url.includes('/manual-trades')) return response({ success: true, trades: [] })
+    return response({ config: { productId: 'BTC-USDC' } })
+  }))
+  const page = render(<TransactionsRegime exchange="coinbase" pair="BTC-USDC" />)
+  const input = await screen.findByRole('searchbox', { name: 'Search cycles' })
+  fireEvent.change(input, { target: { value: 'old-fund' } })
+  page.rerender(<TransactionsRegime exchange="coinbase" pair="ETH-USDC" />)
+  await waitFor(() => expect(searches.some(entry => entry.pair === 'ETH-USDC')).toBe(true))
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 350)) })
+  expect(searches.filter(entry => entry.pair === 'ETH-USDC').every(entry => entry.search === '')).toBe(true)
+
+  fireEvent.change(screen.getByRole('searchbox', { name: 'Search cycles' }), { target: { value: 'eth-search' } })
+  await waitFor(() => expect(searches.some(entry => entry.pair === 'ETH-USDC' && entry.search === 'eth-search')).toBe(true))
+  page.rerender(<TransactionsRegime exchange="coinbase" pair="BTC-USDC" />)
+  await waitFor(() => expect(searches.at(-1)).toEqual({ pair: 'BTC-USDC', search: '' }))
+  const beforeReturn = searches.length
+  page.rerender(<TransactionsRegime exchange="coinbase" pair="ETH-USDC" />)
+  await waitFor(() => expect(searches.slice(beforeReturn).some(entry => entry.pair === 'ETH-USDC')).toBe(true))
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 350)) })
+  expect(searches.slice(beforeReturn).filter(entry => entry.pair === 'ETH-USDC').every(entry => entry.search === '')).toBe(true)
+})
+
 for (const cycles of [3000, 15000]) it(`keeps 30,000-fill requests and rendered options bounded at ${cycles} cycles, including refreshes and historical selection`, async () => {
   const history = Array.from({ length: 30000 }, (_, i) => ({ tradeId: `trade-${i}`, orderId: `order-${i}`, timestamp: i + 1000,
     cycleId: `cycle-${i % cycles}`, side: 'buy', size: 0.01, price: i + 1, quoteAmount: (i + 1) / 100, fee: 0 }))

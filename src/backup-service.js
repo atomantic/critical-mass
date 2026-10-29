@@ -65,6 +65,7 @@ const {
   normalizeLegacyRootToNamespace,
   legacyRootArtifactTarget,
   legacyRootArtifactCandidates,
+  PER_FUND_FILES,
 } = require('./migration');
 const { serializeFundState } = require('./dry-run-state');
 const { JOURNAL_FILENAME: DCA_IMPORT_JOURNAL_FILENAME } = require('./dca-conversion-transaction');
@@ -459,15 +460,298 @@ const rootCollisionEntries = ({ entries, rootTranslation }) => {
   });
 };
 
+// Two placement-intent generations cannot be discarded during layout
+// translation: either can contain an unresolved exchange order.
+const findLegacyIntentCollisions = ({ entries, translations }) => {
+  const present = new Set(entries);
+  return translations.flatMap(({ exchange, pair }) => {
+    const artifact = `${exchange}/placement-intents.json`;
+    const existing = `${exchange}/${pair}/placement-intents.json`;
+    return present.has(artifact) && present.has(existing) ? [{ artifact, existing }] : [];
+  });
+};
+
+const intentCollisionError = (conflicts) =>
+  `This archive contains both legacy and per-fund placement intents (${conflicts.map(({ artifact, existing }) => `${artifact} and ${existing}`).join(', ')}). `
+  + 'Preserve both copies and reconcile all unresolved placement intents against the exchange before restoring. No files were changed.';
+
+// Protected names have case-sensitive meaning to the readers and exclusions.
+// A differently-cased spelling can alias them on a case-insensitive disk
+// without being recognized as accounting, credentials, a journal, or a lock.
+const PROTECTED_ARCHIVE_NAMES = new Set([
+  ...PER_FUND_FILES, ...ROOT_CREDENTIAL_FILES,
+  MANIFEST_FILENAME, FUND_STATE_MANIFEST_FILENAME, BASE_SNAPSHOT_FILENAME,
+  CONFIG_LOCK_DIR, JOURNAL_FILENAME, DCA_IMPORT_JOURNAL_FILENAME,
+  LEGACY_MIGRATION_LOCK, 'config.json', 'updown-state.json', 'backups',
+  '.maintenance-lock',
+].map((name) => name.normalize('NFC').toLowerCase()));
+const PROTECTED_ARCHIVE_PREFIXES = [
+  ...ROOT_CREDENTIAL_FILES.map((name) => `${name}.`),
+  'placement-intents.json.lock', LEGACY_MIGRATION_LOCK,
+  STAGE_PREFIX, ORIGINALS_PREFIX, OWNER_PREFIX, `${BASE_SNAPSHOT_FILENAME}.`,
+].map((name) => name.normalize('NFC').toLowerCase());
+
 /**
- * List an archive's entry paths without extracting it.
- * @param {string} zipPath
- * @returns {string[]} Entry paths, or [] when the listing cannot be read
+ * Validate member destinations before extraction. unzip collapses dot and
+ * repeated-slash components, so two differently-spelled names can overwrite
+ * the same staged file. Retain the original spelling for unzip -p while using
+ * the normalized path for every layout, manifest and payload decision.
+ *
+ * Reject links (including parent-directory links), path traversal, ambiguous
+ * names, and file/directory collisions before unzip can touch staging. Case
+ * and Unicode-equivalent spellings are refused for portable restores on
+ * case-insensitive or normalization-insensitive filesystems.
  */
-const listArchiveEntries = (zipPath) => {
-  const result = spawnSync('unzip', ['-Z1', zipPath], { timeout: SPAWN_TIMEOUT_MS });
-  if (result.error || result.status !== 0 || !result.stdout) return [];
-  return result.stdout.toString().split('\n').map((line) => line.trim()).filter(Boolean);
+const parseArchivePaths = (records) => {
+  const refuse = (detail) => ({
+    ok: false,
+    code: 'archive-unsafe-paths',
+    error: `Archive contains unsafe or ambiguous paths: ${detail}. No files were changed.`,
+  });
+  const entries = [];
+  const members = new Map();
+  const destinations = new Map();
+  for (const { name, directory } of records) {
+    if (name.startsWith('/') || /^[A-Za-z]:/.test(name) || /[\\\x00-\x1f\x7f\ufffd]/.test(name)) {
+      return refuse(`unsafe member ${JSON.stringify(name)}`);
+    }
+    const parts = name.split('/');
+    if (parts.includes('..')) return refuse(`unsafe member ${JSON.stringify(name)}`);
+    const segments = parts.filter((part) => part && part !== '.');
+    if (!segments.length) {
+      if (directory) continue;
+      return refuse(`unsafe member ${JSON.stringify(name)}`);
+    }
+    for (const segment of segments) {
+      const folded = segment.normalize('NFC').toLowerCase();
+      const protectedName = PROTECTED_ARCHIVE_NAMES.has(folded)
+        || folded.endsWith('-keys.json') || folded.endsWith('.restore-tmp')
+        || PROTECTED_ARCHIVE_PREFIXES.some((prefix) => folded.startsWith(prefix));
+      if (protectedName && segment !== folded) return refuse(`ambiguous protected name ${JSON.stringify(name)}`);
+    }
+    const canonical = segments.join('/');
+    for (let i = 1; i <= segments.length; i++) {
+      const prefix = segments.slice(0, i).join('/');
+      const key = prefix.normalize('NFC').toLowerCase();
+      const kind = i < segments.length || directory ? 'directory' : 'file';
+      const previous = destinations.get(key);
+      if (previous && (previous.path !== prefix || previous.kind !== kind || kind === 'file')) {
+        return refuse(`conflicting members ${JSON.stringify(previous.name)} and ${JSON.stringify(name)}`);
+      }
+      destinations.set(key, { path: prefix, kind, name });
+    }
+    entries.push(directory ? `${canonical}/` : canonical);
+    if (!directory) members.set(canonical, name);
+  }
+  return { ok: true, entries, members };
+};
+
+// Info-ZIP's text listing can render valid UTF-8 names lossily on macOS.
+// Parse the bounded central directory and verify each local name instead:
+// the same bytes drive both collision checks and unzip's eventual extraction.
+// The generator lets backup creation/preflight use async file reads while the
+// existing synchronous restore/inspection APIs share exactly the same rules.
+function* readArchiveDirectory(size) {
+  const fail = (reason) => { throw new Error(reason); };
+  if (size < 22) fail('missing end-of-directory record');
+  const tailStart = Math.max(0, size - 65557);
+  const tail = yield { position: tailStart, length: size - tailStart };
+  let end = -1;
+  for (let i = tail.length - 22; i >= 0; i--) {
+    if (tail.readUInt32LE(i) === 0x06054b50 && i + 22 + tail.readUInt16LE(i + 20) === tail.length) { end = i; break; }
+  }
+  if (end < 0) fail('missing end-of-directory record');
+  if (tail.readUInt16LE(end + 4) !== 0 || tail.readUInt16LE(end + 6) !== 0) fail('multi-disk ZIP is unsupported');
+  let count = tail.readUInt16LE(end + 10);
+  let centralSize = tail.readUInt32LE(end + 12);
+  let centralOffset = tail.readUInt32LE(end + 16);
+  if (count === 0xffff || centralSize === 0xffffffff || centralOffset === 0xffffffff) {
+    const locatorPos = tailStart + end - 20;
+    if (locatorPos < 0) fail('missing ZIP64 locator');
+    const locator = yield { position: locatorPos, length: 20 };
+    if (locator.readUInt32LE(0) !== 0x07064b50 || locator.readUInt32LE(4) !== 0 || locator.readUInt32LE(16) !== 1) fail('invalid ZIP64 locator');
+    const zip64Offset = Number(locator.readBigUInt64LE(8));
+    if (!Number.isSafeInteger(zip64Offset) || zip64Offset + 56 > locatorPos) fail('invalid ZIP64 directory');
+    const zip64 = yield { position: zip64Offset, length: 56 };
+    if (zip64.readUInt32LE(0) !== 0x06064b50 || zip64.readUInt32LE(16) !== 0 || zip64.readUInt32LE(20) !== 0) fail('invalid ZIP64 directory');
+    count = Number(zip64.readBigUInt64LE(32));
+    centralSize = Number(zip64.readBigUInt64LE(40));
+    centralOffset = Number(zip64.readBigUInt64LE(48));
+  } else if (tail.readUInt16LE(end + 8) !== count) fail('multi-disk ZIP is unsupported');
+  if (![count, centralSize, centralOffset].every(Number.isSafeInteger)
+    || count < 1 || centralSize > ROOT_COMPARE_MAX_BYTES
+    || centralOffset < 0 || centralOffset + centralSize > tailStart + end) fail('invalid central directory bounds');
+  const central = yield { position: centralOffset, length: centralSize };
+  // A leading UTF-8 BOM is part of a ZIP member name, not a text-file marker.
+  const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+  const decode = (bytes) => { try { return decoder.decode(bytes); } catch { return fail('member name is not valid UTF-8'); } };
+  const checkExtras = (extra, name) => {
+    for (let pos = 0; pos < extra.length;) {
+      if (pos + 4 > extra.length) fail('malformed member metadata');
+      const kind = extra.readUInt16LE(pos);
+      const length = extra.readUInt16LE(pos + 2);
+      pos += 4;
+      if (pos + length > extra.length) fail('malformed member metadata');
+      // Reject a competing Unicode path: unzip versions differ on which name
+      // they select. Identical names are unambiguous.
+      if (kind === 0x7075 && (length < 5 || extra[pos] !== 1 || decode(extra.subarray(pos + 5, pos + length)) !== name)) {
+        fail('ambiguous Unicode member name');
+      }
+      pos += length;
+    }
+  };
+  const records = [];
+  let cursor = 0;
+  for (let index = 0; index < count; index++) {
+    if (cursor + 46 > central.length || central.readUInt32LE(cursor) !== 0x02014b50) fail('malformed central directory');
+    const nameLength = central.readUInt16LE(cursor + 28);
+    const extraLength = central.readUInt16LE(cursor + 30);
+    const commentLength = central.readUInt16LE(cursor + 32);
+    const endEntry = cursor + 46 + nameLength + extraLength + commentLength;
+    if (endEntry > central.length) fail('malformed central directory');
+    const rawName = central.subarray(cursor + 46, cursor + 46 + nameLength);
+    const name = decode(rawName);
+    const extra = central.subarray(cursor + 46 + nameLength, cursor + 46 + nameLength + extraLength);
+    checkExtras(extra, name);
+    const attributes = central.readUInt32LE(cursor + 38);
+    const modeType = (attributes >>> 16) & 0o170000;
+    const host = central.readUInt16LE(cursor + 4) >>> 8;
+    if (modeType === 0o120000) fail('symbolic links are not supported');
+    if (host === 3 && modeType !== 0 && modeType !== 0o100000 && modeType !== 0o040000) fail('unsupported member type');
+    let localOffset = central.readUInt32LE(cursor + 42);
+    if (localOffset === 0xffffffff) {
+      let found = false;
+      for (let pos = 0; pos < extra.length;) {
+        const kind = extra.readUInt16LE(pos), length = extra.readUInt16LE(pos + 2);
+        pos += 4;
+        if (kind === 1) {
+          let value = pos;
+          if (central.readUInt32LE(cursor + 24) === 0xffffffff) value += 8;
+          if (central.readUInt32LE(cursor + 20) === 0xffffffff) value += 8;
+          if (value + 8 > pos + length) fail('invalid ZIP64 member offset');
+          localOffset = Number(extra.readBigUInt64LE(value));
+          found = true;
+          break;
+        }
+        pos += length;
+      }
+      if (!found) fail('missing ZIP64 member offset');
+    }
+    if (!Number.isSafeInteger(localOffset) || localOffset + 30 > centralOffset) fail('invalid local member offset');
+    const local = yield { position: localOffset, length: 30 };
+    if (local.readUInt32LE(0) !== 0x04034b50) fail('invalid local member header');
+    const localNameLength = local.readUInt16LE(26), localExtraLength = local.readUInt16LE(28);
+    if (localOffset + 30 + localNameLength + localExtraLength > centralOffset) fail('invalid local member bounds');
+    const localFields = yield { position: localOffset + 30, length: localNameLength + localExtraLength };
+    if (!localFields.subarray(0, localNameLength).equals(rawName)
+      || local.readUInt16LE(6) !== central.readUInt16LE(cursor + 8)) fail('local and central member names or flags differ');
+    checkExtras(localFields.subarray(localNameLength), name);
+    records.push({ name, directory: name.endsWith('/') });
+    cursor = endEntry;
+  }
+  if (cursor !== central.length) fail('unexpected central directory data');
+  return parseArchivePaths(records);
+}
+
+const archiveReadFailure = (error) => ({
+  ok: false, code: 'archive-unsafe-paths',
+  error: `Archive member metadata could not be verified: ${error.message}. No files were changed.`,
+});
+
+const inspectArchivePaths = (zipPath) => {
+  let fd;
+  try {
+    fd = fs.openSync(zipPath, 'r');
+    const reader = readArchiveDirectory(fs.fstatSync(fd).size);
+    let step = reader.next();
+    while (!step.done) {
+      const data = Buffer.alloc(step.value.length);
+      if (fs.readSync(fd, data, 0, data.length, step.value.position) !== data.length) throw new Error('truncated archive');
+      step = reader.next(data);
+    }
+    return step.value;
+  } catch (error) { return archiveReadFailure(error); }
+  finally { if (fd !== undefined) fs.closeSync(fd); }
+};
+
+const inspectArchivePathsAsync = async (zipPath) => {
+  let fd;
+  try {
+    fd = await fs.promises.open(zipPath, 'r');
+    const reader = readArchiveDirectory((await fd.stat()).size);
+    let step = reader.next();
+    while (!step.done) {
+      const data = Buffer.alloc(step.value.length);
+      if ((await fd.read(data, 0, data.length, step.value.position)).bytesRead !== data.length) throw new Error('truncated archive');
+      step = reader.next(data);
+    }
+    return step.value;
+  } catch (error) { return archiveReadFailure(error); }
+  finally { if (fd) await fd.close(); }
+};
+
+// unzip treats a member argument as a glob, even when passed as a separate
+// argument. Escape metacharacters so a read cannot concatenate other members.
+const unzipMember = (name) => name.replace(/[\\*?\[\]]/g, '\\$&');
+
+/**
+ * A path may alias an existing destination even when it has no duplicate in
+ * the archive. Refuse differing case/Unicode spelling at every existing
+ * component on all hosts, so a restore cannot overwrite a protected file on
+ * a case-insensitive disk while bypassing the reader's exact-name rules.
+ */
+const checkDestinationAliases = (dataDir, entries) => {
+  const cached = new Map();
+  for (const entry of entries) {
+    const parts = entry.replace(/\/$/, '').split('/');
+    let dir = dataDir;
+    for (let index = 0; index < parts.length; index++) {
+      let names = cached.get(dir);
+      if (!names) {
+        try {
+          names = fs.readdirSync(dir);
+        } catch (error) {
+          if (error.code === 'ENOENT') break;
+          return { ok: false, code: 'destination-path-unsafe', error: `Cannot inspect restore destination ${dir}: ${error.message}. No files were changed.` };
+        }
+        cached.set(dir, names);
+      }
+      const segment = parts[index];
+      const folded = segment.normalize('NFC').toLowerCase();
+      const matches = names.filter((name) => name.normalize('NFC').toLowerCase() === folded);
+      if (matches.some((name) => name !== segment)) {
+        return { ok: false, code: 'destination-path-unsafe', error: `Archive path ${entry} aliases an existing destination with different spelling (${matches.join(', ')}). No files were changed.` };
+      }
+      if (!matches.length) break;
+      const next = path.join(dir, segment);
+      if (index < parts.length - 1) {
+        let stat;
+        try { stat = fs.lstatSync(next); } catch (error) {
+          return { ok: false, code: 'destination-path-unsafe', error: `Cannot inspect restore destination ${next}: ${error.message}. No files were changed.` };
+        }
+        if (!stat.isDirectory()) {
+          return { ok: false, code: 'destination-path-unsafe', error: `Restore destination parent ${next} is not a directory. No files were changed.` };
+        }
+      }
+      dir = next;
+    }
+  }
+  return { ok: true };
+};
+
+/** Include paths the layout translation will actually write to the fund. */
+const projectedArchivePaths = (entries, { translations, rootTranslation }) => {
+  const projected = entries.filter((entry) => !entry.endsWith('/'));
+  for (const { exchange, pair } of translations) {
+    for (const entry of entries) {
+      const parts = entry.split('/');
+      if (parts.length === 2 && parts[0] === exchange && isPerFundFile(parts[1])) {
+        projected.push(`${exchange}/${pair}/${parts[1]}`);
+      }
+    }
+  }
+  for (const file of rootTranslation?.files || []) projected.push(file.target);
+  return projected;
 };
 
 /**
@@ -483,22 +767,22 @@ const listArchiveEntries = (zipPath) => {
  *   rootTranslation: Object|null, layoutConflicts: Array<{artifact: string, existing: string}>,
  *   unresolvableLayoutExchanges: string[]}}
  */
-const describeLayoutTranslation = ({ zipPath, snapshot, destinationConfig }) => {
-  const entries = listArchiveEntries(zipPath);
+const describeLayoutTranslation = ({ zipPath, archive, snapshot, destinationConfig }) => {
+  const { entries, members } = archive;
   const { translations, unresolvable, rootTranslation } = planLayoutTranslation({
     exchangeFiles: collectExchangeFilesFromEntries(entries),
     rootFiles: collectRootFilesFromEntries(entries),
     snapshot,
     destinationConfig,
   });
-  const layoutConflicts = findRootCollisions({
+  const layoutConflicts = [...findLegacyIntentCollisions({ entries, translations }), ...findRootCollisions({
     entries,
     rootTranslation,
     readEntry: (entry) => {
-      const result = spawnSync('unzip', ['-p', zipPath, entry], { timeout: SPAWN_TIMEOUT_MS, maxBuffer: ROOT_COMPARE_MAX_BYTES });
+      const result = spawnSync('unzip', ['-p', zipPath, unzipMember(members.get(entry))], { timeout: SPAWN_TIMEOUT_MS, maxBuffer: ROOT_COMPARE_MAX_BYTES });
       return result.error || result.status !== 0 ? null : result.stdout;
     },
-  });
+  })];
   return {
     legacyLayout: translations.length > 0 || unresolvable.length > 0 || rootTranslation !== null,
     layoutTranslations: translations,
@@ -550,11 +834,11 @@ const checkTailFailure = (result, fallback) => {
 };
 
 /** Shared decision logic once an archive's integrity, listing and manifest reads are in hand. */
-const evaluateArchive = ({ entries, readManifest, allowLegacy }) => {
-  const manifests = entries.stdout.toString().split('\n').filter((entry) => entry === MANIFEST_FILENAME);
-  if (manifests.length === 0 && allowLegacy) return { ok: true };
-  if (manifests.length !== 1) return { ok: false, error: `Archive must contain exactly one ${MANIFEST_FILENAME}` };
-  const read = readManifest();
+const evaluateArchive = ({ archive, readManifest, allowLegacy }) => {
+  const manifestName = archive.members.get(MANIFEST_FILENAME);
+  if (!manifestName && allowLegacy) return { ok: true };
+  if (!manifestName) return { ok: false, error: `Archive must contain exactly one ${MANIFEST_FILENAME}` };
+  const read = readManifest(manifestName);
   if (read.error || !read.present) return { ok: false, error: read.error || `Missing ${MANIFEST_FILENAME}` };
   const validated = readManifestSnapshot(read.manifest);
   if (!validated.ok) return { ok: false, error: validated.error };
@@ -572,10 +856,9 @@ const validateBackupArchive = (zipPath, { allowLegacy = false } = {}) => {
   const integrity = spawnSync('unzip', ['-tq', zipPath], { timeout: SPAWN_TIMEOUT_MS });
   const integrityFailure = checkTailFailure(integrity, 'Archive integrity check failed');
   if (integrityFailure) return integrityFailure;
-  const entries = spawnSync('unzip', ['-Z1', zipPath], { timeout: SPAWN_TIMEOUT_MS });
-  const entriesFailure = checkTailFailure(entries, 'Unable to read archive entries');
-  if (entriesFailure) return entriesFailure;
-  return evaluateArchive({ entries, allowLegacy, readManifest: () => readArchiveManifest(zipPath) });
+  const archive = inspectArchivePaths(zipPath);
+  if (!archive.ok) return archive;
+  return evaluateArchive({ archive, allowLegacy, readManifest: (name) => readArchiveManifest(zipPath, name) });
 };
 
 /** Non-blocking validateBackupArchive for the backup-creation path. */
@@ -583,11 +866,11 @@ const validateBackupArchiveAsync = async (zipPath, { allowLegacy = false } = {})
   const integrity = await spawnAsync('unzip', ['-tq', zipPath]);
   const integrityFailure = checkTailFailure(integrity, 'Archive integrity check failed');
   if (integrityFailure) return integrityFailure;
-  const entries = await spawnAsync('unzip', ['-Z1', zipPath]);
-  const entriesFailure = checkTailFailure(entries, 'Unable to read archive entries');
-  if (entriesFailure) return entriesFailure;
-  const manifestRead = await spawnAsync('unzip', ['-p', zipPath, MANIFEST_FILENAME]);
-  return evaluateArchive({ entries, allowLegacy, readManifest: () => parseManifestRead(manifestRead) });
+  const archive = await inspectArchivePathsAsync(zipPath);
+  if (!archive.ok) return archive;
+  const manifestName = archive.members.get(MANIFEST_FILENAME);
+  const manifestRead = manifestName ? await spawnAsync('unzip', ['-p', zipPath, unzipMember(manifestName)]) : null;
+  return evaluateArchive({ archive, allowLegacy, readManifest: () => parseManifestRead(manifestRead) });
 };
 
 /**
@@ -1544,8 +1827,8 @@ const restoreFundStateBackup = (snapshotId, exchange, pair, { paths: pathOverrid
  * @param {string} zipPath
  * @returns {{present: boolean, manifest?: Object, error?: string}}
  */
-const readArchiveManifest = (zipPath) =>
-  parseManifestRead(spawnSync('unzip', ['-p', zipPath, MANIFEST_FILENAME], { timeout: SPAWN_TIMEOUT_MS }));
+const readArchiveManifest = (zipPath, member = MANIFEST_FILENAME) =>
+  parseManifestRead(spawnSync('unzip', ['-p', zipPath, unzipMember(member)], { timeout: SPAWN_TIMEOUT_MS }));
 
 function parseManifestRead(result) {
   if (result.error) return { present: false, error: result.error.message };
@@ -1597,12 +1880,28 @@ const inspectBackup = (filename, { paths: pathOverrides } = {}) => {
   const resolved = resolveArchivePath(filename, paths.backupsDir);
   if (!resolved.ok) return { success: false, error: resolved.error };
 
-  const read = readArchiveManifest(resolved.zipPath);
+  const archive = inspectArchivePaths(resolved.zipPath);
+  if (!archive.ok) return { success: false, code: archive.code, error: archive.error };
+  const inspectLayout = (snapshot, destinationConfig) => {
+    const layout = describeLayoutTranslation({ zipPath: resolved.zipPath, archive, snapshot, destinationConfig });
+    const pathsToWrite = projectedArchivePaths(archive.entries, {
+      translations: layout.layoutTranslations,
+      rootTranslation: layout.rootTranslation,
+    });
+    pathsToWrite.push(BASE_SNAPSHOT_FILENAME);
+    if (snapshot) pathsToWrite.push('config.json');
+    const aliases = checkDestinationAliases(paths.dataDir, pathsToWrite);
+    return { layout, aliases };
+  };
+  const manifestName = archive.members.get(MANIFEST_FILENAME);
+  const read = manifestName ? readArchiveManifest(resolved.zipPath, manifestName) : { present: false };
   if (read.error) {
     return { success: true, filename, legacy: !read.present, compatible: false, manifestVersion: null, funds: [], removedFunds: [], error: read.error };
   }
   if (!read.present) {
     const destination = readEffectiveConfig(paths);
+    const { layout, aliases } = inspectLayout(null, destination.ok ? destination.config : {});
+    if (!aliases.ok) return { success: false, code: aliases.code, error: aliases.error };
     return {
       success: true,
       filename,
@@ -1611,11 +1910,7 @@ const inspectBackup = (filename, { paths: pathOverrides } = {}) => {
       manifestVersion: null,
       funds: [],
       removedFunds: [],
-      ...describeLayoutTranslation({
-        zipPath: resolved.zipPath,
-        snapshot: null,
-        destinationConfig: destination.ok ? destination.config : {},
-      }),
+      ...layout,
       code: 'legacy-archive-missing-base',
       error: `This archive predates configuration manifests, so it does not carry the fund configuration it was taken with. Restoring it replays data files only — the destination keeps its OWN config.json, which may name a different pair or allocation.`,
     };
@@ -1656,6 +1951,8 @@ const inspectBackup = (filename, { paths: pathOverrides } = {}) => {
     paths.dataDir,
     diffSnapshotAgainstConfig({ snapshot: envelope.snapshot, effectiveConfig: effective.config }),
   );
+  const { layout, aliases } = inspectLayout(envelope.snapshot, effective.config);
+  if (!aliases.ok) return { success: false, code: aliases.code, error: aliases.error };
 
   return {
     success: true,
@@ -1672,11 +1969,7 @@ const inspectBackup = (filename, { paths: pathOverrides } = {}) => {
     createdAt: envelope.createdAt,
     funds,
     removedFunds,
-    ...describeLayoutTranslation({
-      zipPath: resolved.zipPath,
-      snapshot: envelope.snapshot,
-      destinationConfig: effective.config,
-    }),
+    ...layout,
     ...(rebuilt.ok ? {} : { error: rebuilt.error }),
   };
 };
@@ -1819,15 +2112,14 @@ const checkRestorePreconditions = async (filename, { paths: pathOverrides, legac
   const integrity = await spawnAsync('unzip', ['-tq', zipPath]);
   const integrityFailure = checkTailFailure(integrity, 'Archive integrity check failed');
   if (integrityFailure) return { ok: false, code: 'archive-corrupt', error: `Archive failed its integrity check: ${integrityFailure.error}. No files were changed.` };
-  const listing = await spawnAsync('unzip', ['-Z1', zipPath]);
-  const listingFailure = checkTailFailure(listing, 'Unable to read archive entries');
-  if (listingFailure) return { ok: false, code: 'archive-corrupt', error: `${listingFailure.error}. No files were changed.` };
-  const entries = listing.stdout.toString().split('\n').map((line) => line.trim()).filter(Boolean);
+  const archive = await inspectArchivePathsAsync(zipPath);
+  if (!archive.ok) return archive;
+  const { entries, members } = archive;
   const archivedJournals = dcaImportJournalPaths(entries);
   if (archivedJournals.length > 0) return { ok: false, ...archivedDcaImportRefusal(archivedJournals) };
 
-  const legacy = !entries.includes(MANIFEST_FILENAME);
-  const readEntry = async (name) => (entries.includes(name) ? spawnAsync('unzip', ['-p', zipPath, name]) : null);
+  const legacy = !members.has(MANIFEST_FILENAME);
+  const readEntry = async (name) => (members.has(name) ? spawnAsync('unzip', ['-p', zipPath, unzipMember(members.get(name))]) : null);
   const manifestRaw = legacy ? null : await readEntry(MANIFEST_FILENAME);
   const overrideRaw = legacy && legacyBaseConfig ? await readEntry('config.json') : null;
   const resolvedSnapshot = resolveRestoreSnapshot({
@@ -1856,28 +2148,91 @@ const checkRestorePreconditions = async (filename, { paths: pathOverrides, legac
   }
   const bytes = new Map();
   for (const entry of rootCollisionEntries({ entries, rootTranslation: layout.rootTranslation })) {
-    const read = await spawnAsync('unzip', ['-p', zipPath, entry]);
+    const read = await readEntry(entry);
     bytes.set(entry, read.error || read.status !== 0 ? null : read.stdout);
   }
   const conflicts = findRootCollisions({ entries, rootTranslation: layout.rootTranslation, readEntry: (entry) => bytes.get(entry) ?? null });
   if (conflicts.length > 0) {
     return { ok: false, code: 'legacy-layout-ambiguous-generations', error: ambiguousLayoutError(conflicts) };
   }
+  const intentConflicts = findLegacyIntentCollisions({ entries, translations: layout.translations });
+  if (intentConflicts.length > 0) {
+    return { ok: false, code: 'legacy-layout-placement-intents-conflict', error: intentCollisionError(intentConflicts) };
+  }
+  const pathsToWrite = projectedArchivePaths(entries, layout);
+  pathsToWrite.push(BASE_SNAPSHOT_FILENAME);
+  if (snapshot) pathsToWrite.push('config.json');
+  const aliases = checkDestinationAliases(paths.dataDir, pathsToWrite);
+  if (!aliases.ok) return aliases;
   const pending = fundsWithPendingDcaImport(paths.dataDir, archiveEntryFunds(entries, snapshot, layout.translations, layout.rootTranslation));
   if (pending.length > 0) return { ok: false, ...pendingDcaImportRefusal(pending, 'No files were changed.') };
 
   // Business-format compatibility of the accounting payloads (#1811): the
   // archive is intact, but the readers must be able to cold-start from it.
+  // Old root-level files are read at their archive names but validated at the
+  // translated paths where restore will place them.
+  const rootTargets = new Map((layout.rootTranslation?.files || []).map(({ name, target }) => [name, target]));
   for (const entry of entries) {
-    if (entry.endsWith('/') || !classifyPayloadPath(entry)) continue;
-    const read = await spawnAsync('unzip', ['-p', zipPath, entry]);
+    const target = rootTargets.get(entry) || entry;
+    if (entry.endsWith('/') || !classifyPayloadPath(target)) continue;
+    const read = await readEntry(entry);
     if (read.error || read.status !== 0) {
       return { ok: false, code: 'archive-corrupt', error: `Unable to read ${entry} from the archive. No files were changed.` };
     }
-    const checked = validatePersistedPayload(entry, read.stdout);
+    const checked = validatePersistedPayload(target, read.stdout);
     if (!checked.ok) return { ok: false, code: 'payload-incompatible', error: `Archive accounting is not readable by this build: ${checked.error}. No files were changed.` };
   }
   return { ok: true };
+};
+
+/**
+ * Copy the source to a private, excluded staging directory and inspect and
+ * extract that same copy. A scheduler, upload, or operator can replace the
+ * original archive between calls; validating one generation and extracting
+ * another would bypass path and symlink checks.
+ */
+const extractVerifiedArchive = (sourceZipPath, dataDir, logger) => {
+  let pinnedDir = null;
+  let stageDir = null;
+  try {
+    pinnedDir = fs.mkdtempSync(path.join(dataDir, STAGE_PREFIX));
+    const pinnedZipPath = path.join(pinnedDir, 'archive.zip');
+    fs.copyFileSync(sourceZipPath, pinnedZipPath, fs.constants.COPYFILE_FICLONE);
+    const archive = inspectArchivePaths(pinnedZipPath);
+    if (!archive.ok) return { ok: false, code: archive.code, error: archive.error };
+
+    stageDir = fs.mkdtempSync(path.join(dataDir, STAGE_PREFIX));
+    const extracted = spawnSync('unzip', ['-o', '-q', pinnedZipPath, '-d', stageDir], { timeout: SPAWN_TIMEOUT_MS });
+    if (extracted.error || extracted.status !== 0) {
+      fs.rmSync(stageDir, { recursive: true, force: true });
+      stageDir = null;
+      return { ok: false, code: 'archive-corrupt', error: extracted.error
+        ? extracted.error.message
+        : (extracted.stderr ? extracted.stderr.toString().trim() : 'Unknown unzip error') };
+    }
+    const inspectTree = (dir) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const child = path.join(dir, entry.name);
+        if (entry.isDirectory()) inspectTree(child);
+        else if (!entry.isFile()) throw new Error(`extracted member ${entry.name} is not a regular file`);
+      }
+    };
+    // A second type check protects staging writes even if an extractor uses
+    // platform-specific metadata not represented by the ZIP's Unix mode.
+    inspectTree(stageDir);
+    return { ok: true, stageDir };
+  } catch (error) {
+    if (stageDir) {
+      try { fs.rmSync(stageDir, { recursive: true, force: true }); } catch { /* retain for recovery */ }
+    }
+    return { ok: false, code: 'staging-failed', error: `Could not safely stage the archive: ${error.message}. No files were changed.` };
+  } finally {
+    if (pinnedDir) {
+      try { fs.rmSync(pinnedDir, { recursive: true, force: true }); } catch (error) {
+        logger.warn(`⚠️ 💾 Could not remove pinned restore archive: ${error.message}`, { action: 'restore-stage-cleanup', error: error.message });
+      }
+    }
+  }
 };
 
 /**
@@ -1918,29 +2273,13 @@ const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null
   const destination = readEffectiveConfig(paths);
   if (!destination.ok) return { success: false, code: 'destination-config-unreadable', error: destination.error };
 
-  // Create temp directory for extraction
-  const tempDir = path.join(paths.dataDir, `${STAGE_PREFIX}${Date.now()}`);
-  fs.mkdirSync(tempDir, { recursive: true });
+  const extracted = extractVerifiedArchive(zipPath, paths.dataDir, logger);
+  if (!extracted.ok) return { success: false, code: extracted.code, error: extracted.error };
+  const tempDir = extracted.stageDir;
   const abort = (error, code) => {
     fs.rmSync(tempDir, { recursive: true, force: true });
     return { success: false, error, ...(code ? { code } : {}) };
   };
-
-  // Extract to temp directory
-  const extractResult = spawnSync('unzip', [
-    '-o',               // Overwrite without prompting
-    '-q',               // Quiet
-    zipPath,
-    '-d', tempDir,
-  ], {
-    timeout: SPAWN_TIMEOUT_MS,
-  });
-
-  if (extractResult.error || extractResult.status !== 0) {
-    return abort(extractResult.error
-      ? extractResult.error.message
-      : (extractResult.stderr ? extractResult.stderr.toString().trim() : 'Unknown unzip error'));
-  }
 
   let handedOff = false;
   // Never throws: cleanup failure must not mask the restore outcome.
@@ -2017,6 +2356,10 @@ const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null
     if (layout.unresolvable.length > 0) {
       return abort(unresolvableLayoutError(layout.unresolvable), 'legacy-layout-unresolvable-pair');
     }
+    const intentConflicts = findLegacyIntentCollisions({ entries: listTreeFiles(tempDir), translations: layout.translations });
+    if (intentConflicts.length > 0) {
+      return abort(intentCollisionError(intentConflicts), 'legacy-layout-placement-intents-conflict');
+    }
     // The oldest layout kept state at the data root. Translate it first, in the
     // staging tree and with the destination never consulted, so it lands exactly
     // where the live root→exchange→pair migrations would put it — and so no
@@ -2037,6 +2380,9 @@ const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null
         action: 'restore-legacy-layout', filename, exchange, pair, moved: moved.length, skipped: skipped.length,
       });
     }
+
+    const aliases = checkDestinationAliases(paths.dataDir, listTreeFiles(tempDir));
+    if (!aliases.ok) return abort(aliases.error, aliases.code);
 
     // A restored fund's pending import would roll forward over (or strand) the
     // restored generation; its journal is not ours to discard (#1809).

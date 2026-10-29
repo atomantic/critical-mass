@@ -527,7 +527,7 @@ describe('pair migration resumes after an interruption and refuses ledger/state 
     assert.match(again.reason, /^no-op/);
   });
 
-  for (const name of ['fill-ledger.json', 'state.json', 'regime-state.json']) {
+  for (const name of ['fill-ledger.json', 'state.json', 'regime-state.json', 'placement-intents.json']) {
     it(`refuses, naming both paths and moving nothing, when ${name} exists at both levels`, () => {
       const exchangeDir = path.join(tmpDir, EXCHANGE);
       const fundDir = path.join(exchangeDir, PAIR);
@@ -546,6 +546,7 @@ describe('pair migration resumes after an interruption and refuses ledger/state 
       assert.ok(result.reason.includes(exchangePath), 'reason names the exchange-level path');
       assert.ok(result.reason.includes(fundPath), 'reason names the fund-level path');
       assert.deepEqual(result.conflicts, [{ name, exchangePath, fundPath }]);
+      if (name === 'placement-intents.json') assert.match(result.reason, /preserve both.*reconcile/i);
       assert.equal(fs.readFileSync(exchangePath, 'utf8'), 'legacy-copy');
       assert.equal(fs.readFileSync(fundPath, 'utf8'), 'fund-copy');
       assert.equal(fs.readFileSync(path.join(exchangeDir, 'optimizer-cache.json'), 'utf8'), 'legacy-cache');
