@@ -25,6 +25,7 @@ const path = require('path');
 const { performRestore, classifyStopAck } = require('../src/restore-coordinator');
 const { stopAllRegimeEngines } = require('../src/engine-stop-all');
 const maintenance = require('../src/restore-maintenance');
+const { IPC_CHANNELS } = require('../src/ipc/ipc-protocol');
 
 const silentLogger = { info: () => {}, warn: () => {}, error: () => {} };
 
@@ -680,6 +681,113 @@ describe('restore joins gateway work that was already in flight', () => {
     assert.match(exportsBlock, /runIntervalCycle:[\s\S]*?runFundWrite\('dca-cycle'/);
     assert.match(exportsBlock, /executeConsolidation:[\s\S]*?runFundWrite\('dca-consolidation'/);
     assert.match(exportsBlock, /retryFailedSell:[\s\S]*?runFundWrite\('dca-sell-retry'/);
+  });
+});
+
+describe('restore joins writes admitted after the initial drain (#1894)', () => {
+  const { trackPendingWrite, drainPendingWrites } = require('../src/pending-writes');
+
+  afterEach(() => maintenance.endMaintenance());
+
+  /**
+   * Engine whose acknowledgement is held until released; a deferred journal
+   * append is admitted while it is held (after the initial drain came back
+   * empty), mirroring an UpDown scorecard append that already owns its lock.
+   * @param {string[]} order - Event log
+   * @param {{journal: string[]}} disk - Fake journal the append writes into
+   * @returns {{ipc: Object, admitLate: Function, releaseAppend: Function, settled: Promise<any>}} Controls
+   */
+  const lateAppendHarness = (order, disk) => {
+    let releaseAck;
+    const ackGate = new Promise((resolve) => { releaseAck = resolve; });
+    let releaseAppend;
+    const appendGate = new Promise((resolve) => { releaseAppend = resolve; });
+    let settled;
+    const ipc = {
+      isConnected: () => true,
+      // Only the stop acknowledgement is held; maintenance-window requests answer at once.
+      request: async (channel) => {
+        if (channel === IPC_CHANNELS.REGIME_STOP_ALL) await ackGate;
+        return { success: true, stopped: [] };
+      },
+    };
+    const admitLate = () => {
+      settled = trackPendingWrite('updown-scorecard-append', async () => {
+        await appendGate;
+        disk.journal.push('late-record');
+        order.push('append-settled');
+      });
+      releaseAck();
+    };
+    return { ipc, admitLate, releaseAppend: () => releaseAppend(), get settled() { return settled; } };
+  };
+
+  it('does not archive or apply while a late append is pending, then restores the staged journal only', async () => {
+    const order = [];
+    const disk = { journal: [] };
+    const h = lateAppendHarness(order, disk);
+    const run = runRestore({
+      exchangeIPCMap: { coinbase: h.ipc },
+      drainPendingWrites,
+      drainTimeoutMs: 1_000,
+      gatewayWriters: [{ name: 'UpDown', stop: () => order.push('updown-stop'), resume: () => order.push('updown-start') }],
+      createRecoveryPoint: async () => { order.push('archive'); return { success: true, filename: 'pre.zip' }; },
+      restore: () => { order.push('apply'); disk.journal = ['snapshot']; return { success: true, filesRestored: 1 }; },
+    });
+    await new Promise((r) => setTimeout(r, 10)); // initial drain returned empty
+    h.admitLate();
+    await new Promise((r) => setTimeout(r, 20));
+    assert.deepEqual(order, ['updown-stop'], 'archive/apply must wait on the late append');
+    h.releaseAppend();
+    const { status } = await run;
+    await h.settled;
+    assert.equal(status, 200);
+    assert.deepEqual(order, ['updown-stop', 'append-settled', 'archive', 'apply', 'updown-start']);
+    assert.deepEqual(disk.journal, ['snapshot']);
+  });
+
+  it('refuses with writers-not-quiesced, applies nothing and resumes writers when the late append never drains', async () => {
+    const order = [];
+    const disk = { journal: [] };
+    const h = lateAppendHarness(order, disk);
+    const run = runRestore({
+      exchangeIPCMap: { coinbase: h.ipc },
+      drainPendingWrites,
+      drainTimeoutMs: 30,
+      gatewayWriters: [{ name: 'UpDown', stop: () => order.push('updown-stop'), resume: () => order.push('updown-start') }],
+      createRecoveryPoint: async () => { order.push('archive'); return { success: true, filename: 'pre.zip' }; },
+      restore: () => { order.push('apply'); return { success: true, filesRestored: 1 }; },
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    h.admitLate();
+    const { status, body } = await run;
+    assert.equal(status, 409);
+    assert.equal(body.code, 'writers-not-quiesced');
+    assert.ok(body.unconfirmed.some((u) => u.reason === 'pending-writes-in-flight'));
+    assert.deepEqual(order, ['updown-stop', 'updown-start'], 'no archive, no apply; writer resumed');
+    h.releaseAppend();
+    await h.settled;
+  });
+
+  it('force applies past a late append that will not drain and reports it', async () => {
+    const order = [];
+    const h = lateAppendHarness(order, { journal: [] });
+    const run = runRestore({
+      exchangeIPCMap: { coinbase: h.ipc },
+      drainPendingWrites,
+      drainTimeoutMs: 30,
+      force: true,
+      restore: () => { order.push('apply'); return { success: true, filesRestored: 1 }; },
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    h.admitLate();
+    const { status, body } = await run;
+    assert.equal(status, 200);
+    assert.equal(body.forced, true);
+    assert.deepEqual(order, ['apply']);
+    assert.equal(body.unconfirmed.filter((u) => u.reason === 'pending-writes-in-flight').length, 1);
+    h.releaseAppend();
+    await h.settled;
   });
 });
 
