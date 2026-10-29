@@ -57,10 +57,11 @@ not understand version 2 journals.
 ### Recovery limits to check before restoring
 
 Archive restore refuses symbolic links, unsafe member paths, and ambiguous path
-aliases before extraction. Member names must be valid UTF-8, and multi-disk ZIPs
-are unsupported. Keep the original archive and reconcile any such entries on an
-isolated copy before retrying the restore. Restore also stages a stable copy of
-the archive, so allow temporary space for that copy as well as the extracted files.
+aliases before extraction. Member names must be valid UTF-8; multi-disk ZIPs and
+Unicode-path metadata that disagrees with the stored name are unsupported. Keep
+the original archive and reconcile any such entries on an isolated copy before
+retrying the restore. Restore also stages a stable copy of the archive, so allow
+temporary space for that copy as well as the extracted files.
 
 These file replacements do not rewind orders or fills at the exchange. Hourly
 snapshots made by this version capture `placement-intents.json` when present,
