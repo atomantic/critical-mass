@@ -8,6 +8,8 @@ const {
   LEDGER_FORMAT_VERSION,
   classifyPayloadPath,
   findIncompatiblePayloadReason,
+  findInvalidManualTradesReason,
+  findInvalidCorrectiveBuysReason,
   validatePersistedPayload,
 } = require('../src/persisted-payload-validation');
 
@@ -22,6 +24,9 @@ describe('classifyPayloadPath', () => {
     assert.equal(classifyPayloadPath('coinbase/BTC-USDC/placement-intents.json'), 'placement-intents');
     assert.equal(classifyPayloadPath('coinbase/BTC-USDC/placement-intents.json.lock'), null);
     assert.equal(classifyPayloadPath('backups/fund-state/x/coinbase/BTC-USDC/placement-intents.json'), null);
+    assert.equal(classifyPayloadPath('coinbase/BTC-USDC/manual-trades.json'), 'manual-trades');
+    assert.equal(classifyPayloadPath('coinbase/BTC-USDC/pending-corrective-buys.json'), 'corrective-buys');
+    assert.equal(classifyPayloadPath('backups/fund-state/x/coinbase/BTC-USDC/manual-trades.json'), null);
     assert.equal(classifyPayloadPath('updown-state.json'), 'updown-state');
     assert.equal(classifyPayloadPath('backups/fund-state/x/coinbase/BTC-USDC/fill-ledger.json'), null);
     assert.equal(classifyPayloadPath('backups/fill-ledger.json'), null);
@@ -80,5 +85,44 @@ describe('validatePersistedPayload', () => {
     assert.equal(bad.ok, false);
     assert.match(bad.error, /^coinbase\/BTC-USDC\/fill-ledger.json is corrupted or unreadable/);
     assert.equal(validatePersistedPayload('coinbase/BTC-USDC/fill-ledger.json', Buffer.from('{}')).ok, false);
+  });
+});
+
+describe('recovery-buy sidecars (#1893)', () => {
+  const manualPath = 'coinbase/BTC-USDC/manual-trades.json';
+  const correctivePath = 'coinbase/BTC-USDC/pending-corrective-buys.json';
+  const check = (rel, content) => validatePersistedPayload(rel, typeof content === 'string' ? content : JSON.stringify(content));
+
+  it('rejects malformed JSON, null/scalar containers and unreadable rows', () => {
+    for (const bad of ['{not json', 'null', '7', '"x"', '[]', '{"trades":{}}', '{"trades":"x"}', '{"trades":[null]}',
+      '{"trades":[1]}', '{"trades":[[]]}', '{"dismissedFillOrderIds":"x"}', '']) {
+      const result = check(manualPath, bad);
+      assert.equal(result.ok, false, `manual ${bad}`);
+    }
+    for (const bad of ['{not json', 'null', '{}', '{"buyOrderId":"x"}', '7', '[null]', '[1]', '[[]]']) {
+      assert.equal(check(correctivePath, bad).ok, false, `corrective ${bad}`);
+    }
+  });
+
+  it('accepts current records, legacy empty documents and unknown metadata', () => {
+    const goodManual = [
+      {},
+      { trades: [] },
+      { trades: [], dismissedFillOrderIds: [] },
+      { trades: null },
+      { trades: [{ id: 'mt-1', buyOrderId: 'b', status: 'buy_pending', futureField: { a: 1 } }], dismissedFillOrderIds: ['o'], extra: true },
+      { trades: [{ id: 'legacy', sellOrderId: 's' }] },
+    ];
+    for (const good of goodManual) assert.deepEqual(check(manualPath, good), { ok: true });
+    for (const good of [[], [{ buyOrderId: 'b', filled: false, cancelled: false }], [{ buyOrderId: 'b', extra: 1 }]]) {
+      assert.deepEqual(check(correctivePath, good), { ok: true });
+    }
+  });
+
+  it('exposes pure checks with reasons', () => {
+    assert.match(findInvalidManualTradesReason(null), /null/);
+    assert.equal(findInvalidManualTradesReason({}), null);
+    assert.match(findInvalidCorrectiveBuysReason({}), /not an array/);
+    assert.equal(findInvalidCorrectiveBuysReason([]), null);
   });
 });

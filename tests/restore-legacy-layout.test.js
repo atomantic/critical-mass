@@ -182,20 +182,20 @@ describe('restoreBackup translates a pre-multi-pair archive (issue #541)', () =>
       'coinbase/state.json': '{"generation":"archived"}',
       'coinbase/fill-ledger.json': ARCHIVED_LEDGER,
       'coinbase/closed-trades.json': '[{"trade":"closed-1"}]',
-      'coinbase/manual-trades.json': '[{"trade":"manual-1"}]',
+      'coinbase/manual-trades.json': '{"trades":[{"id":"manual-1"}]}',
     });
 
     const dest = makeInstall('dest', configWith({ coinbase: 'BTC-USDC' }));
     const fundDir = path.join(dest.dataDir, 'coinbase', 'BTC-USDC');
     write(path.join(fundDir, 'closed-trades.json'), '[{"trade":"destination-closed"}]');
-    write(path.join(fundDir, 'manual-trades.json'), '[{"trade":"destination-manual"}]');
+    write(path.join(fundDir, 'manual-trades.json'), '{"trades":[{"id":"destination-manual"}]}');
     transferArchive(source, dest, filename);
 
     const result = restoreBackup(filename, { paths: dest.paths, logger: silentLogger });
     assert.equal(result.success, true, result.error);
 
     assert.equal(read(path.join(fundDir, 'closed-trades.json')), '[{"trade":"closed-1"}]');
-    assert.equal(read(path.join(fundDir, 'manual-trades.json')), '[{"trade":"manual-1"}]');
+    assert.equal(read(path.join(fundDir, 'manual-trades.json')), '{"trades":[{"id":"manual-1"}]}');
     // Nothing stranded at the exchange level where no reader looks.
     assert.equal(read(path.join(dest.dataDir, 'coinbase', 'closed-trades.json')), null);
     assert.equal(read(path.join(dest.dataDir, 'coinbase', 'manual-trades.json')), null);

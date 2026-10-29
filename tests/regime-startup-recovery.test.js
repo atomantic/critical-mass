@@ -11,6 +11,8 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 
+const os = require('os');
+const { createFundStateBackup, restoreFundStateBackup } = require('../src/backup-service');
 const { createStartupRecovery } = require('../src/regime-startup-recovery');
 const { createFillLedger } = require('../src/fill-ledger');
 const { createInitialRegimePositionState } = require('../src/state-tracker');
@@ -154,5 +156,68 @@ describe('createStartupRecovery (issue #1601)', () => {
     await api.restoreAll();
     assert.ok(calls.indexOf('placeBodyTp') > calls.indexOf('closedTrades.migrateFromFills'));
     assert.ok(calls.indexOf('placeBodyTp') < calls.lastIndexOf('saveLiveState'));
+  });
+});
+
+describe('restore-to-startup recovery-buy ownership (#1893)', () => {
+  const OPEN_BUY = 'recovery-buy-open-1893';
+  const openBuy = { orderId: OPEN_BUY, side: 'BUY', price: 90, size: 1, originalSize: 1, filledSize: 0, status: 'OPEN' };
+  const runStartup = async () => {
+    const cancelled = [];
+    const { api } = make({}, { adapter: {
+      getOpenOrders: async () => [openBuy],
+      cancelOrder: async (id) => { cancelled.push(id); return { success: true }; },
+    } });
+    await api.restoreAll();
+    return cancelled;
+  };
+
+  it('never cancels the recovery buy: unreadable snapshot metadata is refused, the valid destination record survives', async (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-1893-'));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const paths = { dataDir: path.join(root, 'data'), baseConfigFile: path.join(root, 'config.json') };
+    const write = (file, value) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, typeof value === 'string' ? value : JSON.stringify(value)); };
+    write(paths.baseConfigFile, { exchanges: { coinbase: { pairs: { [TEST_PAIR]: {} } } } });
+    const fund = path.join(paths.dataDir, 'coinbase', TEST_PAIR);
+    write(path.join(fund, 'fill-ledger.json'), []);
+    write(path.join(fund, 'regime-state.json'), {});
+    write(path.join(fund, 'manual-trades.json'), 'null');
+    // Hourly publication of the invalid sidecar is refused.
+    assert.equal(createFundStateBackup({ paths, now: new Date('2026-10-03') }).success, false);
+    // A transferred point whose sidecar became unreadable after publication.
+    write(path.join(fund, 'manual-trades.json'), { trades: [] });
+    const created = createFundStateBackup({ paths, now: new Date('2026-10-04') });
+    assert.equal(created.success, true, created.error);
+    write(path.join(paths.dataDir, 'backups', 'fund-state', created.snapshotId, 'coinbase', TEST_PAIR, 'manual-trades.json'), 'null');
+    const validRecord = { trades: [{ id: 'mt-1', buyOrderId: OPEN_BUY, status: 'buy_pending' }] };
+    write(path.join(fund, 'manual-trades.json'), validRecord);
+    const restored = restoreFundStateBackup(created.snapshotId, 'coinbase', TEST_PAIR, { paths });
+    assert.equal(restored.success, false);
+    const survived = JSON.parse(fs.readFileSync(path.join(fund, 'manual-trades.json'), 'utf8'));
+    assert.deepEqual(survived, validRecord);
+
+    // Startup against the surviving destination record (valid-sidecar control).
+    fs.mkdirSync(JUNK_DIR, { recursive: true });
+    fs.writeFileSync(path.join(JUNK_DIR, 'manual-trades.json'), JSON.stringify(survived));
+    assert.deepEqual(await runStartup(), []);
+    fs.rmSync(path.join(JUNK_DIR, 'manual-trades.json'));
+  });
+
+  it('a valid corrective-buy sidecar spares its open buy at startup (control)', async () => {
+    fs.mkdirSync(JUNK_DIR, { recursive: true });
+    fs.writeFileSync(path.join(JUNK_DIR, 'pending-corrective-buys.json'), JSON.stringify([{ buyOrderId: OPEN_BUY, filled: false, cancelled: false }]));
+    assert.deepEqual(await runStartup(), []);
+    fs.rmSync(path.join(JUNK_DIR, 'pending-corrective-buys.json'));
+  });
+
+  it('keeps ownership from readable rows when a sibling row is unreadable', async () => {
+    fs.mkdirSync(JUNK_DIR, { recursive: true });
+    fs.writeFileSync(path.join(JUNK_DIR, 'manual-trades.json'), JSON.stringify({ trades: [{ id: 'mt-1', buyOrderId: OPEN_BUY, status: 'buy_pending' }, null] }));
+    assert.deepEqual(await runStartup(), []);
+    fs.writeFileSync(path.join(JUNK_DIR, 'manual-trades.json'), JSON.stringify({ trades: [{ id: 'mt-1', buyOrderId: OPEN_BUY, status: 'buy_pending' }] }));
+    fs.writeFileSync(path.join(JUNK_DIR, 'pending-corrective-buys.json'), JSON.stringify([null, { buyOrderId: 'other', filled: false }]));
+    assert.deepEqual(await runStartup(), []);
+    fs.rmSync(path.join(JUNK_DIR, 'manual-trades.json'));
+    fs.rmSync(path.join(JUNK_DIR, 'pending-corrective-buys.json'));
   });
 });

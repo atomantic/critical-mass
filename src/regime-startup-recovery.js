@@ -23,6 +23,7 @@
 const celestialHierarchy = require('./celestial-hierarchy');
 const { tradeEvents } = require('./trade-events');
 const { resolveFundDataDir } = require('./migration');
+const { findInvalidManualTradesReason, findInvalidCorrectiveBuysReason } = require('./persisted-payload-validation');
 const { backfillEngineStart: _backfillEngineStart } = require('./apy-calculator');
 const { roundAsset, roundPrice } = require('./volatility-utils');
 const { fmtCurrency: fmtPrice, isFilledStatus, isCancelledStatus, isTerminalStatus, isOrderNotFoundError } = require('./shared-utils');
@@ -263,8 +264,13 @@ const createStartupRecovery = ({
     try {
       const cbPath = require('path').join(resolveFundDataDir(exchange, pair), 'pending-corrective-buys.json');
       const cbData = JSON.parse(require('fs').readFileSync(cbPath, 'utf8'));
-      for (const cb of cbData) {
-        if (!cb.filled && !cb.cancelled) correctiveBuyIds.add(cb.buyOrderId);
+      const invalid = findInvalidCorrectiveBuysReason(cbData);
+      if (invalid) {
+        logger.error(`[regime-engine] pending-corrective-buys.json ${invalid}`, { path: 'pending-corrective-buys.json' });
+      }
+      // Keep ownership from every readable row even when a sibling row is bad.
+      for (const cb of Array.isArray(cbData) ? cbData : []) {
+        if (cb && !cb.filled && !cb.cancelled) correctiveBuyIds.add(cb.buyOrderId);
       }
     } catch (err) {
       if (err.code !== 'ENOENT') {
@@ -279,8 +285,12 @@ const createStartupRecovery = ({
     try {
       const mtPath = require('path').join(resolveFundDataDir(exchange, pair), 'manual-trades.json');
       const mtData = JSON.parse(require('fs').readFileSync(mtPath, 'utf8'));
-      for (const mt of (mtData.trades || [])) {
-        if (mt.buyOrderId && mt.status === 'buy_pending') correctiveBuyIds.add(mt.buyOrderId);
+      const invalid = findInvalidManualTradesReason(mtData);
+      if (invalid) {
+        logger.error(`[regime-engine] manual-trades.json ${invalid}`, { path: 'manual-trades.json' });
+      }
+      for (const mt of (Array.isArray(mtData?.trades) ? mtData.trades : [])) {
+        if (mt && mt.buyOrderId && mt.status === 'buy_pending') correctiveBuyIds.add(mt.buyOrderId);
       }
     } catch (err) {
       if (err.code !== 'ENOENT') {
