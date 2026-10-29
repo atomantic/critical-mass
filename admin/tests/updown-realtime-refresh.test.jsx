@@ -96,6 +96,6 @@ it('refreshes contract and position on change events while stopped, without usin
   act(() => realtime.fire('updown:changed', { field: 'position' }))
   await waitFor(() => expect(screen.getByTestId('signal-position').textContent).toBe('none'))
   expect(screen.getByTestId('banner-position').textContent).toBe('none')
-  expect(screen.queryByRole('button', { name: 'Clear tracker' })).toBeNull()
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'Clear tracker' })).toBeNull())
   expect(fetch.mock.calls.filter(([url]) => url === '/api/updown/status')).toHaveLength(3)
 })

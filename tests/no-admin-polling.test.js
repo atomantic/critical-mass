@@ -1,7 +1,7 @@
 // @ts-check
-// Guard for #1880: the admin refreshes data from pushed realtime events
-// (hooks/useRealtimeRefresh), not on timers. This fails if a polling hook or an
-// interval timer comes back outside the UI-only allowlist below.
+// Guard for #1880: selected admin views refresh from pushed realtime events.
+// Catch the removed polling hook and unreviewed interval timers; this does not
+// cover completion-scheduled timeouts, such as the AI run status poll.
 const { describe, it } = require('node:test')
 const assert = require('node:assert/strict')
 const fs = require('node:fs')
@@ -59,7 +59,7 @@ const files = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((ent
 
 const stripComments = (text) => text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1')
 
-describe('admin has no polling (#1880)', () => {
+describe('admin interval timers (#1880)', () => {
   const sources = files(SRC).map((file) => ({ rel: path.relative(SRC, file).split(path.sep).join('/'), code: stripComments(fs.readFileSync(file, 'utf8')) }))
 
   it('does not use a polling hook', () => {
@@ -99,7 +99,7 @@ describe('admin has no polling (#1880)', () => {
     assert.throws(() => assertAllowedTimers('other.jsx', "setInterval(() => apiGet('('), 1000)"), /unexpected interval callbacks/)
   })
 
-  it('keeps allowlisted timer callbacks free of network reads', () => {
+  it('checks reviewed timer bodies for direct network reads and changes', () => {
     const network = /\b(?:apiGet|apiPost|apiPut|apiRequest|fetch)\b|\bfetch[A-Z]\w*\s*\(/
     for (const rel of UI_ONLY_INTERVALS.keys()) {
       const code = sources.find((source) => source.rel === rel)?.code

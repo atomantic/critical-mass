@@ -98,3 +98,27 @@ it('fences old-fund socket and action snapshots while retaining new-fund updates
   expect(result.current.connected).toBe(true)
   expect(result.current.status.market.lastPrice).toBe(201)
 })
+
+it('does not revive a prior visit or accept its callbacks after A → B → A', () => {
+  const { result, rerender } = renderHook(({ pair }) => useRegimeEvents('gemini', pair),
+    { initialProps: { pair: 'BTCUSD' } })
+  act(() => socket.emit('regime:status', { exchange: 'gemini', pair: 'BTCUSD', status: { isRunning: true, market: { lastPrice: 100 } } }))
+  const oldHandler = [...socket.handlers.get('regime:status')][0]
+  const oldSetStatus = result.current.setStatus
+  rerender({ pair: 'ETHUSD' })
+  expect(result.current.status).toBeNull()
+  rerender({ pair: 'BTCUSD' })
+  expect(result.current.status).toBeNull()
+  expect(result.current.statusSeq).toBe(0)
+
+  act(() => socket.emit('regime:status', { exchange: 'gemini', pair: 'BTCUSD', status: { isRunning: true, market: { lastPrice: 200 } } }))
+  act(() => oldHandler({ exchange: 'gemini', pair: 'BTCUSD', status: { isRunning: true, market: { lastPrice: 101 } } }))
+  act(() => oldSetStatus({ isRunning: false, market: { lastPrice: 1 } }))
+  expect(result.current.status).toEqual({ isRunning: true, market: { lastPrice: 200 } })
+  act(() => result.current.setStatus({ isRunning: false, market: { lastPrice: 201 } }))
+  expect(result.current.status.market.lastPrice).toBe(201)
+  act(() => socket.emit('disconnect'))
+  act(() => socket.emit('connect'))
+  expect(result.current.connected).toBe(true)
+  expect(result.current.status.market.lastPrice).toBe(201)
+})

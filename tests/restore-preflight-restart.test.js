@@ -23,6 +23,7 @@ const { spawnSync } = require('child_process');
 const { performRestore } = require('../src/restore-coordinator');
 const maintenance = require('../src/restore-maintenance');
 const { ledgerOf } = require('./helpers/ledger-fixture');
+const { buildConfigSnapshot } = require('../src/config-utils');
 const {
   createBackup,
   createFundStateBackup,
@@ -36,6 +37,81 @@ const {
 
 
 const silentLogger = { info: () => {}, warn: () => {}, error: () => {} };
+
+// A minimal stored ZIP fixture, built in Node so the tests can retain literal
+// ./ prefixes and Unix symlink metadata without requiring Python or zipnote.
+const archiveWithMembers = (file, members, { zip64 = false } = {}) => {
+  const local = [];
+  const central = [];
+  let offset = 0;
+  const crc32 = (data) => {
+    let crc = 0xffffffff;
+    for (const byte of data) {
+      crc ^= byte;
+      for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+    }
+    return (crc ^ 0xffffffff) >>> 0;
+  };
+  for (const member of members) {
+    const name = Buffer.from(member.name);
+    const content = Buffer.from(member.content ?? '');
+    const crc = crc32(content);
+    const header = Buffer.alloc(30);
+    header.writeUInt32LE(0x04034b50, 0);
+    header.writeUInt16LE(20, 4);
+    header.writeUInt16LE(0x800, 6);
+    header.writeUInt32LE(crc, 14);
+    header.writeUInt32LE(content.length, 18);
+    header.writeUInt32LE(content.length, 22);
+    header.writeUInt16LE(name.length, 26);
+    const entry = Buffer.alloc(46);
+    entry.writeUInt32LE(0x02014b50, 0);
+    entry.writeUInt16LE(member.dos ? 0x0014 : 0x0314, 4);
+    entry.writeUInt16LE(20, 6);
+    entry.writeUInt16LE(0x800, 8);
+    entry.writeUInt32LE(crc, 16);
+    entry.writeUInt32LE(content.length, 20);
+    entry.writeUInt32LE(content.length, 24);
+    entry.writeUInt16LE(name.length, 28);
+    const zip64Extra = zip64 ? Buffer.alloc(12) : Buffer.alloc(0);
+    if (zip64) {
+      zip64Extra.writeUInt16LE(1, 0);
+      zip64Extra.writeUInt16LE(8, 2);
+      zip64Extra.writeBigUInt64LE(BigInt(offset), 4);
+      entry.writeUInt16LE(zip64Extra.length, 30);
+    }
+    entry.writeUInt32LE(member.dos ? (member.name.endsWith('/') ? 0x10 : 0x20) : ((member.mode ?? 0o100644) << 16) >>> 0, 38);
+    entry.writeUInt32LE(zip64 ? 0xffffffff : offset, 42);
+    local.push(header, name, content);
+    central.push(entry, name, zip64Extra);
+    offset += header.length + name.length + content.length;
+  }
+  const centralSize = central.reduce((sum, part) => sum + part.length, 0);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(zip64 ? 0xffff : members.length, 8);
+  end.writeUInt16LE(zip64 ? 0xffff : members.length, 10);
+  end.writeUInt32LE(zip64 ? 0xffffffff : centralSize, 12);
+  end.writeUInt32LE(zip64 ? 0xffffffff : offset, 16);
+  const trailer = [];
+  if (zip64) {
+    const end64 = Buffer.alloc(56);
+    end64.writeUInt32LE(0x06064b50, 0);
+    end64.writeBigUInt64LE(44n, 4);
+    end64.writeUInt16LE(45, 12);
+    end64.writeUInt16LE(45, 14);
+    end64.writeBigUInt64LE(BigInt(members.length), 24);
+    end64.writeBigUInt64LE(BigInt(members.length), 32);
+    end64.writeBigUInt64LE(BigInt(centralSize), 40);
+    end64.writeBigUInt64LE(BigInt(offset), 48);
+    const locator = Buffer.alloc(20);
+    locator.writeUInt32LE(0x07064b50, 0);
+    locator.writeBigUInt64LE(BigInt(offset + centralSize), 8);
+    locator.writeUInt32LE(1, 16);
+    trailer.push(end64, locator);
+  }
+  fs.writeFileSync(file, Buffer.concat([...local, ...central, ...trailer, end]));
+};
 
 /**
  * IPC stub that records every request as `channel exchange[/pair]` and answers
@@ -535,6 +611,335 @@ describe('checkRestorePreconditions mirrors the applier refusals without extract
     const applied = restoreBackup(filename, options);
     assert.equal(applied.code, check.code);
     assert.equal(fs.existsSync(path.join(dest.dataDir, fund)), false);
+  });
+
+  it('rejects both orders of aliased placement-intent members before extraction or stopping engines', async () => {
+    for (const reverse of [false, true]) {
+      const dest = makeInstall(`dest-intent-alias-${reverse}`, BASE);
+      const filename = `backup-alias-${reverse}.zip`;
+      const backups = path.join(dest.dataDir, 'backups');
+      fs.mkdirSync(backups);
+      const retained = { version: 1, intents: [{ id: 'live-blocker', status: 'unresolved' }] };
+      const destinationFile = path.join(dest.dataDir, 'coinbase', 'ETH-USDC', 'placement-intents.json');
+      writeJson(destinationFile, retained);
+      const members = [
+        { name: 'coinbase/ETH-USDC/placement-intents.json', content: JSON.stringify({ intents: [{ id: 'source-blocker', status: 'unresolved' }] }) },
+        { name: './coinbase/ETH-USDC/placement-intents.json', content: JSON.stringify({ intents: [] }) },
+      ];
+      archiveWithMembers(path.join(backups, filename), reverse ? members.reverse() : members);
+      const options = { paths: dest.paths, acceptLegacyWithoutBase: true };
+      const check = await checkRestorePreconditions(filename, options);
+      assert.equal(check.code, 'archive-unsafe-paths');
+      assert.match(check.error, /conflicting members/);
+      assert.equal(inspectBackup(filename, { paths: dest.paths }).code, check.code);
+      const calls = [];
+      const result = await performRestore({
+        filename,
+        exchangeIPCMap: { coinbase: recordingIPC('coinbase', ['ETH-USDC'], calls) },
+        configuredExchanges: ['coinbase'],
+        preflight: () => checkRestorePreconditions(filename, options),
+        restore: () => assert.fail('applier must not run'),
+        logger: silentLogger,
+      });
+      assert.equal(result.body.code, check.code);
+      assert.deepEqual(calls, []);
+      assert.equal(restoreBackup(filename, options).code, check.code);
+      assert.deepEqual(JSON.parse(fs.readFileSync(destinationFile, 'utf8')), retained);
+      assert.ok(!fs.readdirSync(dest.dataDir).some(name => name.startsWith('.restore-temp-')));
+    }
+  });
+
+  it('checks prefixed legacy conflicts and invalid prefixed fund accounting before stopping engines', async () => {
+    const dest = makeInstall('dest-prefixed-refusals', BASE);
+    const backups = path.join(dest.dataDir, 'backups');
+    fs.mkdirSync(backups);
+    const cases = [
+      ['backup-prefixed-intents.zip', [
+        { name: './coinbase/placement-intents.json', content: JSON.stringify({ intents: [] }) },
+        { name: './coinbase/ETH-USDC/placement-intents.json', content: JSON.stringify({ intents: [] }) },
+      ], 'legacy-layout-placement-intents-conflict'],
+      ['backup-prefixed-state.zip', [{ name: './coinbase/ETH-USDC/state.json', content: '[1]' }], 'payload-incompatible'],
+      ['backup-prefixed-root.zip', [{ name: './state.json', content: '[1]' }], 'payload-incompatible'],
+    ];
+    for (const [filename, members, code] of cases) {
+      archiveWithMembers(path.join(backups, filename), members);
+      const options = { paths: dest.paths, acceptLegacyWithoutBase: true };
+      const check = await checkRestorePreconditions(filename, options);
+      assert.equal(check.code, code, filename);
+      const calls = [];
+      const result = await performRestore({
+        filename,
+        exchangeIPCMap: { coinbase: recordingIPC('coinbase', ['ETH-USDC'], calls) },
+        configuredExchanges: ['coinbase'],
+        preflight: () => checkRestorePreconditions(filename, options),
+        restore: () => assert.fail('applier must not run'),
+        logger: silentLogger,
+      });
+      assert.equal(result.body.code, code);
+      assert.deepEqual(calls, []);
+      assert.equal(restoreBackup(filename, options).code, code);
+    }
+    assert.deepEqual(inspectBackup('backup-prefixed-intents.zip', { paths: dest.paths }).layoutConflicts, [
+      { artifact: 'coinbase/placement-intents.json', existing: 'coinbase/ETH-USDC/placement-intents.json' },
+    ]);
+  });
+
+  it('accepts ordinary prefixed members and identifies a prefixed manifest consistently', async () => {
+    const dest = makeInstall('dest-prefixed-manifest', BASE);
+    const backups = path.join(dest.dataDir, 'backups');
+    fs.mkdirSync(backups);
+    const filename = 'backup-prefixed-manifest.zip';
+    const state = { orders: [{ id: 'kept' }] };
+    const manifest = { manifestVersion: 1, createdAt: new Date().toISOString(), config: buildConfigSnapshot(BASE) };
+    archiveWithMembers(path.join(backups, filename), [
+      { name: './backup-manifest.json', content: JSON.stringify(manifest) },
+      { name: './coinbase/ETH-USDC/state.json', content: JSON.stringify(state) },
+    ]);
+    const options = { paths: dest.paths };
+    const report = inspectBackup(filename, options);
+    assert.equal(report.success, true);
+    assert.equal(report.legacy, false);
+    assert.equal(report.compatible, true);
+    assert.deepEqual(await checkRestorePreconditions(filename, options), { ok: true });
+    const restored = restoreBackup(filename, options);
+    assert.equal(restored.success, true, restored.error);
+    assert.equal(restored.legacy, false);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dest.dataDir, 'coinbase', 'ETH-USDC', 'state.json'), 'utf8')), state);
+
+    const legacy = 'backup-prefixed-root-valid.zip';
+    archiveWithMembers(path.join(backups, legacy), [{ name: './state.json', content: JSON.stringify(state) }]);
+    const legacyOptions = { paths: dest.paths, acceptLegacyWithoutBase: true };
+    assert.deepEqual(await checkRestorePreconditions(legacy, legacyOptions), { ok: true });
+    assert.equal(inspectBackup(legacy, { paths: dest.paths }).rootTranslation.files[0].target, 'coinbase/ETH-USDC/state.json');
+    assert.equal(restoreBackup(legacy, legacyOptions).success, true);
+  });
+
+  it('refuses symbolic links, including directory parents, without touching their targets', async () => {
+    for (const parentLink of [false, true]) {
+      const dest = makeInstall(`dest-link-${parentLink}`, BASE);
+      const backups = path.join(dest.dataDir, 'backups');
+      fs.mkdirSync(backups);
+      const filename = `backup-link-${parentLink}.zip`;
+      const victim = path.join(root, `victim-${parentLink}.json`);
+      fs.writeFileSync(victim, '{"sentinel":"untouched"}');
+      const manifest = { manifestVersion: 1, createdAt: new Date().toISOString(), config: buildConfigSnapshot(BASE) };
+      const members = [
+        { name: 'backup-manifest.json', content: JSON.stringify(manifest) },
+        { name: parentLink ? 'coinbase' : 'config.json', content: victim, mode: 0o120777 },
+      ];
+      if (parentLink) members.push({ name: 'coinbase/ETH-USDC/state.json', content: '{}' });
+      archiveWithMembers(path.join(backups, filename), members);
+      const options = { paths: dest.paths };
+      const check = await checkRestorePreconditions(filename, options);
+      assert.equal(check.code, 'archive-unsafe-paths');
+      assert.match(check.error, /symbolic links/);
+      assert.equal(inspectBackup(filename, options).code, check.code);
+      assert.equal(restoreBackup(filename, options).code, check.code);
+      assert.equal(fs.readFileSync(victim, 'utf8'), '{"sentinel":"untouched"}');
+    }
+  });
+
+  it('refuses unsafe paths and fails closed when member metadata cannot be verified', async () => {
+    const dest = makeInstall('dest-unsafe-paths', BASE);
+    const backups = path.join(dest.dataDir, 'backups');
+    fs.mkdirSync(backups);
+    const options = { paths: dest.paths, acceptLegacyWithoutBase: true };
+    for (const [index, name] of ['../state.json', '/state.json', 'C:/state.json', 'coinbase\\state.json', 'coinbase/evil\nstate.json'].entries()) {
+      const filename = `backup-unsafe-${index}.zip`;
+      archiveWithMembers(path.join(backups, filename), [{ name, content: '{}' }]);
+      assert.equal((await checkRestorePreconditions(filename, options)).code, 'archive-unsafe-paths', name);
+      assert.equal(restoreBackup(filename, options).code, 'archive-unsafe-paths', name);
+    }
+
+    const filename = 'backup-bad-metadata.zip';
+    const malformed = path.join(backups, filename);
+    archiveWithMembers(malformed, [{ name: 'state.json', content: '{}' }]);
+    const bytes = fs.readFileSync(malformed);
+    // Disagree with the central directory on the UTF-8 flag.
+    bytes.writeUInt16LE(0, 6);
+    fs.writeFileSync(malformed, bytes);
+    const check = await checkRestorePreconditions(filename, options);
+    assert.ok(['archive-corrupt', 'archive-unsafe-paths'].includes(check.code));
+    assert.equal(inspectBackup(filename, options).code, 'archive-unsafe-paths');
+    assert.equal(restoreBackup(filename, options).code, 'archive-unsafe-paths');
+  });
+
+  it('round-trips ordinary UTF-8 and glob characters in a real backup', async () => {
+    const source = makeInstall('source-ordinary-names', BASE);
+    fs.writeFileSync(path.join(source.dataDir, 'report[1].txt'), 'brackets');
+    fs.writeFileSync(path.join(source.dataDir, '普通.txt'), 'unicode');
+    const created = await createBackup({ paths: source.paths });
+    assert.equal(created.success, true, created.error);
+    const dest = makeInstall('dest-ordinary-names', BASE);
+    transfer(source, dest, created.filename);
+    assert.equal(inspectBackup(created.filename, { paths: dest.paths }).compatible, true);
+    assert.deepEqual(await checkRestorePreconditions(created.filename, { paths: dest.paths }), { ok: true });
+    const result = restoreBackup(created.filename, { paths: dest.paths });
+    assert.equal(result.success, true, result.error);
+    assert.equal(fs.readFileSync(path.join(dest.dataDir, 'report[1].txt'), 'utf8'), 'brackets');
+    assert.equal(fs.readFileSync(path.join(dest.dataDir, '普通.txt'), 'utf8'), 'unicode');
+  });
+
+  it('accepts FAT-created file and directory metadata through inspection and restore', async () => {
+    const dest = makeInstall('dest-dos-archive', BASE);
+    const backups = path.join(dest.dataDir, 'backups');
+    fs.mkdirSync(backups);
+    const filename = 'backup-dos-archive.zip';
+    const manifest = { manifestVersion: 1, createdAt: new Date().toISOString(), config: buildConfigSnapshot(BASE) };
+    archiveWithMembers(path.join(backups, filename), [
+      { name: 'backup-manifest.json', content: JSON.stringify(manifest), dos: true },
+      { name: 'coinbase/', dos: true },
+      { name: 'coinbase/ETH-USDC/', dos: true },
+      { name: 'coinbase/ETH-USDC/state.json', content: '{"orders":[]}', dos: true },
+    ]);
+    const options = { paths: dest.paths };
+    assert.equal(inspectBackup(filename, options).compatible, true);
+    assert.deepEqual(await checkRestorePreconditions(filename, options), { ok: true });
+    const restored = restoreBackup(filename, options);
+    assert.equal(restored.success, true, restored.error);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dest.dataDir, 'coinbase', 'ETH-USDC', 'state.json'), 'utf8')), { orders: [] });
+  });
+
+  it('accepts ZIP64 directory and local-offset metadata through inspection and restore', async () => {
+    const dest = makeInstall('dest-zip64', BASE);
+    const backups = path.join(dest.dataDir, 'backups');
+    fs.mkdirSync(backups);
+    const filename = 'backup-zip64.zip';
+    archiveWithMembers(path.join(backups, filename), [
+      { name: 'coinbase/ETH-USDC/state.json', content: '{"orders":[]}' },
+    ], { zip64: true });
+    const options = { paths: dest.paths, acceptLegacyWithoutBase: true };
+    assert.equal(inspectBackup(filename, options).legacy, true);
+    assert.deepEqual(await checkRestorePreconditions(filename, options), { ok: true });
+    const restored = restoreBackup(filename, options);
+    assert.equal(restored.success, true, restored.error);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dest.dataDir, 'coinbase', 'ETH-USDC', 'state.json'), 'utf8')), { orders: [] });
+  });
+
+  it('reads a literal bracketed accounting member rather than an unzip wildcard match', async () => {
+    const dest = makeInstall('dest-wildcard-member', BASE);
+    const backups = path.join(dest.dataDir, 'backups');
+    fs.mkdirSync(backups);
+    const filename = 'backup-wildcard-member.zip';
+    archiveWithMembers(path.join(backups, filename), [
+      { name: 'coinbase/[1]/state.json', content: '[1]' },
+      { name: 'coinbase/1/state.json', content: '{}' },
+    ]);
+    const check = await checkRestorePreconditions(filename, { paths: dest.paths, acceptLegacyWithoutBase: true });
+    assert.equal(check.code, 'payload-incompatible');
+    assert.match(check.error, /coinbase\/\[1\]\/state.json/);
+  });
+
+  it('checks generated configuration destinations before stopping engines', async () => {
+    const dest = makeInstall('dest-generated-case', BASE);
+    const backups = path.join(dest.dataDir, 'backups');
+    fs.mkdirSync(backups);
+    const filename = 'backup-generated-case.zip';
+    archiveWithMembers(path.join(backups, filename), [{ name: 'state.json', content: '{}' }]);
+    const baseFile = path.join(dest.dataDir, 'CONFIG-BASE.SNAPSHOT.JSON');
+    fs.writeFileSync(baseFile, '{"keep":true}');
+    const options = { paths: dest.paths, acceptLegacyWithoutBase: true };
+    const check = await checkRestorePreconditions(filename, options);
+    assert.equal(check.code, 'destination-path-unsafe');
+    assert.equal(inspectBackup(filename, options).code, check.code);
+    const calls = [];
+    const result = await performRestore({
+      filename, exchangeIPCMap: { coinbase: recordingIPC('coinbase', ['ETH-USDC'], calls) },
+      configuredExchanges: ['coinbase'], preflight: () => checkRestorePreconditions(filename, options),
+      restore: () => assert.fail('applier must not run'), logger: silentLogger,
+    });
+    assert.equal(result.body.code, check.code);
+    assert.deepEqual(calls, []);
+    assert.equal(restoreBackup(filename, options).code, check.code);
+    assert.equal(fs.readFileSync(baseFile, 'utf8'), '{"keep":true}');
+  });
+
+  it('refuses case aliases of protected accounting, credentials, and journals', async () => {
+    const dest = makeInstall('dest-protected-case', BASE);
+    const backups = path.join(dest.dataDir, 'backups');
+    fs.mkdirSync(backups);
+    const secrets = { token: 'keep' };
+    writeJson(path.join(dest.dataDir, 'operator-auth.json'), secrets);
+    const intents = { version: 1, intents: [{ id: 'keep-blocker', status: 'unresolved' }] };
+    writeJson(path.join(dest.dataDir, 'coinbase', 'ETH-USDC', 'placement-intents.json'), intents);
+    const cases = [
+      'OPERATOR-AUTH.JSON', 'COINBASE-KEYS.JSON',
+      'coinbase/ETH-USDC/PLACEMENT-INTENTS.JSON',
+      'coinbase/ETH-USDC/REGIME-STATE.JSON',
+      'coinbase/ETH-USDC/.DCA-IMPORT-JOURNAL.JSON',
+      '.RESTORE-JOURNAL.JSON',
+    ];
+    const options = { paths: dest.paths, acceptLegacyWithoutBase: true };
+    for (const [index, name] of cases.entries()) {
+      const filename = `backup-protected-case-${index}.zip`;
+      archiveWithMembers(path.join(backups, filename), [{ name, content: '{}' }]);
+      const check = await checkRestorePreconditions(filename, options);
+      assert.equal(check.code, 'archive-unsafe-paths', name);
+      assert.equal(restoreBackup(filename, options).code, check.code, name);
+    }
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dest.dataDir, 'operator-auth.json'), 'utf8')), secrets);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dest.dataDir, 'coinbase', 'ETH-USDC', 'placement-intents.json'), 'utf8')), intents);
+  });
+
+  it('refuses aliases of existing destination components, including Unicode-equivalent spellings', async () => {
+    const dest = makeInstall('dest-existing-case', BASE);
+    const backups = path.join(dest.dataDir, 'backups');
+    fs.mkdirSync(backups);
+    const existing = path.join(dest.dataDir, 'coinbase', 'ETH-USDC', 'operator-note.txt');
+    writeJson(existing, { value: 'keep' });
+    const accented = path.join(dest.dataDir, 'coinbase', 'ETH-USDC', 'café.txt');
+    fs.writeFileSync(accented, 'keep');
+    const actual = fs.readdirSync(path.dirname(accented)).find(name => name.normalize('NFC') === 'café.txt');
+    const variant = actual === actual.normalize('NFC') ? actual.normalize('NFD') : actual.normalize('NFC');
+    const cases = ['COINBASE/ETH-USDC/other.txt', 'coinbase/eth-usdc/other.txt',
+      'coinbase/ETH-USDC/OPERATOR-NOTE.TXT', `coinbase/ETH-USDC/${variant}`];
+    const options = { paths: dest.paths, acceptLegacyWithoutBase: true };
+    for (const [index, name] of cases.entries()) {
+      const filename = `backup-destination-case-${index}.zip`;
+      archiveWithMembers(path.join(backups, filename), [{ name, content: 'overwrite' }]);
+      const check = await checkRestorePreconditions(filename, options);
+      if (index === cases.length - 1) {
+        // Some unzip builds render this UTF-8 spelling lossily; refusing the
+        // archive before destination comparison is also safe.
+        assert.ok(['destination-path-unsafe', 'archive-unsafe-paths'].includes(check.code), name);
+      } else {
+        assert.equal(check.code, 'destination-path-unsafe', name);
+      }
+      assert.equal(inspectBackup(filename, options).code, check.code, name);
+      assert.equal(restoreBackup(filename, options).code, check.code, name);
+    }
+    assert.deepEqual(JSON.parse(fs.readFileSync(existing, 'utf8')), { value: 'keep' });
+    assert.equal(fs.readFileSync(accented, 'utf8'), 'keep');
+  });
+
+  it('extracts the validated archive copy when the original is replaced during validation', () => {
+    const dest = makeInstall('dest-archive-swap', BASE);
+    const backups = path.join(dest.dataDir, 'backups');
+    fs.mkdirSync(backups);
+    const filename = 'backup-archive-swap.zip';
+    const archive = path.join(backups, filename);
+    const replacement = path.join(root, 'replacement.zip');
+    const victim = path.join(root, 'swap-victim.json');
+    fs.writeFileSync(victim, '{"sentinel":"untouched"}');
+    archiveWithMembers(archive, [{ name: 'state.json', content: '{"orders":[{"id":"original"}]}' }]);
+    archiveWithMembers(replacement, [{ name: 'config.json', content: victim, mode: 0o120777 }]);
+    const fakeBin = path.join(root, 'swap-unzip');
+    fs.mkdirSync(fakeBin);
+    const realUnzip = spawnSync('which', ['unzip']).stdout.toString().trim();
+    fs.writeFileSync(path.join(fakeBin, 'unzip'),
+      `#!/bin/sh\nif [ "$1" = "-o" ]; then cp "${replacement}" "${archive}"; fi\nexec "${realUnzip}" "$@"\n`, { mode: 0o755 });
+    const originalPath = process.env.PATH;
+    process.env.PATH = `${fakeBin}${path.delimiter}${originalPath}`;
+    try {
+      const result = restoreBackup(filename, { paths: dest.paths, acceptLegacyWithoutBase: true });
+      assert.equal(result.success, true, result.error);
+    } finally {
+      process.env.PATH = originalPath;
+    }
+    assert.equal(fs.readFileSync(victim, 'utf8'), '{"sentinel":"untouched"}');
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dest.dataDir, 'coinbase', 'ETH-USDC', 'state.json'), 'utf8')), { orders: [{ id: 'original' }] });
+    assert.equal(spawnSync('unzip', ['-Z1', archive]).stdout.toString().trim(), 'config.json');
+    assert.ok(!fs.readdirSync(dest.dataDir).some(name => name.startsWith('.restore-temp-')));
   });
 
   it('validates translated root state before stopping engines for a legacy restore', async () => {

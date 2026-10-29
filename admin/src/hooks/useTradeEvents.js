@@ -84,8 +84,16 @@ export function useRegimeEvents(exchange = null, pair = null) {
   const [snapshot, setSnapshot] = useState(EMPTY_SNAPSHOT)
   // A hook can remain mounted while its caller selects a different fund.
   const fundKey = JSON.stringify([exchange, pair])
-  const committedFundKey = useRef(fundKey)
-  useLayoutEffect(() => { committedFundKey.current = fundKey }, [fundKey])
+  // Give each committed selection its own identity, including when navigating
+  // back to a fund visited earlier. Old callbacks must not revive that visit.
+  const [selection, setSelection] = useState(() => ({ fundKey }))
+  let currentSelection = selection
+  if (selection.fundKey !== fundKey) {
+    currentSelection = { fundKey }
+    setSelection(currentSelection)
+  }
+  const committedSelection = useRef(currentSelection)
+  useLayoutEffect(() => { committedSelection.current = currentSelection }, [currentSelection])
   const [regimeState, setRegimeState] = useState(null)
   const [healthState, setHealthState] = useState(null)
   const [positionState, setPositionState] = useState(null)
@@ -112,9 +120,9 @@ export function useRegimeEvents(exchange = null, pair = null) {
       if (!matchesFund(data) || !data.status) return
       // A stopped payload or a running-state change replaces the snapshot;
       // only running -> running emits merge (#1388).
-      setSnapshot(prev => committedFundKey.current !== fundKey ? prev : ({
-        ...stampRegimeStatus(mergeRegimeStatus(prev.fundKey === fundKey ? prev.status : null, data.status)),
-        fundKey,
+      setSnapshot(prev => committedSelection.current !== currentSelection ? prev : ({
+        ...stampRegimeStatus(mergeRegimeStatus(prev.selection === currentSelection ? prev.status : null, data.status)),
+        selection: currentSelection,
       }))
     }
 
@@ -163,14 +171,14 @@ export function useRegimeEvents(exchange = null, pair = null) {
       socket.off('regime:health', handleHealthChange)
       socket.off('regime:position', handlePositionUpdate)
     }
-  }, [exchange, pair, fundKey])
+  }, [exchange, pair, currentSelection])
 
   const clearEvents = useCallback(() => setEvents([]), [])
   // Action responses carry a full snapshot: replace, stamped as newest.
-  const setStatus = useCallback(status => setSnapshot(prev => committedFundKey.current !== fundKey
+  const setStatus = useCallback(status => setSnapshot(prev => committedSelection.current !== currentSelection
     ? prev
-    : { ...stampRegimeStatus(status), fundKey }), [fundKey])
-  const currentSnapshot = snapshot.fundKey === fundKey ? snapshot : EMPTY_SNAPSHOT
+    : { ...stampRegimeStatus(status), selection: currentSelection }), [currentSelection])
+  const currentSnapshot = snapshot.selection === currentSelection ? snapshot : EMPTY_SNAPSHOT
 
   return {
     status: currentSnapshot.status,
