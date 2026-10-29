@@ -735,7 +735,13 @@ describe('retryFailedSell (issue #1035)', () => {
       loggedSellFills = [];
       const buyStatus = ex.adapter.getOrder;
       ex.adapter.getOrder = async (orderId) => sellStatus[orderId] ?? buyStatus(orderId);
-      ex.adapter.cancelOrder = async () => ({ success: true });
+      // An accepted cancel takes a resting sell off the book; the engine re-reads
+      // it to confirm the final execution (issue #1889).
+      ex.adapter.cancelOrder = async (orderId) => {
+        const resting = sellStatus[orderId];
+        if (resting && resting.status === 'OPEN') sellStatus[orderId] = { ...resting, status: 'CANCELLED' };
+        return { success: true };
+      };
       ex.adapter.getOrderFillSummary = async (orderId) => {
         feeLookups.push(orderId);
         return { totalFees: 0.5, totalRebates: 0, netFees: 0.5, fills: [] };

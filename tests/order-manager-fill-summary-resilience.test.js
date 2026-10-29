@@ -156,9 +156,10 @@ describe('order-manager fee/fill-summary resilience (issue #679 follow-up)', () 
     // mirrors tests/fibonacci-sell-consolidation.test.js's Bug-B "PARTIALLY_FILLED"
     // case, but with a rejecting getOrderFillSummary instead of a stubbed one.
     const config = { productId: 'ETH-USD', holdbackPercent: 15, sellMarkupPercent: 5 };
+    let cancelled = false;
     const adapter = {
-      getOrder: async () => ({ status: 'PARTIALLY_FILLED', filledSize: 0.4, filledValue: 800, averageFilledPrice: 2000 }),
-      cancelOrder: async () => ({ success: true }),
+      getOrder: async () => ({ status: cancelled ? 'CANCELLED' : 'PARTIALLY_FILLED', filledSize: 0.4, filledValue: 800, averageFilledPrice: 2000 }),
+      cancelOrder: async () => { cancelled = true; return { success: true }; },
       getOrderFillSummary: async (orderId) => { throw incompleteFillsError(orderId); },
       getCurrentPrice: async () => 2000,
       placeLimitSell: async (productId, qty, price) => ({ success: true, orderId: `new-sell-${qty.toFixed(8)}`, baseSize: qty, limitPrice: price }),
