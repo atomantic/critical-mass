@@ -898,7 +898,12 @@ describe('Fibonacci replacements across intervals (issue #1890)', () => {
   });
 
   describe('a cycle saved before fibCycleSoldAsset existed', () => {
-    /** Strip the cycle-wide sold fields, as a pre-#1887 save would have. */
+    /**
+     * Strip the cycle-wide sold fields, as a pre-#1887 save would have. The
+     * states below have one replacement after the partial, which the legacy
+     * engine sized exactly as the current one does (it subtracted the partial
+     * of the sell it replaced), so they match what a legacy save held.
+     */
     const asLegacy = (state) => {
       const legacy = JSON.parse(JSON.stringify(state));
       delete legacy.fibCycleSoldAsset;
