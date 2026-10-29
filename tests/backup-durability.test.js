@@ -71,6 +71,26 @@ describe('durable full archive publication', () => {
     });
   }
 
+  it('does not publish an archive restore would refuse, so the prior recovery point survives (#1885)', async () => {
+    const previous = await createBackup({ paths });
+    assert.equal(previous.success, true, previous.error);
+    const original = fs.readFileSync(path.join(backupsDir, previous.filename));
+    const fundDir = path.join(paths.dataDir, 'coinbase', 'BTC-USDC');
+    const journal = path.join(fundDir, '.dca-import-journal.json');
+    fs.writeFileSync(journal, '{"version":1,"status":"publishing","entries":[]}');
+    const ledgerBefore = fs.readFileSync(path.join(fundDir, 'fill-ledger.json'));
+    const events = observePublication();
+
+    const result = await createBackup({ paths });
+    assert.equal(result.success, false);
+    assert.match(result.error, /DCA import was unresolved/);
+    assert.equal(events.some(({ kind }) => kind === 'rename'), false, 'nothing is renamed into place');
+    assert.deepEqual(fs.readdirSync(backupsDir), [previous.filename]);
+    assert.deepEqual(fs.readFileSync(path.join(backupsDir, previous.filename)), original);
+    assert.equal(fs.existsSync(journal), true);
+    assert.deepEqual(fs.readFileSync(path.join(fundDir, 'fill-ledger.json')), ledgerBefore);
+  });
+
   it('flushes the validated archive before rename and its ancestors before returning success', async () => {
     const events = observePublication();
     const result = await createBackup({ paths });
