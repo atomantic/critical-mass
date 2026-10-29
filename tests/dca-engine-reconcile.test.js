@@ -710,6 +710,10 @@ describe('retryFailedSell (issue #1035)', () => {
       const ok = await engine.retryFailedSell(EXCHANGE, PAIR, row.buyOrderId);
       assert.equal(ok.success, true, JSON.stringify(ok));
       assert.equal(ex.sellAttempts.length, 2);
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // issue #1887 — a sell that ends CANCELLED/EXPIRED after executing part of
   // its size. Fixed DCA credits it once through repeated syncs and reloads and
   // leaves only the unsold remainder as a retryable failed sell; Fibonacci
