@@ -668,6 +668,10 @@ describe('checkRestorePreconditions mirrors the applier refusals without extract
         { name: './coinbase/placement-intents.json', content: JSON.stringify({ intents: [] }) },
         { name: './coinbase/ETH-USDC/placement-intents.json', content: JSON.stringify({ intents: [] }) },
       ], 'legacy-layout-placement-intents-conflict'],
+      ['backup-duplicate-state.zip', [
+        { name: 'coinbase/state.json', content: JSON.stringify({}) },
+        { name: 'coinbase/ETH-USDC/state.json', content: JSON.stringify({}) },
+      ], 'legacy-layout-placement-intents-conflict'],
       ['backup-prefixed-state.zip', [{ name: './coinbase/ETH-USDC/state.json', content: '[1]' }], 'payload-incompatible'],
       ['backup-prefixed-root.zip', [{ name: './state.json', content: '[1]' }], 'payload-incompatible'],
     ];

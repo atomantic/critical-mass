@@ -25,7 +25,7 @@ const path = require('path');
 
 const { createBackup, restoreBackup, inspectBackup, checkRestorePreconditions } = require('../src/backup-service');
 const { migrateLegacyNamespace } = require('../src/legacy-namespace-migration');
-const { normalizeExchangeTreeToPairs } = require('../src/migration');
+const { normalizeExchangeTreeToPairs, PAIR_MIGRATION_CONFLICT_FILES, findPairMigrationConflicts } = require('../src/migration');
 const { JOURNAL_FILENAME } = require('../src/restore-apply');
 const { ledgerOf } = require('./helpers/ledger-fixture');
 
@@ -579,5 +579,60 @@ describe('inspectBackup discloses the layout translation (issue #541)', () => {
     const report = inspectBackup(filename, { paths: dest.paths });
     assert.equal(report.legacyLayout, false);
     assert.deepEqual(report.layoutTranslations, []);
+  });
+});
+
+describe('restore refuses exchange-level and per-fund copies of guarded files (issue #1888)', () => {
+  /** Every entry under a directory with its mode and bytes, for exact before/after comparison. */
+  const snapshotTree = (dir) => fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name)).flatMap((entry) => {
+    const full = path.join(dir, entry.name);
+    if (entry.name === 'backups') return [];
+    const mode = fs.statSync(full).mode;
+    return entry.isDirectory() ? [[entry.name, mode], ...snapshotTree(full).map(([n, m, c]) => [`${entry.name}/${n}`, m, c])] : [[entry.name, mode, fs.readFileSync(full, 'utf8')]];
+  });
+
+  for (const file of PAIR_MIGRATION_CONFLICT_FILES) {
+    for (const identical of [false, true]) {
+      it(`refuses both ${file} copies${identical ? ' with equal bytes' : ''} at inspection, preflight and apply`, async () => {
+        const { source, filename } = await makeLegacyLayoutArchive(configWith({ coinbase: 'BTC-USDC' }), {
+          [`coinbase/${file}`]: '{}',
+          [`coinbase/BTC-USDC/${file}`]: identical ? '{}' : '{"generation":"pair"}',
+        });
+        const dest = makeInstall('dest', configWith({ coinbase: 'BTC-USDC' }));
+        write(path.join(dest.dataDir, 'coinbase', 'BTC-USDC', 'state.json'), '{"generation":"live"}');
+        fs.chmodSync(path.join(dest.dataDir, 'coinbase', 'BTC-USDC', 'state.json'), 0o640);
+        transferArchive(source, dest, filename);
+        const before = snapshotTree(dest.dataDir);
+
+        const report = inspectBackup(filename, { paths: dest.paths });
+        assert.deepEqual(report.layoutConflicts, [{ artifact: `coinbase/${file}`, existing: `coinbase/BTC-USDC/${file}` }]);
+        const check = await checkRestorePreconditions(filename, { paths: dest.paths, acceptLegacyWithoutBase: true });
+        assert.equal(check.ok, false);
+        assert.equal(check.code, 'legacy-layout-placement-intents-conflict');
+        assert.match(check.error, new RegExp(`coinbase/${file.replace('.', '\\.')}`));
+
+        const result = restoreBackup(filename, { paths: dest.paths, acceptLegacyWithoutBase: true, logger: silentLogger });
+        assert.equal(result.success, false);
+        assert.equal(result.code, 'legacy-layout-placement-intents-conflict');
+        assert.deepEqual(snapshotTree(dest.dataDir), before, 'destination bytes, modes and entries unchanged');
+      });
+    }
+  }
+
+  it('still translates an exchange-only archive into a destination that passes the pair-migration conflict check', async () => {
+    const { source, filename } = await makeLegacyLayoutArchive(configWith({ coinbase: 'BTC-USDC' }), {
+      'coinbase/state.json': '{"generation":"archived"}',
+      'coinbase/fill-ledger.json': ARCHIVED_LEDGER,
+    });
+    const dest = makeInstall('dest', configWith({ coinbase: 'BTC-USDC' }));
+    write(path.join(dest.dataDir, 'coinbase', 'BTC-USDC', 'state.json'), '{"generation":"live"}');
+    transferArchive(source, dest, filename);
+
+    const result = restoreBackup(filename, { paths: dest.paths, acceptLegacyWithoutBase: true, logger: silentLogger });
+    assert.equal(result.success, true, result.error);
+    const exchangeDir = path.join(dest.dataDir, 'coinbase');
+    const fundDir = path.join(exchangeDir, 'BTC-USDC');
+    assert.equal(read(path.join(fundDir, 'state.json')), '{"generation":"archived"}');
+    assert.deepEqual(findPairMigrationConflicts(exchangeDir, fundDir), []);
   });
 });

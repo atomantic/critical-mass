@@ -66,6 +66,7 @@ const {
   legacyRootArtifactTarget,
   legacyRootArtifactCandidates,
   PER_FUND_FILES,
+  PAIR_MIGRATION_CONFLICT_FILES,
 } = require('./migration');
 const { serializeFundState } = require('./dry-run-state');
 const { JOURNAL_FILENAME: DCA_IMPORT_JOURNAL_FILENAME } = require('./dca-conversion-transaction');
@@ -460,20 +461,22 @@ const rootCollisionEntries = ({ entries, rootTranslation }) => {
   });
 };
 
-// Two placement-intent generations cannot be discarded during layout
-// translation: either can contain an unresolved exchange order.
+// Two generations of a guarded accounting file cannot be discarded during
+// layout translation: the exchange-level and per-fund copies may differ, and
+// placement intents may hold an unresolved exchange order. Mirrors the startup
+// refusal (`findPairMigrationConflicts`), so identical bytes still conflict.
 const findLegacyIntentCollisions = ({ entries, translations }) => {
   const present = new Set(entries);
-  return translations.flatMap(({ exchange, pair }) => {
-    const artifact = `${exchange}/placement-intents.json`;
-    const existing = `${exchange}/${pair}/placement-intents.json`;
+  return translations.flatMap(({ exchange, pair }) => PAIR_MIGRATION_CONFLICT_FILES.flatMap((file) => {
+    const artifact = `${exchange}/${file}`;
+    const existing = `${exchange}/${pair}/${file}`;
     return present.has(artifact) && present.has(existing) ? [{ artifact, existing }] : [];
-  });
+  }));
 };
 
 const intentCollisionError = (conflicts) =>
-  `This archive contains both legacy and per-fund placement intents (${conflicts.map(({ artifact, existing }) => `${artifact} and ${existing}`).join(', ')}). `
-  + 'Preserve both copies and reconcile all unresolved placement intents against the exchange before restoring. No files were changed.';
+  `This archive contains both legacy and per-fund copies of guarded accounting files (${conflicts.map(({ artifact, existing }) => `${artifact} and ${existing}`).join(', ')}). `
+  + 'Preserve both copies and reconcile them (including all unresolved placement intents against the exchange) before restoring. No files were changed.';
 
 // Protected names have case-sensitive meaning to the readers and exclusions.
 // A differently-cased spelling can alias them on a case-insensitive disk
