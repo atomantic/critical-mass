@@ -260,16 +260,21 @@ const cancelStep = (id) => ({ call: ['cancelOrder', id], result: { success: true
 const placeStep = (qty, price, result) => ({ call: ['placeLimitSell', 'BTC-USD', qty, price], result });
 
 describe('consolidatePendingOrders — ordered public contracts', () => {
-  it('aborts after a rejected cancel, preserving only the existing failure keys', async () => {
+  it('aborts after a rejected cancel by restoring the confirmed prefix, never the rejected order', async () => {
     const orders = [order('skip', 1, 90), order('a', 1, 100), order('gap', 1, 150), order('b', 2, 250), order('c', 1, 300)];
     const script = scriptedAdapter([
       getStep('skip', { completionPercentage: 10 }), ...['a', 'gap', 'b', 'c'].map(id => getStep(id)),
       cancelStep('a'), getStep('a'),
       cancelStep('gap'), getStep('gap', { completionPercentage: 100, status: 'FILLED' }),
       { call: ['cancelOrder', 'b'], result: { success: false } },
+      placeStep(1, 100, { success: true, orderId: 'restored-a' }),
     ]);
     assert.deepEqual(await consolidatePendingOrders(baseConfig(), orders, script.adapter), {
       success: false, error: 'Failed to cancel order b', cancelledOrderIds: ['a'], skippedOrderIds: ['skip'],
+      filledDuringCancelOrderIds: ['gap'],
+      restoredOrders: [{ oldOrderId: 'a', newOrderId: 'restored-a' }],
+      failedRestoreOrderIds: [],
+      unresolvedRestoreOrderIds: [],
     });
     script.assertComplete();
   });
@@ -342,16 +347,48 @@ describe('consolidatePendingOrders — ordered public contracts', () => {
   });
 
   for (const phase of ['cancel', 're-fetch']) {
-    it(`propagates the original ${phase} exception and stops exchange calls`, async () => {
+    it(`a ${phase} exception returns a failure and restores the earlier confirmed sells without re-placing the uncertain one`, async () => {
       const error = new Error(`${phase} unavailable`);
       const steps = [getStep('a'), getStep('b'), getStep('c'), cancelStep('a'), getStep('a')];
       if (phase === 'cancel') steps.push({ call: ['cancelOrder', 'b'], error });
       if (phase === 're-fetch') steps.push(cancelStep('b'), { call: ['getOrder', 'b'], error });
+      steps.push(placeStep(1, 100, { success: true, orderId: 'restored-a' }));
       const script = scriptedAdapter(steps);
-      await assert.rejects(consolidatePendingOrders(baseConfig(), [order('a', 1, 100), order('b', 2, 250), order('c', 1, 200)], script.adapter), thrown => thrown === error);
+      const message = phase === 'cancel'
+        ? 'Failed to cancel order b: cancel unavailable'
+        : 'Failed to confirm cancellation of order b: re-fetch unavailable';
+      assert.deepEqual(await consolidatePendingOrders(baseConfig(), [order('a', 1, 100), order('b', 2, 250), order('c', 1, 200)], script.adapter), {
+        success: false, error: message, cancelledOrderIds: ['a'], skippedOrderIds: [], filledDuringCancelOrderIds: [],
+        restoredOrders: [{ oldOrderId: 'a', newOrderId: 'restored-a' }],
+        failedRestoreOrderIds: [],
+        unresolvedRestoreOrderIds: [],
+      });
       script.assertComplete();
     });
   }
+
+  it('reports restore failures for the aborted prefix and places nothing when the first cancel fails', async () => {
+    const failing = scriptedAdapter([
+      getStep('a'), getStep('b'), getStep('c'), cancelStep('a'), getStep('a'), cancelStep('b'), getStep('b'),
+      { call: ['cancelOrder', 'c'], result: { success: false } },
+      placeStep(1, 100, { success: false, errorMessage: 'rejected' }),
+      placeStep(2, 250, { success: true, orderId: 'restored-b' }),
+    ]);
+    const orders = [order('a', 1, 100), order('b', 2, 250), order('c', 1, 200)];
+    const result = await consolidatePendingOrders(baseConfig(), orders, failing.adapter);
+    assert.equal(result.error, 'Failed to cancel order c');
+    assert.deepEqual(result.cancelledOrderIds, ['a', 'b']);
+    assert.deepEqual(result.restoredOrders, [{ oldOrderId: 'b', newOrderId: 'restored-b' }]);
+    assert.deepEqual(result.failedRestoreOrderIds, ['a']);
+    failing.assertComplete();
+
+    const first = scriptedAdapter([getStep('a'), getStep('b'), { call: ['cancelOrder', 'a'], result: { success: false } }]);
+    assert.deepEqual(await consolidatePendingOrders(baseConfig(), orders.slice(0, 2), first.adapter), {
+      success: false, error: 'Failed to cancel order a', cancelledOrderIds: [], skippedOrderIds: [], filledDuringCancelOrderIds: [],
+      restoredOrders: [], failedRestoreOrderIds: [], unresolvedRestoreOrderIds: [],
+    });
+    first.assertComplete();
+  });
 });
 
 // ---------------------------------------------------------------------------
