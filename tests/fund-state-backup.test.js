@@ -432,3 +432,55 @@ describe('hourly snapshot publication validates accounting payloads (#1811)', ()
     assert.deepEqual(fs.readdirSync(path.dirname(fixture.ledger)).sort(), ['fill-ledger.json', 'regime-state.json']);
   });
 });
+
+describe('recovery-buy sidecar validation (#1893)', () => {
+  const invalidSidecars = {
+    'null manual-trades.json': ['manual-trades.json', 'null'],
+    'malformed manual-trades.json': ['manual-trades.json', '{not json'],
+    'row-shape manual-trades.json': ['manual-trades.json', JSON.stringify({ trades: [null] })],
+    'non-array corrective buys': ['pending-corrective-buys.json', '{}'],
+    'null corrective row': ['pending-corrective-buys.json', '[null]'],
+  };
+
+  for (const [name, [file, bytes]] of Object.entries(invalidSidecars)) {
+    it(`does not publish or prune for ${name}`, (t) => {
+      const fixture = makeRecoveryFixture(t);
+      const snapshotsDir = path.dirname(fixture.snapshotDir);
+      const before = fs.readdirSync(snapshotsDir).sort();
+      fs.writeFileSync(path.join(fixture.liveDir, file), bytes);
+      const result = createFundStateBackup({ paths: fixture.paths, now: new Date('2026-10-03'), maxBackups: 2 });
+      assert.equal(result.success, false);
+      assert.match(result.error, new RegExp(file.replace('.', '\\.')));
+      assert.deepEqual(fs.readdirSync(snapshotsDir).sort(), before);
+    });
+
+    it(`refuses restore preflight and apply for ${name}, preserving the destination`, (t) => {
+      const fixture = makeRecoveryFixture(t);
+      const valid = { trades: [{ id: 'mt-1', buyOrderId: 'buy-open', status: 'buy_pending' }] };
+      writeJson(path.join(fixture.liveDir, file), file === 'manual-trades.json' ? valid : []);
+      const created = createFundStateBackup({ paths: fixture.paths, now: new Date('2026-10-03'), maxBackups: 10 });
+      assert.equal(created.success, true, created.error);
+      const snapshotFile = path.join(path.dirname(fixture.snapshotDir), created.snapshotId, 'coinbase', 'BTC-USDC', file);
+      fs.writeFileSync(snapshotFile, bytes);
+      const destination = path.join(fixture.liveDir, file);
+      const destinationBytes = fs.readFileSync(destination);
+      const preflight = checkFundStateRestorePreconditions(created.snapshotId, 'coinbase', 'BTC-USDC', { paths: fixture.paths });
+      assert.equal(preflight.ok, false);
+      assert.match(preflight.error, new RegExp(file.replace('.', '\\.')));
+      const restored = restoreFundStateBackup(created.snapshotId, 'coinbase', 'BTC-USDC', { paths: fixture.paths });
+      assert.equal(restored.success, false);
+      assert.deepEqual(fs.readFileSync(destination), destinationBytes);
+      assert.deepEqual(fs.readFileSync(snapshotFile), Buffer.from(bytes));
+    });
+  }
+
+  it('keeps absent-sidecar and legacy-empty restore semantics', (t) => {
+    const fixture = makeRecoveryFixture(t);
+    writeJson(path.join(fixture.liveDir, 'manual-trades.json'), {});
+    writeJson(path.join(fixture.liveDir, 'pending-corrective-buys.json'), []);
+    const created = createFundStateBackup({ paths: fixture.paths, now: new Date('2026-10-03'), maxBackups: 10 });
+    assert.equal(created.success, true, created.error);
+    assert.equal(restoreFundStateBackup(created.snapshotId, 'coinbase', 'BTC-USDC', { paths: fixture.paths }).success, true);
+    assert.equal(restoreFundStateBackup(fixture.newer.snapshotId, 'coinbase', 'BTC-USDC', { paths: fixture.paths }).success, true);
+  });
+});

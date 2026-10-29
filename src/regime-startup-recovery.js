@@ -23,6 +23,7 @@
 const celestialHierarchy = require('./celestial-hierarchy');
 const { tradeEvents } = require('./trade-events');
 const { resolveFundDataDir } = require('./migration');
+const { findInvalidManualTradesReason, findInvalidCorrectiveBuysReason } = require('./persisted-payload-validation');
 const { backfillEngineStart: _backfillEngineStart } = require('./apy-calculator');
 const { roundAsset, roundPrice } = require('./volatility-utils');
 const { fmtCurrency: fmtPrice, isFilledStatus, isCancelledStatus, isTerminalStatus, isOrderNotFoundError } = require('./shared-utils');
@@ -263,6 +264,8 @@ const createStartupRecovery = ({
     try {
       const cbPath = require('path').join(resolveFundDataDir(exchange, pair), 'pending-corrective-buys.json');
       const cbData = JSON.parse(require('fs').readFileSync(cbPath, 'utf8'));
+      const invalid = findInvalidCorrectiveBuysReason(cbData);
+      if (invalid) throw new Error(`pending-corrective-buys.json ${invalid}`);
       for (const cb of cbData) {
         if (!cb.filled && !cb.cancelled) correctiveBuyIds.add(cb.buyOrderId);
       }
@@ -279,6 +282,8 @@ const createStartupRecovery = ({
     try {
       const mtPath = require('path').join(resolveFundDataDir(exchange, pair), 'manual-trades.json');
       const mtData = JSON.parse(require('fs').readFileSync(mtPath, 'utf8'));
+      const invalid = findInvalidManualTradesReason(mtData);
+      if (invalid) throw new Error(`manual-trades.json ${invalid}`);
       for (const mt of (mtData.trades || [])) {
         if (mt.buyOrderId && mt.status === 'buy_pending') correctiveBuyIds.add(mt.buyOrderId);
       }

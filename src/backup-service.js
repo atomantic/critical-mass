@@ -1480,6 +1480,13 @@ const validateFundStateSnapshot = (snapshotDir, snapshotId, stagedManifest) => {
         if (name === PLACEMENT_INTENTS_FILENAME) {
           const file = `${identity}/${name}`;
           assertPlacementIntentRows(parsePlacementIntentsDocument(checkPath([fund.exchange, fund.pair, name], false, true), file), file);
+        } else if (classifyPayloadPath(`${fund.exchange}/${fund.pair}/${name}`) === 'manual-trades'
+          || classifyPayloadPath(`${fund.exchange}/${fund.pair}/${name}`) === 'corrective-buys') {
+          // Recovery-buy ownership sidecars: unreadable content would make
+          // startup cancel the open recovery buy they name.
+          const file = `${identity}/${name}`;
+          const checked = validatePersistedPayload(file, checkPath([fund.exchange, fund.pair, name], false, true));
+          if (!checked.ok) throw new Error(checked.error);
         } else {
           checkPath([fund.exchange, fund.pair, name]);
         }

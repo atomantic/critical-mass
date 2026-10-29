@@ -15,6 +15,7 @@ const crypto = require('crypto');
 const { resolveFundDataDir } = require('./migration');
 const { atomicWriteSync, quarantineFile } = require('./state-tracker');
 const { createContextLogger } = require('./logger');
+const { findInvalidManualTradesReason } = require('./persisted-payload-validation');
 
 /**
  * @typedef {Object} ManualTrade
@@ -244,6 +245,8 @@ const createManualTradeStore = (exchange, pair) => {
 
     try {
       const raw = JSON.parse(text);
+      const invalidReason = findInvalidManualTradesReason(raw);
+      if (invalidReason) throw new Error(`manual-trades.json ${invalidReason}`);
       // Build locally and commit only after the whole file validates.
       const loadedTrades = [];
       const loadedDismissed = [];

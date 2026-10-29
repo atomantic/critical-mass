@@ -144,7 +144,7 @@ const NON_FUND_DIRS = new Set(['backups', 'updown']);
 
 /**
  * Per-fund / UpDown accounting file kinds this module knows how to validate.
- * @typedef {'ledger' | 'fund-state' | 'updown-state' | 'placement-intents'} PayloadKind
+ * @typedef {'ledger' | 'fund-state' | 'updown-state' | 'placement-intents' | 'manual-trades' | 'corrective-buys'} PayloadKind
  */
 
 /**
@@ -161,6 +161,8 @@ const classifyPayloadPath = (relPath) => {
   if (isFundLevel && name === 'fill-ledger.json') return 'ledger';
   if (isFundLevel && (name === 'state.json' || name === 'regime-state.json')) return 'fund-state';
   if (isFundLevel && name === PLACEMENT_INTENTS_FILENAME) return 'placement-intents';
+  if (isFundLevel && name === 'manual-trades.json') return 'manual-trades';
+  if (isFundLevel && name === 'pending-corrective-buys.json') return 'corrective-buys';
   if (segments.length === 1 && name === 'updown-state.json') return 'updown-state';
   return null;
 };
@@ -172,12 +174,44 @@ const classifyPayloadPath = (relPath) => {
 const describeType = (value) => (value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value);
 
 /**
+ * Pure shape check shared by the manual-trade store loader, the startup
+ * recovery-buy exclusion and restore validation. Legacy empty documents
+ * (`{}`, no `trades`/`dismissedFillOrderIds`) stay valid; unknown fields pass.
+ * @param {unknown} doc - JSON-parsed manual-trades.json
+ * @returns {string | null} reason the store would quarantine it, else null
+ */
+const findInvalidManualTradesReason = (doc) => {
+  if (!isPlainObject(doc)) return `did not parse to an object (got ${describeType(doc)})`;
+  const { trades, dismissedFillOrderIds } = /** @type {any} */ (doc);
+  if (trades != null) {
+    if (!Array.isArray(trades)) return `has a non-array trades container (got ${describeType(trades)})`;
+    if (trades.some(row => !isPlainObject(row))) return 'contains an unreadable trade row';
+  }
+  if (dismissedFillOrderIds != null && !Array.isArray(dismissedFillOrderIds)) {
+    return `has a non-array dismissedFillOrderIds container (got ${describeType(dismissedFillOrderIds)})`;
+  }
+  return null;
+};
+
+/**
+ * Pure shape check for pending-corrective-buys.json (an array of rows).
+ * @param {unknown} doc - JSON-parsed pending-corrective-buys.json
+ * @returns {string | null} reason startup would fail to read it, else null
+ */
+const findInvalidCorrectiveBuysReason = (doc) => {
+  if (!Array.isArray(doc)) return `is not an array (got ${describeType(doc)})`;
+  return doc.some(row => !isPlainObject(row)) ? 'contains an unreadable corrective-buy row' : null;
+};
+
+/**
  * Apply the matching reader's refusal rules to a parsed payload.
  * @param {PayloadKind} kind
  * @param {unknown} data - JSON-parsed content
  * @returns {string | null} reason the reader would refuse it, else null
  */
 const findIncompatiblePayloadReason = (kind, data) => {
+  if (kind === 'manual-trades') return findInvalidManualTradesReason(data);
+  if (kind === 'corrective-buys') return findInvalidCorrectiveBuysReason(data);
   if (kind === 'ledger') {
     if (!Array.isArray(data)) return `is not an array (got ${describeType(data)})`;
     const newerFormat = maxLedgerFormatVersion(data);
@@ -230,5 +264,7 @@ module.exports = {
   findInvalidLedgerReason,
   classifyPayloadPath,
   findIncompatiblePayloadReason,
+  findInvalidManualTradesReason,
+  findInvalidCorrectiveBuysReason,
   validatePersistedPayload,
 };
