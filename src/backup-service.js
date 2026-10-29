@@ -851,6 +851,74 @@ const evaluateArchive = ({ archive, readManifest, allowLegacy }) => {
   return { ok: true };
 };
 
+/**
+ * Pre-namespace root artifacts have no fund directory in the archive; their
+ * restored location depends on the destination's pair, which is a restore-time
+ * choice and not a property of the archive. Payload rules depend only on path
+ * depth, so any stand-in pair yields the same verdict the real restore reaches.
+ */
+const INTRINSIC_LEGACY_PAIR = '_legacy';
+
+/**
+ * Accounting members of an archive paired with the path restore validates them
+ * at (supported legacy root files are judged at their translated location).
+ * @param {string[]} entries
+ * @returns {Array<{entry: string, target: string}>}
+ */
+const archivePayloadMembers = (entries) => {
+  const rootTargets = new Map(collectRootFilesFromEntries(entries)
+    .map((name) => [name, legacyRootArtifactTarget(name, INTRINSIC_LEGACY_PAIR)]));
+  return entries.flatMap((entry) => {
+    const target = rootTargets.get(entry) || entry;
+    return entry.endsWith('/') || !classifyPayloadPath(target) ? [] : [{ entry, target }];
+  });
+};
+
+/** Restore's verdict on one accounting member read from an archive. */
+const payloadMemberVerdict = (entry, target, read) => {
+  if (read.error || read.status !== 0) {
+    return { ok: false, code: 'archive-corrupt', error: `Unable to read ${entry} from the archive. No files were changed.` };
+  }
+  const checked = validatePersistedPayload(target, read.stdout);
+  return checked.ok
+    ? { ok: true }
+    : { ok: false, code: 'payload-incompatible', error: `Archive accounting is not readable by this build: ${checked.error}. No files were changed.` };
+};
+
+/** Largest accounting member the synchronous validity pass will buffer. */
+const PAYLOAD_VALIDATION_MAX_BYTES = 1024 * 1024 * 1024;
+
+/**
+ * Archive-local restorability (#1885): the refusals restore applies that depend
+ * only on the archive itself. Destination choices (fund removal, legacy base
+ * configuration) are deliberately absent, so one verdict serves publication,
+ * listing, retention and the schedule anchor.
+ * @param {string} zipPath
+ * @param {{entries: string[], members: Map<string, string>}} archive
+ */
+const checkArchiveRestorable = (zipPath, { entries, members }) => {
+  const journals = dcaImportJournalPaths(entries);
+  if (journals.length > 0) return { ok: false, ...archivedDcaImportRefusal(journals) };
+  for (const { entry, target } of archivePayloadMembers(entries)) {
+    const read = spawnSync('unzip', ['-p', zipPath, unzipMember(members.get(entry))], { timeout: SPAWN_TIMEOUT_MS, maxBuffer: PAYLOAD_VALIDATION_MAX_BYTES });
+    const verdict = payloadMemberVerdict(entry, target, read);
+    if (!verdict.ok) return verdict;
+  }
+  return { ok: true };
+};
+
+/** Non-blocking checkArchiveRestorable for the backup-creation path. */
+const checkArchiveRestorableAsync = async (zipPath, { entries, members }) => {
+  const journals = dcaImportJournalPaths(entries);
+  if (journals.length > 0) return { ok: false, ...archivedDcaImportRefusal(journals) };
+  for (const { entry, target } of archivePayloadMembers(entries)) {
+    const read = await spawnAsync('unzip', ['-p', zipPath, unzipMember(members.get(entry))]);
+    const verdict = payloadMemberVerdict(entry, target, read);
+    if (!verdict.ok) return verdict;
+  }
+  return { ok: true };
+};
+
 /** Validate an archive; only listing may admit the supported pre-manifest format. */
 const validateBackupArchive = (zipPath, { allowLegacy = false } = {}) => {
   const integrity = spawnSync('unzip', ['-tq', zipPath], { timeout: SPAWN_TIMEOUT_MS });
@@ -858,7 +926,8 @@ const validateBackupArchive = (zipPath, { allowLegacy = false } = {}) => {
   if (integrityFailure) return integrityFailure;
   const archive = inspectArchivePaths(zipPath);
   if (!archive.ok) return archive;
-  return evaluateArchive({ archive, allowLegacy, readManifest: (name) => readArchiveManifest(zipPath, name) });
+  const evaluated = evaluateArchive({ archive, allowLegacy, readManifest: (name) => readArchiveManifest(zipPath, name) });
+  return evaluated.ok ? checkArchiveRestorable(zipPath, archive) : evaluated;
 };
 
 /** Non-blocking validateBackupArchive for the backup-creation path. */
@@ -870,7 +939,8 @@ const validateBackupArchiveAsync = async (zipPath, { allowLegacy = false } = {})
   if (!archive.ok) return archive;
   const manifestName = archive.members.get(MANIFEST_FILENAME);
   const manifestRead = manifestName ? await spawnAsync('unzip', ['-p', zipPath, unzipMember(manifestName)]) : null;
-  return evaluateArchive({ archive, allowLegacy, readManifest: () => parseManifestRead(manifestRead) });
+  const evaluated = evaluateArchive({ archive, allowLegacy, readManifest: () => parseManifestRead(manifestRead) });
+  return evaluated.ok ? checkArchiveRestorableAsync(zipPath, archive) : evaluated;
 };
 
 /**
@@ -2175,12 +2245,8 @@ const checkRestorePreconditions = async (filename, { paths: pathOverrides, legac
   for (const entry of entries) {
     const target = rootTargets.get(entry) || entry;
     if (entry.endsWith('/') || !classifyPayloadPath(target)) continue;
-    const read = await readEntry(entry);
-    if (read.error || read.status !== 0) {
-      return { ok: false, code: 'archive-corrupt', error: `Unable to read ${entry} from the archive. No files were changed.` };
-    }
-    const checked = validatePersistedPayload(target, read.stdout);
-    if (!checked.ok) return { ok: false, code: 'payload-incompatible', error: `Archive accounting is not readable by this build: ${checked.error}. No files were changed.` };
+    const verdict = payloadMemberVerdict(entry, target, await readEntry(entry));
+    if (!verdict.ok) return verdict;
   }
   return { ok: true };
 };

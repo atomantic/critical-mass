@@ -315,6 +315,16 @@ describe('checkRestorePreconditions mirrors the applier refusals without extract
     fs.copyFileSync(path.join(from.dataDir, 'backups', filename), path.join(to.dataDir, 'backups', filename));
   };
   const listDir = (dir) => fs.readdirSync(dir).sort();
+  // Production creation refuses archives restore would reject (#1885), so a
+  // deliberately unrestorable archive is a valid one with members overwritten.
+  const plantMembers = (install, filename, members) => {
+    const staging = fs.mkdtempSync(path.join(root, 'plant-'));
+    for (const [rel, bytes] of Object.entries(members)) {
+      fs.mkdirSync(path.dirname(path.join(staging, rel)), { recursive: true });
+      fs.writeFileSync(path.join(staging, rel), typeof bytes === 'string' ? bytes : JSON.stringify(bytes));
+    }
+    assert.equal(spawnSync('zip', ['-q', path.join(install.dataDir, 'backups', filename), ...Object.keys(members)], { cwd: staging }).status, 0);
+  };
 
   beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-restore-preflight-')); });
   afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -481,9 +491,9 @@ describe('checkRestorePreconditions mirrors the applier refusals without extract
     it('refuses an archive that carries an unresolved import journal', async () => {
       const source = makeInstall('source', BASE);
       seedAccounting(source);
-      pendImport(source);
       const created = await createBackup({ paths: source.paths });
       assert.equal(created.success, true, created.error);
+      plantMembers(source, created.filename, { 'coinbase/ETH-USDC/regime-state.json': { position: { totalAsset: 1 } }, [`coinbase/ETH-USDC/${JOURNAL_FILENAME}`]: { version: 1, status: 'publishing', entries: [] } });
       const dest = makeInstall('dest', BASE);
       seedAccounting(dest);
       transfer(source, dest, created.filename);
@@ -544,9 +554,9 @@ describe('checkRestorePreconditions mirrors the applier refusals without extract
     };
     for (const [name, { ledger, reason }] of Object.entries(incompatible)) {
       const source = makeInstall(`source-${name}`, BASE);
-      writeJson(path.join(source.dataDir, 'coinbase', 'ETH-USDC', 'fill-ledger.json'), ledger);
       const created = await createBackup({ paths: source.paths });
       assert.equal(created.success, true, created.error);
+      plantMembers(source, created.filename, { 'coinbase/ETH-USDC/fill-ledger.json': ledger });
       const dest = makeInstall(`dest-${name}`, BASE);
       const destLedger = path.join(dest.dataDir, 'coinbase', 'ETH-USDC', 'fill-ledger.json');
       writeJson(destLedger, ledgerOf('working'));
@@ -996,8 +1006,8 @@ describe('checkRestorePreconditions mirrors the applier refusals without extract
   it('refuses invalid JSON and a non-object state file in an archive (#1811)', async () => {
     const source = makeInstall('source', BASE);
     fs.mkdirSync(path.join(source.dataDir, 'coinbase', 'ETH-USDC'), { recursive: true });
-    fs.writeFileSync(path.join(source.dataDir, 'coinbase', 'ETH-USDC', 'fill-ledger.json'), '{not json');
     const created = await createBackup({ paths: source.paths });
+    plantMembers(source, created.filename, { 'coinbase/ETH-USDC/fill-ledger.json': '{not json' });
     const dest = makeInstall('dest', BASE);
     transfer(source, dest, created.filename);
     const jsonCheck = await checkRestorePreconditions(created.filename, { paths: dest.paths });
@@ -1005,8 +1015,8 @@ describe('checkRestorePreconditions mirrors the applier refusals without extract
     assert.match(jsonCheck.error, /corrupted or unreadable/);
 
     writeJson(path.join(source.dataDir, 'coinbase', 'ETH-USDC', 'fill-ledger.json'), ledgerOf('t1'));
-    writeJson(path.join(source.dataDir, 'coinbase', 'ETH-USDC', 'regime-state.json'), [1]);
     const second = await createBackup({ paths: source.paths });
+    plantMembers(source, second.filename, { 'coinbase/ETH-USDC/regime-state.json': [1] });
     transfer(source, dest, second.filename);
     const stateCheck = await checkRestorePreconditions(second.filename, { paths: dest.paths });
     assert.equal(stateCheck.code, 'payload-incompatible');
@@ -1058,9 +1068,9 @@ describe('checkRestorePreconditions mirrors the applier refusals without extract
       for (const [name, bytes] of Object.entries(malformed)) {
         const source = makeInstall(`source-${name}`, BASE);
         writeJson(path.join(source.dataDir, 'coinbase', 'ETH-USDC', 'fill-ledger.json'), ledgerOf('t1'));
-        fs.writeFileSync(intentsPath(source), bytes);
         const created = await createBackup({ paths: source.paths });
         assert.equal(created.success, true, created.error);
+        plantMembers(source, created.filename, { 'coinbase/ETH-USDC/placement-intents.json': bytes });
         const dest = makeInstall(`dest-${name}`, BASE);
         const destLedger = path.join(dest.dataDir, 'coinbase', 'ETH-USDC', 'fill-ledger.json');
         writeJson(destLedger, ledgerOf('working'));
