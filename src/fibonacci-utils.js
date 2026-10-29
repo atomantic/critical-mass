@@ -97,6 +97,12 @@ const createInitialFibState = () => ({
   fibSellOrderCoveredAsset: 0,
   fibSellOrderCoveredCost: 0,
   fibSellOrderCoveredPosition: 0,
+  // Asset this cycle already sold through partially-executed sells (cancelled
+  // live, or cancelled/expired by the exchange), and the ids of the sells
+  // credited, so each is credited once and every replacement sell shrinks by
+  // what already sold (issue #1887).
+  fibCycleSoldAsset: 0,
+  fibCreditedSellOrderIds: [],
 });
 
 /**
@@ -130,6 +136,8 @@ const resetFibState = () => ({
   fibSellOrderCoveredAsset: 0,
   fibSellOrderCoveredCost: 0,
   fibSellOrderCoveredPosition: 0,
+  fibCycleSoldAsset: 0,
+  fibCreditedSellOrderIds: [],
 });
 
 module.exports = {

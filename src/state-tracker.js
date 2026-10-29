@@ -424,16 +424,119 @@ const updateAfterSellFill = (state, fillDetails) => {
   // Find and update the order
   const orderIndex = state.orders.findIndex(o => o.orderId === fillDetails.orderId);
   if (orderIndex >= 0) {
-    state.outstandingOrdersUSDC -= state.orders[orderIndex].sellQuantity * state.orders[orderIndex].sellPrice;
-    state.orders[orderIndex].status = 'filled';
-    state.orders[orderIndex].filledAt = new Date().toISOString();
-    state.orders[orderIndex].actualFillValue = fillDetails.fillValue;
-    state.orders[orderIndex].sellFees = sellFees;
-    state.orders[orderIndex].sellRebates = sellRebates;
-    state.orders[orderIndex].sellNetFees = sellNetFees;
-    state.orders[orderIndex].netProceeds = netProceeds;
+    const order = state.orders[orderIndex];
+    state.outstandingOrdersUSDC -= order.sellQuantity * order.sellPrice;
+    order.status = 'filled';
+    order.filledAt = new Date().toISOString();
+    order.actualFillValue = fillDetails.fillValue;
+    order.sellFees = sellFees;
+    order.sellRebates = sellRebates;
+    order.sellNetFees = sellNetFees;
+    order.netProceeds = netProceeds;
+    foldExecutedSells(order);
   }
 
+  return state;
+};
+
+/** Per-row totals of what earlier cancelled sells executed (issue #1887). */
+const EXECUTED_SELL_FIELDS = Object.freeze([
+  'executedSellQuantity',
+  'executedSellValue',
+  'executedSellNetProceeds',
+  'executedSellFees',
+  'executedSellRebates',
+  'executedSellNetFees',
+]);
+
+/**
+ * Fold the portions earlier cancelled sells executed into a row's completed
+ * sell totals, so the row reports everything it sold — not only its last
+ * sell's remainder. Those portions were credited to the fund when booked, so
+ * this touches no fund-level aggregate.
+ * @param {TrackedOrder} order - Row whose final sell just completed
+ * @returns {void}
+ */
+const foldExecutedSells = (order) => {
+  if (!(order.executedSellQuantity > 0)) return;
+  order.sellQuantity += order.executedSellQuantity;
+  order.actualFillValue = (order.actualFillValue || 0) + (order.executedSellValue || 0);
+  order.netProceeds = (order.netProceeds || 0) + (order.executedSellNetProceeds || 0);
+  order.sellFees = (order.sellFees || 0) + (order.executedSellFees || 0);
+  order.sellRebates = (order.sellRebates || 0) + (order.executedSellRebates || 0);
+  order.sellNetFees = (order.sellNetFees || 0) + (order.executedSellNetFees || 0);
+};
+
+/**
+ * Settle a pending sell that left the book CANCELLED/EXPIRED/FAILED (issue #1887).
+ *
+ * Its resting exposure is gone in full. Whatever it executed is real money:
+ * the net proceeds and fees are credited here, once — the row leaves 'pending'
+ * in the same mutation, so a repeated sync never sees it again. The unsold
+ * remainder stays on the row as a 'sell_failed' sell of just that quantity,
+ * visible and retryable through retryFailedSell without re-selling what
+ * executed. A zero-fill cancellation credits nothing and keeps the whole
+ * quantity retryable. A cancellation whose execution covered the whole sell
+ * completes the row as filled. Holdback is untouched: it was booked with the
+ * buy and never rested on the sell.
+ * @param {BotState} state - Current state
+ * @param {FilledSellOrder} fillDetails - What the cancelled sell executed
+ * @returns {BotState} Updated state
+ */
+const settleCancelledSell = (state, fillDetails) => {
+  const order = state.orders.find(o => o.orderId === fillDetails.orderId && o.status === 'pending');
+  if (!order) return state;
+
+  const restingQuantity = order.sellQuantity || 0;
+  state.outstandingOrdersAsset = Math.max(0, state.outstandingOrdersAsset - restingQuantity);
+  state.outstandingOrdersUSDC = Math.max(0, state.outstandingOrdersUSDC - restingQuantity * (order.sellPrice || 0));
+
+  const executed = Math.max(0, Number(fillDetails.filledSize) || 0);
+  const now = new Date().toISOString();
+  if (executed > 0) {
+    const sellFees = fillDetails.fees || 0;
+    const sellRebates = fillDetails.rebates || 0;
+    const sellNetFees = fillDetails.netFees || 0;
+    const fillValue = fillDetails.fillValue || 0;
+    const netProceeds = fillDetails.netProceeds ?? (fillValue - sellNetFees);
+
+    state.usdcFundSize += netProceeds;
+    state.totalFees = (state.totalFees || 0) + sellFees;
+    state.totalRebates = (state.totalRebates || 0) + sellRebates;
+    state.netFees = (state.netFees || 0) + sellNetFees;
+
+    order.executedSellQuantity = (order.executedSellQuantity || 0) + executed;
+    order.executedSellValue = (order.executedSellValue || 0) + fillValue;
+    order.executedSellNetProceeds = (order.executedSellNetProceeds || 0) + netProceeds;
+    order.executedSellFees = (order.executedSellFees || 0) + sellFees;
+    order.executedSellRebates = (order.executedSellRebates || 0) + sellRebates;
+    order.executedSellNetFees = (order.executedSellNetFees || 0) + sellNetFees;
+    order.partialSellOrderIds = [...(order.partialSellOrderIds || []), fillDetails.orderId];
+  }
+
+  const remaining = restingQuantity - executed;
+  if (remaining <= Math.max(1e-12, restingQuantity * 1e-9)) {
+    // Executed in full despite the terminal label: the row is complete.
+    order.sellQuantity = 0;
+    order.status = 'filled';
+    order.filledAt = now;
+    order.actualFillValue = 0;
+    order.netProceeds = 0;
+    order.sellFees = 0;
+    order.sellRebates = 0;
+    order.sellNetFees = 0;
+    foldExecutedSells(order);
+    return state;
+  }
+
+  const status = fillDetails.status || 'CANCELLED';
+  order.sellQuantity = remaining;
+  order.status = 'sell_failed';
+  order.sellFailedReason = executed > 0
+    ? `sell ${fillDetails.orderId} ended ${status} after executing ${executed} of ${restingQuantity}; the unsold ${remaining} needs a new sell`
+    : `sell ${fillDetails.orderId} ended ${status} with nothing executed`;
+  order.sellFailedAt = now;
+  delete order.sellPlacementUnresolved;
   return state;
 };
 
@@ -472,8 +575,12 @@ const updateAfterConsolidation = (state, consolidatedOrders, newOrderId, newSell
   let totalBuyFees = 0;
   let totalBuyRebates = 0;
   let totalBuyNetFees = 0;
+  // Portions earlier cancelled sells executed (issue #1887) travel with the
+  // consolidated row so its final fill still reports everything sold.
+  const executedSells = Object.fromEntries(EXECUTED_SELL_FIELDS.map(field => [field, 0]));
 
   for (const order of consolidatedOrders) {
+    for (const field of EXECUTED_SELL_FIELDS) executedSells[field] += order[field] || 0;
     totalBuyCostBasis += order.buyCostBasis || (order.buyUSDC + (order.buyNetFees || 0));
     totalBuyQuantityBTC += order.buyQuantity;
     totalHoldbackBTC += order.holdbackAsset || 0;
@@ -513,6 +620,7 @@ const updateAfterConsolidation = (state, consolidatedOrders, newOrderId, newSell
     createdAt: now,
     isConsolidated: true,
     sourceOrderIds,
+    ...(executedSells.executedSellQuantity > 0 ? executedSells : {}),
   };
 
   state.orders.push(consolidatedOrder);
@@ -809,6 +917,12 @@ const settleFibSellAndCarryUncoveredBuys = (state, fillDetails) => {
  * @returns {BotState} Updated state
  */
 const creditFibPartialSell = (state, fillDetails) => {
+  // Exactly once per sell: a cancelled sell can be observed again (a restart,
+  // or the replacement path seeing the same terminal order) after its credit
+  // was saved (issue #1887).
+  const credited = state.fibCreditedSellOrderIds || [];
+  if (fillDetails.orderId && credited.includes(fillDetails.orderId)) return state;
+
   const sellFees = fillDetails.fees || 0;
   const sellRebates = fillDetails.rebates || 0;
   const sellNetFees = fillDetails.netFees || 0;
@@ -824,8 +938,42 @@ const creditFibPartialSell = (state, fillDetails) => {
   state.totalRebates = (state.totalRebates || 0) + sellRebates;
   state.netFees = (state.netFees || 0) + sellNetFees;
 
+  // Every later replacement in this cycle sells only what is still unsold.
+  state.fibCycleSoldAsset = (state.fibCycleSoldAsset || 0) + (fillDetails.filledSize || 0);
+  if (fillDetails.orderId) state.fibCreditedSellOrderIds = [...credited, fillDetails.orderId];
+
   return state;
 };
+
+/**
+ * Settle the active Fibonacci sell after it left the book CANCELLED/EXPIRED
+ * without completing (issue #1887). Its executed portion (if any) is credited
+ * once via creditFibPartialSell; the cycle continues — cumulative, position and
+ * pending holdback are untouched and the holdback is NOT realized. No sell
+ * rests any more, so the active identity and outstanding exposure clear; the
+ * next consolidated sell re-covers the cycle less what already sold.
+ * @param {BotState} state - Current state
+ * @param {FibonacciFillDetails} fillDetails - What the cancelled sell executed
+ * @returns {BotState} Updated state
+ */
+const settleFibCancelledSell = (state, fillDetails) => {
+  if ((fillDetails.filledSize || 0) > 0) creditFibPartialSell(state, fillDetails);
+  if (state.fibActiveSellOrderId !== fillDetails.orderId) return state;
+  state.fibActiveSellOrderId = null;
+  state.outstandingOrdersAsset = 0;
+  state.outstandingOrdersUSDC = 0;
+  return state;
+};
+
+/**
+ * The sold-so-far context a Fibonacci replacement sell needs (issue #1887).
+ * @param {BotState} state - Current state
+ * @returns {{soldAsset: number, creditedSellOrderIds: string[]}} Cycle sold context
+ */
+const getFibCycleSold = (state) => ({
+  soldAsset: state.fibCycleSoldAsset || 0,
+  creditedSellOrderIds: state.fibCreditedSellOrderIds || [],
+});
 
 /**
  * Get current Fibonacci cycle information
@@ -1112,6 +1260,9 @@ module.exports = {
   settleFibSellAndCarryUncoveredBuys,
   updateAfterFibSellFill: settleFibSellAndCarryUncoveredBuys,
   creditFibPartialSell,
+  settleFibCancelledSell,
+  getFibCycleSold,
+  settleCancelledSell,
   getFibonacciCycleInfo,
   // Regime state management
   // (updateRegimeStateAfterTP was removed — used a `realizedPnL += pnl`

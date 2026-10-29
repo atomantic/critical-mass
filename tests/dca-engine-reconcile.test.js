@@ -710,6 +710,181 @@ describe('retryFailedSell (issue #1035)', () => {
       const ok = await engine.retryFailedSell(EXCHANGE, PAIR, row.buyOrderId);
       assert.equal(ok.success, true, JSON.stringify(ok));
       assert.equal(ex.sellAttempts.length, 2);
+  // issue #1887 — a sell that ends CANCELLED/EXPIRED after executing part of
+  // its size. Fixed DCA credits it once through repeated syncs and reloads and
+  // leaves only the unsold remainder as a retryable failed sell; Fibonacci
+  // credits it, keeps its cycle and shrinks every replacement.
+  // -------------------------------------------------------------------------
+  describe('terminal partial sells (issue #1887)', () => {
+    /** @type {Record<string, Object>} */
+    let sellStatus;
+    /** @type {Array<string>} */
+    let feeLookups;
+    /** @type {Array<Object>} */
+    let loggedSellFills;
+    /** @type {Function} */
+    let originalLogSellFilled;
+
+    beforeEach(() => {
+      sellStatus = {};
+      feeLookups = [];
+      loggedSellFills = [];
+      const buyStatus = ex.adapter.getOrder;
+      ex.adapter.getOrder = async (orderId) => sellStatus[orderId] ?? buyStatus(orderId);
+      ex.adapter.cancelOrder = async () => ({ success: true });
+      ex.adapter.getOrderFillSummary = async (orderId) => {
+        feeLookups.push(orderId);
+        return { totalFees: 0.5, totalRebates: 0, netFees: 0.5, fills: [] };
+      };
+      // Drive the real fill reconciliation, not the suite's empty stub.
+      orderManager.checkFilledOrders = originals.checkFilledOrders;
+      originalLogSellFilled = logger.logSellFilled;
+      logger.logSellFilled = (fill) => { loggedSellFills.push(fill); };
+    });
+
+    afterEach(() => {
+      logger.logSellFilled = originalLogSellFilled;
+    });
+
+    /** Run a live cycle whose buy fills and whose covering sell rests. */
+    const buyWithRestingSell = async () => {
+      ex.sellMode = 'accept';
+      const result = await engine.runIntervalCycle(EXCHANGE, PAIR);
+      assert.equal(result.status, 'success', JSON.stringify(result));
+      const [row] = readState().orders;
+      assert.equal(row.status, 'pending');
+      return row;
+    };
+
+    it('fixed DCA: a cancelled partial is credited once across repeated syncs and reloads, and only the remainder is re-sold', async () => {
+      const row = await buyWithRestingSell();
+      const booked = readState();
+      const executed = row.sellQuantity * 0.4;
+      const value = executed * row.sellPrice;
+      sellStatus[row.orderId] = { orderId: row.orderId, status: 'CANCELLED', filledSize: executed, filledValue: value, averageFilledPrice: row.sellPrice };
+
+      const first = await engine.syncFundOrders(EXCHANGE, PAIR);
+      assert.equal(first.filledOrders.length, 1);
+      const settled = readState();
+      assert.ok(Math.abs(settled.usdcFundSize - (booked.usdcFundSize + value - 0.5)) < 1e-9, 'net proceeds credited');
+      assert.ok(Math.abs(settled.netFees - (booked.netFees + 0.5)) < 1e-12);
+      assert.ok(Math.abs(settled.outstandingOrdersAsset) < 1e-12, 'no resting sell remains');
+      assert.ok(Math.abs(settled.outstandingOrdersUSDC) < 1e-9);
+      assert.equal(settled.assetReserves, booked.assetReserves, 'holdback untouched');
+      const [failed] = settled.orders;
+      assert.equal(failed.status, 'sell_failed');
+      assert.ok(Math.abs(failed.sellQuantity - (row.sellQuantity - executed)) < 1e-12);
+      assert.equal(loggedSellFills.length, 1, 'the executed portion is logged once');
+
+      // Repeated sync, then a cold restart: nothing is credited again.
+      const second = await engine.syncFundOrders(EXCHANGE, PAIR);
+      assert.equal(second.filledOrders.length, 0);
+      restartEngine();
+      const status = await engine.checkStatus(EXCHANGE, PAIR);
+      assert.deepEqual(readState(), settled);
+      assert.equal(status.state.failedSells.length, 1, 'the unsold remainder stays visible');
+      assert.equal(status.state.pendingOrders, 0);
+
+      const attempts = ex.sellAttempts.length;
+      const retried = await engine.retryFailedSell(EXCHANGE, PAIR, row.buyOrderId);
+      assert.equal(retried.success, true, JSON.stringify(retried));
+      assert.equal(ex.sellAttempts.length - attempts, 1);
+      assert.ok(Math.abs(ex.sellAttempts.at(-1).size - (row.sellQuantity - executed)) < 1e-12, 'only the unsold remainder is offered');
+      const resting = readState();
+      assert.ok(Math.abs(resting.outstandingOrdersAsset - (row.sellQuantity - executed)) < 1e-12);
+
+      const remainderOrder = retried.sellOrder.orderId;
+      const remainderValue = (row.sellQuantity - executed) * resting.orders[0].sellPrice;
+      sellStatus[remainderOrder] = { orderId: remainderOrder, status: 'FILLED', filledSize: row.sellQuantity - executed, filledValue: remainderValue, averageFilledPrice: resting.orders[0].sellPrice };
+      await engine.syncFundOrders(EXCHANGE, PAIR);
+      const done = readState();
+      const [filled] = done.orders;
+      assert.equal(filled.status, 'filled');
+      assert.ok(Math.abs(filled.sellQuantity - row.sellQuantity) < 1e-12, 'the row reports the whole sold quantity');
+      assert.ok(Math.abs(filled.netProceeds - (value - 0.5 + remainderValue - 0.5)) < 1e-9);
+      assert.ok(Math.abs(done.usdcFundSize - (booked.usdcFundSize + value + remainderValue - 1)) < 1e-9);
+      assert.ok(Math.abs(done.outstandingOrdersAsset) < 1e-12);
+      assert.equal(ex.placedBuys, 1, 'no buy along the way');
+    });
+
+    it('fixed DCA: a zero-fill expiry credits nothing and leaves the whole sell retryable', async () => {
+      const row = await buyWithRestingSell();
+      const booked = readState();
+      feeLookups.length = 0;
+      sellStatus[row.orderId] = { orderId: row.orderId, status: 'EXPIRED', filledSize: 0, filledValue: 0, averageFilledPrice: 0 };
+
+      await engine.syncFundOrders(EXCHANGE, PAIR);
+
+      const after = readState();
+      assert.equal(after.usdcFundSize, booked.usdcFundSize);
+      assert.equal(after.netFees, booked.netFees);
+      assert.equal(after.outstandingOrdersAsset, 0);
+      assert.equal(after.orders[0].status, 'sell_failed');
+      assert.ok(Math.abs(after.orders[0].sellQuantity - row.sellQuantity) < 1e-12);
+      assert.deepEqual(feeLookups, [], 'no fee lookup when nothing executed');
+      assert.equal(loggedSellFills.length, 0);
+    });
+
+    it('fixed DCA: an UNKNOWN status keeps the sell owned and pending; a full fill books once', async () => {
+      const row = await buyWithRestingSell();
+      const booked = readState();
+      sellStatus[row.orderId] = { orderId: row.orderId, status: 'UNKNOWN', filledSize: row.sellQuantity * 0.4, filledValue: 1, averageFilledPrice: 0 };
+
+      assert.equal((await engine.syncFundOrders(EXCHANGE, PAIR)).filledOrders.length, 0);
+      assert.deepEqual(readState(), booked, 'nothing changes while the status is unconfirmed');
+
+      const value = row.sellQuantity * row.sellPrice;
+      sellStatus[row.orderId] = { orderId: row.orderId, status: 'FILLED', filledSize: row.sellQuantity, filledValue: value, averageFilledPrice: row.sellPrice };
+      await engine.syncFundOrders(EXCHANGE, PAIR);
+      await engine.syncFundOrders(EXCHANGE, PAIR);
+      const after = readState();
+      assert.equal(after.orders[0].status, 'filled');
+      assert.ok(Math.abs(after.usdcFundSize - (booked.usdcFundSize + value - 0.5)) < 1e-9, 'credited once');
+    });
+
+    it('Fibonacci: an expired partial is credited once, keeps its cycle and holdback, and shrinks every replacement', async () => {
+      fundConfig.dcaStrategy = 'fibonacci';
+      fundConfig.fibBaseAmount = 100;
+      ex.sellMode = 'accept';
+      const nextInterval = () => writeState({ ...readState(), lastRunId: 'an-earlier-interval' });
+
+      assert.equal((await engine.runIntervalCycle(EXCHANGE, PAIR)).status, 'success');
+      const first = readState();
+      const firstSell = first.fibActiveSellOrderId;
+      const firstQty = ex.sellAttempts.at(-1).size;
+      const executed = firstQty * 0.4;
+      const value = executed * 52000;
+      sellStatus[firstSell] = { orderId: firstSell, status: 'EXPIRED', filledSize: executed, filledValue: value, averageFilledPrice: 52000 };
+
+      nextInterval();
+      assert.equal((await engine.runIntervalCycle(EXCHANGE, PAIR)).status, 'success');
+      const second = readState();
+      const boughtAsset = second.fibCumulativeAsset - first.fibCumulativeAsset;
+      const target = second.fibCumulativeAsset * (1 - fundConfig.holdbackPercent / 100);
+      assert.ok(Math.abs(ex.sellAttempts.at(-1).size - (target - executed)) < 1e-12, 'replacement excludes the executed portion');
+      assert.ok(Math.abs(second.fibCycleSoldAsset - executed) < 1e-12);
+      assert.deepEqual(second.fibCreditedSellOrderIds, [firstSell]);
+      assert.equal(second.fibPosition, 2, 'the cycle continues');
+      assert.ok(boughtAsset > 0);
+      assert.equal(second.assetReserves, first.assetReserves, 'holdback is not realized by a partial');
+      assert.ok(Math.abs(second.fibPendingHoldback - second.fibCumulativeAsset * fundConfig.holdbackPercent / 100) < 1e-12);
+      const allocated = second.totalAllocated - first.totalAllocated;
+      // Fund: + executed proceeds (less 0.5 sell fee) − this interval's buy (plus its 0.5 fee).
+      assert.ok(Math.abs(second.usdcFundSize - (first.usdcFundSize + value - 0.5 - allocated - 0.5)) < 1e-9);
+      assert.ok(Math.abs(second.outstandingOrdersAsset - (target - executed)) < 1e-12, 'exposure is the resting replacement');
+
+      // A later replacement (the resting sell untouched, another buy) still
+      // subtracts what already sold — and credits nothing again.
+      const replacement = second.fibActiveSellOrderId;
+      sellStatus[replacement] = { orderId: replacement, status: 'OPEN', filledSize: 0, filledValue: 0, averageFilledPrice: 0 };
+      restartEngine();
+      nextInterval();
+      assert.equal((await engine.runIntervalCycle(EXCHANGE, PAIR)).status, 'success');
+      const third = readState();
+      const thirdTarget = third.fibCumulativeAsset * (1 - fundConfig.holdbackPercent / 100);
+      assert.ok(Math.abs(ex.sellAttempts.at(-1).size - (thirdTarget - executed)) < 1e-12);
+      assert.ok(Math.abs(third.fibCycleSoldAsset - executed) < 1e-12);
+      assert.ok(Math.abs(third.usdcFundSize - (second.usdcFundSize - (third.totalAllocated - second.totalAllocated) - 0.5)) < 1e-9, 'no second credit');
     });
   });
 });

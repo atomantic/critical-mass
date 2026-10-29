@@ -2,9 +2,11 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { placeFibonacciSellOrder } = require('../src/order-manager');
+const { placeFibonacciSellOrder, checkFibonacciSellFill } = require('../src/order-manager');
 const {
   creditFibPartialSell,
+  settleFibCancelledSell,
+  getFibCycleSold,
   updateAfterFibSellOrder,
   updateAfterFibSellFill,
   settleFibSellAndCarryUncoveredBuys,
@@ -173,14 +175,14 @@ describe('placeFibonacciSellOrder — fully-open previous sell (cancel and repla
     assert.ok(Math.abs(result.sellQuantity - target) < 1e-9, 'full consolidated size when nothing was executed');
   });
 
-  it('a terminal (CANCELLED) prev order with a residual fill is NOT re-cancelled — places new full sell', async () => {
+  it('a terminal (CANCELLED) prev order with a residual fill is not re-cancelled — credits it and shrinks the new sell (issue #1887)', async () => {
     const calls = [];
     const config = baseConfig();
     const adapter = makeAdapter({
       calls,
       getOrder: () => ({ status: 'CANCELLED', filledSize: 0.1, filledValue: 200, averageFilledPrice: 2000 }),
       cancelOrder: () => ({ success: true }),
-      getOrderFillSummary: () => ({ totalFees: 0, totalRebates: 0, netFees: 0 }),
+      getOrderFillSummary: () => ({ totalFees: 0.3, totalRebates: 0, netFees: 0.3 }),
     });
 
     const cumulativeAsset = 1.05;
@@ -188,9 +190,101 @@ describe('placeFibonacciSellOrder — fully-open previous sell (cancel and repla
 
     assert.ok(!calls.some(c => c.method === 'cancelOrder'), 'must not cancel a terminal order');
     assert.equal(result.alreadyFilled, false);
-    assert.equal(result.prevFill, null);
+    assert.ok(result.prevFill, 'the executed portion is handed back for crediting');
+    assert.equal(result.prevFill.orderId, 'cancelled-1');
+    assert.equal(result.prevFill.filledSize, 0.1);
+    assert.equal(result.prevFill.cancelled, true);
+    assert.ok(Math.abs(result.prevFill.netProceeds - (200 - 0.3)) < 1e-9);
     const target = getFibonacciSellQuantity(cumulativeAsset, config.holdbackPercent);
-    assert.ok(Math.abs(result.sellQuantity - target) < 1e-9, 'falls through to a full consolidated sell');
+    assert.ok(Math.abs(result.sellQuantity - (target - 0.1)) < 1e-9, 'the executed 0.1 is not offered again');
+    assert.ok(Math.abs(result.holdbackAsset - cumulativeAsset * 0.15) < 1e-9, 'holdback stays a fraction of the full cycle');
+  });
+
+  it('an EXPIRED 2-unit cycle sell that executed 0.4 is replaced by 1.6, not 2 (issue #1887)', async () => {
+    const calls = [];
+    const config = { ...baseConfig(), holdbackPercent: 0 };
+    const adapter = makeAdapter({
+      calls,
+      getOrder: () => ({ status: 'EXPIRED', filledSize: 0.4, filledValue: 42, averageFilledPrice: 105 }),
+      cancelOrder: () => ({ success: true }),
+      getOrderFillSummary: () => ({ totalFees: 0.1, totalRebates: 0, netFees: 0.1 }),
+    });
+
+    const result = await placeFibonacciSellOrder(config, 2, 100, 'expired-1', adapter);
+
+    const placed = calls.filter(c => c.method === 'placeLimitSell');
+    assert.equal(placed.length, 1);
+    assert.ok(Math.abs(placed[0].qty - 1.6) < 1e-9, `replacement submitted ${placed[0].qty}`);
+    assert.ok(Math.abs(result.prevFill.netProceeds - 41.9) < 1e-9);
+  });
+
+  it('a zero-fill terminal prev order places the full remaining sell and credits nothing', async () => {
+    const calls = [];
+    const config = baseConfig();
+    const adapter = makeAdapter({
+      calls,
+      getOrder: () => ({ status: 'CANCELLED', filledSize: 0, filledValue: 0, averageFilledPrice: 0 }),
+      cancelOrder: () => ({ success: true }),
+      getOrderFillSummary: () => ({ totalFees: 0, totalRebates: 0, netFees: 0 }),
+    });
+
+    const result = await placeFibonacciSellOrder(config, 1.05, 1900, 'cancelled-0', adapter);
+
+    assert.ok(!calls.some(c => c.method === 'cancelOrder'));
+    assert.ok(!calls.some(c => c.method === 'getOrderFillSummary'), 'no money moved, so no fee lookup');
+    assert.equal(result.prevFill, null);
+    assert.ok(Math.abs(result.sellQuantity - getFibonacciSellQuantity(1.05, config.holdbackPercent)) < 1e-9);
+  });
+
+  it('an UNKNOWN prev status is neither cancelled nor credited', async () => {
+    const calls = [];
+    const config = baseConfig();
+    const adapter = makeAdapter({
+      calls,
+      getOrder: () => ({ status: 'UNKNOWN', filledSize: 0.3, filledValue: 600, averageFilledPrice: 2000 }),
+      cancelOrder: () => ({ success: true }),
+      getOrderFillSummary: () => ({ totalFees: 0, totalRebates: 0, netFees: 0 }),
+    });
+
+    const result = await placeFibonacciSellOrder(config, 1.05, 1900, 'unknown-1', adapter);
+
+    assert.ok(!calls.some(c => c.method === 'cancelOrder'));
+    assert.equal(result.prevFill, null, 'an unconfirmed status is not booked as sold');
+    assert.ok(Math.abs(result.sellQuantity - getFibonacciSellQuantity(1.05, config.holdbackPercent)) < 1e-9);
+  });
+
+  it('subtracts asset the cycle already sold through earlier partials from every replacement', async () => {
+    const calls = [];
+    const config = baseConfig();
+    const adapter = makeAdapter({
+      calls,
+      getOrder: () => ({ status: 'OPEN', filledSize: 0, filledValue: 0, averageFilledPrice: 0 }),
+      cancelOrder: () => ({ success: true }),
+      getOrderFillSummary: () => ({ totalFees: 0, totalRebates: 0, netFees: 0 }),
+    });
+
+    const result = await placeFibonacciSellOrder(config, 2, 1900, 'open-2', adapter, null, { soldAsset: 0.4, creditedSellOrderIds: ['old-partial'] });
+
+    const target = getFibonacciSellQuantity(2, config.holdbackPercent);
+    assert.ok(Math.abs(result.sellQuantity - (target - 0.4)) < 1e-9);
+    assert.equal(result.prevFill, null);
+  });
+
+  it('a redelivered terminal prev order that was already credited is not subtracted or credited again', async () => {
+    const calls = [];
+    const config = baseConfig();
+    const adapter = makeAdapter({
+      calls,
+      getOrder: () => ({ status: 'CANCELLED', filledSize: 0.4, filledValue: 800, averageFilledPrice: 2000 }),
+      cancelOrder: () => ({ success: true }),
+      getOrderFillSummary: () => ({ totalFees: 0, totalRebates: 0, netFees: 0 }),
+    });
+
+    const result = await placeFibonacciSellOrder(config, 2, 1900, 'done-1', adapter, null, { soldAsset: 0.4, creditedSellOrderIds: ['done-1'] });
+
+    const target = getFibonacciSellQuantity(2, config.holdbackPercent);
+    assert.ok(Math.abs(result.sellQuantity - (target - 0.4)) < 1e-9, 'the 0.4 is subtracted exactly once');
+    assert.equal(result.prevFill, null, 'nothing new to credit');
   });
 
   it('OPEN cancel refused (filled in race) routes through fill path', async () => {
@@ -321,8 +415,119 @@ describe('creditFibPartialSell (Bug B) — book executed portion without resetti
     assert.ok(Math.abs(state.netFees - (4 + 1.4)) < 1e-9);
     assert.ok(Math.abs(state.totalFees - (5 + 1.6)) < 1e-9);
   });
+
+  it('credits each sell once and accumulates what the cycle sold (issue #1887)', () => {
+    const state = { ...createInitialFibState(), usdcFundSize: 1000, outstandingOrdersAsset: 0.9, outstandingOrdersUSDC: 1800, fibCumulativeAsset: 2, fibPosition: 3 };
+    const fill = { orderId: 'p-1', filledSize: 0.4, fillValue: 800, fees: 1, rebates: 0, netFees: 1, netProceeds: 799 };
+
+    creditFibPartialSell(state, fill);
+    creditFibPartialSell(state, fill);
+
+    assert.ok(Math.abs(state.usdcFundSize - 1799) < 1e-9, 'a redelivered credit is a no-op');
+    assert.equal(state.netFees, 1);
+    assert.deepEqual(getFibCycleSold(state), { soldAsset: 0.4, creditedSellOrderIds: ['p-1'] });
+
+    creditFibPartialSell(state, { ...fill, orderId: 'p-2', filledSize: 0.2, fillValue: 400, netFees: 0, fees: 0, netProceeds: 400 });
+    assert.ok(Math.abs(state.fibCycleSoldAsset - 0.6) < 1e-12);
+    assert.deepEqual(state.fibCreditedSellOrderIds, ['p-1', 'p-2']);
+  });
 });
 
+describe('settleFibCancelledSell (issue #1887) — terminal sell without completion', () => {
+  const cycleState = () => ({
+    ...createInitialFibState(),
+    usdcFundSize: 1000,
+    assetReserves: 0.2,
+    outstandingOrdersAsset: 1.7,
+    outstandingOrdersUSDC: 3400,
+    fibCumulativeAsset: 2,
+    fibCumulativeCost: 3800,
+    fibPosition: 3,
+    fibCycleStartTime: 123,
+    fibPendingHoldback: 0.3,
+    fibActiveSellOrderId: 'active-1',
+    fibSellOrderCoveredAsset: 2,
+    fibSellOrderCoveredCost: 3800,
+    fibSellOrderCoveredPosition: 3,
+    totalFees: 0,
+    totalRebates: 0,
+    netFees: 0,
+  });
+
+  it('credits the executed portion, clears the resting identity, and keeps the cycle and its holdback', () => {
+    const state = cycleState();
+    settleFibCancelledSell(state, { orderId: 'active-1', filledSize: 0.4, fillValue: 840, fees: 1, rebates: 0, netFees: 1, netProceeds: 839, cancelled: true });
+
+    assert.ok(Math.abs(state.usdcFundSize - 1839) < 1e-9);
+    assert.equal(state.fibActiveSellOrderId, null, 'nothing rests any more');
+    assert.equal(state.outstandingOrdersAsset, 0);
+    assert.equal(state.outstandingOrdersUSDC, 0);
+    assert.equal(state.fibCycleSoldAsset, 0.4);
+    // Cycle continues: no reset, no holdback realization.
+    assert.equal(state.fibCumulativeAsset, 2);
+    assert.equal(state.fibCumulativeCost, 3800);
+    assert.equal(state.fibPosition, 3);
+    assert.equal(state.fibCycleStartTime, 123);
+    assert.equal(state.fibPendingHoldback, 0.3);
+    assert.equal(state.assetReserves, 0.2);
+  });
+
+  it('a zero-fill terminal sell credits nothing but still clears the resting identity', () => {
+    const state = cycleState();
+    settleFibCancelledSell(state, { orderId: 'active-1', filledSize: 0, fillValue: 0, fees: 0, rebates: 0, netFees: 0, netProceeds: 0, cancelled: true });
+
+    assert.equal(state.usdcFundSize, 1000);
+    assert.equal(state.fibCycleSoldAsset, 0);
+    assert.deepEqual(state.fibCreditedSellOrderIds, []);
+    assert.equal(state.fibActiveSellOrderId, null);
+    assert.equal(state.fibPosition, 3);
+  });
+
+  it('the completing sell realizes the holdback and resets what the cycle sold', () => {
+    const state = cycleState();
+    settleFibCancelledSell(state, { orderId: 'active-1', filledSize: 0.4, fillValue: 840, fees: 0, rebates: 0, netFees: 0, netProceeds: 840, cancelled: true });
+    updateAfterFibSellOrder(state, { orderId: 'replacement-1', limitPrice: 2100 }, 1.3, 0.3);
+    assert.ok(Math.abs(state.outstandingOrdersAsset - 1.3) < 1e-12);
+
+    settleFibSellAndCarryUncoveredBuys(state, { orderId: 'replacement-1', filledSize: 1.3, fillValue: 2730, fees: 0, rebates: 0, netFees: 0, netProceeds: 2730 });
+
+    assert.ok(Math.abs(state.usdcFundSize - (1000 + 840 + 2730)) < 1e-9);
+    assert.ok(Math.abs(state.assetReserves - 0.5) < 1e-12, 'holdback realized once, at completion');
+    assert.equal(state.fibCycleSoldAsset, 0);
+    assert.deepEqual(state.fibCreditedSellOrderIds, []);
+    assert.equal(state.fibPosition, 0);
+  });
+});
+
+describe('checkFibonacciSellFill (issue #1887) — terminal outcomes', () => {
+  const adapterFor = (order, calls = []) => ({
+    getOrder: async () => order,
+    getOrderFillSummary: async (orderId) => { calls.push(orderId); return { totalFees: 0.2, totalRebates: 0, netFees: 0.2 }; },
+  });
+
+  it('reports a cancelled partial with its executed portion, flagged as not complete', async () => {
+    const fill = await checkFibonacciSellFill('s-1', adapterFor({ status: 'CANCELLED', filledSize: 0.4, filledValue: 42, averageFilledPrice: 105 }));
+    assert.equal(fill.cancelled, true);
+    assert.equal(fill.filledSize, 0.4);
+    assert.ok(Math.abs(fill.netProceeds - 41.8) < 1e-9);
+  });
+
+  it('reports a zero-fill expiry without a fee lookup', async () => {
+    const calls = [];
+    const fill = await checkFibonacciSellFill('s-2', adapterFor({ status: 'EXPIRED', filledSize: 0, filledValue: 0 }, calls));
+    assert.equal(fill.cancelled, true);
+    assert.equal(fill.filledSize, 0);
+    assert.deepEqual(calls, []);
+  });
+
+  it('a full fill is not flagged cancelled; live and UNKNOWN orders report nothing', async () => {
+    const filled = await checkFibonacciSellFill('s-3', adapterFor({ status: 'FILLED', filledSize: 1, filledValue: 100 }));
+    assert.equal(filled.cancelled, false);
+    assert.equal(await checkFibonacciSellFill('s-4', adapterFor({ status: 'OPEN', filledSize: 0.4 })), null);
+    assert.equal(await checkFibonacciSellFill('s-5', adapterFor({ status: 'PARTIALLY_FILLED', filledSize: 0.4 })), null);
+    assert.equal(await checkFibonacciSellFill('s-6', adapterFor({ status: 'UNKNOWN', filledSize: 0.4 })), null);
+  });
+});
 
 describe('completed Fibonacci sell carry contract', () => {
   const cases = [

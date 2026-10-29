@@ -208,3 +208,124 @@ describe('updateAfterConsolidation no-consolidation guard (issue #150)', () => {
     assert.equal(state.orders.find(o => o.orderId === 'old-a').status, 'consolidated');
   });
 });
+
+// ---------------------------------------------------------------------------
+// issue #1887 — a pending sell that ends CANCELLED/EXPIRED after executing
+// part of its size is real money. settleCancelledSell credits the executed
+// portion once, removes the whole resting exposure, and leaves only the unsold
+// remainder as a retryable failed sell; the final fill folds the earlier
+// executed portion back into the row's totals.
+// ---------------------------------------------------------------------------
+const { settleCancelledSell, updateAfterSellFill, reopenFailedSell, getFailedSellOrders } = require('../src/state-tracker');
+const { calculateCostBasis } = require('../src/shared-utils');
+
+describe('settleCancelledSell (issue #1887)', () => {
+  // 1 unit bought for 100 (+0 fees), 10% holdback, sell of 0.9 resting at 105.
+  const stateWithPendingSell = () => {
+    const config = { ...baseConfig, holdbackPercent: 10 };
+    const state = createInitialState(config);
+    recordBuyFill(state, { orderId: 'buy-1', assetAmount: 1, price: 100, usdcAmount: 100, fees: 0, rebates: 0, netFees: 0 }, config);
+    attachSellOrder(state, 'buy-1', { orderId: 'sell-1', limitPrice: 105 });
+    return state;
+  };
+  const cancelledPartial = (overrides = {}) => ({
+    orderId: 'sell-1', status: 'CANCELLED', cancelled: true,
+    filledSize: 0.4, fillValue: 42, averageFilledPrice: 105, fees: 0.1, rebates: 0, netFees: 0.1, netProceeds: 41.9,
+    ...overrides,
+  });
+
+  it('credits the executed portion once and keeps only the unsold remainder retryable', () => {
+    const state = stateWithPendingSell();
+    const fundBefore = state.usdcFundSize;
+    const reservesBefore = state.assetReserves;
+
+    settleCancelledSell(state, cancelledPartial());
+    settleCancelledSell(state, cancelledPartial()); // redelivered: no-op
+
+    assert.ok(Math.abs(state.usdcFundSize - (fundBefore + 41.9)) < 1e-9, 'net proceeds credited once');
+    assert.ok(Math.abs(state.netFees - 0.1) < 1e-12);
+    assert.equal(state.outstandingOrdersAsset, 0, 'the cancelled sell no longer rests');
+    assert.equal(state.outstandingOrdersUSDC, 0);
+    assert.equal(state.assetReserves, reservesBefore, 'designed holdback is untouched');
+
+    const [row] = state.orders;
+    assert.equal(row.status, 'sell_failed', 'not marked as a completed sell');
+    assert.ok(Math.abs(row.sellQuantity - 0.5) < 1e-12, 'only the unsold 0.5 remains to sell');
+    assert.equal(row.executedSellQuantity, 0.4);
+    assert.ok(Math.abs(row.executedSellNetProceeds - 41.9) < 1e-12);
+    assert.deepEqual(row.partialSellOrderIds, ['sell-1']);
+    assert.match(row.sellFailedReason, /CANCELLED after executing 0\.4/);
+    assert.equal(getPendingOrders(state).length, 0);
+    assert.equal(getFailedSellOrders(state).length, 1);
+  });
+
+  it('a retried remainder that fills completes the row with the full sold totals', () => {
+    const state = stateWithPendingSell();
+    const fundBefore = state.usdcFundSize;
+    settleCancelledSell(state, cancelledPartial());
+
+    reopenFailedSell(state, 'buy-1');
+    attachSellOrder(state, 'buy-1', { orderId: 'sell-2', limitPrice: 106 });
+    assert.ok(Math.abs(state.outstandingOrdersAsset - 0.5) < 1e-12, 'exposure is the remainder only');
+
+    updateAfterSellFill(state, { orderId: 'sell-2', filledSize: 0.5, fillValue: 53, fees: 0.1, rebates: 0, netFees: 0.1, netProceeds: 52.9 });
+
+    const [row] = state.orders;
+    assert.equal(row.status, 'filled');
+    assert.ok(Math.abs(row.sellQuantity - 0.9) < 1e-12, 'row reports everything it sold');
+    assert.ok(Math.abs(row.actualFillValue - 95) < 1e-9);
+    assert.ok(Math.abs(row.netProceeds - 94.8) < 1e-9);
+    assert.ok(Math.abs(row.sellNetFees - 0.2) < 1e-12);
+    assert.ok(Math.abs(state.usdcFundSize - (fundBefore + 94.8)) < 1e-9);
+    assert.ok(Math.abs(state.outstandingOrdersAsset) < 1e-12);
+    assert.ok(Math.abs(state.outstandingOrdersUSDC) < 1e-9);
+    // Per-row P&L: 94.8 proceeds less 0.9 units at 100 cost.
+    const [breakdown] = calculateCostBasis(state, []).orderBreakdown;
+    assert.ok(Math.abs(breakdown.realizedPnL - 4.8) < 1e-9);
+  });
+
+  it('a zero-fill cancellation credits nothing and keeps the whole sell retryable', () => {
+    const state = stateWithPendingSell();
+    const before = structuredClone(state);
+
+    settleCancelledSell(state, cancelledPartial({ filledSize: 0, fillValue: 0, fees: 0, netFees: 0, netProceeds: 0, status: 'EXPIRED' }));
+
+    assert.equal(state.usdcFundSize, before.usdcFundSize);
+    assert.equal(state.netFees, before.netFees);
+    assert.equal(state.outstandingOrdersAsset, 0);
+    const [row] = state.orders;
+    assert.equal(row.status, 'sell_failed');
+    assert.ok(Math.abs(row.sellQuantity - 0.9) < 1e-12);
+    assert.equal(row.executedSellQuantity, undefined);
+    assert.match(row.sellFailedReason, /EXPIRED with nothing executed/);
+  });
+
+  it('a retried remainder that is then consolidated still reports the earlier executed portion', () => {
+    const state = stateWithPendingSell();
+    settleCancelledSell(state, cancelledPartial());
+    reopenFailedSell(state, 'buy-1');
+    attachSellOrder(state, 'buy-1', { orderId: 'sell-2', limitPrice: 106 });
+    const sources = state.orders.filter(o => o.status === 'pending');
+
+    updateAfterConsolidation(state, sources, 'consolidated-1', 107, 0.5);
+    updateAfterSellFill(state, { orderId: 'consolidated-1', filledSize: 0.5, fillValue: 53.5, fees: 0, rebates: 0, netFees: 0, netProceeds: 53.5 });
+
+    const consolidated = state.orders.find(o => o.orderId === 'consolidated-1');
+    assert.equal(consolidated.status, 'filled');
+    assert.ok(Math.abs(consolidated.sellQuantity - 0.9) < 1e-12);
+    assert.ok(Math.abs(consolidated.netProceeds - (41.9 + 53.5)) < 1e-9);
+  });
+
+  it('a cancellation that executed the whole sell completes the row as filled', () => {
+    const state = stateWithPendingSell();
+    const fundBefore = state.usdcFundSize;
+    settleCancelledSell(state, cancelledPartial({ filledSize: 0.9, fillValue: 94.5, netProceeds: 94.4 }));
+
+    const [row] = state.orders;
+    assert.equal(row.status, 'filled');
+    assert.ok(Math.abs(row.sellQuantity - 0.9) < 1e-12);
+    assert.ok(Math.abs(row.netProceeds - 94.4) < 1e-9);
+    assert.ok(Math.abs(state.usdcFundSize - (fundBefore + 94.4)) < 1e-9);
+    assert.equal(state.outstandingOrdersAsset, 0);
+  });
+});
