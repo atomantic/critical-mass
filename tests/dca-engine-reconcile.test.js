@@ -528,4 +528,188 @@ describe('retryFailedSell (issue #1035)', () => {
     assert.equal(ex.sellAttempts.length, attempts);
     assert.equal(readState().orders[0].status, 'sell_failed');
   });
+
+  // -------------------------------------------------------------------------
+  // issue #1886 — every fixed-DCA sell owner (new buy, awaiting-sell recovery,
+  // operator retry) attaches and saves the accepted sell BEFORE its placement
+  // intent is released. Previously the intent was cleared first, so a crash or
+  // failed save in between left an awaiting_sell row with no sell id and no
+  // blocking intent, and restart recovery placed a second sell for the buy.
+  // -------------------------------------------------------------------------
+  describe('accepted-sell ownership is durable before the intent clears (issue #1886)', () => {
+    /** @type {Function} */
+    let realSaveState;
+
+    beforeEach(() => {
+      realSaveState = stateTracker.saveState;
+    });
+
+    afterEach(() => {
+      stateTracker.saveState = realSaveState;
+    });
+
+    /**
+     * Capture what a crash just before each state save would leave on disk,
+     * for every save after the exchange accepted a sell, plus the final disk.
+     * @param {() => Promise<any>} run - Operation under test
+     * @returns {Promise<Array<{stateRaw: string, intents: Object[]}>>} Crash snapshots
+     */
+    const crashPointsAfterAcceptance = async (run) => {
+      const acceptedBefore = ex.acceptedSells;
+      const snapshots = [];
+      const snapshot = () => snapshots.push({ stateRaw: fs.readFileSync(stateFile(), 'utf8'), intents: readIntents() });
+      stateTracker.saveState = (...args) => {
+        if (ex.acceptedSells > acceptedBefore) snapshot();
+        return realSaveState(...args);
+      };
+      await run();
+      stateTracker.saveState = realSaveState;
+      snapshot();
+      assert.ok(ex.acceptedSells > acceptedBefore, 'the run accepted a sell');
+      return snapshots;
+    };
+
+    /**
+     * Restore one crash snapshot as a restarted process would find it, run
+     * restart recovery, and require that the buy is never sold twice.
+     * @param {{stateRaw: string, intents: Object[]}} crash - Crash snapshot
+     * @param {string} buyOrderId - Buy whose sell was accepted
+     * @param {string} sellOrderId - The accepted sell
+     */
+    const assertOwnedAfterRestart = async (crash, buyOrderId, sellOrderId) => {
+      fs.writeFileSync(stateFile(), crash.stateRaw);
+      stateTracker.savePlacementIntents(crash.intents.map(i => ({ ...i, instanceId: 'a-process-that-died' })), EXCHANGE, PAIR);
+      restartEngine();
+
+      const state = stateTracker.loadState(fundConfig, EXCHANGE, PAIR);
+      const row = state.orders.find(o => o.buyOrderId === buyOrderId);
+      const blocking = stateTracker.getBlockingPlacementIntents(EXCHANGE, PAIR);
+      assert.ok(row.orderId === sellOrderId || blocking.length > 0,
+        `crash leaves a durable owner: row ${row.status}/${row.orderId}, ${blocking.length} blocking intent(s)`);
+
+      ex.sellMode = 'accept';
+      const attempts = ex.sellAttempts.length;
+      await engine.reconcileAwaitingSells(state, fundConfig, ex.adapter, EXCHANGE, PAIR);
+      assert.equal(ex.sellAttempts.length, attempts, 'restart recovery places no second sell for the buy');
+    };
+
+    it('new-buy path: no crash point after acceptance loses the sell owner', async () => {
+      ex.sellMode = 'accept';
+      const crashes = await crashPointsAfterAcceptance(async () => {
+        const result = await engine.runIntervalCycle(EXCHANGE, PAIR);
+        assert.equal(result.status, 'success', JSON.stringify(result));
+      });
+      const [row] = readState().orders;
+      assert.equal(row.orderId, 'sell-1');
+      assert.ok(crashes.length >= 2);
+      for (const crash of crashes) await assertOwnedAfterRestart(crash, row.buyOrderId, 'sell-1');
+    });
+
+    it('awaiting-sell recovery path: no crash point after acceptance loses the sell owner', async () => {
+      const failed = await buyWithFailedSell();
+      // Rewrite the failed row into the crash footprint recovery owns.
+      const seeded = readState();
+      const seededRow = seeded.orders[0];
+      seededRow.status = 'awaiting_sell';
+      delete seededRow.sellFailedReason;
+      delete seededRow.sellFailedAt;
+      writeState(seeded);
+
+      ex.sellMode = 'accept';
+      const crashes = await crashPointsAfterAcceptance(async () => {
+        const state = stateTracker.loadState(fundConfig, EXCHANGE, PAIR);
+        const recon = await engine.reconcileAwaitingSells(state, fundConfig, ex.adapter, EXCHANGE, PAIR);
+        assert.deepEqual(recon, { recovered: 1, failed: 0 });
+      });
+      const row = readState().orders[0];
+      assert.equal(row.status, 'pending', 'recovery saved the sell itself, without a caller save');
+      assert.equal(row.orderId, 'sell-1');
+      for (const crash of crashes) await assertOwnedAfterRestart(crash, failed.buyOrderId, 'sell-1');
+    });
+
+    it('failed-sell retry path: no crash point after acceptance loses the sell owner', async () => {
+      const failed = await buyWithFailedSell();
+      ex.sellMode = 'accept';
+      const crashes = await crashPointsAfterAcceptance(async () => {
+        const result = await engine.retryFailedSell(EXCHANGE, PAIR, failed.buyOrderId);
+        assert.equal(result.success, true, JSON.stringify(result));
+      });
+      assert.equal(readState().orders[0].orderId, 'sell-1');
+      for (const crash of crashes) await assertOwnedAfterRestart(crash, failed.buyOrderId, 'sell-1');
+    });
+
+    it('a reconciled acceptance goes through the same handoff with its requested size and price', async () => {
+      ex.sellMode = 'unknown';
+      ex.lookup = { orderId: 'sell-adopted', status: 'OPEN', filledSize: 0 };
+      /** @type {any[]} */
+      const savedSellPrices = [];
+      stateTracker.saveState = (state, ...rest) => {
+        const row = state.orders?.[0];
+        if (row?.orderId === 'sell-adopted') savedSellPrices.push({ sellPrice: row.sellPrice, intents: readIntents().length });
+        return realSaveState(state, ...rest);
+      };
+
+      const result = await engine.runIntervalCycle(EXCHANGE, PAIR);
+
+      assert.equal(result.status, 'success', JSON.stringify(result));
+      const [attempt] = ex.sellAttempts;
+      assert.equal(savedSellPrices[0].sellPrice, attempt.price, 'handoff saw the requested limit price');
+      assert.equal(savedSellPrices[0].intents, 1, 'saved while the intent still guarded the order');
+      const after = readState();
+      assert.equal(after.orders[0].status, 'pending');
+      assert.ok(Math.abs(after.outstandingOrdersAsset - attempt.size) < 1e-12);
+      assert.ok(Math.abs(after.outstandingOrdersUSDC - attempt.size * attempt.price) < 1e-9);
+      assert.deepEqual(readIntents(), []);
+    });
+
+    it('a failed handoff save keeps the accepted sell recoverable without crediting it or placing another', async () => {
+      ex.sellMode = 'accept';
+      let failedOnce = false;
+      stateTracker.saveState = (state, ...rest) => {
+        if (!failedOnce && state.orders?.some(o => o.orderId === 'sell-1')) {
+          failedOnce = true;
+          throw new Error('ENOSPC: no space left on device');
+        }
+        return realSaveState(state, ...rest);
+      };
+
+      const result = await engine.runIntervalCycle(EXCHANGE, PAIR);
+
+      assert.equal(failedOnce, true);
+      assert.equal(result.status, 'sell_placement_failed', JSON.stringify(result));
+      assert.match(result.error, /accepted but not handed off/);
+      assert.equal(ex.sellAttempts.length, 1, 'an accepted sell is never retried as a rejection');
+      const [intent] = readIntents();
+      assert.equal(intent.status, 'unresolved');
+      assert.equal(intent.orderId, 'sell-1');
+      const stored = readState();
+      const [row] = stored.orders;
+      assert.equal(row.status, 'sell_failed');
+      assert.equal(row.orderId, null);
+      assert.deepEqual(row.sellPlacementUnresolved, { intentId: intent.id, clientOrderId: null, orderId: 'sell-1' });
+      assert.equal(stored.outstandingOrdersAsset, 0, 'outstanding exposure is not credited for an unowned sell');
+      assert.equal(stored.outstandingOrdersUSDC, 0);
+
+      // Restart: the retained intent still blocks a retry.
+      stateTracker.savePlacementIntents(readIntents().map(i => ({ ...i, instanceId: 'a-process-that-died' })), EXCHANGE, PAIR);
+      restartEngine();
+      const blocked = await engine.retryFailedSell(EXCHANGE, PAIR, row.buyOrderId);
+      assert.equal(blocked.code, 'placement_unresolved');
+
+      // Even once the operator clears the intent, the accepted sell's own id
+      // rules out a second sell while it is live.
+      const discarded = await engine.reconcilePlacementIntent(EXCHANGE, PAIR, intent.id, 'discard');
+      assert.equal(discarded.success, true, JSON.stringify(discarded));
+      const live = await engine.retryFailedSell(EXCHANGE, PAIR, row.buyOrderId);
+      assert.equal(live.code, 'placement_unresolved');
+      assert.equal(live.orderId, 'sell-1');
+      assert.equal(ex.sellAttempts.length, 1);
+
+      // Cancelled with nothing executed: now safe to cover the buy.
+      ex.adapter.getOrder = async (orderId) => ({ orderId, status: 'CANCELLED', filledSize: 0 });
+      const ok = await engine.retryFailedSell(EXCHANGE, PAIR, row.buyOrderId);
+      assert.equal(ok.success, true, JSON.stringify(ok));
+      assert.equal(ex.sellAttempts.length, 2);
+    });
+  });
 });

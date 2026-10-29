@@ -159,13 +159,17 @@ beforeEach(() => {
       status: 'FILLED',
     };
   };
-  orderManager.placeSellOrderWithRetry = async (config, buyDetails) => ({
-    orderId: `sell-for-${buyDetails.orderId}`,
-    success: true,
-    baseSize: buyDetails.assetAmount * 0.9,
-    limitPrice: FUND_CONFIGS[config.productId].price * 1.02,
-    status: 'OPEN',
-  });
+  orderManager.placeSellOrderWithRetry = async (config, buyDetails, _adapter, _retries, _scope, options) => {
+    const sellOrder = {
+      orderId: `sell-for-${buyDetails.orderId}`,
+      success: true,
+      baseSize: buyDetails.assetAmount * 0.9,
+      limitPrice: FUND_CONFIGS[config.productId].price * 1.02,
+      status: 'OPEN',
+    };
+    await options?.onAccepted?.(sellOrder);
+    return sellOrder;
+  };
   orderManager.checkFilledOrders = async () => [];
   orderManager.consolidatePendingOrders = async (config, pendingOrders) => {
     consolidations.push({ productId: config.productId, orderIds: pendingOrders.map(o => o.orderId) });

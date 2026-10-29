@@ -102,7 +102,7 @@
  * @property {number} [netProceeds] - Net proceeds after fees
  * @property {string} [sellFailedReason] - Why sell placement failed (status 'sell_failed')
  * @property {string} [sellFailedAt] - ISO timestamp when sell placement failed
- * @property {{intentId: string, clientOrderId: string|null}} [sellPlacementUnresolved] - Unknown-outcome sell placement that blocks a retry (issue #1035)
+ * @property {{intentId: string, clientOrderId: string|null, orderId?: string}} [sellPlacementUnresolved] - Unknown-outcome sell placement that blocks a retry (issue #1035); `orderId` names a sell the exchange accepted but whose ownership could not be saved (issue #1886)
  * @property {number} [sellRetryCount] - Operator retries of a failed sell placement
  * @property {string|null} [lastSellFailedReason] - Failure reason before the latest retry
  * @property {string} [consolidatedInto] - Order ID of the consolidated order (for original orders)

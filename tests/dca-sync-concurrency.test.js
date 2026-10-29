@@ -57,9 +57,11 @@ beforeEach(() => {
     return [{ orderId: 'other-sell', filledSize: 1, fillValue: 102, fees: 0, netFees: 0 }];
   });
   placements = 0;
-  mock.method(manager, 'placeSellOrderWithRetry', async (_config, _buy, _adapter, _retries, scope) => {
+  mock.method(manager, 'placeSellOrderWithRetry', async (_config, _buy, _adapter, _retries, scope, options) => {
     assert.deepEqual(scope, { exchange: EXCHANGE, pair: PAIR });
-    return { orderId: `retry-sell-${++placements}`, baseSize: 1, limitPrice: 102 };
+    const sellOrder = { orderId: `retry-sell-${++placements}`, baseSize: 1, limitPrice: 102 };
+    await options?.onAccepted?.(sellOrder);
+    return sellOrder;
   });
   engine = require('../src/dca-engine');
 });

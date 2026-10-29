@@ -79,11 +79,19 @@ const dcaLogger = (exchange, productId) => createContextLogger({
  * whose outcome stayed unresolved qualifies. A refusal because ANOTHER intent
  * was blocking the fund carries no intent of its own — nothing was dispatched,
  * so it is a definitive non-placement.
- * @param {Error & {placementPending?: boolean, intentId?: string|null, clientOrderId?: string|null}} err - Sell-placement error
- * @returns {{intentId: string, clientOrderId: string|null}|null} Identity to record on the row
+ *
+ * A sell the exchange ACCEPTED but whose ownership could not be persisted
+ * (handoff failure, issue #1886) also carries the accepted order id, so a later
+ * retry can still rule that live order in or out.
+ * @param {Error & {placementPending?: boolean, handoffFailed?: boolean, intentId?: string|null, clientOrderId?: string|null, orderId?: string|null}} err - Sell-placement error
+ * @returns {{intentId: string, clientOrderId: string|null, orderId?: string}|null} Identity to record on the row
  */
 const unresolvedSellPlacement = (err) => (err?.placementPending && err.intentId
-  ? { intentId: err.intentId, clientOrderId: err.clientOrderId ?? null }
+  ? {
+    intentId: err.intentId,
+    clientOrderId: err.clientOrderId ?? null,
+    ...(err.handoffFailed && err.orderId ? { orderId: err.orderId } : {}),
+  }
   : null);
 
 /**
@@ -99,6 +107,53 @@ const sellDetailsForRow = (order) => ({
   assetAmount: order.buyQuantity,
   price: order.buyPrice,
   sellQuantity: order.sellQuantity,
+});
+
+/**
+ * Accepted-sell handoff for one fixed-strategy buy row (issue #1886).
+ *
+ * placeSellOrderWithRetry runs it while the sell's dispatch intent is still on
+ * disk: the accepted sell is attached to its awaiting_sell row and state is
+ * saved, and only then is the intent released. At every instant the accepted
+ * sell therefore has a durable owner: the intent, which blocks the fund, or
+ * the row carrying the sell id. Neither restart recovery nor a retry can sell
+ * that buy a second time.
+ *
+ * If the save fails, the in-memory attach is undone so outstanding exposure is
+ * not credited for a sell that state.json does not hold. The error then
+ * propagates, so the placement funnel keeps the intent blocking with the
+ * accepted order id and reports the sell as pending, never as a rejection.
+ * @param {BotState} state - Fund state (mutated in place)
+ * @param {string} buyOrderId - Buy the sell covers
+ * @param {string} exchange - Exchange name
+ * @param {string|undefined} pair - Fund pair
+ * @returns {{onAccepted: (sellOrder: Object) => void}} placeSellOrderWithRetry options
+ */
+const sellOwnerHandoff = (state, buyOrderId, exchange, pair) => ({
+  onAccepted: (sellOrder) => {
+    const row = stateTracker.findAwaitingSellOrder(state, buyOrderId);
+    if (!row) {
+      throw new Error(`no awaiting_sell row for buy ${buyOrderId} to own sell ${sellOrder.orderId}`);
+    }
+    const before = {
+      orderId: row.orderId,
+      sellPrice: row.sellPrice,
+      status: row.status,
+      outstandingOrdersAsset: state.outstandingOrdersAsset,
+      outstandingOrdersUSDC: state.outstandingOrdersUSDC,
+    };
+    stateTracker.attachSellOrder(state, buyOrderId, sellOrder);
+    try {
+      stateTracker.saveState(state, exchange, pair);
+    } catch (err) {
+      row.orderId = before.orderId;
+      row.sellPrice = before.sellPrice;
+      row.status = before.status;
+      state.outstandingOrdersAsset = before.outstandingOrdersAsset;
+      state.outstandingOrdersUSDC = before.outstandingOrdersUSDC;
+      throw err;
+    }
+  },
 });
 
 /** @type {Map<string, Promise<void>>} */
@@ -317,10 +372,12 @@ const executeConsolidation = async (exchange = 'coinbase', pair, orderIds = null
  *
  * For each such row, re-derive the buyDetails the sell-placement path expects
  * from the persisted fields (buyOrderId/buyPrice/buyQuantity) and re-attempt the
- * sell via the same orderManager.placeSellOrderWithRetry used post-buy. On
- * success attach the sell; on failure mark sell_failed for operator follow-up.
- * Dry-run rows are never persisted as awaiting_sell, so this only ever sees real
- * orders. State is NOT saved here — the caller persists once after reconciliation.
+ * sell via the same orderManager.placeSellOrderWithRetry used post-buy. An
+ * accepted sell is attached and saved by its handoff before its placement
+ * intent is released (issue #1886); on failure mark sell_failed for operator
+ * follow-up. Dry-run rows are never persisted as awaiting_sell, so this only
+ * ever sees real orders. A failure is NOT saved here — the caller persists once
+ * after reconciliation.
  *
  * @param {BotState} state - Current state (mutated in place)
  * @param {ExchangeConfig} config - Configuration
@@ -346,7 +403,8 @@ const reconcileAwaitingSells = async (state, config, adapter, exchange, pair) =>
 
     let sellOrder;
     try {
-      sellOrder = await orderManager.placeSellOrderWithRetry(config, buyDetails, adapter, 3, { exchange, pair });
+      sellOrder = await orderManager.placeSellOrderWithRetry(config, buyDetails, adapter, 3, { exchange, pair },
+        sellOwnerHandoff(state, order.buyOrderId, exchange, pair));
     } catch (err) {
       stateTracker.markSellPlacementFailed(state, order.buyOrderId, err.message, unresolvedSellPlacement(err));
       cycleLogger.error(`❌ 🔧 [${exchange}] Recovery sell failed for buy ${order.buyOrderId} — marked sell_failed: ${err.message}`, {
@@ -360,7 +418,6 @@ const reconcileAwaitingSells = async (state, config, adapter, exchange, pair) =>
       continue;
     }
 
-    stateTracker.attachSellOrder(state, order.buyOrderId, sellOrder);
     cycleLogger.info(`ℹ️ 🔧 [${exchange}] Recovery sell placed for buy ${order.buyOrderId}: ${sellOrder.orderId} @ ${sellOrder.limitPrice}`);
     tradeEvents.sellPlaced(exchange, sellOrder.orderId, sellOrder.baseSize, sellOrder.limitPrice);
     recovered += 1;
@@ -820,14 +877,14 @@ const runIntervalCycle = async (exchange = 'coinbase', pair, { pendingBuyOrderId
       logger.logBuy(buyResult, state, exchange, pair);
 
       try {
-        sellOrder = await orderManager.placeSellOrderWithRetry(config, buyResult, adapter, 3, { exchange, pair });
+        sellOrder = await orderManager.placeSellOrderWithRetry(config, buyResult, adapter, 3, { exchange, pair },
+          sellOwnerHandoff(state, buyResult.orderId, exchange, pair));
       } catch (err) {
         stateTracker.markSellPlacementFailed(state, buyResult.orderId, err.message, unresolvedSellPlacement(err));
         stateTracker.saveState(state, exchange, pair);
         return sellPlacementFailed(err);
       }
 
-      stateTracker.attachSellOrder(state, buyResult.orderId, sellOrder);
       logger.logSellOrder(sellOrder, state, exchange, pair);
       tradeEvents.sellPlaced(exchange, sellOrder.orderId, sellOrder.baseSize, sellOrder.limitPrice);
     }
@@ -1339,6 +1396,21 @@ const priorSellRefusal = async (prior, config, adapter, exchange, pair) => {
   if (stateTracker.loadPlacementIntents(exchange, pair).some(i => i?.id === prior.intentId)) {
     return refuse(`The earlier sell attempt (intent ${prior.intentId}) is still unresolved — reconcile it before retrying`);
   }
+  if (!prior.clientOrderId && prior.orderId) {
+    // An accepted sell whose ownership could not be saved (issue #1886): its
+    // exchange id is known even without a client id, so check it directly.
+    const status = await adapter.getOrder(prior.orderId).catch((err) => ({ __lookupError: err }));
+    if (status?.__lookupError) {
+      return refuse(`Could not check the exchange for the earlier accepted sell ${prior.orderId} (${status.__lookupError.message}) — not placing another sell`);
+    }
+    if (orderManager.isAdoptableOrder(status)) {
+      return refuse(
+        `The earlier sell attempt exists on the exchange as order ${prior.orderId} (status ${status.status}) — not placing a second sell for this buy`,
+        { orderId: prior.orderId, orderStatus: status.status ?? null },
+      );
+    }
+    return null;
+  }
   if (!prior.clientOrderId) return null;
 
   if (typeof adapter.findOrderByClientOrderId !== 'function') {
@@ -1421,7 +1493,8 @@ const retryFailedSell = async (exchange, pair, buyOrderId) => {
   const buyDetails = sellDetailsForRow(order);
   let sellOrder;
   try {
-    sellOrder = await orderManager.placeSellOrderWithRetry(config, buyDetails, adapter, 3, { exchange, pair });
+    sellOrder = await orderManager.placeSellOrderWithRetry(config, buyDetails, adapter, 3, { exchange, pair },
+      sellOwnerHandoff(state, buyOrderId, exchange, pair));
   } catch (err) {
     const unresolved = unresolvedSellPlacement(err);
     stateTracker.markSellPlacementFailed(state, buyOrderId, err.message, unresolved);
@@ -1441,8 +1514,7 @@ const retryFailedSell = async (exchange, pair, buyOrderId) => {
     };
   }
 
-  stateTracker.attachSellOrder(state, buyOrderId, sellOrder);
-  stateTracker.saveState(state, exchange, pair);
+  // The handoff already attached and saved the sell before its intent cleared.
   logger.logSellOrder(sellOrder, state, exchange, pair);
   cycleLogger.info(`ℹ️ 🔁 [${exchange}] Retried sell placed for buy ${buyOrderId}: ${sellOrder.orderId} @ ${sellOrder.limitPrice}`, {
     orderId: buyOrderId,

@@ -317,11 +317,13 @@ const attachSellOrder = (state, buyOrderId, sellOrder) => {
  * `unresolved` names the placement intent of a sell whose outcome is UNKNOWN
  * (dispatched, ambiguous response, reconciliation inconclusive). It travels
  * with the row so an operator retry can refuse to place a second sell while
- * that earlier one may be resting live (issue #1035).
+ * that earlier one may be resting live (issue #1035). A sell the exchange
+ * accepted but whose ownership could not be saved also carries its `orderId`
+ * (issue #1886).
  * @param {BotState} state - Current state
  * @param {string} buyOrderId - Buy order ID
  * @param {string} reason - Failure reason
- * @param {{intentId: string, clientOrderId?: string|null}|null} [unresolved] - Unknown-outcome placement identity
+ * @param {{intentId: string, clientOrderId?: string|null, orderId?: string|null}|null} [unresolved] - Unknown-outcome placement identity
  * @returns {BotState} Updated state
  */
 const markSellPlacementFailed = (state, buyOrderId, reason, unresolved = null) => {
@@ -338,7 +340,11 @@ const markSellPlacementFailed = (state, buyOrderId, reason, unresolved = null) =
   order.sellFailedReason = reason;
   order.sellFailedAt = new Date().toISOString();
   if (unresolved?.intentId) {
-    order.sellPlacementUnresolved = { intentId: unresolved.intentId, clientOrderId: unresolved.clientOrderId ?? null };
+    order.sellPlacementUnresolved = {
+      intentId: unresolved.intentId,
+      clientOrderId: unresolved.clientOrderId ?? null,
+      ...(unresolved.orderId ? { orderId: unresolved.orderId } : {}),
+    };
   } else {
     delete order.sellPlacementUnresolved;
   }
@@ -1083,6 +1089,7 @@ module.exports = {
   checkAllocationRemaining,
   checkIfRanThisInterval,
   recordBuyFill,
+  findAwaitingSellOrder,
   attachSellOrder,
   markSellPlacementFailed,
   getFailedSellOrders,
