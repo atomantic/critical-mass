@@ -780,6 +780,22 @@ describe('checkRestorePreconditions mirrors the applier refusals without extract
     assert.equal(fs.readFileSync(path.join(dest.dataDir, '普通.txt'), 'utf8'), 'unicode');
   });
 
+  it('preserves a leading Unicode BOM in a filename through native backup and restore', async () => {
+    const source = makeInstall('source-bom-name', BASE);
+    fs.writeFileSync(path.join(source.dataDir, 'note.txt'), 'plain');
+    fs.writeFileSync(path.join(source.dataDir, '\uFEFFnote.txt'), 'leading BOM');
+    const created = await createBackup({ paths: source.paths });
+    assert.equal(created.success, true, created.error);
+    const dest = makeInstall('dest-bom-name', BASE);
+    transfer(source, dest, created.filename);
+    assert.equal(inspectBackup(created.filename, { paths: dest.paths }).compatible, true);
+    assert.deepEqual(await checkRestorePreconditions(created.filename, { paths: dest.paths }), { ok: true });
+    const restored = restoreBackup(created.filename, { paths: dest.paths });
+    assert.equal(restored.success, true, restored.error);
+    assert.equal(fs.readFileSync(path.join(dest.dataDir, 'note.txt'), 'utf8'), 'plain');
+    assert.equal(fs.readFileSync(path.join(dest.dataDir, '\uFEFFnote.txt'), 'utf8'), 'leading BOM');
+  });
+
   it('accepts FAT-created file and directory metadata through inspection and restore', async () => {
     const dest = makeInstall('dest-dos-archive', BASE);
     const backups = path.join(dest.dataDir, 'backups');

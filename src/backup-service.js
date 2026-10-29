@@ -582,7 +582,8 @@ function* readArchiveDirectory(size) {
     || count < 1 || centralSize > ROOT_COMPARE_MAX_BYTES
     || centralOffset < 0 || centralOffset + centralSize > tailStart + end) fail('invalid central directory bounds');
   const central = yield { position: centralOffset, length: centralSize };
-  const decoder = new TextDecoder('utf-8', { fatal: true });
+  // A leading UTF-8 BOM is part of a ZIP member name, not a text-file marker.
+  const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
   const decode = (bytes) => { try { return decoder.decode(bytes); } catch { return fail('member name is not valid UTF-8'); } };
   const checkExtras = (extra, name) => {
     for (let pos = 0; pos < extra.length;) {
