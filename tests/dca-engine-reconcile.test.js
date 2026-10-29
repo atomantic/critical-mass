@@ -885,6 +885,15 @@ describe('retryFailedSell (issue #1035)', () => {
       assert.ok(Math.abs(ex.sellAttempts.at(-1).size - (thirdTarget - executed)) < 1e-12);
       assert.ok(Math.abs(third.fibCycleSoldAsset - executed) < 1e-12);
       assert.ok(Math.abs(third.usdcFundSize - (second.usdcFundSize - (third.totalAllocated - second.totalAllocated) - 0.5)) < 1e-9, 'no second credit');
+
+      // An unconfirmed status keeps the resting sell owned: no replacement.
+      const owned = third.fibActiveSellOrderId;
+      sellStatus[owned] = { orderId: owned, status: 'UNKNOWN', filledSize: 0, filledValue: 0, averageFilledPrice: 0 };
+      const attempts = ex.sellAttempts.length;
+      nextInterval();
+      assert.equal((await engine.runIntervalCycle(EXCHANGE, PAIR)).status, 'sell_placement_failed');
+      assert.equal(ex.sellAttempts.length, attempts, 'no second sell beside a possibly-live one');
+      assert.equal(readState().fibActiveSellOrderId, owned);
     });
   });
 });

@@ -1291,12 +1291,19 @@ const placeFibonacciSellOrder = async (config, cumulativeAsset, avgCostBasis, pr
     const filledSize = prevOrderStatus.filledSize || 0;
     // A resting limit sell the engine placed is still live while OPEN/PENDING or,
     // on Gemini, PARTIALLY_FILLED. Only a live order should be cancelled; a
-    // terminal status (CANCELLED/EXPIRED) or UNKNOWN falls through to place-new
-    // without a cancel. A terminal order that executed part of its size still
-    // hands its executed portion to the caller (below).
+    // terminal status (CANCELLED/EXPIRED/FAILED/REJECTED) falls through to
+    // place-new without a cancel, handing any executed portion to the caller.
     const isLive = prevOrderStatus.status === 'OPEN'
       || prevOrderStatus.status === 'PENDING'
       || prevOrderStatus.status === 'PARTIALLY_FILLED';
+    const isTerminal = isCancelledStatus(prevOrderStatus) || prevOrderStatus.status === 'REJECTED';
+
+    if (prevOrderStatus.status !== 'FILLED' && !isLive && !isTerminal) {
+      // UNKNOWN (or unrecognized): the order may still rest or be executing.
+      // Replacing it now could sell the same asset twice and lose its fills,
+      // so keep it as the cycle's sell until its status is confirmed (#1887).
+      throw new Error(`Previous Fibonacci sell ${prevOrderId} has unconfirmed status ${prevOrderStatus.status}; not replacing it until it resolves`);
+    }
 
     if (prevOrderStatus.status === 'FILLED') {
       // Fully filled - this should trigger cycle reset upstream
@@ -1333,7 +1340,7 @@ const placeFibonacciSellOrder = async (config, cumulativeAsset, avgCostBasis, pr
 
       // Gather the executed-portion details so the caller can book the proceeds.
       prevFill = await sellFillDetails(adapter, prevOrderId, prevOrderStatus);
-    } else if (isCancelledStatus(prevOrderStatus) && filledSize > 0) {
+    } else if (isTerminal && filledSize > 0) {
       // Already off the book after executing part of its size: nothing to
       // cancel, but the executed portion is sold. Credit it and shrink the
       // replacement exactly as for a live partial; the cycle and its holdback

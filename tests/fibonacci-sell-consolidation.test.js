@@ -236,9 +236,8 @@ describe('placeFibonacciSellOrder — fully-open previous sell (cancel and repla
     assert.ok(Math.abs(result.sellQuantity - getFibonacciSellQuantity(1.05, config.holdbackPercent)) < 1e-9);
   });
 
-  it('an UNKNOWN prev status is neither cancelled nor credited', async () => {
+  it('an UNKNOWN prev status keeps the order owned: no cancel, no credit, no replacement', async () => {
     const calls = [];
-    const config = baseConfig();
     const adapter = makeAdapter({
       calls,
       getOrder: () => ({ status: 'UNKNOWN', filledSize: 0.3, filledValue: 600, averageFilledPrice: 2000 }),
@@ -246,11 +245,11 @@ describe('placeFibonacciSellOrder — fully-open previous sell (cancel and repla
       getOrderFillSummary: () => ({ totalFees: 0, totalRebates: 0, netFees: 0 }),
     });
 
-    const result = await placeFibonacciSellOrder(config, 1.05, 1900, 'unknown-1', adapter);
+    await assert.rejects(() => placeFibonacciSellOrder(baseConfig(), 1.05, 1900, 'unknown-1', adapter), /unconfirmed status UNKNOWN/);
 
     assert.ok(!calls.some(c => c.method === 'cancelOrder'));
-    assert.equal(result.prevFill, null, 'an unconfirmed status is not booked as sold');
-    assert.ok(Math.abs(result.sellQuantity - getFibonacciSellQuantity(1.05, config.holdbackPercent)) < 1e-9);
+    assert.ok(!calls.some(c => c.method === 'placeLimitSell'), 'a possibly-live order is never doubled');
+    assert.ok(!calls.some(c => c.method === 'getOrderFillSummary'));
   });
 
   it('subtracts asset the cycle already sold through earlier partials from every replacement', async () => {
