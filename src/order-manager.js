@@ -892,13 +892,16 @@ const placeSellOrderWithRetry = async (config, buyDetails, adapter = null, maxRe
   throw new Error(`Failed to place sell order after ${maxRetries} attempts: ${lastError}`);
 };
 
+/** Message of any caught value; an adapter may reject with null/undefined or a non-Error. */
+const caughtMessage = (err) => err?.message ?? String(err);
+
 /**
  * Cancel sequentially and partition orders by their post-cancel fill state.
  * @param {TrackedOrder[]} eligibleOrders
  * @param {string[]} skippedOrderIds
  * @param {ExchangeAdapter} adapter
  * @param {ReturnType<typeof orderLogger>} logger
- * @returns {Promise<{failure: ConsolidationResult} | {failure?: undefined, cancelledOrders: TrackedOrder[], cancelledOrderIds: string[], filledDuringCancelOrderIds: string[]}>}
+ * @returns {Promise<{cancelledOrders: TrackedOrder[], cancelledOrderIds: string[], filledDuringCancelOrderIds: string[], abortError?: string}>} `abortError` is set when a cancel was rejected/threw or a post-cancel status read failed; the lists then hold only the work completed before it. The aborting order is deliberately in none of them: its outcome is unknown, so it is neither restored nor counted as filled (issue #1891).
  */
 const cancelOrdersForConsolidation = async (eligibleOrders, skippedOrderIds, adapter, logger) => {
   const cancelledOrders = [];
@@ -913,18 +916,22 @@ const cancelOrdersForConsolidation = async (eligibleOrders, skippedOrderIds, ada
   // a double-sell. Partition into confirmed-cancelled (still 0% filled) vs
   // filled-during-cancel; only the confirmed set feeds the consolidated quantity.
   logger.info(`ℹ️ Cancelling ${eligibleOrders.length} orders...`, { orderCount: eligibleOrders.length });
+  // The cancel or the status read can reject or throw part-way through. Earlier
+  // orders are then already cancelled on the exchange, so the loop never
+  // returns early: it reports the completed prefix with `abortError` and the
+  // caller restores that prefix (issue #1891). The aborting order itself may
+  // still be live (or cancelled, or filled), so it joins no list.
   for (const order of eligibleOrders) {
-    const cancelResult = await adapter.cancelOrder(order.orderId);
-    if (!cancelResult.success) {
-      // Abort consolidation if any cancel fails
-      return {
-        failure: {
-          success: false,
-          error: `Failed to cancel order ${order.orderId}`,
-          cancelledOrderIds,
-          skippedOrderIds,
-        },
-      };
+    let postCancel;
+    try {
+      const cancelResult = await adapter.cancelOrder(order.orderId);
+      if (!cancelResult?.success) {
+        return { cancelledOrders, cancelledOrderIds, filledDuringCancelOrderIds, abortError: `Failed to cancel order ${order.orderId}` };
+      }
+    } catch (err) {
+      const message = caughtMessage(err);
+      logger.error(`❌ Cancel of order ${order.orderId} threw — outcome unknown: ${message}`, { orderId: order.orderId, error: message });
+      return { cancelledOrders, cancelledOrderIds, filledDuringCancelOrderIds, abortError: `Failed to cancel order ${order.orderId}: ${message}` };
     }
 
     // Re-fetch may return null/undefined for a just-cancelled or not-found order.
@@ -932,7 +939,13 @@ const cancelOrdersForConsolidation = async (eligibleOrders, skippedOrderIds, ada
     // conservative choice: re-selling an order that may have filled is the
     // double-sell we're guarding against, whereas excluding a cleanly-cancelled
     // order only frees its asset for the engine's normal reconciliation to re-cover.
-    const postCancel = await adapter.getOrder(order.orderId);
+    try {
+      postCancel = await adapter.getOrder(order.orderId);
+    } catch (err) {
+      const message = caughtMessage(err);
+      logger.error(`❌ Status read for order ${order.orderId} failed after cancel — outcome unknown: ${message}`, { orderId: order.orderId, error: message });
+      return { cancelledOrders, cancelledOrderIds, filledDuringCancelOrderIds, abortError: `Failed to confirm cancellation of order ${order.orderId}: ${message}` };
+    }
     if (!postCancel || postCancel.completionPercentage > 0 || postCancel.status === 'FILLED') {
       // Filled (fully or partially) during the cancel window, or indeterminate —
       // any filled quantity is already sold on the exchange. Exclude the WHOLE
@@ -1119,8 +1132,29 @@ const consolidatePendingOrders = async (config, pendingOrders, adapter, scope = 
   }
 
   const cancellation = await cancelOrdersForConsolidation(eligibleOrders, skippedOrderIds, adapter, logger);
-  if (cancellation.failure) return cancellation.failure;
-  const { cancelledOrders, cancelledOrderIds, filledDuringCancelOrderIds } = cancellation;
+  const { cancelledOrders, cancelledOrderIds, filledDuringCancelOrderIds, abortError } = cancellation;
+
+  if (abortError) {
+    // Cancelling stopped part-way, so the already-confirmed-cancelled sells
+    // are no longer resting. Restore them through the same path a failed
+    // consolidated placement uses and report its recovery fields, so the
+    // caller re-points or flags every one of them (issue #1891). Orders after
+    // the aborting one were never touched; the aborting one is not restored
+    // because it may still be live.
+    logger.error(`❌ ${abortError} — restoring ${cancelledOrders.length} already-cancelled sell(s)`, {
+      error: abortError,
+      cancelledOrderIds,
+    });
+    const recovery = await restoreCancelledSellOrders(config.productId, cancelledOrders, adapter, logger, scope);
+    return {
+      success: false,
+      error: abortError,
+      cancelledOrderIds,
+      skippedOrderIds,
+      filledDuringCancelOrderIds,
+      ...recovery,
+    };
+  }
 
   if (cancelledOrders.length === 0) {
     // Every eligible order filled during its cancel window — nothing left to
