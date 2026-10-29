@@ -209,4 +209,15 @@ describe('restore-to-startup recovery-buy ownership (#1893)', () => {
     assert.deepEqual(await runStartup(), []);
     fs.rmSync(path.join(JUNK_DIR, 'pending-corrective-buys.json'));
   });
+
+  it('keeps ownership from readable rows when a sibling row is unreadable', async () => {
+    fs.mkdirSync(JUNK_DIR, { recursive: true });
+    fs.writeFileSync(path.join(JUNK_DIR, 'manual-trades.json'), JSON.stringify({ trades: [{ id: 'mt-1', buyOrderId: OPEN_BUY, status: 'buy_pending' }, null] }));
+    assert.deepEqual(await runStartup(), []);
+    fs.writeFileSync(path.join(JUNK_DIR, 'manual-trades.json'), JSON.stringify({ trades: [{ id: 'mt-1', buyOrderId: OPEN_BUY, status: 'buy_pending' }] }));
+    fs.writeFileSync(path.join(JUNK_DIR, 'pending-corrective-buys.json'), JSON.stringify([null, { buyOrderId: 'other', filled: false }]));
+    assert.deepEqual(await runStartup(), []);
+    fs.rmSync(path.join(JUNK_DIR, 'manual-trades.json'));
+    fs.rmSync(path.join(JUNK_DIR, 'pending-corrective-buys.json'));
+  });
 });
