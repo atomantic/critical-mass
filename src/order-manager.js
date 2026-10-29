@@ -4,7 +4,7 @@ const { createContextLogger } = require('./logger');
 const { getFibonacciSellPrice, getFibonacciSellQuantity } = require('./fibonacci-utils');
 const { PLACEMENT_RETRY_DELAY_MS } = require('./timing-constants');
 const { getBaseCurrency } = require('./config-utils');
-const { isFilledStatus, isPostOnlyRejection, sleep } = require('./shared-utils');
+const { isFilledStatus, isCancelledStatus, isPostOnlyRejection, sleep } = require('./shared-utils');
 const {
   getBlockingPlacementIntents,
   recordPlacementIntent,
@@ -22,6 +22,7 @@ const {
  * @typedef {import('./types').FilledSellOrder} FilledSellOrder
  * @typedef {import('./types').TrackedOrder} TrackedOrder
  * @typedef {import('./types').ConsolidationResult} ConsolidationResult
+ * @typedef {import('./types').FibonacciFillDetails} FibonacciFillDetails
  */
 
 /**
@@ -85,6 +86,36 @@ const safeGetOrderFillSummary = async (adapter, orderId, { retries = 2, retryDel
     { orderId, error: lastErr.message, incompleteFills: lastErr.incompleteFills === true, attempts: retries + 1 }
   );
   return { totalFees: 0, totalRebates: 0, netFees: 0, fills: [] };
+};
+
+/**
+ * Fee-inclusive details of what a sell actually executed. A sell that left the
+ * book cancelled or expired (`cancelled`) may still have executed part of its
+ * size; `filledSize`/`fillValue` are that executed portion, and a zero-fill one
+ * skips the fee lookup because no money moved (issue #1887).
+ * @param {ExchangeAdapter} adapter - Exchange adapter
+ * @param {string} orderId - Sell order ID
+ * @param {{filledSize?: number, filledValue?: number, averageFilledPrice?: number}} orderStatus - Normalized getOrder result
+ * @param {{cancelled?: boolean}} [options] - Whether the order ended cancelled/expired rather than filled
+ * @returns {Promise<FibonacciFillDetails & {cancelled: boolean}>} Executed-portion fill details
+ */
+const sellFillDetails = async (adapter, orderId, orderStatus, { cancelled = false } = {}) => {
+  const filledSize = Number(orderStatus.filledSize) || 0;
+  const fillValue = Number(orderStatus.filledValue) || 0;
+  const fillSummary = cancelled && filledSize <= 0
+    ? { totalFees: 0, totalRebates: 0, netFees: 0 }
+    : await safeGetOrderFillSummary(adapter, orderId);
+  return {
+    orderId,
+    filledSize,
+    fillValue,
+    averageFilledPrice: orderStatus.averageFilledPrice,
+    fees: fillSummary.totalFees,
+    rebates: fillSummary.totalRebates,
+    netFees: fillSummary.netFees,
+    netProceeds: fillValue - fillSummary.netFees,
+    cancelled,
+  };
 };
 
 /**
@@ -688,10 +719,18 @@ const placeSellOrder = async (config, buyDetails, adapter = null, scope = null) 
 };
 
 /**
- * Check status of pending sell orders (includes fee details)
+ * Check status of pending sell orders (includes fee details).
+ *
+ * Reports every pending sell that has left the book: FILLED ones, and ones
+ * that ended CANCELLED/EXPIRED/FAILED (`cancelled: true`), whose `filledSize`
+ * is whatever they executed before leaving — possibly zero. Exchanges keep the
+ * executed quantity on a cancelled order (Gemini normalizes it with its
+ * executed amount), so a terminal partial is money that moved and must be
+ * booked, not a status to wait out (issue #1887). Live and UNKNOWN orders are
+ * not reported.
  * @param {TrackedOrder[]} pendingOrders - List of pending orders from state
  * @param {ExchangeAdapter|null} [adapter] - Exchange adapter (optional)
- * @returns {Promise<FilledSellOrder[]>} List of orders that have filled with fee info
+ * @returns {Promise<FilledSellOrder[]>} Orders that left the book, with fee info
  */
 const checkFilledOrders = async (pendingOrders, adapter = null) => {
   adapter = adapter || getAdapter('coinbase');
@@ -704,6 +743,18 @@ const checkFilledOrders = async (pendingOrders, adapter = null) => {
 
   for (const pendingOrder of realOrders) {
     const orderStatus = await adapter.getOrder(pendingOrder.orderId);
+
+    if (isCancelledStatus(orderStatus)) {
+      const executed = await sellFillDetails(adapter, pendingOrder.orderId, orderStatus, { cancelled: true });
+      filledOrders.push({ ...executed, status: orderStatus.status, originalOrder: pendingOrder });
+      logger.warn(`⚠️ Sell order ${pendingOrder.orderId} ended ${orderStatus.status} after executing ${executed.filledSize} of ${pendingOrder.sellQuantity}`, {
+        orderId: pendingOrder.orderId,
+        status: orderStatus.status,
+        filledSize: executed.filledSize,
+        sellQuantity: pendingOrder.sellQuantity,
+      });
+      continue;
+    }
 
     if (orderStatus.status === 'FILLED') {
       // Get detailed fill info with fees/rebates
@@ -1218,9 +1269,11 @@ const consolidatePendingOrders = async (config, pendingOrders, adapter, scope = 
  * @param {number} avgCostBasis - Weighted average cost basis per BTC
  * @param {string|null} prevOrderId - Previous sell order ID to cancel
  * @param {ExchangeAdapter} adapter - Exchange adapter
+ * @param {{exchange: string, pair?: string}|null} [scope] - Fund the placement belongs to (durable placement intents)
+ * @param {{soldAsset?: number, creditedSellOrderIds?: string[]}} [cycleSold] - Asset this cycle already sold through earlier partial sells, and the sell ids already credited (issue #1887)
  * @returns {Promise<{sellOrder: SellOrder, sellQuantity: number, holdbackAsset: number}>} Sell order result
  */
-const placeFibonacciSellOrder = async (config, cumulativeAsset, avgCostBasis, prevOrderId, adapter, scope = null) => {
+const placeFibonacciSellOrder = async (config, cumulativeAsset, avgCostBasis, prevOrderId, adapter, scope = null, { soldAsset = 0, creditedSellOrderIds = [] } = {}) => {
   const baseCurrency = getBaseCurrency(config.productId);
   const logger = orderLogger(adapter, config.productId);
 
@@ -1228,8 +1281,9 @@ const placeFibonacciSellOrder = async (config, cumulativeAsset, avgCostBasis, pr
   // executed amount (filledSize), not just the coarse status string, because
   // exchanges disagree on how they label a live partially-executed order
   // (Gemini → 'PARTIALLY_FILLED'; Coinbase → 'OPEN' with filled_size > 0).
-  // Three cases: fully filled, partially filled (still live), fully open.
-  let alreadySoldQty = 0;
+  // Cases: fully filled, partially filled (still live), fully open, and a
+  // terminal (cancelled/expired) order that executed part of its size before
+  // leaving the book (issue #1887).
   let prevFill = null;
 
   if (prevOrderId) {
@@ -1237,11 +1291,19 @@ const placeFibonacciSellOrder = async (config, cumulativeAsset, avgCostBasis, pr
     const filledSize = prevOrderStatus.filledSize || 0;
     // A resting limit sell the engine placed is still live while OPEN/PENDING or,
     // on Gemini, PARTIALLY_FILLED. Only a live order should be cancelled; a
-    // terminal status (CANCELLED/EXPIRED/UNKNOWN) falls through to place-new,
-    // preserving prior behaviour.
+    // terminal status (CANCELLED/EXPIRED/FAILED/REJECTED) falls through to
+    // place-new without a cancel, handing any executed portion to the caller.
     const isLive = prevOrderStatus.status === 'OPEN'
       || prevOrderStatus.status === 'PENDING'
       || prevOrderStatus.status === 'PARTIALLY_FILLED';
+    const isTerminal = isCancelledStatus(prevOrderStatus) || prevOrderStatus.status === 'REJECTED';
+
+    if (prevOrderStatus.status !== 'FILLED' && !isLive && !isTerminal) {
+      // UNKNOWN (or unrecognized): the order may still rest or be executing.
+      // Replacing it now could sell the same asset twice and lose its fills,
+      // so keep it as the cycle's sell until its status is confirmed (#1887).
+      throw new Error(`Previous Fibonacci sell ${prevOrderId} has unconfirmed status ${prevOrderStatus.status}; not replacing it until it resolves`);
+    }
 
     if (prevOrderStatus.status === 'FILLED') {
       // Fully filled - this should trigger cycle reset upstream
@@ -1277,18 +1339,18 @@ const placeFibonacciSellOrder = async (config, cumulativeAsset, avgCostBasis, pr
       }
 
       // Gather the executed-portion details so the caller can book the proceeds.
-      const fillSummary = await safeGetOrderFillSummary(adapter, prevOrderId);
-      prevFill = {
+      prevFill = await sellFillDetails(adapter, prevOrderId, prevOrderStatus);
+    } else if (isTerminal && filledSize > 0) {
+      // Already off the book after executing part of its size: nothing to
+      // cancel, but the executed portion is sold. Credit it and shrink the
+      // replacement exactly as for a live partial; the cycle and its holdback
+      // continue (issue #1887).
+      logger.info(`ℹ️ Previous Fibonacci sell ${prevOrderId} ended ${prevOrderStatus.status} after executing ${filledSize} ${baseCurrency}`, {
         orderId: prevOrderId,
+        status: prevOrderStatus.status,
         filledSize,
-        fillValue: prevOrderStatus.filledValue,
-        averageFilledPrice: prevOrderStatus.averageFilledPrice,
-        fees: fillSummary.totalFees,
-        rebates: fillSummary.totalRebates,
-        netFees: fillSummary.netFees,
-        netProceeds: (prevOrderStatus.filledValue || 0) - fillSummary.netFees,
-      };
-      alreadySoldQty = filledSize;
+      });
+      prevFill = await sellFillDetails(adapter, prevOrderId, prevOrderStatus, { cancelled: true });
     } else if (isLive) {
       // Fully open, nothing executed - cancel and replace.
       logger.info(`ℹ️ Cancelling previous Fibonacci sell order ${prevOrderId}`, {
@@ -1308,9 +1370,14 @@ const placeFibonacciSellOrder = async (config, cumulativeAsset, avgCostBasis, pr
     }
   }
 
+  // A sell already credited to this cycle is counted in soldAsset; never
+  // subtract (or hand back for crediting) its executed portion a second time.
+  if (prevFill && creditedSellOrderIds.includes(prevOrderId)) prevFill = null;
+  const alreadySoldQty = soldAsset + (prevFill ? prevFill.filledSize : 0);
+
   // Calculate sell quantity and price. Holdback stays a fixed fraction of the
   // full cycle cumulative (design intent); the new sell only covers what still
-  // needs selling after subtracting any already-executed partial quantity.
+  // needs selling after subtracting every already-executed partial quantity.
   const holdbackAsset = cumulativeAsset * (config.holdbackPercent / 100);
   const targetSellQuantity = getFibonacciSellQuantity(cumulativeAsset, config.holdbackPercent);
   const sellQuantity = Math.max(0, targetSellQuantity - alreadySoldQty);
@@ -1366,37 +1433,31 @@ const placeFibonacciSellOrder = async (config, cumulativeAsset, avgCostBasis, pr
     sellQuantity,
     holdbackAsset,
     alreadyFilled: false,
-    // Present only when a partially-filled prev sell was cancelled and rolled
-    // into this consolidated order; the caller books its proceeds (issue #200).
+    // Present only when a partially-executed prev sell (cancelled here, or
+    // already cancelled/expired) was rolled into this consolidated order; the
+    // caller books its proceeds (issues #200, #1887).
     prevFill,
   };
 };
 
 /**
- * Check if a Fibonacci cycle sell order has filled
+ * Check whether a Fibonacci cycle sell order has left the book.
+ *
+ * A FILLED sell returns its fill details. A sell that ended
+ * CANCELLED/EXPIRED/FAILED returns `cancelled: true` with whatever it executed
+ * (possibly zero) — that portion is sold and must be credited, but the cycle
+ * is not complete, so callers must not settle it as a full fill (issue #1887).
+ * A live or UNKNOWN order returns null.
  * @param {string} orderId - Order ID to check
  * @param {ExchangeAdapter} adapter - Exchange adapter
- * @returns {Promise<FibonacciFillDetails|null>} Fill details if filled, null otherwise
+ * @returns {Promise<(FibonacciFillDetails & {cancelled: boolean})|null>} Fill details once off the book, null otherwise
  */
 const checkFibonacciSellFill = async (orderId, adapter) => {
   const orderStatus = await adapter.getOrder(orderId);
 
-  if (orderStatus.status !== 'FILLED') {
-    return null;
-  }
-
-  const fillSummary = await safeGetOrderFillSummary(adapter, orderId);
-
-  return {
-    orderId,
-    filledSize: orderStatus.filledSize,
-    fillValue: orderStatus.filledValue,
-    averageFilledPrice: orderStatus.averageFilledPrice,
-    fees: fillSummary.totalFees,
-    rebates: fillSummary.totalRebates,
-    netFees: fillSummary.netFees,
-    netProceeds: orderStatus.filledValue - fillSummary.netFees,
-  };
+  if (orderStatus.status === 'FILLED') return sellFillDetails(adapter, orderId, orderStatus);
+  if (isCancelledStatus(orderStatus)) return sellFillDetails(adapter, orderId, orderStatus, { cancelled: true });
+  return null;
 };
 
 module.exports = {

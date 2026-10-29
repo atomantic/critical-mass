@@ -185,11 +185,17 @@ const withFundLock = (key, run) => {
 
 
 /**
- * Sync order statuses and update state for filled orders
+ * Sync order statuses and update state for sells that left the book.
+ *
+ * A filled sell is booked in full. A sell that ended cancelled/expired is
+ * settled by what it executed: those proceeds are credited once, its resting
+ * exposure is removed, and the unsold remainder becomes a retryable failed
+ * sell (issue #1887). Every returned entry changed state, so callers persist
+ * whenever the list is non-empty.
  * @param {BotState} state - Current state
  * @param {string} [exchange] - Exchange name
  * @param {string} [pair] - Fund pair (default: the exchange's default fund)
- * @returns {Promise<FilledSellOrder[]>} List of newly filled orders
+ * @returns {Promise<FilledSellOrder[]>} Newly settled sells (`cancelled` marks a terminal one)
  */
 const syncOrderStatuses = async (state, exchange = 'coinbase', pair) => {
   const cycleLogger = dcaLogger(exchange, pair);
@@ -206,6 +212,17 @@ const syncOrderStatuses = async (state, exchange = 'coinbase', pair) => {
   const filledOrders = await orderManager.checkFilledOrders(pendingOrders, adapter);
 
   for (const filled of filledOrders) {
+    if (filled.cancelled) {
+      stateTracker.settleCancelledSell(state, filled);
+      if (filled.filledSize > 0) logger.logSellFilled(filled, state, exchange, pair);
+      cycleLogger.warn(`⚠️ [${exchange}] Sell order ${filled.orderId} ended ${filled.status} after executing ${filled.filledSize}: +${(filled.netProceeds || 0).toFixed(2)} credited; any unsold remainder is a failed sell to retry`, {
+        orderId: filled.orderId,
+        status: filled.status,
+        filledSize: filled.filledSize,
+        netProceeds: filled.netProceeds,
+      });
+      continue;
+    }
     stateTracker.updateAfterSellFill(state, filled);
     logger.logSellFilled(filled, state, exchange, pair);
     cycleLogger.info(`ℹ️ [${exchange}] Sell order filled: +${filled.fillValue.toFixed(2)}`);
@@ -703,7 +720,18 @@ const runIntervalCycle = async (exchange = 'coinbase', pair, { pendingBuyOrderId
   // Settle the prior sell before buying more; uncovered buys may keep the position nonzero.
   if (isFibonacci && state.fibActiveSellOrderId) {
     const fibFill = await orderManager.checkFibonacciSellFill(state.fibActiveSellOrderId, adapter);
-    if (fibFill) {
+    if (fibFill?.cancelled) {
+      // Off the book without completing: credit what it executed, keep the
+      // cycle and its holdback, and let the next consolidated sell re-cover
+      // the unsold remainder (issue #1887).
+      stateTracker.settleFibCancelledSell(state, fibFill);
+      stateTracker.saveState(state, exchange, pair);
+      cycleLogger.warn(`⚠️ [${exchange}] Fibonacci sell ${fibFill.orderId} ended without completing after executing ${fibFill.filledSize} ${getBaseCurrency(config.productId)} → net proceeds $${(fibFill.netProceeds || 0).toFixed(2)}; cycle continues at position ${state.fibPosition || 0}`, {
+        orderId: fibFill.orderId,
+        filledSize: fibFill.filledSize,
+        netProceeds: fibFill.netProceeds,
+      });
+    } else if (fibFill) {
       const cyclePosition = state.fibPosition || 0;
       stateTracker.settleFibSellAndCarryUncoveredBuys(state, fibFill);
       logger.logFibSellFilled(fibFill, state, cyclePosition, exchange, pair);
@@ -826,15 +854,17 @@ const runIntervalCycle = async (exchange = 'coinbase', pair, { pendingBuyOrderId
           cycleInfo.avgCostBasis,
           state.fibActiveSellOrderId,
           adapter,
-          { exchange, pair }
+          { exchange, pair },
+          stateTracker.getFibCycleSold(state)
         );
 
         if (fibSellResult.alreadyFilled) {
           // Rare case: previous order filled between check and now
           const fibFill = await orderManager.checkFibonacciSellFill(state.fibActiveSellOrderId, adapter);
-          if (!fibFill) {
-            // Fill details unavailable despite FILLED status — leave
-            // fibActiveSellOrderId intact so next cycle's fill check resolves it
+          if (!fibFill || fibFill.cancelled) {
+            // No complete fill to settle (details unavailable, or the refused
+            // cancel was for an order that ended cancelled) — leave
+            // fibActiveSellOrderId intact so next cycle's check resolves it
             throw new Error(`fill details unavailable for filled fib sell ${state.fibActiveSellOrderId}`);
           }
           // The sell filled after this interval’s buy was already booked; carry that buy forward.
@@ -854,10 +884,11 @@ const runIntervalCycle = async (exchange = 'coinbase', pair, { pendingBuyOrderId
           holdbackAsset = newFibSellResult.holdbackAsset;
           stateTracker.updateAfterFibSellOrder(state, sellOrder, newFibSellResult.sellQuantity, holdbackAsset);
         } else {
-          // A partially-filled previous sell was cancelled and rolled into this
-          // consolidated order — book the already-executed proceeds before
-          // tracking the new sell (issue #200, Bug B). The cycle is NOT reset;
-          // holdback is realized only when the consolidated sell fully fills.
+          // A partially-executed previous sell (cancelled here, or already
+          // cancelled/expired) was rolled into this consolidated order — book
+          // the already-executed proceeds before tracking the new sell (issues
+          // #200 Bug B, #1887). The cycle is NOT reset; holdback is realized
+          // only when the consolidated sell fully fills.
           if (fibSellResult.prevFill) {
             stateTracker.creditFibPartialSell(state, fibSellResult.prevFill);
             cycleLogger.info(`ℹ️ [${exchange}] Credited partially-filled prev fib sell ${fibSellResult.prevFill.orderId}: ${fibSellResult.prevFill.filledSize.toFixed(8)} ${getBaseCurrency(config.productId)} → net proceeds $${(fibSellResult.prevFill.netProceeds || 0).toFixed(2)}`);

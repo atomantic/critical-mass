@@ -101,6 +101,13 @@
  * @property {number} [sellNetFees] - Net fees on sell
  * @property {number} [netProceeds] - Net proceeds after fees
  * @property {string} [sellFailedReason] - Why sell placement failed (status 'sell_failed')
+ * @property {number} [executedSellQuantity] - Asset already sold by sells that ended cancelled/expired after executing part of their size (issue #1887)
+ * @property {number} [executedSellValue] - Gross value of that executed portion
+ * @property {number} [executedSellNetProceeds] - Net proceeds of that executed portion, already credited to the fund
+ * @property {number} [executedSellFees] - Fees on that executed portion
+ * @property {number} [executedSellRebates] - Rebates on that executed portion
+ * @property {number} [executedSellNetFees] - Net fees on that executed portion
+ * @property {string[]} [partialSellOrderIds] - Sells whose executed portion was booked before they left the book
  * @property {string} [sellFailedAt] - ISO timestamp when sell placement failed
  * @property {{intentId: string, clientOrderId: string|null, orderId?: string}} [sellPlacementUnresolved] - Unknown-outcome sell placement that blocks a retry (issue #1035); `orderId` names a sell the exchange accepted but whose ownership could not be saved (issue #1886)
  * @property {number} [sellRetryCount] - Operator retries of a failed sell placement
@@ -133,6 +140,8 @@
  * @property {number} [fibCumulativeCost] - Total cost basis for current Fibonacci cycle
  * @property {number} [fibCumulativeAsset] - Total BTC accumulated in current Fibonacci cycle
  * @property {string|null} [fibActiveSellOrderId] - Active consolidated sell order ID for Fibonacci cycle
+ * @property {number} [fibCycleSoldAsset] - Asset the current Fibonacci cycle already sold through partially-executed sells (issue #1887)
+ * @property {string[]} [fibCreditedSellOrderIds] - Partially-executed sells already credited to the current Fibonacci cycle (issue #1887)
  * @property {Object} [pendingDcaBuy] - Accepted market buy awaiting fill recovery (issue #963): orderId, clientOrderId, requestedUsdc, runId, acceptedAt, statusChecks, lastError
  * @property {string[]} [bookedDcaBuyOrderIds] - Recently booked buy order ids, for exactly-once booking (issue #963)
  */
@@ -289,6 +298,8 @@
 /**
  * @typedef {Object} FilledSellOrder
  * @property {string} orderId - Order ID
+ * @property {boolean} [cancelled] - The sell left the book CANCELLED/EXPIRED/FAILED; filledSize is only what it executed (issue #1887)
+ * @property {string} [status] - Exchange status of a cancelled sell
  * @property {number} filledSize - Amount filled
  * @property {number} fillValue - Value of fill
  * @property {number} averageFilledPrice - Average price
