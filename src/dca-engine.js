@@ -1399,7 +1399,9 @@ const priorSellRefusal = async (prior, config, adapter, exchange, pair) => {
   if (!prior.clientOrderId && prior.orderId) {
     // An accepted sell whose ownership could not be saved (issue #1886): its
     // exchange id is known even without a client id, so check it directly.
-    const status = await adapter.getOrder(prior.orderId).catch((err) => ({ __lookupError: err }));
+    const status = await Promise.resolve()
+      .then(() => adapter.getOrder(prior.orderId))
+      .catch((err) => ({ __lookupError: err }));
     if (status?.__lookupError) {
       return refuse(`Could not check the exchange for the earlier accepted sell ${prior.orderId} (${status.__lookupError.message}) — not placing another sell`);
     }
