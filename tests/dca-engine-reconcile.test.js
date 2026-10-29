@@ -846,6 +846,119 @@ describe('retryFailedSell (issue #1035)', () => {
       assert.ok(Math.abs(after.usdcFundSize - (booked.usdcFundSize + value - 0.5)) < 1e-9, 'credited once');
     });
 
+    describe('unavailable fee detail is never a permanent zero (issue #1892)', () => {
+      const failFees = (orderId) => { throw Object.assign(new Error(`fills incomplete for ${orderId}`), { incompleteFills: true }); };
+
+      it('fixed DCA: the status fee credits 103 of a 105 sell even when fill history is down, once', async () => {
+        const row = await buyWithRestingSell();
+        const booked = readState();
+        ex.adapter.getOrderFillSummary = async (id) => { feeLookups.push(id); failFees(id); };
+        sellStatus[row.orderId] = { orderId: row.orderId, status: 'FILLED', filledSize: row.sellQuantity, filledValue: 105, averageFilledPrice: row.sellPrice, totalFees: 2 };
+
+        assert.equal((await engine.syncFundOrders(EXCHANGE, PAIR)).filledOrders.length, 1);
+        await engine.syncFundOrders(EXCHANGE, PAIR);
+        const after = readState();
+        assert.equal(after.orders[0].status, 'filled');
+        assert.equal(after.orders[0].sellNetFees, 2);
+        assert.equal(after.orders[0].netProceeds, 103);
+        assert.ok(Math.abs(after.usdcFundSize - (booked.usdcFundSize + 103)) < 1e-9);
+      });
+
+      it('fixed DCA: with no authoritative fee the sell stays pending until history recovers, then finalizes once', async () => {
+        const row = await buyWithRestingSell();
+        const booked = readState();
+        let historyUp = false;
+        ex.adapter.getOrderFillSummary = async (id) => {
+          feeLookups.push(id);
+          if (!historyUp) failFees(id);
+          return { totalFees: 2, totalRebates: 0, netFees: 2, fills: [] };
+        };
+        // Zero in the status is the adapter default/placeholder, not proof of a zero fee.
+        sellStatus[row.orderId] = { orderId: row.orderId, status: 'FILLED', filledSize: row.sellQuantity, filledValue: 105, averageFilledPrice: row.sellPrice, totalFees: 0 };
+
+        assert.equal((await engine.syncFundOrders(EXCHANGE, PAIR)).filledOrders.length, 0);
+        assert.deepEqual(readState(), booked, 'nothing is finalized or credited while fees are unknown');
+        assert.equal(readState().orders[0].status, 'pending');
+
+        historyUp = true;
+        restartEngine();
+        assert.equal((await engine.syncFundOrders(EXCHANGE, PAIR)).filledOrders.length, 1);
+        assert.equal((await engine.syncFundOrders(EXCHANGE, PAIR)).filledOrders.length, 0);
+        const after = readState();
+        assert.equal(after.orders[0].status, 'filled');
+        assert.equal(after.orders[0].netProceeds, 103);
+        assert.ok(Math.abs(after.usdcFundSize - (booked.usdcFundSize + 103)) < 1e-9, 'credited exactly once');
+        assert.equal(ex.placedBuys, 1, 'no replacement order');
+      });
+
+      it('fixed DCA: a cancelled partial with unknown fees stays pending, then books once', async () => {
+        const row = await buyWithRestingSell();
+        const booked = readState();
+        let historyUp = false;
+        ex.adapter.getOrderFillSummary = async (id) => {
+          if (!historyUp) failFees(id);
+          return { totalFees: 0.5, totalRebates: 0, netFees: 0.5, fills: [] };
+        };
+        const executed = row.sellQuantity * 0.4;
+        sellStatus[row.orderId] = { orderId: row.orderId, status: 'CANCELLED', filledSize: executed, filledValue: executed * row.sellPrice, averageFilledPrice: row.sellPrice };
+
+        assert.equal((await engine.syncFundOrders(EXCHANGE, PAIR)).filledOrders.length, 0);
+        assert.deepEqual(readState(), booked);
+        historyUp = true;
+        assert.equal((await engine.syncFundOrders(EXCHANGE, PAIR)).filledOrders.length, 1);
+        assert.equal((await engine.syncFundOrders(EXCHANGE, PAIR)).filledOrders.length, 0);
+        assert.equal(readState().orders[0].status, 'sell_failed');
+      });
+
+      it('genuine zero fees and signed rebates are still honored', async () => {
+        ex.adapter.getOrderFillSummary = async () => ({ totalFees: 0, totalRebates: 0, netFees: 0, fills: [] });
+        const row = await buyWithRestingSell();
+        sellStatus[row.orderId] = { orderId: row.orderId, status: 'FILLED', filledSize: row.sellQuantity, filledValue: 105, averageFilledPrice: row.sellPrice };
+        await engine.syncFundOrders(EXCHANGE, PAIR);
+        assert.equal(readState().orders[0].netProceeds, 105);
+
+        const rebateOrders = await orderManager.checkFilledOrders([{ orderId: 'rb' }], {
+          name: EXCHANGE,
+          getOrder: async () => ({ status: 'FILLED', filledSize: 1, filledValue: 105, averageFilledPrice: 105, totalFees: -0.4 }),
+          getOrderFillSummary: async () => { throw new Error('down'); },
+        });
+        assert.equal(rebateOrders[0].netFees, -0.4);
+        assert.equal(rebateOrders[0].rebates, 0.4);
+        assert.equal(rebateOrders[0].netProceeds, 105.4);
+      });
+
+      it('Fibonacci: a filled sell with unknown fees is not settled or replaced until fees return', async () => {
+        fundConfig.dcaStrategy = 'fibonacci';
+        fundConfig.fibBaseAmount = 100;
+        ex.sellMode = 'accept';
+        const nextInterval = () => writeState({ ...readState(), lastRunId: 'an-earlier-interval' });
+        assert.equal((await engine.runIntervalCycle(EXCHANGE, PAIR)).status, 'success');
+        const first = readState();
+        const sellId = first.fibActiveSellOrderId;
+        let historyUp = false;
+        ex.adapter.getOrderFillSummary = async (id) => {
+          if (!historyUp) failFees(id);
+          return { totalFees: 0.5, totalRebates: 0, netFees: 0.5, fills: [] };
+        };
+        sellStatus[sellId] = { orderId: sellId, status: 'FILLED', filledSize: first.outstandingOrdersAsset, filledValue: 105, averageFilledPrice: 52000 };
+
+        nextInterval();
+        await engine.runIntervalCycle(EXCHANGE, PAIR);
+        const stuck = readState();
+        assert.equal(stuck.fibActiveSellOrderId, sellId, 'the filled sell stays the cycle\'s owned sell');
+        assert.equal(stuck.fibCreditedSellOrderIds?.length ?? 0, 0);
+
+        historyUp = true;
+        restartEngine();
+        nextInterval();
+        const attempts = ex.sellAttempts.length;
+        await engine.runIntervalCycle(EXCHANGE, PAIR);
+        const settledState = readState();
+        assert.notEqual(settledState.fibActiveSellOrderId, sellId);
+        assert.ok(ex.sellAttempts.length > attempts);
+      });
+    });
+
     it('Fibonacci: an expired partial is credited once, keeps its cycle and holdback, and shrinks every replacement', async () => {
       fundConfig.dcaStrategy = 'fibonacci';
       fundConfig.fibBaseAmount = 100;
