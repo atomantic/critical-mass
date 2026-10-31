@@ -53,6 +53,7 @@ const { performBackup } = require('./src/backup-coordinator');
 const { drainPendingWrites, trackPendingWrite } = require('./src/pending-writes');
 const { maintenanceGuard, isMaintenanceActive } = require('./src/restore-maintenance');
 const { createUpDownService } = require('./src/updown/updown-service');
+const { JOURNAL_WRITE_LABEL: SCORECARD_JOURNAL_WRITE_LABEL } = require('./src/updown/scorecard');
 const { createCandleCache } = require('./src/candle-cache');
 const { createSentinelService } = require('./src/sentinel/sentinel-service');
 const { getSentinelConfig, updateSentinelConfig } = require('./src/config-utils');
@@ -148,11 +149,14 @@ const gatewayShutdown = createGatewayShutdown({
     // A restore owns UpDown and Sentinel from its stop through its reload, and
     // keeps them stopped after an incomplete rollback. stop() always persists,
     // so stopping them inside that window would write pre-restore memory over
-    // the restored files.
-    const restoreOwnsWriters = isMaintenanceActive();
+    // the restored files. A service still running under maintenance (a
+    // fund-state snapshot leaves both up) is not owned and must persist.
+    const ownedByMaintenance = (service) => isMaintenanceActive() && !service.getStatus().running;
     const failures = [];
     for (const [name, stop] of [
-      ...(restoreOwnsWriters ? [] : [['UpDown', () => updownService.stop()], ['Sentinel', () => sentinelService.stop()]]),
+      ...[['UpDown', updownService], ['Sentinel', sentinelService]]
+        .filter(([, service]) => !ownedByMaintenance(service))
+        .map(([serviceName, service]) => [serviceName, () => service.stop()]),
       ['log streams', () => activeLogStreams.stopAll()],
     ]) {
       try {
@@ -223,18 +227,23 @@ app.param('exchange', (req, res, next, exchange) => {
 
 // ============ Backup Scheduler ============
 
-const runBackup = (kind, create) => performBackup({
+// UpDown and Sentinel write gateway-level files (updown-state.json, scorecard
+// journals, sentinel-state.json) that only full archives capture. A fund-state
+// snapshot copies per-fund files alone, so it leaves both running and does not
+// wait on their journal appends, which can sit out a replay's lock for minutes.
+const runBackup = (kind, create, { stopGatewayWriters = true } = {}) => performBackup({
   kind, create, exchangeIPCMap,
   configuredExchanges: getConfiguredExchanges().filter((name) => exchangeIPCMap[name]),
-  drainPendingWrites,
-  gatewayWriters: [updownService, sentinelService].map((service, index) => {
+  drainPendingWrites: stopGatewayWriters ? drainPendingWrites
+    : (timeoutMs) => drainPendingWrites(timeoutMs, (entry) => entry.label !== SCORECARD_JOURNAL_WRITE_LABEL),
+  gatewayWriters: stopGatewayWriters ? [updownService, sentinelService].map((service, index) => {
     const wasRunning = service.getStatus().running;
     return {
       name: index === 0 ? 'UpDown' : 'Sentinel',
       stop: () => service.stop(),
       resume: () => wasRunning ? service.start() : undefined,
     };
-  }),
+  }) : [],
   logger: createContextLogger({ module: 'backup-coordinator' }),
 });
 
@@ -272,7 +281,7 @@ const backupScheduler = createBackupScheduler({
       startupOffsetMs: 2 * 60_000,
       newest: getNewestFundStateBackupTime,
       run: async (config) => {
-        const result = await runBackup('fund state', () => createFundStateBackup({ maxBackups: config.fundStateMaxBackups }));
+        const result = await runBackup('fund state', () => createFundStateBackup({ maxBackups: config.fundStateMaxBackups }), { stopGatewayWriters: false });
         if (result.success && result.snapshotId) {
           log('INFO', `💾 Fund-state snapshot created: ${result.snapshotId} (${result.files} files, ${result.funds.length} funds)`);
           if (result.pruned > 0) {

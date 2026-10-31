@@ -10,6 +10,7 @@ const { performBackup } = require('../src/backup-coordinator');
 const { trackPendingWrite, drainPendingWrites, getPendingWrites } = require('../src/pending-writes');
 const maintenance = require('../src/restore-maintenance');
 const backup = require('../src/backup-service');
+const { JOURNAL_WRITE_LABEL } = require('../src/updown/scorecard');
 const { ledgerOf, fixturePayload } = require('./helpers/ledger-fixture');
 
 const logger = { info() {}, warn() {}, error() {} };
@@ -59,13 +60,23 @@ const setup = (t, { disconnected = false, resumeFails = false, createFails = fal
   assert.notEqual(runnerStart, -1, 'server must expose its backup runner');
   const runner = serverSource.slice(runnerStart, serverSource.indexOf('const backupScheduler =', runnerStart));
   const runnerName = /const (run\w*Backup) =/.exec(runner)[1];
-  const runtime = vm.runInNewContext(`${wrapper}\n${runner}\n({ routes, runBackup: ${runnerName} });`, {
+  const schedulerStart = serverSource.indexOf('const backupScheduler =', runnerStart);
+  const scheduler = serverSource.slice(schedulerStart, serverSource.indexOf('const rescheduleBackupTimer', schedulerStart));
+  const runtime = vm.runInNewContext(`${wrapper}\n${runner}\n${scheduler}\n({ routes, runBackup: ${runnerName}, backupScheduler });`, {
     app, gatewayShutdown: { routes: () => app }, trackPendingWrite,
     performBackup, exchangeIPCMap, getConfiguredExchanges: () => ['coinbase'],
     // A short deadline makes accidental self-draining fail deterministically.
-    drainPendingWrites: () => drainPendingWrites(100),
+    drainPendingWrites: (_timeoutMs, matches) => drainPendingWrites(100, matches),
+    SCORECARD_JOURNAL_WRITE_LABEL: JOURNAL_WRITE_LABEL,
     updownService: service('updown', true), sentinelService: service('sentinel', false),
     createContextLogger: () => logger,
+    // Capture the scheduler's kinds so tests run the server's own fund-state job.
+    createBackupScheduler: (options) => options,
+    getBackupConfig: () => ({}), log() {}, getNewestBackupTimeAsync() {}, getNewestFundStateBackupTime() {},
+    createFundStateBackup: (options) => {
+      events.push('fund-state');
+      return backup.createFundStateBackup({ ...options, paths });
+    },
   });
   const routeFile = path.join(__dirname, '../src/routes/settings-routes.js');
   const routeRequire = createRequire(routeFile);
@@ -107,6 +118,7 @@ const setup = (t, { disconnected = false, resumeFails = false, createFails = fal
     fs.rmSync(root, { recursive: true, force: true });
   });
   return { paths, fundDir, events, write, invoke, copies: () => copies, prunes: () => prunes,
+    fundStateJob: runtime.backupScheduler.kinds.fundState,
     pendingWriter: async () => {
       const gate = deferred();
       const entered = deferred();
@@ -181,6 +193,24 @@ describe('manual backups use the server writer-quiescence gate', () => {
     assert.ok(w.events.includes('stop:sentinel'));
     assert.ok(w.events.includes('start:updown'));
     assert.ok(!w.events.includes('start:sentinel'), 'a previously stopped service stays stopped');
+    assert.equal(maintenance.isMaintenanceActive(), false);
+  });
+
+  it('hourly fund-state snapshots quiesce engines but leave UpDown and Sentinel running', async (t) => {
+    const w = setup(t);
+    w.write('regime-state.json', 1);
+    // A live scorecard append waiting out a replay's lock writes no fund file.
+    const replayLock = deferred();
+    const journal = trackPendingWrite(JOURNAL_WRITE_LABEL, () => replayLock.promise);
+    t.after(() => { replayLock.resolve(); return journal; });
+    const res = await w.fundStateJob.run({ fundStateMaxBackups: 24 });
+    assert.equal(res.success, true, JSON.stringify(res));
+    const paused = w.events.indexOf('engine:backup-pause');
+    assert.ok(paused >= 0 && paused < w.events.indexOf('fund-state'), 'engines must be quiesced before the copy');
+    assert.ok(w.events.includes('engine:backup-resume'));
+    for (const name of ['updown', 'sentinel']) {
+      assert.ok(!w.events.includes(`stop:${name}`), `${name} owns no file a fund-state snapshot copies`);
+    }
     assert.equal(maintenance.isMaintenanceActive(), false);
   });
 
