@@ -670,14 +670,15 @@ describe('Adapter instrumentation', () => {
     assert.ok(!clearedAuthDenial, 'clearAuthDenied should NOT be called on public method success');
   });
 
-  it('instrumentAdapterForHealth records latency on success and error', async () => {
+  it('instrumentAdapterForHealth records latency on success and error', async (t) => {
+    t.mock.timers.enable({ apis: ['Date'] });
     const monitor = createHealthMonitor('test', createTestConfig());
     const latencies = [];
     monitor.recordRestLatency = (ms) => { latencies.push(ms); };
 
     const adapter = {
       getCandles: async () => {
-        await new Promise(r => setTimeout(r, 10));
+        t.mock.timers.tick(10);
         return [];
       },
     };
@@ -685,7 +686,7 @@ describe('Adapter instrumentation', () => {
 
     await wrapped.getCandles();
     assert.equal(latencies.length, 1);
-    assert.ok(latencies[0] >= 10);
+    assert.equal(latencies[0], 10);
 
     // Record latency even on error
     const errAdapter = {
