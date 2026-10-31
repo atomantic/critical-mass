@@ -11,6 +11,8 @@
  *   process, so concurrently running files never share fixtures
  * - preserves the quiet-console preload, the tests/*.test.js selection and any
  *   extra CLI arguments, and the child's exit status
+ * - the skip-fsync preload turns fs.fsyncSync into a descriptor check: every
+ *   fixture write lands in this disposable root, so flushing it buys nothing
  * - removes ONLY its own root after the child closes (success, failure or signal)
  * - forwards SIGINT/SIGTERM/SIGHUP to the child's process group, waits for it to
  *   stop, then cleans up; escalates to SIGKILL after a bounded grace period
@@ -38,6 +40,7 @@ function defaultChildArgs(extraArgs) {
   return [
     '--require', './tests/quiet-console.js',
     '--require', './tests/isolated-data-root.js',
+    '--require', './tests/skip-fsync.js',
     '--test',
     ...extraArgs,
     ...files,

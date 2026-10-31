@@ -225,10 +225,15 @@ describe('scripts/test.js runner lifecycle', () => {
 
   it('preserves test selection, preloads and argument forwarding', () => {
     const args = defaultChildArgs(['--test-name-pattern=foo']);
-    assert.deepEqual(args.slice(0, 5), ['--require', './tests/quiet-console.js', '--require', './tests/isolated-data-root.js', '--test']);
+    assert.deepEqual(args.slice(0, 7), [
+      '--require', './tests/quiet-console.js',
+      '--require', './tests/isolated-data-root.js',
+      '--require', './tests/skip-fsync.js',
+      '--test',
+    ]);
     assert.ok(args.includes(path.join('tests', 'test-runner.test.js')));
     assert.ok(args.filter((a) => a.endsWith('.test.js')).every((a) => a.startsWith('tests' + path.sep)));
-    assert.equal(args[5], '--test-name-pattern=foo', 'Node options must precede test file paths');
+    assert.equal(args[7], '--test-name-pattern=foo', 'Node options must precede test file paths');
     const onDisk = fs.readdirSync(path.join(REPO_ROOT, 'tests')).filter((n) => n.endsWith('.test.js'));
     assert.equal(args.filter((a) => a.endsWith('.test.js')).length, onDisk.length);
     assert.equal(JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8')).scripts.test, 'node scripts/test.js');
@@ -242,6 +247,7 @@ describe('scripts/test.js runner lifecycle', () => {
     fs.copyFileSync(path.join(REPO_ROOT, 'scripts/lib/process-group.js'), path.join(repo, 'scripts/lib/process-group.js'));
     fs.writeFileSync(path.join(repo, 'tests/quiet-console.js'), '');
     fs.copyFileSync(path.join(REPO_ROOT, 'tests/isolated-data-root.js'), path.join(repo, 'tests/isolated-data-root.js'));
+    fs.writeFileSync(path.join(repo, 'tests/skip-fsync.js'), '');
     fs.writeFileSync(path.join(repo, 'tests/selection.test.js'), `
       const { test } = require('node:test');
       test('chosen', () => {
