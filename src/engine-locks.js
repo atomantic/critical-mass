@@ -85,6 +85,9 @@ const createEngineLocks = (opts = {}) => {
   // Closed at shutdown: no NEW top-level fill may start, but a fill nested in
   // an in-flight handler (its AsyncLocalStorage context) still runs through.
   let fillGateClosed = false;
+  // Backup hold: unlike the shutdown close, new top-level fills QUEUE here
+  // (outside the in-flight count) and run once the hold is released.
+  let fillHold = null;
   const fillOwner = new AsyncLocalStorage();
   let entryInProgress = false;
   // Ladder lock: `ladderTail` settles when the last queued holder releases;
@@ -158,6 +161,7 @@ const createEngineLocks = (opts = {}) => {
    * @param {{exchange?: string, orderId?: string}} [meta]
    */
   const withFillGate = async (fn, meta = {}) => {
+    while (fillHold && !fillOwner.getStore()) await fillHold.released;
     if (fillGateClosed && !fillOwner.getStore()) {
       throw Object.assign(
         new Error(`Fill ${meta.orderId || '?'} refused — engine is shutting down; it will be recovered on next start`),
@@ -190,6 +194,45 @@ const createEngineLocks = (opts = {}) => {
   const closeFillGate = () => { fillGateClosed = true; };
   /** Re-admit fills (engine start after a stop). */
   const openFillGate = () => { fillGateClosed = false; };
+
+  /** Queue new top-level fills (backup hold) until releaseFillHold. Idempotent. */
+  const holdFills = () => {
+    if (fillHold) return;
+    let release = () => {};
+    const released = new Promise((resolve) => { release = resolve; });
+    fillHold = { released, release };
+  };
+  const releaseFillHold = () => {
+    const hold = fillHold;
+    fillHold = null;
+    hold?.release();
+  };
+
+  /**
+   * Hold the ladder lock open-ended so no sweep starts. Resolves
+   * `{ held: true, release }`, or `{ held: false }` if a running sweep did not
+   * finish within `timeoutMs` (a late acquisition then releases itself).
+   * @param {number} timeoutMs
+   * @returns {Promise<{held: boolean, release: () => void}>}
+   */
+  const holdLadder = (timeoutMs) => new Promise((resolve) => {
+    let settled = false;
+    let release = () => {};
+    const done = new Promise((r) => { release = r; });
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      resolve({ held: false, release: () => {} });
+    }, timeoutMs);
+    timer.unref?.();
+    void withLadderLock(() => {
+      if (settled) return undefined;
+      settled = true;
+      clearTimeout(timer);
+      resolve({ held: true, release });
+      return done;
+    }, { onTimeout: 'refuse', label: 'backup hold' });
+  });
 
   /**
    * Resolve once no fill is in flight, or at the deadline — never rejects, so
@@ -344,6 +387,9 @@ const createEngineLocks = (opts = {}) => {
     withFillGate,
     closeFillGate,
     openFillGate,
+    holdFills,
+    releaseFillHold,
+    holdLadder,
     waitForFillsIdle,
     withReconcileLock,
     withEntryLock,
