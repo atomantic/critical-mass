@@ -11,19 +11,8 @@ Critical Mass uses a single release branch: `main`. The Release workflow runs on
 5. Run `npm test` and `npm run build`. In a worktree, dependencies may be linked from the primary checkout; never run an installer through those links. Resolve failures before proceeding.
 6. Commit the preparation, run the configured optional code review with enforced read-only permissions, and open a PR from `release/vX.Y.Z` into `main`. Include the previous-tag comparison so reviewers can inspect the full release scope beyond the version-bump diff.
 7. Wait for the PR's CI build to succeed, then merge. Do not merge on an empty checks response while expected checks are still attaching.
-8. Watch the Release workflow for the merge commit. Verify the PR is merged, the merge commit is on `origin/main`, the remote version tag points to that release lineage, and `gh release view vX.Y.Z` reports a published, non-draft, non-prerelease release. A merged PR alone is not completion.
-9. Verify the container publication for the same tag:
-   - `docker buildx imagetools inspect ghcr.io/atomantic/critical-mass:vX.Y.Z` must list both `linux/amd64` and `linux/arm64`.
-   - Pull each platform explicitly and compare `org.opencontainers.image.revision` from `docker image inspect` with `git rev-parse vX.Y.Z^{commit}`. For example:
-     ```sh
-     EXPECTED_REVISION="$(git rev-parse 'vX.Y.Z^{commit}')"
-     for PLATFORM in linux/amd64 linux/arm64; do
-       docker pull --platform "$PLATFORM" ghcr.io/atomantic/critical-mass:vX.Y.Z
-       test "$(docker image inspect ghcr.io/atomantic/critical-mass:vX.Y.Z --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" = "$EXPECTED_REVISION"
-     done
-     ```
-     The revision must match for both platforms, and the version label/tag must be `vX.Y.Z`.
-   - Confirm the versioned image exists before treating the release as deployable through the container path.
+8. Watch the Release workflow run for the merge commit (`gh run list --workflow release.yml --commit <merge-sha>`). It must succeed with its **Publish release image** job run, not skipped: a skipped publication means the tag already existed and nothing new was released. `gh release view vX.Y.Z` then confirms the GitHub Release. A merged PR alone is not completion.
+9. Confirm the image: `docker buildx imagetools inspect ghcr.io/atomantic/critical-mass:vX.Y.Z` must list both `linux/amd64` and `linux/arm64`. It reads the registry manifest without pulling either image. The Docker Build workflow already fails unless its checkout is the tag's commit and stamps that commit as `org.opencontainers.image.revision` on both platforms, so do not pull each platform to re-compare the label.
 
 ## Automation compatibility
 

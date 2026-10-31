@@ -23,12 +23,8 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Use Node.js 22.x
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version: 26.x
-          cache: 'npm'
-
+      # No setup-node: this job installs nothing, and the runner's preinstalled
+      # Node only reads package.json's version.
       - name: Configure git
         run: |
           git config user.name "github-actions[bot]"
