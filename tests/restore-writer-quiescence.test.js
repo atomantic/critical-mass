@@ -933,7 +933,7 @@ describe('engine-side maintenance window', () => {
   }
 
   it('derives kind from the legacy reason prefix when a caller omits it', () => {
-    const cases = [['restore backup-1.zip', 'restore'], ['backup manual', 'backup'], ['FIFO backfill', 'generic'], ['restore', 'generic']];
+    const cases = [['restore backup-1.zip', 'restore'], ['backup manual', 'backup'], ['offline repair', 'generic'], ['restore', 'generic']];
     for (const [reason, kind] of cases) {
       engineMaintenance.setEngineMaintenance({ active: true, reason });
       assert.equal(engineMaintenance.getEngineMaintenance().kind, kind, reason);

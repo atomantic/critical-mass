@@ -117,25 +117,6 @@ for (const code of ['EINVAL', 'EPERM']) {
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(fundDir, 'state.json'))), { orders: [] });
   });
 
-  test(`FIFO backfill retains injected writes and completes with directory fsync ${code}`, (t) => {
-    const dir = fixture(t);
-    const fund = path.join(dir, 'synthetic', 'AAA-USD');
-    fs.mkdirSync(fund, { recursive: true });
-    const file = path.join(fund, 'regime-state.json');
-    const before = JSON.stringify({ position: { realizedPnL: 0, realizedAssetPnL: 0 } });
-    const after = JSON.stringify({ position: { realizedPnL: 5, realizedAssetPnL: 1 } });
-    fs.writeFileSync(file, before);
-    const writes = [];
-    unsupportedDirectorySync(t, code);
-    const { runBackfill, JOURNAL_FILENAME } = require('../src/fifo-backfill-transaction');
-    assert.deepEqual(runBackfill({ dataDir: dir, stage: () => [{ file, before, after }],
-      write: (target, bytes) => { writes.push(target); atomicWriteSync(target, bytes); },
-    }), { status: 'committed', count: 1 });
-    assert.ok(writes.includes(file));
-    assert.equal(fs.readFileSync(file, 'utf8'), after);
-    assert.equal(fs.existsSync(path.join(dir, JOURNAL_FILENAME)), false);
-  });
-
   test(`scorecard validates before publication and tolerates directory fsync ${code}`, (t) => {
     const dir = fixture(t);
     const file = path.join(dir, 'scorecard.jsonl');

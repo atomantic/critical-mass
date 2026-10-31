@@ -23,7 +23,6 @@ const path = require('path');
 const { DATA_DIR } = require('./paths');
 const { IPC_CHANNELS } = require('./ipc/ipc-protocol');
 const { JOURNAL_FILENAME } = require('./restore-apply');
-const { hasPendingBackfill } = require('./fifo-backfill-transaction');
 const { createContextLogger } = require('./logger');
 
 const maintenanceLog = createContextLogger({ component: 'engine-maintenance' });
@@ -152,9 +151,6 @@ const refuseDuringMaintenance = (channel) => {
   if (MAINTENANCE_SAFE_CHANNELS.has(channel)) return null;
   // The in-memory window expires; an unfinished restore must not. Only startup
   // recovery may consume/remove this journal before trading mutations resume.
-  if (hasPendingBackfill()) {
-    return { success: false, code: 'backfill-incomplete-recovery', error: 'FIFO backfill recovery is pending; run the offline repair with --resume or --rollback.', heldBy: 'FIFO backfill recovery', expiresAt: 0 };
-  }
   if (fs.existsSync(path.join(DATA_DIR, JOURNAL_FILENAME))) {
     return {
       success: false,
