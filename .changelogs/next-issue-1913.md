@@ -1,0 +1,1 @@
+- **[issue-1913] Run the fills-completeness tests on a virtual clock** — The synthesized-order fills completeness tests now advance a virtual clock instead of waiting on adapter pacing and retry timers, cutting the file from about 29s to under 1s.
