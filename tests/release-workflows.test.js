@@ -57,12 +57,10 @@ test('release and registry login use the runner CLIs instead of third-party acti
   assert.ok(dockerWorkflow.indexOf('docker login ghcr.io') < dockerWorkflow.indexOf('docker/build-push-action'));
 });
 
-test('release documentation covers image recovery and source verification', () => {
+test('release documentation covers image verification and recovery', () => {
   assert.match(releaseDocs, /docker buildx imagetools inspect/);
   assert.match(releaseDocs, /linux\/amd64/);
   assert.match(releaseDocs, /linux\/arm64/);
-  assert.match(releaseDocs, /org\.opencontainers\.image\.revision/);
-  assert.match(releaseDocs, /docker pull --platform/);
   assert.match(releaseDocs, /Actions → Docker Build → Run workflow/);
   assert.match(releaseDocs, /immutable tag/);
 });

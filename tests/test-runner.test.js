@@ -223,12 +223,12 @@ describe('scripts/test.js runner lifecycle', () => {
     assert.equal(fs.existsSync(rootB), false);
   });
 
-  it('preserves test selection, preload, concurrency and argument forwarding', () => {
+  it('preserves test selection, preloads and argument forwarding', () => {
     const args = defaultChildArgs(['--test-name-pattern=foo']);
-    assert.deepEqual(args.slice(0, 4), ['--require', './tests/quiet-console.js', '--test', '--test-concurrency=1']);
+    assert.deepEqual(args.slice(0, 5), ['--require', './tests/quiet-console.js', '--require', './tests/isolated-data-root.js', '--test']);
     assert.ok(args.includes(path.join('tests', 'test-runner.test.js')));
     assert.ok(args.filter((a) => a.endsWith('.test.js')).every((a) => a.startsWith('tests' + path.sep)));
-    assert.equal(args[4], '--test-name-pattern=foo', 'Node options must precede test file paths');
+    assert.equal(args[5], '--test-name-pattern=foo', 'Node options must precede test file paths');
     const onDisk = fs.readdirSync(path.join(REPO_ROOT, 'tests')).filter((n) => n.endsWith('.test.js'));
     assert.equal(args.filter((a) => a.endsWith('.test.js')).length, onDisk.length);
     assert.equal(JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8')).scripts.test, 'node scripts/test.js');
@@ -241,9 +241,16 @@ describe('scripts/test.js runner lifecycle', () => {
     fs.copyFileSync(path.join(REPO_ROOT, 'scripts/test.js'), path.join(repo, 'scripts/test.js'));
     fs.copyFileSync(path.join(REPO_ROOT, 'scripts/lib/process-group.js'), path.join(repo, 'scripts/lib/process-group.js'));
     fs.writeFileSync(path.join(repo, 'tests/quiet-console.js'), '');
+    fs.copyFileSync(path.join(REPO_ROOT, 'tests/isolated-data-root.js'), path.join(repo, 'tests/isolated-data-root.js'));
     fs.writeFileSync(path.join(repo, 'tests/selection.test.js'), `
       const { test } = require('node:test');
-      test('chosen', () => {});
+      test('chosen', () => {
+        // Concurrent test files must not share a data root.
+        const dir = process.env.CRITICAL_MASS_DATA_DIR;
+        if (require('path').basename(dir) !== 'pid-' + process.pid || !require('fs').statSync(dir).isDirectory()) {
+          throw new Error('data root not isolated per test process: ' + dir);
+        }
+      });
       test('unselected', () => { throw new Error('filter was ignored'); });
     `);
     const env = { ...process.env, TMPDIR: parent, TMP: parent, TEMP: parent };
