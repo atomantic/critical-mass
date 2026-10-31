@@ -1269,6 +1269,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // process is not killed between ledger ingest and TP booking. New
       // top-level fills are refused first; the drain is bounded so a hung
       // exchange call cannot block shutdown.
+      releaseBackupHold(); // queued backup-hold fills are refused (and recovered on start), not left waiting
       engineLocks.closeFillGate();
       const drain = await engineLocks.waitForFillsIdle(Math.max(0, drainDeadline - Date.now()));
       if (!drain.idle) {
@@ -7541,13 +7542,48 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     closedTrades.applySellCorrection(correction);
   });
 
+  const flushForBackup = () => {
+    if (isDryRun) dryRunState.forceSave(exchange, snapshotDryRunState(), pair);
+    else { saveLiveState(); fillLedger.persist({ force: true }); }
+  };
+
+  // Backup quiescence without stopping: queue new fills at the gate, let
+  // in-flight handlers finish (bounded), keep sweeps off the ladder lock, then
+  // publish one generation. Fail closed: if either bound expires, release
+  // everything and report not-quiesced so no recovery point is published.
+  let releaseLadderHold = null;
+  const releaseBackupHold = () => {
+    const releaseLadder = releaseLadderHold;
+    releaseLadderHold = null;
+    releaseLadder?.();
+    engineLocks.releaseFillHold();
+  };
+  const holdForBackup = async (timeoutMs = fillDrainMs) => {
+    releaseBackupHold();
+    const deadline = Date.now() + timeoutMs;
+    engineLocks.holdFills();
+    const drain = await engineLocks.waitForFillsIdle(timeoutMs);
+    if (!drain.idle) {
+      releaseBackupHold();
+      return { quiesced: false, error: `${drain.pending} fill handler(s) still in flight (orders: ${drain.orderIds.join(', ')})` };
+    }
+    const ladder = await engineLocks.holdLadder(Math.max(0, deadline - Date.now()));
+    if (!ladder.held) {
+      releaseBackupHold();
+      return { quiesced: false, error: 'A ladder sweep is still running' };
+    }
+    releaseLadderHold = ladder.release;
+    try { flushForBackup(); }
+    catch (err) { releaseBackupHold(); return { quiesced: false, error: err.message }; }
+    return { quiesced: true };
+  };
+
   return {
     start,
     stop,
-    flushForBackup: () => {
-      if (isDryRun) dryRunState.forceSave(exchange, snapshotDryRunState(), pair);
-      else { saveLiveState(); fillLedger.persist({ force: true }); }
-    },
+    flushForBackup,
+    holdForBackup,
+    releaseBackupHold,
     getState,
     getStatus,
     forceRegime,

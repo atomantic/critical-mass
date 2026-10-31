@@ -494,3 +494,67 @@ describe('createEngineLocks — ladder lock deadlock-freedom (#766)', () => {
     assert.equal(await tpFill, 'reset');
   });
 });
+
+describe('createEngineLocks — backup hold (#1909)', () => {
+  it('queues a fill that arrives during the hold and runs it exactly once after release', async () => {
+    const locks = createEngineLocks();
+    const ran = [];
+    locks.holdFills();
+    const fill = locks.withFillGate(() => { ran.push('fill'); return 'done'; }, { orderId: 'o1' });
+    await tick(); await tick();
+    assert.deepEqual(ran, [], 'the fill waits at the gate');
+    assert.equal((await locks.waitForFillsIdle(0)).idle, true, 'a queued fill is not in flight');
+    locks.releaseFillHold();
+    assert.equal(await fill, 'done');
+    assert.deepEqual(ran, ['fill']);
+  });
+  it('lets an in-flight fill finish before the engine reports idle', async () => {
+    const locks = createEngineLocks();
+    let finish = () => {};
+    const inFlight = locks.withFillGate(() => new Promise((r) => { finish = r; }), { orderId: 'o1' });
+    await tick();
+    locks.holdFills();
+    const drained = locks.waitForFillsIdle(1000);
+    await tick();
+    finish(); await inFlight;
+    assert.equal((await drained).idle, true);
+    locks.releaseFillHold();
+  });
+  it('keeps nested fills of an in-flight handler running through the hold', async () => {
+    const locks = createEngineLocks();
+    const result = await locks.withFillGate(async () => {
+      locks.holdFills();
+      return locks.withFillGate(() => 'nested');
+    });
+    assert.equal(result, 'nested');
+    locks.releaseFillHold();
+  });
+  it('refuses, not queues, a held fill once shutdown closes the gate', async () => {
+    const locks = createEngineLocks();
+    locks.holdFills();
+    const fill = locks.withFillGate(() => 'ran', { orderId: 'o1' });
+    locks.closeFillGate();
+    locks.releaseFillHold();
+    await assert.rejects(fill, { code: 'FILL_GATE_CLOSED' });
+  });
+  it('holds the ladder lock against sweeps and releases it', async () => {
+    const locks = createEngineLocks();
+    const hold = await locks.holdLadder(1000);
+    assert.equal(hold.held, true);
+    assert.equal((await locks.withLadderLock(() => 'x', { wait: false })).success, false, 'tick sweeps refuse');
+    const queued = locks.withLadderLock(() => 'sweep');
+    hold.release();
+    assert.equal(await queued, 'sweep');
+  });
+  it('reports not held when a running sweep outlasts the bound, and releases the late acquisition', async () => {
+    const locks = createEngineLocks();
+    let finish = () => {};
+    const sweep = locks.withLadderLock(() => new Promise((r) => { finish = r; }));
+    await tick();
+    const hold = await locks.holdLadder(20);
+    assert.equal(hold.held, false);
+    finish(); await sweep;
+    await new Promise((r) => setTimeout(r, LADDER_POLL_MS * 3));
+    assert.equal(locks.isLadderBusy(), false, 'a late hold does not strand the lock');
+  });
+});
