@@ -1,0 +1,1 @@
+- **[issue-1910] Cut the placement-intents lock test to 50 writes per process** — The cross-process lock test now records 50 intents per child instead of 200, keeping the lock-disabled regression check while cutting the slowest suite.

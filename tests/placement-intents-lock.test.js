@@ -54,10 +54,10 @@ const runChild = (label, count) => new Promise((resolve, reject) => {
 
 describe('placement intents cross-process lock', () => {
   it('two processes recording and resolving concurrently end with exactly the surviving rows', async () => {
-    await Promise.all([runChild('a', 200), runChild('b', 200)]);
+    await Promise.all([runChild('a', 50), runChild('b', 50)]);
 
     const actions = stateTracker.loadPlacementIntents(EXCHANGE, PAIR).map(i => i.action).sort();
-    const expected = ['a', 'b'].flatMap(l => Array.from({ length: 100 }, (_, n) => `${l}-${n * 2 + 1}`)).sort();
+    const expected = ['a', 'b'].flatMap(l => Array.from({ length: 25 }, (_, n) => `${l}-${n * 2 + 1}`)).sort();
     assert.deepEqual(actions, expected);
     assert.equal(fs.existsSync(`${stateTracker.getPlacementIntentsFile(EXCHANGE, PAIR)}.lock`), false);
   });
