@@ -1,0 +1,1 @@
+- **[issue-1914] Drop realized-P&L writes the engine discards from repair scripts** — The four fund-repair scripts no longer assign realized P&L fields that the engine re-derives from the fill ledger, and no longer log them as corrected.

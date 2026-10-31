@@ -346,8 +346,7 @@ async function main() {
   console.log(`    totalAsset:        ${pos.totalAsset} -> ${newTotalAsset}`);
   console.log(`    totalCostBasis:    ${pos.totalCostBasis} -> ${newTotalCostBasis}`);
   console.log(`    avgCostBasis:      ${pos.avgCostBasis.toFixed(2)} -> ${newAvgCostBasis.toFixed(2)}`);
-  console.log(`    realizedPnL:       ${pos.realizedPnL} -> ${correctRealizedPnL}`);
-  console.log(`    realizedAssetPnL:  ${pos.realizedAssetPnL} -> ${correctReserves}`);
+  console.log(`    (realizedPnL / realizedAssetPnL re-derive from the ledger on engine restart; ledger-derived values would be $${correctRealizedPnL} / ${correctReserves})`);
   console.log(`    celestialBodies:   ${pos.celestialBodies.length} -> ${activeBodies.length} (removed placeholder, added ${newBodies.length})`);
 
   // Verify against exchange
@@ -376,12 +375,9 @@ async function main() {
   pos.totalAsset = newTotalAsset;
   pos.totalCostBasis = newTotalCostBasis;
   pos.avgCostBasis = newAvgCostBasis;
-  pos.realizedPnL = correctRealizedPnL;
-  pos.realizedAssetPnL = correctReserves;
   pos.celestialBodies = activeBodies;
 
   if (pos.celestialState) {
-    pos.celestialState.bodiesRealizedPnL = correctRealizedPnL;
     pos.celestialState.bodiesRealizedAssetPnL = correctReserves;
   }
 

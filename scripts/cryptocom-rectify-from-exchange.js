@@ -269,8 +269,7 @@ console.log(`\n=== Position state ===`);
 console.log(`  totalAsset:       ${state.position.totalAsset.toFixed(2)} → ${newTotalAsset.toFixed(2)} CRO`);
 console.log(`  totalCostBasis:   $${state.position.totalCostBasis.toFixed(2)} → $${newTotalCostBasis.toFixed(2)}`);
 console.log(`  avgCostBasis:     $${state.position.avgCostBasis.toFixed(6)} → $${newAvgCostBasis.toFixed(6)}`);
-console.log(`  realizedPnL:      $${state.position.realizedPnL.toFixed(2)} → $${fifo.realizedPnL.toFixed(2)}`);
-console.log(`  realizedAssetPnL: ${state.position.realizedAssetPnL.toFixed(2)} → ${newRealizedAssetPnL.toFixed(2)} CRO`);
+console.log(`  (realizedPnL / realizedAssetPnL are re-derived from the ledger on engine restart)`);
 console.log(`  active bodies:    ${bodies.length} → ${updatedBodies.length}`);
 console.log(`  drained bodies:   ${drainedBodies.map(b=>b.id.slice(-12)).join(', ') || '(none)'}`);
 
@@ -297,10 +296,7 @@ state.position.totalAsset = newTotalAsset;
 state.position.totalCostBasis = newTotalCostBasis;
 state.position.avgCostBasis = newAvgCostBasis;
 state.position.assetOnOrder = newAssetOnOrder;
-state.position.realizedPnL = fifo.realizedPnL;
-state.position.realizedAssetPnL = newRealizedAssetPnL;
 if (state.position.celestialState) {
-  state.position.celestialState.bodiesRealizedPnL = fifo.realizedPnL;
   state.position.celestialState.bodiesRealizedAssetPnL = newRealizedAssetPnL;
   state.position.celestialState.totalBodiesCompleted =
     (state.position.celestialState.totalBodiesCompleted || 0) + drainedBodies.length;

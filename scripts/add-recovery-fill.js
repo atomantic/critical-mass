@@ -147,11 +147,9 @@ async function main() {
   console.log(`   bodyCostBasis: $${roundUSDC(buyCost)}`);
 
   // 5. Update state
-  const oldPnl = pos.realizedPnL;
-  const newPnl = roundUSDC(oldPnl + roundTripPnl);
-
+  // realizedPnL is derived from the fill ledger's cycle pairs on engine start; the ledger edit above is the correction.
   console.log(`\n🔧 State updates:`);
-  console.log(`   realizedPnL: $${oldPnl} → $${newPnl}`);
+  console.log(`   round-trip pnl recorded on the ledger sell: $${roundTripPnl} (realizedPnL re-derives on restart)`);
 
   // Also update maxUsdcDeployed
   const configPath = path.join(__dirname, '../data/config.json');
@@ -161,8 +159,6 @@ async function main() {
   console.log(`   maxUsdcDeployed: $${oldMaxUsdc} → $${newMaxUsdc}`);
 
   if (!DRY_RUN) {
-    pos.realizedPnL = newPnl;
-
     // Save ledger
     ledger.sort((a, b) => a.timestamp - b.timestamp);
     atomicWriteSync(LEDGER_PATH, JSON.stringify(ledger, null, 2));
