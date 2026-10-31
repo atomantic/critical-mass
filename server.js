@@ -223,18 +223,21 @@ app.param('exchange', (req, res, next, exchange) => {
 
 // ============ Backup Scheduler ============
 
-const runBackup = (kind, create) => performBackup({
+// UpDown and Sentinel write gateway-level files (updown-state.json, scorecard
+// journals, sentinel-state.json) that only full archives capture. A fund-state
+// snapshot copies per-fund files alone, so stopping them for it buys nothing.
+const runBackup = (kind, create, { stopGatewayWriters = true } = {}) => performBackup({
   kind, create, exchangeIPCMap,
   configuredExchanges: getConfiguredExchanges().filter((name) => exchangeIPCMap[name]),
   drainPendingWrites,
-  gatewayWriters: [updownService, sentinelService].map((service, index) => {
+  gatewayWriters: stopGatewayWriters ? [updownService, sentinelService].map((service, index) => {
     const wasRunning = service.getStatus().running;
     return {
       name: index === 0 ? 'UpDown' : 'Sentinel',
       stop: () => service.stop(),
       resume: () => wasRunning ? service.start() : undefined,
     };
-  }),
+  }) : [],
   logger: createContextLogger({ module: 'backup-coordinator' }),
 });
 
@@ -272,7 +275,7 @@ const backupScheduler = createBackupScheduler({
       startupOffsetMs: 2 * 60_000,
       newest: getNewestFundStateBackupTime,
       run: async (config) => {
-        const result = await runBackup('fund state', () => createFundStateBackup({ maxBackups: config.fundStateMaxBackups }));
+        const result = await runBackup('fund state', () => createFundStateBackup({ maxBackups: config.fundStateMaxBackups }), { stopGatewayWriters: false });
         if (result.success && result.snapshotId) {
           log('INFO', `💾 Fund-state snapshot created: ${result.snapshotId} (${result.files} files, ${result.funds.length} funds)`);
           if (result.pruned > 0) {
