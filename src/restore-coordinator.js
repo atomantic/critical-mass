@@ -620,7 +620,6 @@ const performRestore = async ({
 
 module.exports = {
   performRestore,
-  requestEngineStop,
   classifyStopAck,
   DEFAULT_STOP_TIMEOUT_MS,
   DEFAULT_DRAIN_TIMEOUT_MS,
