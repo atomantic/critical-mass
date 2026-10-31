@@ -1,6 +1,6 @@
 // @ts-check
 /**
- * Preloaded into every test process (see the `test` script's NODE_OPTIONS).
+ * Preloaded into every test process by scripts/test.js.
  *
  * Node's test runner multiplexes its parent<->child protocol and the child's
  * raw stdout onto the same pipe. The suite writes tens of thousands of
