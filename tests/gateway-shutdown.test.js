@@ -69,16 +69,22 @@ describe('gateway shutdown owns admitted work', () => {
     const source = fs.readFileSync(require.resolve('../server'), 'utf8');
     const start = source.indexOf('  stopProducers: () => {');
     const block = source.slice(start, source.indexOf('\n  },', start) + '\n  },'.length);
-    for (const maintenance of [true, false]) {
+    // A running service under maintenance belongs to a fund-state snapshot,
+    // which never stops it, so shutdown must still persist it.
+    for (const [maintenance, running, expected] of [
+      [true, false, ['logs']],
+      [true, true, ['updown', 'sentinel', 'logs']],
+      [false, false, ['updown', 'sentinel', 'logs']],
+    ]) {
       const calls = [];
       const context = vm.createContext({
         isMaintenanceActive: () => maintenance,
-        updownService: { stop: () => calls.push('updown') },
-        sentinelService: { stop: () => calls.push('sentinel') },
+        updownService: { getStatus: () => ({ running }), stop: () => calls.push('updown') },
+        sentinelService: { getStatus: () => ({ running }), stop: () => calls.push('sentinel') },
         activeLogStreams: { stopAll: () => calls.push('logs') },
       });
       vm.runInContext(`({${block}}).stopProducers()`, context);
-      assert.deepEqual(calls, maintenance ? ['logs'] : ['updown', 'sentinel', 'logs']);
+      assert.deepEqual(calls, expected, `maintenance=${maintenance} running=${running}`);
     }
   });
 

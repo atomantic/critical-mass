@@ -32,6 +32,8 @@ const {
 const scorecardLogger = createContextLogger({ module: 'updown-scorecard' })
 
 const SCORECARD_DIR = path.join(UPDOWN_DATA_DIR, 'scorecard')
+// Pending-write label of a journal append, which writes only under SCORECARD_DIR.
+const JOURNAL_WRITE_LABEL = 'updown-scorecard-journal'
 const SAMPLE_INTERVAL_MS = 60_000
 const EVAL_WINDOWS = [60_000, 300_000, 900_000, 3_600_000]
 const WINDOW_LABELS = { 60000: '1m', 300000: '5m', 900000: '15m', 3600000: '1h' }
@@ -554,7 +556,7 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
   const persistRecord = (record) => {
     // Bind now: a stop()+start() before the deferred write runs swaps lockWaits.
     const { signal } = lockWaits
-    return trackPendingWrite('updown-scorecard-journal', () => journalWriter(record, { signal }))
+    return trackPendingWrite(JOURNAL_WRITE_LABEL, () => journalWriter(record, { signal }))
       .then(() => {
         journal.healthy = true
         journal.lastError = null
@@ -1279,4 +1281,5 @@ module.exports = {
   ALL_TFS,
   scorecardDirection,
   SCORECARD_RETENTION_DAYS,
+  JOURNAL_WRITE_LABEL,
 }

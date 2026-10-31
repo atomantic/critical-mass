@@ -10,6 +10,7 @@ const { performBackup } = require('../src/backup-coordinator');
 const { trackPendingWrite, drainPendingWrites, getPendingWrites } = require('../src/pending-writes');
 const maintenance = require('../src/restore-maintenance');
 const backup = require('../src/backup-service');
+const { JOURNAL_WRITE_LABEL } = require('../src/updown/scorecard');
 const { ledgerOf, fixturePayload } = require('./helpers/ledger-fixture');
 
 const logger = { info() {}, warn() {}, error() {} };
@@ -65,7 +66,8 @@ const setup = (t, { disconnected = false, resumeFails = false, createFails = fal
     app, gatewayShutdown: { routes: () => app }, trackPendingWrite,
     performBackup, exchangeIPCMap, getConfiguredExchanges: () => ['coinbase'],
     // A short deadline makes accidental self-draining fail deterministically.
-    drainPendingWrites: () => drainPendingWrites(100),
+    drainPendingWrites: (_timeoutMs, matches) => drainPendingWrites(100, matches),
+    SCORECARD_JOURNAL_WRITE_LABEL: JOURNAL_WRITE_LABEL,
     updownService: service('updown', true), sentinelService: service('sentinel', false),
     createContextLogger: () => logger,
     // Capture the scheduler's kinds so tests run the server's own fund-state job.
@@ -197,6 +199,10 @@ describe('manual backups use the server writer-quiescence gate', () => {
   it('hourly fund-state snapshots quiesce engines but leave UpDown and Sentinel running', async (t) => {
     const w = setup(t);
     w.write('regime-state.json', 1);
+    // A live scorecard append waiting out a replay's lock writes no fund file.
+    const replayLock = deferred();
+    const journal = trackPendingWrite(JOURNAL_WRITE_LABEL, () => replayLock.promise);
+    t.after(() => { replayLock.resolve(); return journal; });
     const res = await w.fundStateJob.run({ fundStateMaxBackups: 24 });
     assert.equal(res.success, true, JSON.stringify(res));
     const paused = w.events.indexOf('engine:backup-pause');
