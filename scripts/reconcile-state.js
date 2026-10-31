@@ -280,10 +280,7 @@ async function main() {
 
   const pos = state.position;
 
-  // 3a. realizedPnL: undo the -103.57 false loss
-  const oldRealizedPnL = pos.realizedPnL;
-  pos.realizedPnL = roundUSDC(pos.realizedPnL + 103.57);
-  console.log(`💰 realizedPnL: ${oldRealizedPnL} → ${pos.realizedPnL} (+103.57 undo)`);
+  // 3a. realizedPnL is re-derived from the ledger on engine start, so no direct write here.
 
   // 3b. cyclesCompleted: 11 → 10
   const oldCycles = pos.cyclesCompleted;
@@ -342,12 +339,9 @@ async function main() {
 
     // 4.1 Update celestialState
     cs.bodiesCompleted += 1;
-    cs.bodiesRealizedPnL += pnl;
     cs.bodiesRealizedBtcPnL += holdbackBtc;
 
     // 4.2 Update shared realized P&L
-    pos.realizedPnL = roundUSDC(pos.realizedPnL + pnl);
-    pos.realizedBtcPnL += holdbackBtc;
 
     // 4.3 Update maxUsdcDeployed
     userConfig.exchanges.coinbase.regime.maxUsdcDeployed = roundUSDC(
@@ -387,7 +381,7 @@ async function main() {
   }
 
   pos.celestialState = cs;
-  console.log(`\n✅ Step 4: bodiesCompleted=${cs.bodiesCompleted}, bodiesRealizedPnL=$${roundUSDC(cs.bodiesRealizedPnL)}, bodiesRealizedBtcPnL=${cs.bodiesRealizedBtcPnL.toFixed(8)}`);
+  console.log(`\n✅ Step 4: bodiesCompleted=${cs.bodiesCompleted}, bodiesRealizedBtcPnL=${cs.bodiesRealizedBtcPnL.toFixed(8)}`);
 
   // ─────────────────────────────────────────────────────────────
   // STEP 5: Rebuild aggregates from remaining bodies
