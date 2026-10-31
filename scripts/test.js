@@ -6,9 +6,11 @@
  * in the shared system temp directory.
  *
  * - allocates one unique root under os.tmpdir() and points TMPDIR/TMP/TEMP at it,
- *   plus CRITICAL_MASS_DATA_DIR at <root>/data (the suite never sees the live data/)
- * - preserves the quiet-console preload, serial concurrency, the tests/*.test.js
- *   selection and any extra CLI arguments, and the child's exit status
+ *   plus CRITICAL_MASS_DATA_DIR at <root>/data (the suite never sees the live data/);
+ *   the isolated-data-root preload narrows that to one subdirectory per test file
+ *   process, so concurrently running files never share fixtures
+ * - preserves the quiet-console preload, the tests/*.test.js selection and any
+ *   extra CLI arguments, and the child's exit status
  * - removes ONLY its own root after the child closes (success, failure or signal)
  * - forwards SIGINT/SIGTERM/SIGHUP to the child's process group, waits for it to
  *   stop, then cleans up; escalates to SIGKILL after a bounded grace period
@@ -35,7 +37,8 @@ function defaultChildArgs(extraArgs) {
     .map((name) => path.join('tests', name));
   return [
     '--require', './tests/quiet-console.js',
-    '--test', '--test-concurrency=1',
+    '--require', './tests/isolated-data-root.js',
+    '--test',
     ...extraArgs,
     ...files,
   ];
