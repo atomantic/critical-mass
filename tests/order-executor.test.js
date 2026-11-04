@@ -1,6 +1,7 @@
 // @ts-check
 const { describe, it, mock, afterEach, after } = require('node:test');
 const { createIsolatedDataDir } = require('./test-data-dir');
+const { useVirtualClock } = require('./virtual-clock');
 
 // Placement intents are persisted per fund. Without this root the BTC-USDC
 // executors below read and rewrite the live fund's placement-intents.json.
@@ -635,18 +636,20 @@ describe('safeCancelOrder — surfaces cancelled-with-partials filledSize (issue
     ['FILLED', { cancelled: false, filled: true, filledSize: 0.003 }],
     ['OPEN', { cancelled: false, filled: false, filledSize: 0 }],
   ]) {
-    it(`preserves the exact ${status} result and body-specific tracking`, async () => {
+    it(`preserves the exact ${status} result and body-specific tracking`, async (t) => {
+      // OPEN is refused, never settles and exhausts safeCancelOrder's 1s retry sleeps: run them virtually.
+      const clock = useVirtualClock(t);
       const captured = [];
       const adapter = makeCancelAdapter({ status, filledSize: 0.003, filledValue: 153, averageFilledPrice: 51000, totalFees: 0.02, side: 'SELL' });
       const exec = createOrderExecutor('coinbase', baseConfig(), adapter, 'BTC-USDC', {
         onFillDetected: (id) => captured.push(id),
       });
       exec.restoreBodyTpOrder('body-shape', 'tp-shape', 0.01, 51000);
-      assert.deepEqual(await exec.cancelBodyTpOrder('body-shape'), expected);
+      assert.deepEqual(await clock.run(exec.cancelBodyTpOrder('body-shape')), expected);
       assert.equal(exec.isBodyTpOrder('tp-shape'), status === 'OPEN');
       assert.equal(exec.getPendingOrdersList().some(o => o.orderId === 'tp-shape'), status !== 'CANCELLED');
       if (status !== 'OPEN') {
-        assert.deepEqual(await exec.cancelBodyTpOrder('body-shape'), { cancelled: true, filled: false, filledSize: 0 });
+        assert.deepEqual(await clock.run(exec.cancelBodyTpOrder('body-shape')), { cancelled: true, filled: false, filledSize: 0 });
         await exec.checkPendingOrderFills();
         assert.deepEqual(captured, status === 'FILLED' ? ['tp-shape'] : []);
       }
@@ -885,7 +888,8 @@ describe('order-executor placement paths — unknown-outcome reconciliation (iss
     ...over,
   });
 
-  it('placeEntryBid adopts a reconciled order instead of retrying into a double-place', async () => {
+  it('placeEntryBid adopts a reconciled order instead of retrying into a double-place', async (t) => {
+    const clock = useVirtualClock(t); // placeEntryBid's fixed 750ms post-place verify delay
     let placeCalls = 0;
     const adapter = {
       placeLimitBuy: async () => { placeCalls++; throw unknownError('coid-entry-1'); },
@@ -894,7 +898,7 @@ describe('order-executor placement paths — unknown-outcome reconciliation (iss
     };
     const exec = createOrderExecutor('coinbase', configFor(), adapter, 'BTC-USDC');
 
-    const result = await exec.placeEntryBid(1000, 100_000, 100_010);
+    const result = await clock.run(exec.placeEntryBid(1000, 100_000, 100_010));
 
     assert.equal(placeCalls, 1, 'must NOT re-place a possibly-executed entry bid');
     assert.equal(result.success, true);
@@ -966,7 +970,8 @@ describe('order-executor placement paths — unknown-outcome reconciliation (iss
     assert.equal(orders[0].orderId, 'real-ladder-1');
   });
 
-  it('a genuinely-failed (non-reconcilable) unknown placement is reported as a clean failure, not blindly retried', async () => {
+  it('a genuinely-failed (non-reconcilable) unknown placement is reported as a clean failure, not blindly retried', async (t) => {
+    const clock = useVirtualClock(t); // the reconcile lookup retries on its production delays
     let placeCalls = 0;
     const adapter = {
       placeLimitSell: async () => { placeCalls++; throw unknownError('coid-tp-2'); },
@@ -974,7 +979,7 @@ describe('order-executor placement paths — unknown-outcome reconciliation (iss
     };
     const exec = createOrderExecutor('coinbase', configFor(), adapter, 'BTC-USDC');
 
-    const result = await exec.placeTakeProfitOrder(0.01, 105000, { forceUpdate: true });
+    const result = await clock.run(exec.placeTakeProfitOrder(0.01, 105000, { forceUpdate: true }));
 
     assert.equal(placeCalls, 1, 'placement attempted exactly once, never blind-retried');
     assert.equal(result.success, false);
@@ -988,7 +993,8 @@ describe('scheduleStaleOrderTimeout — per-order adaptive stale timeout (issue 
   // scheduleStaleOrderTimeout, scheduled once per order by placeEntryBid —
   // now that refreshStaleOrders (a redundant, never-called sweep of the same
   // logic) is gone.
-  it('honors order.staleMs over the global regime-adjusted timeout', async () => {
+  it('honors order.staleMs over the global regime-adjusted timeout', async (t) => {
+    const clock = useVirtualClock(t);
     const cancelled = [];
     const cancelledIds = new Set();
     let placeCalls = 0;
@@ -1019,17 +1025,17 @@ describe('scheduleStaleOrderTimeout — per-order adaptive stale timeout (issue 
     // timer can race that verify's own getOrder call and be misread as an
     // immediate post-only rejection (a real, but unrelated, production edge
     // case — not what this test targets).
-    const adaptive = await exec.placeEntryBid(1000, 30000, 30010, 0, null, 3000);
+    const adaptive = await clock.run(exec.placeEntryBid(1000, 30000, 30010, 0, null, 3000));
     assert.equal(adaptive.success, true);
     // A tight bid with a short (but still >750ms) per-order timeout.
-    const short = await exec.placeEntryBid(1000, 30000, 30010, 0, null, 900);
+    const short = await clock.run(exec.placeEntryBid(1000, 30000, 30010, 0, null, 900));
     assert.equal(short.success, true);
 
     // Both placeEntryBid calls together already waited ~1500ms (750ms verify
     // each) since the short order was placed at the ~750ms mark — wait past
     // its 900ms stale window (and the zero-delay refused-cancel round trip)
     // without approaching the long order's 3000ms window.
-    await new Promise(r => setTimeout(r, 500));
+    await clock.advance(500);
 
     assert.deepStrictEqual(cancelled, ['default-entry'], 'only the short-staleMs order is cancelled');
     assert.equal(exec.getPendingCounts().entries, 1, 'the long-staleMs order stays resting');
@@ -1043,7 +1049,8 @@ describe('scheduleStaleOrderTimeout — refused cancel during stale check (issue
   // exercised here through the public placeEntryBid entry point with a short
   // per-order staleMs, using a real (short) timer — same approach as the
   // issue's own reproduction script.
-  it('routes a fill through onFillDetected — not onEntryCancelled — when the stale-timeout cancel is refused because the order already filled', async () => {
+  it('routes a fill through onFillDetected — not onEntryCancelled — when the stale-timeout cancel is refused because the order already filled', async (t) => {
+    const clock = useVirtualClock(t);
     let getOrderCalls = 0;
     const filledStatus = {
       status: 'FILLED', filledSize: 0.01, completionPercentage: 100,
@@ -1079,8 +1086,8 @@ describe('scheduleStaleOrderTimeout — refused cancel during stale check (issue
       onEntryCancelled: (orderId) => entryCancelled.push(orderId),
     });
 
-    const staleMs = 60; // real timer, kept short so the test stays fast
-    const result = await exec.placeEntryBid(1000, 30000, 30010, 0, null, staleMs);
+    const staleMs = 60; // short stale window; the virtual clock passes it during the 750ms verify
+    const result = await clock.run(exec.placeEntryBid(1000, 30000, 30010, 0, null, staleMs));
     assert.equal(result.success, true);
 
     // placeEntryBid's own fixed 750ms immediate-cancel verify delay is well
@@ -1097,7 +1104,8 @@ describe('scheduleStaleOrderTimeout — refused cancel during stale check (issue
     exec.clearTimers();
   });
 
-  it('keeps the order tracked when the stale-timeout cancel is neither filled nor cancelled (ack\'d but never settled)', async () => {
+  it('keeps the order tracked when the stale-timeout cancel is neither filled nor cancelled (ack\'d but never settled)', async (t) => {
+    const clock = useVirtualClock(t);
     // cancelOrder is refused and getOrder never converges to a terminal
     // state — safeCancelOrder exhausts its ack-retry budget and returns
     // {cancelled:false, filled:false}. The old raw-cancel code would have
@@ -1124,13 +1132,13 @@ describe('scheduleStaleOrderTimeout — refused cancel during stale check (issue
     });
 
     const staleMs = 60;
-    const result = await exec.placeEntryBid(1000, 30000, 30010, 0, null, staleMs);
+    const result = await clock.run(exec.placeEntryBid(1000, 30000, 30010, 0, null, staleMs));
     assert.equal(result.success, true);
 
     // safeCancelOrder's refused-cancel path retries maxAckRetries(=2) times
     // with a 1s sleep between attempts before giving up — wait past that,
     // on top of the 750ms placeEntryBid already waited.
-    await new Promise(r => setTimeout(r, 2500));
+    await clock.advance(2500);
 
     assert.equal(captured.length, 0, 'no fill to route');
     assert.deepEqual(entryCancelled, [], 'not a confirmed cancellation either');
@@ -1139,7 +1147,8 @@ describe('scheduleStaleOrderTimeout — refused cancel during stale check (issue
     exec.clearTimers();
   });
 
-  it('clears the partialFillTracker entry on a refused-because-filled cancel, not just pendingOrders (issue #674 codex review finding, ported to the live path by issue #678)', async () => {
+  it('clears the partialFillTracker entry on a refused-because-filled cancel, not just pendingOrders (issue #674 codex review finding, ported to the live path by issue #678)', async (t) => {
+    const clock = useVirtualClock(t);
     // Ported from the now-deleted refreshStaleOrders' equivalent test (issue
     // #678 Fix step 2) onto scheduleStaleOrderTimeout, the only live path
     // left that reaches this branch. Reuse the SAME orderId across two
@@ -1184,7 +1193,7 @@ describe('scheduleStaleOrderTimeout — refused cancel during stale check (issue
         ? { status: 'OPEN', filledSize: 0, completionPercentage: 0, side: 'BUY' }
         : { status: 'FILLED', filledSize: 0.1, completionPercentage: 100, side: 'BUY', filledValue: 230, averageFilledPrice: 2300, totalFees: 0.05 };
     };
-    const result = await exec.placeEntryBid(1000, 30000, 30010, 0, null, 60);
+    const result = await clock.run(exec.placeEntryBid(1000, 30000, 30010, 0, null, 60));
     assert.equal(result.success, true);
     assert.equal(captured.length, 2, 'the refused-because-filled cancel also fires onFillDetected');
 
@@ -1495,7 +1504,8 @@ describe('entry admission — stop/close fences pending entry dispatch (issue #1
     assert.equal(result.notAdmitted, true);
   });
 
-  it('an order already dispatched when admission closes is still tracked', async () => {
+  it('an order already dispatched when admission closes is still tracked', async (t) => {
+    const clock = useVirtualClock(t);
     let admitted = true;
     const placed = deferred();
     const adapter = {
@@ -1508,7 +1518,7 @@ describe('entry admission — stop/close fences pending entry dispatch (issue #1
     await tick();
     admitted = false; // closes while the exchange response is in flight
     placed.resolve({ success: true, orderId: 'accepted-1' });
-    const result = await pending;
+    const result = await clock.run(pending);
 
     assert.equal(result.success, true, 'an accepted order is never discarded');
     assert.equal(result.orderId, 'accepted-1');

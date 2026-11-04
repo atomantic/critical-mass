@@ -13,6 +13,7 @@ const configUtils = require('../src/config-utils');
 const orderManager = require('../src/order-manager');
 const adapters = require('../src/adapters');
 const logger = require('../src/logger');
+const { useVirtualClock } = require('./virtual-clock');
 
 // ---------------------------------------------------------------------------
 // issue #129 — recover durable 'awaiting_sell' rows after a crash between the
@@ -113,14 +114,15 @@ describe('reconcileAwaitingSells (issue #129)', () => {
     assert.ok(Math.abs(state.outstandingOrdersAsset - sizes[0]) < 1e-12);
   });
 
-  it('marks the row sell_failed when placement keeps failing', async () => {
+  it('marks the row sell_failed when placement keeps failing', async (t) => {
+    const clock = useVirtualClock(t); // placeSellOrderWithRetry waits PLACEMENT_RETRY_DELAY_MS between attempts
     const state = stateWithAwaitingSells(['buy-1']);
     const adapter = {
       getCurrentPrice: async () => 100000,
       placeLimitSell: async () => ({ success: false, errorMessage: 'exchange 500' }),
     };
 
-    const result = await reconcileAwaitingSells(state, config, adapter, 'coinbase');
+    const result = await clock.run(reconcileAwaitingSells(state, config, adapter, 'coinbase'));
 
     assert.deepEqual(result, { recovered: 0, failed: 1 });
     const order = state.orders[0];
@@ -132,7 +134,8 @@ describe('reconcileAwaitingSells (issue #129)', () => {
     assert.equal(getPendingOrders(state).length, 0);
   });
 
-  it('reconciles each row independently — one recovers, one fails', async () => {
+  it('reconciles each row independently — one recovers, one fails', async (t) => {
+    const clock = useVirtualClock(t);
     const state = stateWithAwaitingSells(['buy-ok', 'buy-bad']);
     const adapter = {
       getCurrentPrice: async () => 100000,
@@ -145,7 +148,7 @@ describe('reconcileAwaitingSells (issue #129)', () => {
       _calls: 0,
     };
 
-    const result = await reconcileAwaitingSells(state, config, adapter, 'coinbase');
+    const result = await clock.run(reconcileAwaitingSells(state, config, adapter, 'coinbase'));
 
     assert.equal(result.recovered, 1);
     assert.equal(result.failed, 1);

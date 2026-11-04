@@ -7,6 +7,7 @@ const path = require('path');
 
 const { createHealthMonitor, createInitialHealthState, instrumentAdapterForHealth, isRateLimitError, isAuthDeniedError } = require('../src/health-monitor');
 const { createGeminiAdapter } = require('../src/adapters/gemini/api');
+const { useVirtualClock } = require('./virtual-clock');
 
 /**
  * Build a minimal config with sensible defaults, overridable per-test
@@ -754,7 +755,11 @@ describe('instrumentAdapterForHealth + Gemini REST throttle (issue #680)', () =>
     fs.rmSync(keysPath, { force: true });
   });
 
-  it('a burst of concurrent getOrder calls does not trip SAFE mode on queue-wait-as-latency', async () => {
+  it('a burst of concurrent getOrder calls does not trip SAFE mode on queue-wait-as-latency', async (t) => {
+    // Virtual clock: the adapter's throttle reads Date.now and sleeps on setTimeout,
+    // so both must be mocked before the adapter and monitor are created.
+    const clock = useVirtualClock(t);
+    const startedAt = clock.now();
     const monitor = createHealthMonitor('gemini-test', createTestConfig({ maxLatencyMs: 5000 }));
     // The stale-order/websocket checks are orthogonal to this test's concern
     // (queue wait miscounted as REST latency) — satisfy them so checkHealth()
@@ -768,7 +773,14 @@ describe('instrumentAdapterForHealth + Gemini REST throttle (issue #680)', () =>
     // 200ms-spaced throttle queue past config.maxLatencyMs (5000ms) if queue
     // wait were still counted as latency (issue #680's reported repro: 40
     // calls produced avgLatencyMs 5901 and tripped SAFE).
-    await Promise.all(Array.from({ length: 40 }, () => wrapped.getOrder('555')));
+    await clock.run(Promise.all(Array.from({ length: 40 }, () => wrapped.getOrder('555'))));
+
+    // The throttle really did queue the tail of the burst past maxLatencyMs, so the
+    // assertions below prove the wait was excluded rather than never incurred.
+    assert.ok(
+      clock.now() - startedAt > 5000,
+      `expected the virtual queue wait to exceed maxLatencyMs (5000), got ${clock.now() - startedAt}`
+    );
 
     const state = monitor.getState();
     assert.ok(
@@ -778,7 +790,9 @@ describe('instrumentAdapterForHealth + Gemini REST throttle (issue #680)', () =>
     assert.equal(monitor.checkHealth().mode, 'ACTIVE');
   });
 
-  it('excludes the 429 rate-limit backoff wait from recorded latency', async () => {
+  it('excludes the 429 rate-limit backoff wait from recorded latency', async (t) => {
+    const clock = useVirtualClock(t);
+    const startedAt = clock.now();
     const monitor = createHealthMonitor('gemini-test', createTestConfig({ maxLatencyMs: 5000 }));
     monitor.recordWsStatus(true);
 
@@ -812,8 +826,9 @@ describe('instrumentAdapterForHealth + Gemini REST throttle (issue #680)', () =>
     const adapter = createGeminiAdapter(keysPath);
     const wrapped = instrumentAdapterForHealth(adapter, monitor);
 
-    await wrapped.getOrder('555');
+    await clock.run(wrapped.getOrder('555'));
     assert.equal(calls, 2, 'expected one 429 then one successful retry');
+    assert.ok(clock.now() - startedAt >= 500, 'the virtual clock passed the 500ms backoff');
 
     const state = monitor.getState();
     // The real backoff sleep is ~500ms; if it were still counted as latency

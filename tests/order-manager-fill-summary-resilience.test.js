@@ -24,6 +24,7 @@ const {
   safeGetOrderFillSummary, isFeeDetailUnavailable,
 } = require('../src/order-manager');
 const { getFibonacciSellQuantity } = require('../src/fibonacci-utils');
+const { useVirtualClock } = require('./virtual-clock');
 
 const incompleteFillsError = (orderId) =>
   Object.assign(new Error(`fills incomplete for ${orderId}: 0.5 of 1.5`), { incompleteFills: true });
@@ -82,19 +83,21 @@ describe('safeGetOrderFillSummary — bounded retry before degrading (issue #679
 });
 
 describe('order-manager fee/fill-summary resilience (issue #679 follow-up)', () => {
-  it('waitForBuyFill keeps the accepted buy pending when getOrderFillSummary rejects and no fee is authoritative', async () => {
+  it('waitForBuyFill keeps the accepted buy pending when getOrderFillSummary rejects and no fee is authoritative', async (t) => {
+    const clock = useVirtualClock(t); // safeGetOrderFillSummary retries on production 500ms delays
     const adapter = {
       getOrder: async (orderId) => ({ orderId, status: 'FILLED', filledSize: 0.01, filledValue: 500, averageFilledPrice: 50000 }),
       getOrderFillSummary: async (orderId) => { throw incompleteFillsError(orderId); },
     };
 
     await assert.rejects(
-      waitForBuyFill('order-0', adapter, 1, 1),
+      clock.run(waitForBuyFill('order-0', adapter, 1, 1)),
       (err) => err.buyFillPending === true && err.orderId === 'order-0' && /fee detail unavailable/.test(err.reason),
     );
   });
 
-  it('waitForBuyFill still returns the fill when getOrderFillSummary rejects but the status carries a fee', async () => {
+  it('waitForBuyFill still returns the fill when getOrderFillSummary rejects but the status carries a fee', async (t) => {
+    const clock = useVirtualClock(t); // safeGetOrderFillSummary retries on production 500ms delays
     const adapter = {
       getOrder: async (orderId) => ({
         orderId,
@@ -108,7 +111,7 @@ describe('order-manager fee/fill-summary resilience (issue #679 follow-up)', () 
       getOrderFillSummary: async (orderId) => { throw incompleteFillsError(orderId); },
     };
 
-    const result = await waitForBuyFill('order-1', adapter, 1, 1);
+    const result = await clock.run(waitForBuyFill('order-1', adapter, 1, 1));
 
     assert.equal(result.status, 'FILLED');
     assert.equal(result.assetAmount, 0.01);
@@ -122,7 +125,8 @@ describe('order-manager fee/fill-summary resilience (issue #679 follow-up)', () 
     assert.deepEqual(result.fills, []);
   });
 
-  it('waitForBuyFill keeps a partially-filled CANCELLED order pending when its fees are unavailable', async () => {
+  it('waitForBuyFill keeps a partially-filled CANCELLED order pending when its fees are unavailable', async (t) => {
+    const clock = useVirtualClock(t); // safeGetOrderFillSummary retries on production 500ms delays
     const adapter = {
       getOrder: async (orderId) => ({
         orderId,
@@ -135,27 +139,29 @@ describe('order-manager fee/fill-summary resilience (issue #679 follow-up)', () 
       getOrderFillSummary: async (orderId) => { throw incompleteFillsError(orderId); },
     };
 
-    await assert.rejects(waitForBuyFill('order-2', adapter, 1, 1), (err) => err.buyFillPending === true);
+    await assert.rejects(clock.run(waitForBuyFill('order-2', adapter, 1, 1)), (err) => err.buyFillPending === true);
 
     // Once the fill history returns, the same order is finalized with real fees.
     adapter.getOrderFillSummary = async () => ({ totalFees: 0.3, totalRebates: 0, netFees: 0.3, fills: [] });
-    const result = await waitForBuyFill('order-2', adapter, 1, 1);
+    const result = await clock.run(waitForBuyFill('order-2', adapter, 1, 1));
     assert.equal(result.status, 'CANCELLED');
     assert.equal(result.assetAmount, 0.004);
     assert.equal(result.fees, 0.3);
   });
 
-  it('checkFilledOrders leaves a fill pending when getOrderFillSummary rejects and no fee is authoritative', async () => {
+  it('checkFilledOrders leaves a fill pending when getOrderFillSummary rejects and no fee is authoritative', async (t) => {
+    const clock = useVirtualClock(t); // safeGetOrderFillSummary retries on production 500ms delays
     const adapter = {
       name: 'gemini',
       getOrder: async (orderId) => ({ orderId, status: 'FILLED', filledSize: 1.2, filledValue: 3000, averageFilledPrice: 2500, totalFees: 0 }),
       getOrderFillSummary: async (orderId) => { throw incompleteFillsError(orderId); },
     };
 
-    assert.deepEqual(await checkFilledOrders([{ orderId: 'sell-0' }], adapter), []);
+    assert.deepEqual(await clock.run(checkFilledOrders([{ orderId: 'sell-0' }], adapter)), []);
   });
 
-  it('checkFilledOrders credits the status fee (105 value, 2 fee -> 103) when getOrderFillSummary rejects', async () => {
+  it('checkFilledOrders credits the status fee (105 value, 2 fee -> 103) when getOrderFillSummary rejects', async (t) => {
+    const clock = useVirtualClock(t); // safeGetOrderFillSummary retries on production 500ms delays
     const adapter = {
       name: 'coinbase',
       getOrder: async (orderId) => ({
@@ -169,7 +175,7 @@ describe('order-manager fee/fill-summary resilience (issue #679 follow-up)', () 
       getOrderFillSummary: async (orderId) => { throw incompleteFillsError(orderId); },
     };
 
-    const filled = await checkFilledOrders([{ orderId: 'sell-1' }], adapter);
+    const filled = await clock.run(checkFilledOrders([{ orderId: 'sell-1' }], adapter));
 
     assert.equal(filled.length, 1);
     assert.equal(filled[0].orderId, 'sell-1');
@@ -178,20 +184,22 @@ describe('order-manager fee/fill-summary resilience (issue #679 follow-up)', () 
     assert.equal(filled[0].netProceeds, 103);
   });
 
-  it('checkFibonacciSellFill reports nothing settled while fees are unavailable, then the fill once they return', async () => {
+  it('checkFibonacciSellFill reports nothing settled while fees are unavailable, then the fill once they return', async (t) => {
+    const clock = useVirtualClock(t); // safeGetOrderFillSummary retries on production 500ms delays
     const adapter = {
       name: 'cryptocom',
       getOrder: async (orderId) => ({ orderId, status: 'FILLED', filledSize: 0.5, filledValue: 1000, averageFilledPrice: 2000 }),
       getOrderFillSummary: async (orderId) => { throw incompleteFillsError(orderId); },
     };
-    assert.equal(await checkFibonacciSellFill('sell-fib-0', adapter), null);
+    assert.equal(await clock.run(checkFibonacciSellFill('sell-fib-0', adapter)), null);
 
     adapter.getOrderFillSummary = async () => ({ totalFees: 3, totalRebates: 0, netFees: 3, fills: [] });
-    const fill = await checkFibonacciSellFill('sell-fib-0', adapter);
+    const fill = await clock.run(checkFibonacciSellFill('sell-fib-0', adapter));
     assert.equal(fill?.netProceeds, 997);
   });
 
-  it('checkFibonacciSellFill reports a fill with the status fee when getOrderFillSummary rejects', async () => {
+  it('checkFibonacciSellFill reports a fill with the status fee when getOrderFillSummary rejects', async (t) => {
+    const clock = useVirtualClock(t); // safeGetOrderFillSummary retries on production 500ms delays
     const adapter = {
       name: 'cryptocom',
       getOrder: async (orderId) => ({
@@ -205,7 +213,7 @@ describe('order-manager fee/fill-summary resilience (issue #679 follow-up)', () 
       getOrderFillSummary: async (orderId) => { throw incompleteFillsError(orderId); },
     };
 
-    const fill = await checkFibonacciSellFill('sell-fib-1', adapter);
+    const fill = await clock.run(checkFibonacciSellFill('sell-fib-1', adapter));
 
     assert.ok(fill);
     assert.equal(fill.filledSize, 0.5);
@@ -213,7 +221,8 @@ describe('order-manager fee/fill-summary resilience (issue #679 follow-up)', () 
     assert.equal(fill.netProceeds, 996);
   });
 
-  it('placeFibonacciSellOrder credits a partially-filled, cancelled previous sell at its status fee when getOrderFillSummary rejects', async () => {
+  it('placeFibonacciSellOrder credits a partially-filled, cancelled previous sell at its status fee when getOrderFillSummary rejects', async (t) => {
+    const clock = useVirtualClock(t); // safeGetOrderFillSummary retries on production 500ms delays
     // Prev cycle sell for 1.0 ETH, 40% executed (0.4 ETH) at 2000, still live —
     // mirrors tests/fibonacci-sell-consolidation.test.js's Bug-B "PARTIALLY_FILLED"
     // case, but with a rejecting getOrderFillSummary instead of a stubbed one.
@@ -228,7 +237,7 @@ describe('order-manager fee/fill-summary resilience (issue #679 follow-up)', () 
     };
 
     const cumulativeAsset = 1.05;
-    const result = await placeFibonacciSellOrder(config, cumulativeAsset, 1900, 'prev-partial', adapter);
+    const result = await clock.run(placeFibonacciSellOrder(config, cumulativeAsset, 1900, 'prev-partial', adapter));
 
     assert.equal(result.alreadyFilled, false);
     assert.ok(result.prevFill, 'the executed portion of the cancelled prev sell must still be credited');
