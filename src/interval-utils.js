@@ -25,29 +25,16 @@ const getIntervalConfig = (intervalType) =>
   INTERVAL_DEFINITIONS[intervalType] || INTERVAL_DEFINITIONS['daily'];
 
 /**
- * Calculate next execution time aligned to interval boundaries
+ * Start of the next interval slot — the moment getRunIdentifier changes and the
+ * scheduler may run again. Daily slots therefore start at 00:00 UTC; any other
+ * alignment would show a countdown to a time nothing runs and give
+ * planScheduledRetry the wrong interval end.
  * @param {IntervalType} intervalType - Interval type
- * @param {number|null} [lastRunTimestamp] - Optional last run timestamp
  * @returns {number} Next execution timestamp in ms
  */
-const getNextExecutionTime = (intervalType, lastRunTimestamp = null) => {
-  const now = Date.now();
+const getNextExecutionTime = (intervalType) => {
   const { ms } = getIntervalConfig(intervalType);
-
-  // For daily, align to 10 AM UTC
-  if (intervalType === 'daily') {
-    const next = new Date(now);
-    next.setUTCHours(10, 0, 0, 0);
-    if (next.getTime() <= now) {
-      next.setUTCDate(next.getUTCDate() + 1);
-    }
-    return next.getTime();
-  }
-
-  // For other intervals, align to interval boundaries
-  const intervalStart = Math.floor(now / ms) * ms;
-  const nextSlot = intervalStart + ms;
-  return nextSlot;
+  return (Math.floor(Date.now() / ms) + 1) * ms;
 };
 
 /**

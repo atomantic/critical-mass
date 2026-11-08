@@ -83,13 +83,20 @@ describe('getNextExecutionTime', () => {
     assert.equal(next % INTERVAL_DEFINITIONS['1hour'].ms, 0);
   });
 
-  it('returns a time aligned to 10:00 UTC for daily interval', () => {
-    const next = getNextExecutionTime('daily');
-    const d = new Date(next);
-    assert.equal(d.getUTCHours(), 10);
-    assert.equal(d.getUTCMinutes(), 0);
-    assert.equal(d.getUTCSeconds(), 0);
-    assert.equal(d.getUTCMilliseconds(), 0);
+  it('reports the moment the run identifier changes, which is when the scheduler runs again', (t) => {
+    // 05:00 UTC: a daily fund has already run for this UTC day. The next run is
+    // at 00:00 UTC, not a fixed hour later in the day the scheduler never uses.
+    t.mock.timers.enable({ apis: ['Date'], now: Date.UTC(2026, 0, 2, 5, 0, 0) });
+    for (const intervalType of Object.keys(INTERVAL_DEFINITIONS)) {
+      const ranId = getRunIdentifier(intervalType);
+      const next = getNextExecutionTime(intervalType);
+      t.mock.timers.setTime(next - 1);
+      assert.equal(getRunIdentifier(intervalType), ranId, `${intervalType}: still the same interval just before the next run`);
+      t.mock.timers.setTime(next);
+      assert.notEqual(getRunIdentifier(intervalType), ranId, `${intervalType}: a new interval starts at the reported time`);
+      t.mock.timers.setTime(Date.UTC(2026, 0, 2, 5, 0, 0));
+    }
+    assert.equal(getNextExecutionTime('daily'), Date.UTC(2026, 0, 3, 0, 0, 0));
   });
 
   it('daily next execution is always in the future', () => {

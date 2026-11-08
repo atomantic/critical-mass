@@ -123,6 +123,9 @@ const calculateCostBasis = (state, transactions) => {
   let pendingAsset = 0;
 
   orders.forEach((order) => {
+    // The consolidated order carries its sources' summed cost, quantity and
+    // holdback; the sources remain only as history in orderBreakdown.
+    if (order.status === 'consolidated') return;
     const costBasis =
       order.buyCostBasis || order.buyUSDC || (order.buyQuantity || order.buyQuantityBTC || 0) * order.buyPrice;
     const assetAmount = order.buyQuantity || order.buyQuantityBTC || 0;
@@ -212,7 +215,7 @@ const getNextTradeInfo = (config, state) => {
   const { intervalType, intervalsToSpread, totalAllocation } = normalized;
 
   const ranThisInterval = hasRunThisInterval(state.lastRunId, intervalType);
-  const nextExecutionTime = getNextExecutionTime(intervalType, state.lastRunTimestamp);
+  const nextExecutionTime = getNextExecutionTime(intervalType);
   const timeUntilNext = getTimeUntilNext(intervalType);
 
   const remaining = (totalAllocation || 0) - (state.totalAllocated || 0);
