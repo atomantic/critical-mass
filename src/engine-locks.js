@@ -26,9 +26,20 @@
  *     own async context, run through the ladder lock reentrantly;
  *   - merge → nothing: a caller inside a merge never waits on the ladder
  *     lock (it takes it only when free, otherwise runs unserialised).
+ *
+ * Backup fence (#1945): while a backup holds it (holdBackupFence), every NEW
+ * top-level writer — fills, merges, entries, ladder sweeps, reconcile — parks
+ * before taking any lock above, and the holder waits (bounded) for the writers
+ * already past the fence to finish (waitForBackupIdle). Parking happens before
+ * a lock is acquired and before a lock flag is set, and work nested in a
+ * writer that already passed (its AsyncLocalStorage context) runs through, so
+ * no writer the holder waits on can be waiting on a parked one. A parked
+ * writer also marks its tracked pending writes parked, so the process-wide
+ * backup drain skips exactly those and still joins everything else.
  */
 const { AsyncLocalStorage } = require('node:async_hooks');
 const { sleep: defaultSleep } = require('./shared-utils');
+const { parkPendingWrites } = require('./pending-writes');
 
 /** How long a fill will poll for an in-flight merge before proceeding anyway. */
 const FILL_WAIT_MS = 15000;
@@ -96,6 +107,85 @@ const createEngineLocks = (opts = {}) => {
   let ladderPending = 0;
   let ladderHolders = 0;
   const ladderOwner = new AsyncLocalStorage();
+  // Backup fence (#1945). `backupHold` is set while a backup owns the fund's
+  // files; `fencedWriters` counts top-level writers that passed the fence. The
+  // ALS token is per writer and deactivated when it finishes, so a timer or
+  // fire-and-forget chain it left behind is fenced like any new writer.
+  /** @type {{released: Promise<void>, release: () => void} | null} */
+  let backupHold = null;
+  let fencedWriters = 0;
+  const fenceOwner = new AsyncLocalStorage();
+
+  /** True when the current async context is a writer that passed the fence. */
+  const insideBackupFence = () => fenceOwner.getStore()?.active === true;
+  /** True when a backup holds the fence and the caller has not passed it. */
+  const isBackupFenced = () => backupHold !== null && !insideBackupFence();
+
+  /**
+   * Run `fn` as a counted writer. Synchronous up to `fn`'s first await, so a
+   * caller's check-then-set (the entry flag) stays atomic.
+   * @template T
+   * @param {() => (T | Promise<T>)} fn
+   * @returns {Promise<T>}
+   */
+  const runFenced = async (fn) => {
+    if (insideBackupFence()) return fn();
+    const token = { active: true };
+    fencedWriters++;
+    try {
+      return await fenceOwner.run(token, fn);
+    } finally {
+      token.active = false;
+      fencedWriters--;
+    }
+  };
+
+  /**
+   * Pass the backup fence, then run `fn` as a counted writer. A new top-level
+   * writer parks while a backup holds the fence and runs once it is released;
+   * a writer nested in one that already passed runs straight through.
+   * @template T
+   * @param {() => (T | Promise<T>)} fn
+   * @returns {Promise<T>}
+   */
+  const withBackupFence = async (fn) => {
+    while (isBackupFenced()) {
+      await parkPendingWrites(/** @type {NonNullable<typeof backupHold>} */ (backupHold).released);
+    }
+    return runFenced(fn);
+  };
+
+  /** Close the backup fence: new top-level writers park until release. Idempotent. */
+  const holdBackupFence = () => {
+    if (backupHold) return;
+    /** @type {() => void} */
+    let release = () => {};
+    const released = new Promise((resolve) => { release = () => resolve(undefined); });
+    backupHold = { released, release };
+  };
+
+  /** Reopen the backup fence; parked writers run in arrival order. Idempotent. */
+  const releaseBackupFence = () => {
+    const hold = backupHold;
+    backupHold = null;
+    hold?.release();
+  };
+
+  /**
+   * Run synchronous `fn` as the fence holder itself (the backup's own flush),
+   * so writes it makes are not deferred as fenced-out.
+   * @template T
+   * @param {() => T} fn
+   * @returns {T}
+   */
+  const runAsBackupHolder = (fn) => {
+    const token = { active: true };
+    try {
+      return fenceOwner.run(token, fn);
+    } finally {
+      token.active = false;
+    }
+  };
 
   /**
    * True while a merge or reconcile is rewriting celestialBodies / TP orders.
@@ -138,15 +228,17 @@ const createEngineLocks = (opts = {}) => {
     if (mergeOwner.getStore()) {
       return fn();
     }
-    if (isMutatingStructure()) {
-      return { success: false, message: describeBusy('structure') };
-    }
-    mergeInProgress = true;
-    try {
-      return await mergeOwner.run(true, fn);
-    } finally {
-      mergeInProgress = false;
-    }
+    return withBackupFence(async () => {
+      if (isMutatingStructure()) {
+        return { success: false, message: describeBusy('structure') };
+      }
+      mergeInProgress = true;
+      try {
+        return await mergeOwner.run(true, fn);
+      } finally {
+        mergeInProgress = false;
+      }
+    });
   };
 
   /**
@@ -157,7 +249,13 @@ const createEngineLocks = (opts = {}) => {
    * @param {() => (T | Promise<T>)} fn
    * @param {{exchange?: string, orderId?: string}} [meta]
    */
-  const withFillGate = async (fn, meta = {}) => {
+  const withFillGate = (fn, meta = {}) => withBackupFence(() => enterFillGate(fn, meta));
+  /**
+   * @template T
+   * @param {() => (T | Promise<T>)} fn
+   * @param {{exchange?: string, orderId?: string}} meta
+   */
+  const enterFillGate = async (fn, meta) => {
     if (fillGateClosed && !fillOwner.getStore()) {
       throw Object.assign(
         new Error(`Fill ${meta.orderId || '?'} refused — engine is shutting down; it will be recovered on next start`),
@@ -191,6 +289,32 @@ const createEngineLocks = (opts = {}) => {
   /** Re-admit fills (engine start after a stop). */
   const openFillGate = () => { fillGateClosed = false; };
 
+  /** Writers and lock holders that keep a backup hold from confirming. */
+  const backupBusy = () => [
+    ...(fencedWriters > 0 ? [`${fencedWriters} writer(s)`] : []),
+    ...(fillInProgress > 0 ? [`${fillInProgress} fill(s)`] : []),
+    ...(mergeInProgress ? ['merge'] : []),
+    ...(reconcileInProgress ? ['reconcile'] : []),
+    ...(entryInProgress ? ['entry'] : []),
+    ...(ladderPending > 0 ? ['ladder sweep'] : []),
+  ];
+
+  /**
+   * Resolve once no writer that passed the backup fence is still running (and
+   * no fill, merge, reconcile, entry or ladder holder is active), or at the
+   * deadline. Never rejects: the caller fails the backup closed instead.
+   * @param {number} [timeoutMs]
+   * @returns {Promise<{idle: boolean, busy: string[], orderIds: string[]}>}
+   */
+  const waitForBackupIdle = async (timeoutMs = FILL_DRAIN_MS) => {
+    const deadline = now() + timeoutMs;
+    while (backupBusy().length && now() < deadline) {
+      await sleep(fillPollMs);
+    }
+    const busy = backupBusy();
+    return { idle: busy.length === 0, busy, orderIds: [...inFlightFills.values()] };
+  };
+
   /**
    * Resolve once no fill is in flight, or at the deadline — never rejects, so
    * a hung fill handler cannot block shutdown past `timeoutMs`.
@@ -218,7 +342,8 @@ const createEngineLocks = (opts = {}) => {
    * @returns {T | void}
    */
   const withReconcileLock = (fn) => {
-    if (isMutatingStructure()) return;
+    // A backup fence skips the tick like a busy lock: the next tick reconciles.
+    if (isMutatingStructure() || isBackupFenced()) return;
     reconcileInProgress = true;
     let result;
     try {
@@ -238,17 +363,24 @@ const createEngineLocks = (opts = {}) => {
 
   /**
    * Hold the entry gate across `fn`. Caller still checks isEntryInProgress
-   * before the first await they care about; this only acquire/releases.
+   * before the first await they care about; this only acquire/releases, and
+   * sets the flag synchronously. Under a backup fence the evaluation is
+   * skipped (resolves undefined) rather than queued: entries are tick-driven,
+   * and a queued check-then-set would let two of them pass the same check.
    * @template T
    * @param {() => (T | Promise<T>)} fn
+   * @returns {Promise<T | undefined>}
    */
-  const withEntryLock = async (fn) => {
-    entryInProgress = true;
-    try {
-      return await fn();
-    } finally {
-      entryInProgress = false;
-    }
+  const withEntryLock = (fn) => {
+    if (isBackupFenced()) return Promise.resolve(undefined);
+    return runFenced(async () => {
+      entryInProgress = true;
+      try {
+        return await fn();
+      } finally {
+        entryInProgress = false;
+      }
+    });
   };
 
   /** True while a ladder sweep holds the ladder lock or one is queued. */
@@ -279,6 +411,20 @@ const createEngineLocks = (opts = {}) => {
     if (held && held.active) {
       return fn();
     }
+    // A tick-driven caller refuses under a backup fence, as when busy; any
+    // other caller parks before it takes a queue slot.
+    if (isBackupFenced() && opts.wait === false) {
+      return { success: false, message: BUSY_LADDER };
+    }
+    return withBackupFence(() => enterLadderLock(fn, opts));
+  };
+  /**
+   * @template T
+   * @param {() => (T | Promise<T>)} fn
+   * @param {{wait?: boolean, onTimeout?: 'proceed' | 'refuse', label?: string, exchange?: string}} opts
+   * @returns {Promise<T | {success: false, message: string}>}
+   */
+  const enterLadderLock = async (fn, opts) => {
     const { wait = true, onTimeout = 'proceed', label = 'ladder sweep', exchange = '?' } = opts;
     const busy = ladderPending > 0;
     if (busy && !wait) {
@@ -337,6 +483,8 @@ const createEngineLocks = (opts = {}) => {
     entryInProgress,
     ladderPending,
     ladderHolders,
+    fencedWriters,
+    backupFenceHeld: backupHold !== null,
   });
 
   return {
@@ -345,6 +493,13 @@ const createEngineLocks = (opts = {}) => {
     closeFillGate,
     openFillGate,
     waitForFillsIdle,
+    withBackupFence,
+    holdBackupFence,
+    releaseBackupFence,
+    isBackupFenced,
+    isBackupFenceHeld: () => backupHold !== null,
+    waitForBackupIdle,
+    runAsBackupHolder,
     withReconcileLock,
     withEntryLock,
     withLadderLock,

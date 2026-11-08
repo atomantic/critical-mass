@@ -283,7 +283,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // Publish BEFORE the cancel sweep starts: a slow or rejected cancel must
       // never delay or swallow the operator's SAFE warning (issue #1030).
       tradeEvents.safeMode(exchange, reason, fundEventData);
-      return trackPendingWrite(`engine-safe-mode:${fundLabel}`, async () => {
+      return fencedWrite(`engine-safe-mode:${fundLabel}`, async () => {
         logger.warn(`⚠️ [${exchange}] SAFE mode: ${reason}`, { reason });
         // A disk fault is not an exchange fault (issue #532): the intervention is
         // to stop opening NEW entries (canPlaceEntry blocks them in SAFE), not to
@@ -581,6 +581,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   const engineLocks = createEngineLocks({
     logWarn: (msg) => logger.warn(msg),
   });
+  // Every top-level engine writer passes the backup fence (#1945) inside its
+  // tracked write: while a backup holds the fund's files it parks there and is
+  // marked parked, so the backup drain joins everything else but never waits
+  // on it. Work nested in a writer that already passed runs straight through.
+  const fencedWrite = (label, run) => trackPendingWrite(label, () => engineLocks.withBackupFence(run));
   // Cooldown after a failed dust consolidation so a body that can't currently be
   // merged (e.g. target TP partially filled) doesn't re-attempt+re-log every
   // cycle (#189). 0 = no cooldown.
@@ -625,7 +630,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     if (config.cancelEntriesOnFlash === false) return;
     reactiveFlashEpoch += 1;
     if (flashCancelSweep) return;
-    flashCancelSweep = trackPendingWrite(`engine-flash-cancel:${fundLabel}`, async () => {
+    flashCancelSweep = fencedWrite(`engine-flash-cancel:${fundLabel}`, async () => {
       logger.warn(`⚡ [${exchange}] Flash move — cancelling resting reactive entries (cancelEntriesOnFlash)`);
       // An entry already dispatched is not in pendingOrders until its response
       // lands; sweeping first would miss it. Wait (bounded) for the entry-lock
@@ -811,7 +816,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    */
   const scheduleLifecycleClosed = () => {
     if (!callbacks.onLifecycleClosed) return;
-    trackPendingWrite(`engine-lifecycle-close:${fundLabel}`, async () => {
+    fencedWrite(`engine-lifecycle-close:${fundLabel}`, async () => {
       await new Promise((resolve) => setImmediate(resolve));
       await callbacks.onLifecycleClosed();
     }).catch((err) => logger.warn(`⚠️ [${exchange}] onLifecycleClosed callback error: ${err.message}`, { error: err.message }));
@@ -832,7 +837,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * @param {Object} cycleData - Data about the completed cycle
    * @returns {Promise<void>}
    */
-  const recordCycleForSizeOptimizer = (cycleData) => trackPendingWrite(`engine-size-optimizer:${fundLabel}`, async () => {
+  const recordCycleForSizeOptimizer = (cycleData) => fencedWrite(`engine-size-optimizer:${fundLabel}`, async () => {
     if (!config.sizeAutoManaged) return;
 
     // getAccountBalance is ACCOUNT-wide, not fund-scoped (same caveat as
@@ -946,7 +951,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   const {
     snapshotDryRunState, saveDryRunState, saveDryRunStateGuarded, loadDryRunState,
     refreshRealizedFromCyclePairs, syncActiveCycleIdAfterRecalc, resyncLiveCycleCountersAfterRecalc,
-    saveLiveState, saveLiveStateGuarded, reloadStateFromDisk, loadLiveState,
+    saveLiveState, saveLiveStateGuarded, reloadStateFromDisk, loadLiveState, flushDeferredSave,
   } = createEngineStatePersistence({
     exchange, pair, baseCurrency, fundLabel, isDryRun, config, logger,
     positionState, replacePositionState, createInitialPositionState,
@@ -1237,6 +1242,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     // Mark as not running FIRST to prevent callbacks from taking action
     isRunning = false;
+    // A stop ends any backup hold on this fund: writers parked at the fence
+    // wake into a stopping engine (fills are refused once the gate closes
+    // below, and recovered on the next start) instead of waiting it out. The
+    // backup window sees the released fence and refuses its pause (#1945).
+    releaseBackupHold();
 
     // Persist-then-cleanup, with the teardown in `finally`: a throwing state
     // save used to abandon stop() before the timer/websocket cleanup below, so
@@ -1379,14 +1389,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       apiSecret: credentials.apiSecret,
       onTicker: (data) => { if (isRunning) handleTicker(data); },
       onTrade: (data) => { if (isRunning) handleTrade(data); },
-      onOrderUpdate: (data) => {
-        if (isRunning) {
-          trackPendingWrite(`engine-order:${fundLabel}`, () => handleOrderUpdate(data)).catch(err => logger.error(
-            `❌ [${exchange}] handleOrderUpdate error: ${err.message}`,
-            { orderId: data.orderId, error: err.message }
-          ));
-        }
-      },
+      onOrderUpdate: (data) => onWsOrderUpdate(data),
       onConnect: () => {
         if (isRunning) healthMonitor.recordWsStatus(true);
       },
@@ -1404,6 +1407,18 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     });
 
     wsFeed.connect();
+  };
+
+  /**
+   * WebSocket order-event callback: one tracked, backup-fenced write per event.
+   * @param {Object} data - Order update
+   */
+  const onWsOrderUpdate = (data) => {
+    if (!isRunning) return;
+    fencedWrite(`engine-order:${fundLabel}`, () => handleOrderUpdate(data)).catch(err => logger.error(
+      `❌ [${exchange}] handleOrderUpdate error: ${err.message}`,
+      { orderId: data.orderId, error: err.message }
+    ));
   };
 
   /**
@@ -1425,14 +1440,20 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // Process tail event checks
     tailEvents.processTicker(data, marketState.atr1m);
 
+    // Ticker-driven work is skipped, not queued, while a backup holds the
+    // fund's files (#1945): the next tick after release re-evaluates it.
+    const backupFenced = engineLocks.isBackupFenced();
+
     // Evaluate entry trigger (fire-and-forget, catch to prevent unhandled rejection)
-    trackPendingWrite(`engine-entry:${fundLabel}`, () => evaluateEntryTrigger()).catch(err => logger.warn(
-      `⚠️ [${exchange}] Entry evaluation failed: ${err.message}`,
-      { error: err.message }
-    ));
+    if (!backupFenced) {
+      fencedWrite(`engine-entry:${fundLabel}`, () => evaluateEntryTrigger()).catch(err => logger.warn(
+        `⚠️ [${exchange}] Entry evaluation failed: ${err.message}`,
+        { error: err.message }
+      ));
+    }
 
     // In dry-run mode, check if any orders should fill based on current price
-    if (isDryRun) {
+    if (isDryRun && !backupFenced) {
       orderExecutor.checkTpFills(data.price);
       orderExecutor.checkEntryFills(data.price);
     }
@@ -3830,7 +3851,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * to ALL callers (WS, reconcile, polling) — the polling callback also clears
    * its own outer recentlyProcessedFills key (issue #99 follow-up).
    */
-  const handleOrderFill = (fillData) => trackPendingWrite(`engine-booking:${fundLabel}`, async () => {
+  const handleOrderFill = (fillData) => fencedWrite(`engine-booking:${fundLabel}`, async () => {
     const dedupRef = { set: null, key: null };
     try {
       // withFillGate increments the in-flight fill count (so dust consolidation
@@ -4029,7 +4050,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     const runMetrics = () => {
       if (metricsInFlight) return;
       metricsInFlight = true;
-      trackPendingWrite(`engine-metrics:${fundLabel}`, () => updateMetrics())
+      fencedWrite(`engine-metrics:${fundLabel}`, () => updateMetrics())
         .catch((err) =>
           logger.error(`❌ [${exchange}] Metrics update crashed: ${err.message}`, { error: err.message })
         )
@@ -5029,7 +5050,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * Start periodic reconciliation
    */
   const startReconciliation = () => {
-    reconcileInterval = setInterval(() => trackPendingWrite(`engine-reconcile:${fundLabel}`, reconcileTick).catch((err) => logger.error(`Reconcile failed: ${err.message}`)), config.reconcileIntervalMs);
+    reconcileInterval = setInterval(() => {
+      // A tick that lands under a backup fence is skipped, like a busy lock.
+      if (engineLocks.isBackupFenced()) return;
+      fencedWrite(`engine-reconcile:${fundLabel}`, reconcileTick).catch((err) => logger.error(`Reconcile failed: ${err.message}`));
+    }, config.reconcileIntervalMs);
   };
 
   /**
@@ -6140,13 +6165,17 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       saveDryRunState, resaveAfterSizeOptimizerDryRun, updateRegimeConfig,
       roundPrice, roundAsset, roundUSDC, fmtPrice, calculateDynamicTpPercent,
     });
-    dryRunCallbacks.onBuyFill = onBuyFill;
-    dryRunCallbacks.onSellFill = onSellFill;
+    // The executor fires these without awaiting them; pass the backup fence
+    // like every other fill writer (#1945) and contain a rejection here.
+    const fencedDryRunFill = (side, handler) => (...args) => fencedWrite(`engine-dry-run-fill:${fundLabel}`, () => handler(...args))
+      .catch((err) => logger.error(`❌ [${exchange}] ${modeLabel}Dry-run ${side} fill handling failed: ${err.message}`, { side, error: err.message }));
+    dryRunCallbacks.onBuyFill = fencedDryRunFill('buy', onBuyFill);
+    dryRunCallbacks.onSellFill = fencedDryRunFill('sell', onSellFill);
   }
 
   // Set up live mode fill detection callback (backup for when WebSocket misses fills)
   if (!isDryRun) {
-    liveCallbacks.onFillDetected = (orderId, status) => trackPendingWrite(`engine-fill:${fundLabel}`, async () => {
+    liveCallbacks.onFillDetected = (orderId, status) => fencedWrite(`engine-fill:${fundLabel}`, async () => {
       // Partial-fill detection from polling reuses this callback. Dedup
       // on the (orderId, filledSize) tuple so a partial fill that grows
       // (e.g. 0.02 → 0.05 → 0.08) is processed once per advance instead
@@ -7541,13 +7570,57 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     closedTrades.applySellCorrection(correction);
   });
 
+  /** Publish one generation of this fund's files as the backup fence holder. */
+  const flushForBackup = () => engineLocks.runAsBackupHolder(() => {
+    if (isDryRun) dryRunState.forceSave(exchange, snapshotDryRunState(), pair);
+    else { saveLiveState(); fillLedger.persist({ force: true }); }
+  });
+
+  /**
+   * Reopen the backup fence. Parked writers run once, in arrival order, and a
+   * state save deferred during the hold is written now. Idempotent.
+   */
+  const releaseBackupHold = () => {
+    if (!engineLocks.isBackupFenceHeld()) return;
+    engineLocks.releaseBackupFence();
+    flushDeferredSave();
+  };
+
+  /**
+   * Quiesce this fund in place for a backup (#1945): close the backup fence
+   * so every new writer parks, let the writers already past it finish
+   * (bounded), then publish one generation of its files. The engine, its
+   * websockets and its market data keep running throughout. Fails closed —
+   * the fence is reopened and nothing is reported quiesced — when a writer
+   * outlives the bound, the flush throws, or a stop ends the hold meanwhile.
+   * @param {number} [timeoutMs]
+   * @returns {Promise<{quiesced: boolean, error?: string}>}
+   */
+  const holdForBackup = async (timeoutMs = fillDrainMs) => {
+    engineLocks.holdBackupFence();
+    const idle = await engineLocks.waitForBackupIdle(timeoutMs);
+    if (!engineLocks.isBackupFenceHeld()) return { quiesced: false, error: 'The fund stopped during the backup hold' };
+    if (!idle.idle) {
+      releaseBackupHold();
+      const orders = idle.orderIds.length ? `; orders: ${idle.orderIds.join(', ')}` : '';
+      return { quiesced: false, error: `Engine writers still in flight after ${timeoutMs / 1000}s (${idle.busy.join(', ')}${orders})` };
+    }
+    try {
+      flushForBackup();
+    } catch (err) {
+      releaseBackupHold();
+      return { quiesced: false, error: err.message };
+    }
+    return { quiesced: true };
+  };
+
   return {
     start,
     stop,
-    flushForBackup: () => {
-      if (isDryRun) dryRunState.forceSave(exchange, snapshotDryRunState(), pair);
-      else { saveLiveState(); fillLedger.persist({ force: true }); }
-    },
+    flushForBackup,
+    holdForBackup,
+    releaseBackupHold,
+    isBackupHeld: () => engineLocks.isBackupFenceHeld(),
     getState,
     getStatus,
     forceRegime,
@@ -7621,6 +7694,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       mergeBody: _mergeBodyImpl,
       handleOrderFill,
       handlePolledFill: (orderId, status) => liveCallbacks.onFillDetected(orderId, status),
+      handleWsOrderUpdate: (data) => onWsOrderUpdate(data),
       handleEntryCancelled,
       getMergeTpSnapshots: () => ({ pending: new Map(pendingMergeTpOrders), completed: new Map(completedMergeTpOrders) }),
       sweepLedgerDrift,
