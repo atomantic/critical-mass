@@ -41,3 +41,19 @@ it('counts each purchase once after its sells are consolidated, including a seco
   // Source orders stay visible as history.
   assert.equal(after.orderBreakdown.filter(o => o.status === 'consolidated').length, 4);
 });
+
+it('counts bought BTC with a failed or unplaced sell as held, not as pending or reserves', () => {
+  const base = order('a', 50_000);
+  const failed = { ...order('f', 60_000), status: 'sell_failed' };
+  const awaiting = { ...order('w', 40_000), status: 'awaiting_sell' };
+  const withUnsold = calculateCostBasis({ orders: [base, failed, awaiting], assetReserves: 0.0015 }, []);
+  const withoutUnsold = calculateCostBasis({ orders: [base], assetReserves: 0.0005 }, []);
+
+  assert.ok(Math.abs(withUnsold.unsoldAsset - 0.019) < 1e-9);
+  assert.ok(Math.abs(withUnsold.unsoldCostBasis - (0.0095 * 60_000 + 0.0095 * 40_000)) < 1e-6);
+  // Pending figures only reflect the order that actually has a sell resting.
+  assert.equal(withUnsold.pendingAsset, withoutUnsold.pendingAsset);
+  assert.equal(withUnsold.pendingCostBasis, withoutUnsold.pendingCostBasis);
+  assert.equal(withoutUnsold.unsoldAsset, 0);
+  assert.equal(withoutUnsold.unsoldCostBasis, 0);
+});

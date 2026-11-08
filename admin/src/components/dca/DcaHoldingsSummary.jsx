@@ -7,10 +7,12 @@ export default function DcaHoldingsSummary({ state, stats, costBasis, currentPri
   const priceKnown = currentPrice !== null
   const NA = '—'
   const assetValue = (state.assetReserves || 0) * (currentPrice || 0)
-  const pendingAssetValue = (state.outstandingOrdersAsset || 0) * (currentPrice || 0)
-  const totalAssetHeld = (state.assetReserves || 0) + (state.outstandingOrdersAsset || 0)
+  const unsoldAsset = costBasis?.unsoldAsset || 0
+  const pendingAssetValue = ((state.outstandingOrdersAsset || 0) + unsoldAsset) * (currentPrice || 0)
+  // Bought BTC with no sell on order (awaiting_sell / sell_failed) is still held, so it counts as pending here.
+  const totalAssetHeld = (state.assetReserves || 0) + (state.outstandingOrdersAsset || 0) + unsoldAsset
   const hasHoldingCostBasis = costBasis != null
-  const totalAssetCostBasis = (costBasis?.reservesCostBasis || 0) + (costBasis?.pendingCostBasis || 0)
+  const totalAssetCostBasis = (costBasis?.reservesCostBasis || 0) + (costBasis?.pendingCostBasis || 0) + (costBasis?.unsoldCostBasis || 0)
 
   // formatCurrency for balances/totals, formatPrice for prices.
   // Local wrapper preserves this page's trailing-zero-stripped "0.5 BTC" rendering.

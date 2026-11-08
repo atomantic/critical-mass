@@ -121,6 +121,8 @@ const calculateCostBasis = (state, transactions) => {
   let reservesCostBasis = 0;
   let pendingCostBasis = 0;
   let pendingAsset = 0;
+  let unsoldAsset = 0;
+  let unsoldCostBasis = 0;
 
   orders.forEach((order) => {
     // The consolidated order carries its sources' summed cost, quantity and
@@ -138,6 +140,10 @@ const calculateCostBasis = (state, transactions) => {
     if (order.status === 'pending') {
       pendingCostBasis += sellQuantity * costPerAsset;
       pendingAsset += sellQuantity;
+    } else if (order.status === 'awaiting_sell' || order.status === 'sell_failed') {
+      // Bought and still held, but no sell is resting on the exchange for it.
+      unsoldCostBasis += sellQuantity * costPerAsset;
+      unsoldAsset += sellQuantity;
     }
 
     totalCostBasis += costBasis;
@@ -173,6 +179,8 @@ const calculateCostBasis = (state, transactions) => {
     pendingAsset,
     pendingCostBasis,
     pendingAvgCost: pendingAsset > 0 ? pendingCostBasis / pendingAsset : 0,
+    unsoldAsset,
+    unsoldCostBasis,
     orderBreakdown: orders.map((order) => {
       const costBasis =
         order.buyCostBasis || order.buyUSDC || (order.buyQuantity || order.buyQuantityBTC || 0) * order.buyPrice;
