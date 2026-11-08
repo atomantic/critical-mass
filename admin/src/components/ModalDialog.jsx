@@ -44,6 +44,13 @@ function ModalDialog({ onClose, labelledBy, describedBy, dismissible = true, max
 
     previouslyFocusedRef.current = document.activeElement
     dialog.showModal()
+    // WHATWG dialog focusing steps (enforced by jsdom 28+) focus the dialog
+    // itself when no `autofocus` attribute exists, and React does not emit one
+    // for `autoFocus`. Fall back to the first enabled focusable descendant so
+    // initial focus lands on a control, matching what browsers do.
+    if (document.activeElement === dialog || !dialog.contains(document.activeElement)) {
+      dialog.querySelector('input:not([disabled]):not([type="hidden"]), textarea:not([disabled]), select:not([disabled]), button:not([disabled]), [href], [tabindex]:not([tabindex="-1"])')?.focus()
+    }
 
     const handleCancel = (event) => {
       // Escape fires 'cancel' before closing — block it while a pending
