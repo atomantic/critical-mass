@@ -213,7 +213,7 @@ const createEngineCallbacks = (exchange, pair) => ({
 // directly against these production callbacks. Ledger ownership transfers
 // exclusively between the engine and the standalone service (issue #1008).
 let backupRecovery;
-const { autoResumeFund, getStartStatus, cancelStarts, settleStarts } = registerEngineLifecycleHandlers(ipcServer, {
+const { autoResumeFund, resumeAfterBackup, getStartStatus, cancelStarts, settleStarts } = registerEngineLifecycleHandlers(ipcServer, {
   regimeEngines,
   beforeStop: (key) => backupRecovery?.cancelFund(key),
   beforeCancelAll: () => backupRecovery?.cancelAll(),
@@ -241,10 +241,13 @@ const { autoResumeFund, getStartStatus, cancelStarts, settleStarts } = registerE
 // restore path's proof of writer quiescence, so a fund that failed to stop is
 // reported as failed and stays owned by this process (issue #429).
 backupRecovery = registerEngineBackupHandlers(ipcServer, {
-  regimeEngines, drainPendingWrites, drainStarts: settleStarts,
+  regimeEngines, getMarketFunds: getActiveMarketDataFunds,
+  stopMarketServices: stopAllMarketDataServices, drainMarketStarts: drainMarketDataStarts,
+  drainPendingWrites, startMarketService: startMarketDataService,
+  resumeFund: resumeAfterBackup, getStartStatus, drainStarts: settleStarts,
   pauseBuffers: shutdownAllBuffers, resumeBuffers: resumeAllBuffers,
   // A gateway that dies mid-backup can never send backup-resume; the window
-  // reopens the held fill gates itself once its only client is gone.
+  // restarts the captured funds itself once its only client is gone.
   onGatewayDisconnect: (listener) => ipcServer.onClientDisconnect((remaining) => { if (remaining === 0) listener(); }),
   isShuttingDown: ipcServer.isShuttingDown,
   logger: engineLogger(EXCHANGE_NAME),
