@@ -83,8 +83,14 @@ function CostBasisDCA({ summary, quoteCurrency = 'USDC', exchange = 'coinbase', 
     ? ((pendingCurrentValue / costBasis.pendingCostBasis) - 1) * 100
     : 0
 
-  const totalCurrentValue = reservesCurrentValue + pendingCurrentValue
-  const totalHeldCostBasis = costBasis.reservesCostBasis + costBasis.pendingCostBasis
+  // BTC bought whose covering sell failed or is not yet placed: held, but not on order.
+  const unsoldAsset = costBasis.unsoldAsset || 0
+  const unsoldCostBasis = costBasis.unsoldCostBasis || 0
+  const unsoldCurrentValue = unsoldAsset * price
+
+  const totalHeldAsset = costBasis.reservesAsset + costBasis.pendingAsset + unsoldAsset
+  const totalCurrentValue = reservesCurrentValue + pendingCurrentValue + unsoldCurrentValue
+  const totalHeldCostBasis = costBasis.reservesCostBasis + costBasis.pendingCostBasis + unsoldCostBasis
   const totalUnrealizedPnL = totalCurrentValue - totalHeldCostBasis
   const totalPnLPercent = totalHeldCostBasis > 0
     ? ((totalCurrentValue / totalHeldCostBasis) - 1) * 100
@@ -187,8 +193,14 @@ function CostBasisDCA({ summary, quoteCurrency = 'USDC', exchange = 'coinbase', 
           <div className="space-y-2">
             <div className="flex justify-between">
               <span className="text-gray-400">Amount:</span>
-              <span className="font-mono">{formatAsset(costBasis.reservesAsset + costBasis.pendingAsset)} {baseCurrency}</span>
+              <span className="font-mono">{formatAsset(totalHeldAsset)} {baseCurrency}</span>
             </div>
+            {unsoldAsset > 0 && (
+              <div className="flex justify-between text-sm">
+                <span className="text-gray-400">Not on order:</span>
+                <span className="font-mono text-yellow-400">{formatAsset(unsoldAsset)} {baseCurrency} ({formatCurrency(unsoldCostBasis)})</span>
+              </div>
+            )}
             <div className="flex justify-between">
               <span className="text-gray-400">Cost Basis:</span>
               <span>{formatCurrency(totalHeldCostBasis)}</span>
