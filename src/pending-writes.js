@@ -17,10 +17,22 @@
  * same as a writer that never confirmed shutdown, and blocks the restore.
  */
 
-/** @typedef {{label: string, startedAt: number, promise: Promise<any>}} PendingWrite */
+const { AsyncLocalStorage } = require('node:async_hooks');
+
+/** @typedef {{label: string, startedAt: number, promise: Promise<any>, parked: number}} PendingWrite */
 
 /** @type {Set<PendingWrite>} */
 const pending = new Set();
+// The tracked writes enclosing the current async context, outermost first, so
+// a writer that parks marks every write waiting on it (issue #1945).
+/** @type {AsyncLocalStorage<PendingWrite[]>} */
+const enclosingWrites = new AsyncLocalStorage();
+// Drains waiting for a park/unpark to re-evaluate their cohort.
+/** @type {Set<() => void>} */
+const parkWaiters = new Set();
+const notifyParkChange = () => {
+  for (const wake of [...parkWaiters]) wake();
+};
 
 /**
  * Run an operation while it is visible to the drain.
@@ -32,15 +44,43 @@ const pending = new Set();
  */
 const trackPendingWrite = (label, run) => {
   /** @type {PendingWrite} */
-  const entry = { label, startedAt: Date.now(), promise: Promise.resolve() };
+  const entry = { label, startedAt: Date.now(), promise: Promise.resolve(), parked: 0 };
+  const chain = [...(enclosingWrites.getStore() || []), entry];
   // `run` may throw synchronously before returning a promise; Promise.resolve()
   // .then keeps that on the rejection path instead of leaking an untracked throw.
-  entry.promise = Promise.resolve().then(run).finally(() => {
+  entry.promise = Promise.resolve().then(() => enclosingWrites.run(chain, run)).finally(() => {
     pending.delete(entry);
   });
   pending.add(entry);
   return entry.promise;
 };
+
+/**
+ * Wait on `released` as a PARKED writer: the current tracked write, and every
+ * tracked write enclosing it, is writing nothing until `released` settles. A
+ * backup drain excludes exactly these entries (see isParkedWrite), so a writer
+ * queued behind a backup fence cannot stall the drain that fence exists for.
+ * Writers that have passed the fence stay unparked and are still joined.
+ * @param {Promise<unknown>} released
+ * @returns {Promise<void>}
+ */
+const parkPendingWrites = async (released) => {
+  const chain = enclosingWrites.getStore() || [];
+  for (const entry of chain) entry.parked++;
+  if (chain.length) notifyParkChange();
+  try {
+    await released;
+  } finally {
+    for (const entry of chain) entry.parked--;
+    if (chain.length) notifyParkChange();
+  }
+};
+
+/**
+ * @param {PendingWrite} entry
+ * @returns {boolean} Whether the write is parked behind a fence right now
+ */
+const isParkedWrite = (entry) => entry.parked > 0;
 
 /**
  * @returns {Array<{label: string, runningMs: number}>} Snapshot of in-flight writes
@@ -66,10 +106,19 @@ const drainPendingWrites = async (timeoutMs = 30_000, matches = () => true) => {
     // even when the outstanding writer has no active event-loop handles.
   });
   // allSettled: a cycle that rejected has stopped writing, which is what we need.
+  // A park/unpark re-evaluates the cohort: `matches` may select on isParkedWrite.
   const settled = (async () => {
     let batch = entries;
     while (batch.length) {
-      await Promise.allSettled(batch.map((e) => e.promise));
+      /** @type {() => void} */
+      let wake = () => {};
+      const parkChanged = new Promise((resolve) => { wake = () => resolve(undefined); });
+      parkWaiters.add(wake);
+      try {
+        await Promise.race([Promise.allSettled(batch.map((e) => e.promise)), parkChanged]);
+      } finally {
+        parkWaiters.delete(wake);
+      }
       batch = [...pending].filter(matches);
     }
     return true;
@@ -83,4 +132,4 @@ const drainPendingWrites = async (timeoutMs = 30_000, matches = () => true) => {
     : { drained: false, pending: [...pending].filter(matches).map((e) => ({ label: e.label, runningMs: Date.now() - e.startedAt })) };
 };
 
-module.exports = { trackPendingWrite, getPendingWrites, drainPendingWrites };
+module.exports = { trackPendingWrite, getPendingWrites, drainPendingWrites, parkPendingWrites, isParkedWrite };

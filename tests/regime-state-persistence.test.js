@@ -19,7 +19,7 @@ const make = (overrides = {}) => {
     fillLedger: { getDerivedRealizedPnL: () => derived, isDirty: () => false },
     tpOptimizer: {}, sizeOptimizer: {}, regimeDetector: {}, macroRegime: null,
     healthMonitor: {},
-    engineLocks: { isMutatingPosition: () => flags.mutating, isLadderBusy: () => flags.ladderBusy, getFlags: () => ({}) },
+    engineLocks: { isMutatingPosition: () => flags.mutating, isLadderBusy: () => flags.ladderBusy, isBackupFenced: () => false, getFlags: () => ({}) },
     tpPlacementInFlight: new Set(), isExtendInFlight: () => false,
     getOrderExecutor: () => ({}),
     persistEpisodeState: () => {}, restoreEpisodeState: () => {},

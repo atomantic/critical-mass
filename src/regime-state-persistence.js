@@ -59,11 +59,21 @@ const createEngineStatePersistence = ({
     };
   };
 
+  // A save requested by a caller outside the backup fence while a backup holds
+  // it (#1945) — the save timer, an executor callback — is deferred, never
+  // written mid-copy; releasing the hold writes it (flushDeferredSave).
+  let saveDeferred = false;
+  const deferredByBackup = () => {
+    if (!engineLocks.isBackupFenced()) return false;
+    saveDeferred = true;
+    return true;
+  };
+
   /**
    * Save dry-run state to disk
    */
   const saveDryRunState = () => {
-    if (!isDryRun) return;
+    if (!isDryRun || deferredByBackup()) return;
     dryRunState.saveState(exchange, snapshotDryRunState(), pair);
   };
 
@@ -244,7 +254,7 @@ const createEngineStatePersistence = ({
    * Save live state to disk (for faster recovery on restarts)
    */
   const saveLiveState = () => {
-    if (isDryRun) return;
+    if (isDryRun || deferredByBackup()) return;
 
     persistEpisodeState();
 
@@ -283,6 +293,8 @@ const createEngineStatePersistence = ({
    * @returns {boolean} Whether the save succeeded
    */
   const saveLiveStateGuarded = (source) => {
+    // Deferred by a backup hold: nothing was written, so record no outcome.
+    if (!isDryRun && deferredByBackup()) return true;
     const startedAt = Date.now();
     try {
       saveLiveState();
@@ -449,10 +461,19 @@ const createEngineStatePersistence = ({
     return true;
   };
 
+  /** Write the save a backup hold deferred, once the hold is released. */
+  const flushDeferredSave = () => {
+    if (!saveDeferred) return;
+    saveDeferred = false;
+    if (isDryRun) saveDryRunStateGuarded('backup-release');
+    else saveLiveStateGuarded('backup-release');
+  };
+
   return {
     snapshotDryRunState, saveDryRunState, saveDryRunStateGuarded, loadDryRunState,
     refreshRealizedFromCyclePairs, syncActiveCycleIdAfterRecalc, resyncLiveCycleCountersAfterRecalc,
     saveLiveState, saveLiveStateGuarded, describeReloadBlocker, reloadStateFromDisk, loadLiveState,
+    flushDeferredSave,
   };
 };
 

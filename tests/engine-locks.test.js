@@ -494,3 +494,116 @@ describe('createEngineLocks — ladder lock deadlock-freedom (#766)', () => {
     assert.equal(await tpFill, 'reset');
   });
 });
+
+describe('createEngineLocks — backup fence (#1945)', () => {
+  const deferred = () => {
+    let resolve = () => {};
+    const promise = new Promise((r) => { resolve = () => r(undefined); });
+    return { promise, resolve };
+  };
+
+  it('parks new top-level writers until release, while a nested writer runs through', async () => {
+    const locks = createEngineLocks();
+    const inner = deferred();
+    const order = [];
+    const outer = locks.withBackupFence(async () => {
+      await inner.promise;
+      await locks.withBackupFence(async () => { order.push('nested'); });
+    });
+    await tick();
+    locks.holdBackupFence();
+    const parked = locks.withBackupFence(async () => { order.push('parked'); });
+    inner.resolve();
+    await outer;
+    assert.deepEqual(order, ['nested'], 'the nested writer ran under the hold');
+    assert.deepEqual(await locks.waitForBackupIdle(50), { idle: true, busy: [], orderIds: [] });
+    locks.releaseBackupFence();
+    await parked;
+    assert.deepEqual(order, ['nested', 'parked']);
+  });
+
+  it('waitForBackupIdle waits for writers past the fence and times out on a hung one', async () => {
+    const locks = createEngineLocks();
+    const gate = deferred();
+    const writer = locks.withFillGate(() => gate.promise, { orderId: 'held-1' });
+    await tick();
+    locks.holdBackupFence();
+    const timedOut = await locks.waitForBackupIdle(30);
+    assert.equal(timedOut.idle, false);
+    assert.deepEqual(timedOut.busy, ['1 writer(s)', '1 fill(s)']);
+    assert.deepEqual(timedOut.orderIds, ['held-1']);
+    gate.resolve();
+    await writer;
+    assert.equal((await locks.waitForBackupIdle(200)).idle, true);
+    locks.releaseBackupFence();
+  });
+
+  it('a parked fill is not counted in flight and books after release', async () => {
+    const locks = createEngineLocks();
+    locks.holdBackupFence();
+    let ran = false;
+    const fill = locks.withFillGate(async () => { ran = true; }, { orderId: 'queued' });
+    await tick();
+    assert.equal(locks.getFlags().fillInProgress, 0);
+    assert.equal(locks.getFlags().fencedWriters, 0);
+    assert.equal((await locks.waitForBackupIdle(20)).idle, true, 'a queued fill cannot block its own hold');
+    locks.releaseBackupFence();
+    await fill;
+    assert.equal(ran, true);
+  });
+
+  it('a timer a writer left behind is fenced once that writer finished', async () => {
+    const locks = createEngineLocks();
+    let spawned;
+    await locks.withBackupFence(async () => {
+      spawned = new Promise((resolve) => setTimeout(() => resolve(locks.isBackupFenced()), 5));
+    });
+    locks.holdBackupFence();
+    assert.equal(await spawned, true);
+    locks.releaseBackupFence();
+  });
+
+  it('skips entries and reconcile ticks, refuses tick-driven ladder sweeps and parks the rest', async () => {
+    const locks = createEngineLocks({ ladderPollMs: 1 });
+    locks.holdBackupFence();
+    let entryRan = false;
+    assert.equal(await locks.withEntryLock(async () => { entryRan = true; }), undefined);
+    assert.equal(entryRan, false);
+    assert.equal(locks.isEntryInProgress(), false);
+    assert.equal(locks.withReconcileLock(() => assert.fail('reconcile must skip')), undefined);
+    assert.deepEqual(await locks.withLadderLock(async () => assert.fail('refused'), { wait: false }), { success: false, message: BUSY_LADDER });
+    const order = [];
+    const ladder = locks.withLadderLock(async () => { order.push('ladder'); });
+    const merge = locks.withMergeLock(async () => { order.push('merge'); return { success: true }; });
+    await tick();
+    assert.deepEqual(order, []);
+    assert.equal(locks.isLadderBusy(), false, 'a parked sweep takes no queue slot');
+    assert.equal(locks.getFlags().mergeInProgress, false, 'a parked merge sets no flag');
+    locks.releaseBackupFence();
+    await Promise.all([ladder, merge]);
+    assert.deepEqual(order, ['ladder', 'merge']);
+  });
+
+  it('an entry admitted before the hold sets its flag synchronously and is waited for', async () => {
+    const locks = createEngineLocks();
+    const gate = deferred();
+    const entry = locks.withEntryLock(() => gate.promise);
+    assert.equal(locks.isEntryInProgress(), true);
+    locks.holdBackupFence();
+    assert.equal((await locks.waitForBackupIdle(20)).idle, false);
+    gate.resolve();
+    await entry;
+    assert.equal((await locks.waitForBackupIdle(200)).idle, true);
+    locks.releaseBackupFence();
+  });
+
+  it('runAsBackupHolder lets the holder write past its own fence', () => {
+    const locks = createEngineLocks();
+    locks.holdBackupFence();
+    assert.equal(locks.isBackupFenced(), true);
+    assert.equal(locks.runAsBackupHolder(() => locks.isBackupFenced()), false);
+    assert.equal(locks.isBackupFenced(), true);
+    locks.releaseBackupFence();
+    assert.equal(locks.isBackupFenced(), false);
+  });
+});
