@@ -61,7 +61,7 @@ limits; see [Simulation endpoint limits](docs/simulation-limits.md).
 
 ## Requirements
 
-- Node.js 22.12.0 or newer. Production accounting synchronously loads shared ESM modules, and the locked admin toolchain also requires Node 22.12 or newer on the Node 22 line.
+- Node.js 22.12.0 or newer to run Critical Mass. Production accounting synchronously loads shared ESM modules, and the locked admin build toolchain also requires Node 22.12 or newer on the Node 22 line. Running the admin test suite (jsdom 31) needs Node 22.22.2+, 24.15+ or 26+; `npm ci --prefix admin --engine-strict` refuses older versions.
 - PM2 available on your `PATH` for the production commands below (installed separately from the project dependencies)
 - `lsof` for the native npm startup port checks
 - `zip` and `unzip` for creating, listing, and restoring full backup archives
