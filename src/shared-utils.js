@@ -212,7 +212,7 @@ const getNextTradeInfo = (config, state) => {
   const { intervalType, intervalsToSpread, totalAllocation } = normalized;
 
   const ranThisInterval = hasRunThisInterval(state.lastRunId, intervalType);
-  const nextExecutionTime = getNextExecutionTime(intervalType, state.lastRunTimestamp);
+  const nextExecutionTime = getNextExecutionTime(intervalType);
   const timeUntilNext = getTimeUntilNext(intervalType);
 
   const remaining = (totalAllocation || 0) - (state.totalAllocated || 0);
