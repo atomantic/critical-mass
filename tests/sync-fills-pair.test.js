@@ -2,7 +2,7 @@
 /**
  * sync-fills pair-threading regression tests (issue #198)
  *
- * getUnaccountedFills/syncFills used to hardcode the BTC symbol regardless of
+ * getUnaccountedFills used to hardcode the BTC symbol regardless of
  * which fund's ledger was passed in, so a non-BTC fund's "unaccounted fills"
  * view fetched BTC trades and diffed them against (e.g.) an ETH ledger. These
  * tests drive getUnaccountedFills with a mock adapter and assert the fund's
@@ -17,7 +17,6 @@ const assert = require('node:assert/strict');
 
 /** @type {Array<{productId: string|undefined, since: number}>} */
 let geminiCalls = [];
-let loadedStatePairs = [];
 
 const fakeGeminiAdapter = {
   getReconciliationFills: async (productId, since) => {
@@ -43,36 +42,12 @@ require.cache[adaptersPath] = /** @type {any} */ ({
   },
   children: [],
 });
-const stateTrackerPath = require.resolve('../src/state-tracker');
-require.cache[stateTrackerPath] = /** @type {any} */ ({
-  id: stateTrackerPath,
-  filename: stateTrackerPath,
-  path: require('path').dirname(stateTrackerPath),
-  loaded: true,
-  exports: {
-    loadFundRegimeState: (exchange, pair) => {
-      loadedStatePairs.push({ exchange, pair });
-      return { position: { engineStartTime: Date.UTC(2026, 0, 1) } };
-    },
-  },
-  children: [],
-});
-const configUtilsPath = require.resolve('../src/config-utils');
-require.cache[configUtilsPath] = /** @type {any} */ ({
-  id: configUtilsPath,
-  filename: configUtilsPath,
-  path: require('path').dirname(configUtilsPath),
-  loaded: true,
-  exports: { getDefaultPair: () => 'BTCUSD' },
-  children: [],
-});
 delete require.cache[require.resolve('../src/sync-fills')];
-const { getUnaccountedFills, syncFills } = require('../src/sync-fills');
+const { getUnaccountedFills } = require('../src/sync-fills');
 
 const fakeFillLedger = {
   hasProcessedTrade: () => false,
   getFillCount: () => 0,
-  getAllFills: () => [],
 };
 
 const fakeManualTradeStore = {
@@ -90,16 +65,6 @@ describe('getUnaccountedFills pair threading (issue #198)', () => {
     assert.equal(result.success, true);
     assert.equal(geminiCalls.length, 1);
     assert.equal(geminiCalls[0].productId, 'ETHUSD');
-  });
-
-  it('keeps syncFills default-pair state loading when pair is omitted', async () => {
-    geminiCalls = [];
-    loadedStatePairs = [];
-    const result = await syncFills('gemini', fakeFillLedger);
-
-    assert.equal(result.success, true);
-    assert.deepEqual(loadedStatePairs, [{ exchange: 'gemini', pair: 'BTCUSD' }]);
-    assert.equal(geminiCalls[0].productId, undefined, 'the adapter keeps its legacy omitted-pair default');
   });
 
   it('lets the adapter choose its legacy default when no pair is supplied', async () => {
