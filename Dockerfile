@@ -3,6 +3,9 @@ FROM --platform=$BUILDPLATFORM node:26-alpine@sha256:8996bb5821d62a8fd9bb27c1cb0
 
 WORKDIR /app
 
+# The pinned base predates Alpine's zlib security fixes.
+RUN apk add --no-cache 'zlib>=1.4-r0'
+
 COPY admin/package.json admin/package-lock.json ./admin/
 RUN cd admin && npm ci
 
@@ -33,7 +36,7 @@ RUN pm2 install pm2-logrotate@3.0.1 \
     && chown -R 1000:1000 /opt/pm2-home
 
 # zip/unzip are used by src/backup-service.js for archive create/restore
-RUN apk add --no-cache zip unzip
+RUN apk add --no-cache zip unzip 'zlib>=1.4-r0'
 
 # Install production dependencies
 COPY package.json package-lock.json ./
