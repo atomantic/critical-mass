@@ -1,7 +1,10 @@
 # ─── Stage 1: Build admin UI ───────────────────────────────────
-FROM --platform=$BUILDPLATFORM node:26-alpine@sha256:40cd011b55415bc894e45b02fdd5a5dfde056921b7d23a64c74f80497af48797 AS builder
+FROM --platform=$BUILDPLATFORM node:26-alpine@sha256:8996bb5821d62a8fd9bb27c1cb07462f3fdce6e47d640c6a881ead0b064ce216 AS builder
 
 WORKDIR /app
+
+# The pinned base predates Alpine's zlib security fixes.
+RUN apk add --no-cache 'zlib>=1.4-r0'
 
 COPY admin/package.json admin/package-lock.json ./admin/
 RUN cd admin && npm ci
@@ -11,7 +14,7 @@ COPY shared/ ./shared/
 RUN cd admin && npm run build
 
 # ─── Stage 2: Production runtime ──────────────────────────────
-FROM node:26-alpine@sha256:40cd011b55415bc894e45b02fdd5a5dfde056921b7d23a64c74f80497af48797
+FROM node:26-alpine@sha256:8996bb5821d62a8fd9bb27c1cb07462f3fdce6e47d640c6a881ead0b064ce216
 
 WORKDIR /app
 
@@ -24,7 +27,7 @@ ENV PM2_DISABLE_VERSION_CHECK=1
 # Install rotation once at build time, outside persistent application mounts.
 # pm2-runtime loads modules from this writable home without network access.
 ENV PM2_HOME=/opt/pm2-home
-RUN pm2 install pm2-logrotate@2.7.0 \
+RUN pm2 install pm2-logrotate@3.0.1 \
     && pm2 set pm2-logrotate:max_size 20M \
     && pm2 set pm2-logrotate:retain 5 \
     && pm2 set pm2-logrotate:compress true \
@@ -33,7 +36,7 @@ RUN pm2 install pm2-logrotate@2.7.0 \
     && chown -R 1000:1000 /opt/pm2-home
 
 # zip/unzip are used by src/backup-service.js for archive create/restore
-RUN apk add --no-cache zip unzip
+RUN apk add --no-cache zip unzip 'zlib>=1.4-r0'
 
 # Install production dependencies
 COPY package.json package-lock.json ./

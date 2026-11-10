@@ -50,7 +50,7 @@ function run(t, command = 'start', scenario = '', initial = names) {
     if (args[0] === 'install') {
       state = state.filter(app => app.name !== 'pm2-logrotate');
       const pm_id = Math.max(-1, ...state.map(app => app.pm_id)) + 1;
-      state.push({ name:'pm2-logrotate',pm_id,pid:pm_id+100,pm2_env:{status:'online',version:'2.7.0'} });
+      state.push({ name:'pm2-logrotate',pm_id,pid:pm_id+100,pm2_env:{status:'online',version:'3.0.1'} });
     }
     if (args[0] === 'restart') {
       if (scenario === 'rotation-stopped-restart-failure') process.exit(2);
@@ -101,7 +101,7 @@ test('npm start confirms gateway stop before engines, recreates in dependency or
     ['pm2', 'delete', '0', '1', '2', '3', '4'],
     ['pm2', 'start', 'ecosystem.config.cjs', '--only', names.slice(1, 4).join(',')],
     ['pm2', 'start', 'ecosystem.config.cjs', '--only', [names[0], names[4]].join(',')],
-    ['pm2', 'install', 'pm2-logrotate@2.7.0'],
+    ['pm2', 'install', 'pm2-logrotate@3.0.1'],
     ...[['max_size', '20M'], ['retain', '5'], ['compress', 'true'], ['rotateInterval', '0 0 * * *']].map(([key, value]) => ['pm2', 'set', `pm2-logrotate:${key}`, value]),
     ['pm2', 'save'],
   ]);
@@ -180,7 +180,7 @@ test('log rotation repairs stopped modules and migrates the broken compression r
     assert.equal(result.status, 0, result.stderr);
     if (scenario === 'rotation-v3') {
       assert.equal(result.calls.some(call => call[1] === 'install'), true);
-      assert.equal(result.state.find(app => app.name === 'pm2-logrotate').pm2_env.version, '2.7.0');
+      assert.equal(result.state.find(app => app.name === 'pm2-logrotate').pm2_env.version, '3.0.1');
     } else {
       assert.equal(result.calls.some(call => call[1] === 'restart' && call[2] === 'pm2-logrotate'), true);
       if (scenario.endsWith('failure')) assert.match(result.stderr, /log rotation could not be configured/);

@@ -63,9 +63,9 @@ function ensureLogRotation() {
   // healthy stack from starting, and inventory output must remain private.
   try {
     const existing = inventory().find(app => app?.name === 'pm2-logrotate');
-    // 3.0.0 cannot compress with PMX's boolean configuration casting.
+    // 3.0.1 fixes 3.0.0 compression with PMX boolean configuration casting.
     if (!existing || existing.pm2_env?.version === '3.0.0') {
-      pm2(['install', 'pm2-logrotate@2.7.0'], true);
+      pm2(['install', 'pm2-logrotate@3.0.1'], true);
     }
     for (const [setting, value] of Object.entries({
       max_size: '20M', retain: '5', compress: 'true', rotateInterval: '0 0 * * *',
