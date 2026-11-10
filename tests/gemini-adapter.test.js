@@ -228,6 +228,10 @@ describe('gemini getOrderFills', () => {
       console.log = origLog;
       console.warn = origWarn;
     }
+    installFetchMock(() => ({ result: 'error', reason: 'Maintenance' }));
+    const malformed = await adapter.getReconciliationFills('BTCUSD', at);
+    assert.equal(malformed.length, 0);
+    assert.equal(malformed.incomplete, true, 'a non-array body is not an empty fill history');
     assert.equal(saturated.length, 500);
     assert.equal(saturated.incomplete, true);
     assert.equal(complete.length, 1);

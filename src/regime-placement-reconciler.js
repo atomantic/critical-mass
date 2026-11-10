@@ -342,6 +342,13 @@ const createPlacementReconciler = ({
       return { success: false, error: `Placement intent ${intentId} was already resolved` };
     }
     if (evidence.verdict === 'absent') {
+      // Evidence skips orders this fund already tracks, so an adoption that is
+      // tracked in memory but failed to save would read as absent here. Make
+      // tracking durable first; a failed save throws and keeps the intent.
+      if (!isDryRun) {
+        saveLiveState();
+        fillLedger.persist();
+      }
       const removed = releasePlacementIntent(intentId);
       logger.warn(`🧹 [${exchange}] Cleared placement intent ${intentId} (${intent.action ?? 'order'}) — no matching open order or untracked fill on the exchange; placements resume`, {
         intentId,

@@ -284,6 +284,16 @@ describe('coinbase getOpenOrders pagination', () => {
     assert.equal(orders.incomplete, true);
   });
 
+  it('marks the list incomplete when a page carries no orders array', async () => {
+    for (const page of [{ has_next: false }, { has_next: false, orders: null }]) {
+      const adapter = createCoinbaseAdapter(keysPath, { sleep: async () => {} });
+      installFetchMock(() => page);
+      const orders = await adapter.getOpenOrders('BTC-USDC');
+      assert.equal(orders.length, 0);
+      assert.equal(orders.incomplete, true);
+    }
+  });
+
   it('marks the list incomplete on a repeated cursor', async () => {
     const adapter = createCoinbaseAdapter(keysPath, { sleep: async () => {} });
     installFetchMock(() => ({ has_next: true, cursor: 'same', orders: [rawOrder('a')] }));

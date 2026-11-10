@@ -715,7 +715,9 @@ const createGeminiAdapter = (keysPath = null, { sleep = defaultSleep } = {}) => 
       if (symbol) params.symbol = symbol;
       const trades = await makeRestRequest('/v1/mytrades', params);
 
-      if (!Array.isArray(trades) || trades.length === 0) { complete = true; break; }
+      // Only a real empty array is an empty page; any other body leaves the scan incomplete.
+      if (!Array.isArray(trades)) break;
+      if (trades.length === 0) { complete = true; break; }
 
       let newestMs = -1;
       for (const trade of trades) {

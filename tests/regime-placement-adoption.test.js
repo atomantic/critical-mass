@@ -234,6 +234,19 @@ describe('automatic placement recovery from exchange evidence', () => {
     assert.equal(state.loadPlacementIntents('coinbase', PAIR).length, 1, 'a live-listed order is never released on a stale status');
   });
 
+  it('keeps the intent when tracking cannot be saved before an absent verdict releases it', async () => {
+    strandedEntry();
+    withExchange();
+    const originalRename = fs.renameSync;
+    mock.method(fs, 'renameSync', (from, to) => {
+      if (String(to).endsWith('regime-state.json')) throw new Error('disk failure');
+      return originalRename(from, to);
+    });
+    await engine._test.reconcilePendingPlacements();
+    fs.renameSync.mock.restore();
+    assert.equal(state.loadPlacementIntents('coinbase', PAIR).length, 1);
+  });
+
   it('keeps the intent when both the client-id lookup and the exchange search fail', async () => {
     ageIntent(makeIntent('entry_bid', { side: 'buy' }));
     adapter.findOrderByClientOrderId = historyBudgetExceeded;

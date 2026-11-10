@@ -622,7 +622,12 @@ const createCoinbaseAdapter = (keysPath = null, { sleep = defaultSleep, random =
     let truncated = false;
     for (let page = 1; ; page++) {
       const data = await makeRequest('GET', cursor ? `${basePath}&cursor=${encodeURIComponent(cursor)}` : basePath);
-      rawOrders.push(...(data.orders || []));
+      // A page without an orders array is not evidence of an empty book.
+      if (!Array.isArray(data?.orders)) {
+        truncated = true;
+        break;
+      }
+      rawOrders.push(...data.orders);
       if (data.has_next === false) break;
       // A missing or malformed continuation flag cannot prove this was the last page.
       if (data.has_next !== true) {
