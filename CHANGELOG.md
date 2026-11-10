@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- Upgrade the pinned PM2 log-rotation module to 3.0.1 for fresh native installs and Docker/Umbrel images. This fixes PMX boolean compression, concurrent rotations and archive retention; native startup replaces the broken 3.0.0 release with 3.0.1 and continues reusing other installed versions.
+
 - Update Vite to 8.3.7, its React plugin to 6.3.0, and the associated Rolldown lock entries; refresh PM2 helper patch floors and the Node 26.13.0/Alpine 3.24.4 image digest. The PM2 YAML override remains on its supported 4.x line.
 
 - **[issue-1945] Hourly snapshots no longer stop and cold-start live funds** — the in-place backup quiesce from #1909 is re-landed with its two release-review defects fixed. A fill that arrives while a backup is quiescing no longer stalls the pause for 30 s and refuses the snapshot: it parks at the engine's backup fence, is excluded from the drain, and books once after resume. Every accounting writer now checks that fence: fills, reactive and ladder entries, merges and dust consolidation, ladder sweeps, reconcile ticks, the state-save timer and dry-run fills. Standalone market-data services still stop and restart around the copy, so no file under `data/<exchange>/<pair>/` changes while the backup holds it. Daily and manual full archives keep their semantics.

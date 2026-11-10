@@ -255,11 +255,11 @@ when an exchange or transport hangs.
 
 ## Process log rotation
 
-Native `npm run pm2:start` ensures `pm2-logrotate` (2.7.0 on first install)
-only after the application processes are online. Version 2.7.0 is pinned because
-3.0.0 fails to enable compression when PMX casts its configuration to booleans.
+Native `npm run pm2:start` ensures `pm2-logrotate` (3.0.1 on first install)
+only after the application processes are online. Version 3.0.1 fixes compression
+with PMX boolean configuration casting, concurrent rotations and archive retention.
 Existing modules are reused except the broken 3.0.0 release, which is replaced
-with 2.7.0. Stopped or errored modules are restarted and checked online.
+with 3.0.1. Stopped or errored modules are restarted and checked online.
 Every start reapplies `max_size=20M`, `retain=5`, `compress=true` and
 `rotateInterval="0 0 * * *"` (daily, local timezone). Installation/configuration
 failure warns without failing startup; retry startup when network access is
