@@ -198,6 +198,41 @@ describe('automatic placement recovery from exchange evidence', () => {
     assert.equal(state.loadPlacementIntents('coinbase', PAIR).length, 0);
   });
 
+  // Coinbase's client-id lookup scans product history newest-first and throws
+  // once it exhausts its page budget, so a busy fund could never settle a
+  // stuck intent through that lookup alone.
+  const historyBudgetExceeded = async () => { throw new Error('Coinbase client order lookup inconclusive: exceeded 64-page history budget'); };
+
+  it('clears a stuck body TP from exchange evidence when the client-id lookup cannot finish', async () => {
+    seedBody();
+    ageIntent(makeIntent('body_tp', { bodyId: 'body-1', side: 'sell' }));
+    adapter.findOrderByClientOrderId = historyBudgetExceeded;
+    withExchange();
+    await engine._test.reconcilePendingPlacements();
+    assert.equal(state.loadPlacementIntents('coinbase', PAIR).length, 0);
+    assert.equal(engine._getPositionState().celestialBodies[0].tpOrderId, null, 'nothing adopted — the body re-places its TP');
+  });
+
+  it('adopts the resting TP that matches a stuck intent when the client-id lookup cannot finish', async () => {
+    seedBody();
+    const intent = ageIntent(makeIntent('body_tp', { bodyId: 'body-1', side: 'sell' }));
+    adapter.findOrderByClientOrderId = historyBudgetExceeded;
+    const resting = { orderId: 'resting-tp', side: 'SELL', price: 120, size: 0.9, originalSize: 0.9, createdTime: new Date(intent.createdAt + 500).toISOString() };
+    withExchange({ openOrders: [resting], order: { ...resting, status: 'OPEN', filledSize: 0 } });
+    await engine._test.reconcilePendingPlacements();
+    assert.equal(state.loadPlacementIntents('coinbase', PAIR).length, 0);
+    assert.equal(diskPosition().celestialBodies[0].tpOrderId, 'resting-tp');
+  });
+
+  it('keeps the intent when both the client-id lookup and the exchange search fail', async () => {
+    ageIntent(makeIntent('entry_bid', { side: 'buy' }));
+    adapter.findOrderByClientOrderId = historyBudgetExceeded;
+    withExchange();
+    adapter.getReconciliationFills = async () => { throw new Error('rate limited'); };
+    await engine._test.reconcilePendingPlacements();
+    assert.equal(state.loadPlacementIntents('coinbase', PAIR).length, 1);
+  });
+
   it('never clears an intent from an operator adopt, which does not search exchange evidence', async () => {
     const stranded = strandedEntry();
     ageIntent(makeIntent('entry_bid', { side: 'buy' }));
