@@ -354,7 +354,15 @@ const createPlacementReconciler = ({
       return { success: Boolean(removed), message: 'No matching order on the exchange; intent cleared' };
     }
     const classification = classifyAutomaticLookup(evidence.order);
-    if (classification === 'clear-unfilled-terminal') return clearUnfilledTerminalIntent(intentId);
+    if (classification === 'clear-unfilled-terminal') {
+      // The open-order list just showed this order live; a terminal status
+      // read right after may be stale. Retry rather than release the intent:
+      // once the order really is gone it drops off the list and settles there.
+      if (evidence.resting) {
+        return { success: false, error: `Matched resting order ${evidence.order.orderId} but its status reads ${evidence.order.status}; retrying automatically` };
+      }
+      return clearUnfilledTerminalIntent(intentId);
+    }
     if (classification === 'status-unknown') {
       return { success: false, error: `Matched exchange order ${evidence.order.orderId} but its status is unknown; retrying automatically` };
     }

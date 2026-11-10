@@ -623,8 +623,12 @@ const createCoinbaseAdapter = (keysPath = null, { sleep = defaultSleep, random =
     for (let page = 1; ; page++) {
       const data = await makeRequest('GET', cursor ? `${basePath}&cursor=${encodeURIComponent(cursor)}` : basePath);
       rawOrders.push(...(data.orders || []));
-      // A missing or false has_next is the final page (the pre-pagination contract).
-      if (data.has_next !== true) break;
+      if (data.has_next === false) break;
+      // A missing or malformed continuation flag cannot prove this was the last page.
+      if (data.has_next !== true) {
+        truncated = true;
+        break;
+      }
       const nextCursor = typeof data.cursor === 'string' ? data.cursor.trim() : '';
       if (!nextCursor || seenCursors.has(nextCursor) || page >= OPEN_ORDERS_MAX_PAGES) {
         truncated = true;

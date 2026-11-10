@@ -127,7 +127,7 @@ const fillsFitIntent = (fills, intent, side, candidates) => {
 
 /**
  * @typedef {{verdict: 'absent'}
- *   | {verdict: 'match', order: import('./types').OrderDetails}
+ *   | {verdict: 'match', order: import('./types').OrderDetails, resting: boolean}
  *   | {verdict: 'inconclusive', reason: string}} PlacementEvidence
  */
 
@@ -173,6 +173,7 @@ const findPlacementOnExchange = async ({ adapter, productId, intent, isKnownOrde
       candidates.add(order.orderId);
     }
   }
+  const restingIds = new Set(candidates);
 
   /** @type {Map<string, Array<import('./types').ReconciliationFill>>} */
   const untrackedFills = new Map();
@@ -207,7 +208,9 @@ const findPlacementOnExchange = async ({ adapter, productId, intent, isKnownOrde
     return inconclusive(`${candidates.size} untracked exchange orders (${[...candidates].join(', ')}) match the intent`);
   }
   const [orderId] = candidates;
-  return { verdict: 'match', order: await adapter.getOrder(orderId) };
+  // `resting` records that the open-order list showed this order live, so a
+  // status that contradicts it is not taken as proof the placement is gone.
+  return { verdict: 'match', order: await adapter.getOrder(orderId), resting: restingIds.has(orderId) };
 };
 
 module.exports = {

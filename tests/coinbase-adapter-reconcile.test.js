@@ -258,12 +258,22 @@ describe('coinbase getOpenOrders pagination', () => {
     assert.equal(calls.length, 2);
   });
 
-  it('keeps a single page without has_next as the complete list', async () => {
+  it('treats a single final page as the complete list', async () => {
     const adapter = createCoinbaseAdapter(keysPath, { sleep: async () => {} });
-    installFetchMock(() => ({ orders: [rawOrder('a')] }));
+    installFetchMock(() => ({ has_next: false, orders: [rawOrder('a')] }));
     const orders = await adapter.getOpenOrders('BTC-USDC');
     assert.equal(orders.length, 1);
     assert.equal(orders.incomplete, undefined);
+  });
+
+  it('marks the list incomplete when the continuation flag is missing or malformed', async () => {
+    for (const page of [{ orders: [rawOrder('a')] }, { has_next: 'true', cursor: 'c2', orders: [rawOrder('a')] }]) {
+      const adapter = createCoinbaseAdapter(keysPath, { sleep: async () => {} });
+      installFetchMock(() => page);
+      const orders = await adapter.getOpenOrders('BTC-USDC');
+      assert.equal(orders.length, 1);
+      assert.equal(orders.incomplete, true);
+    }
   });
 
   it('marks the list incomplete when more pages exist but no cursor is usable', async () => {

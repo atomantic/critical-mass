@@ -224,6 +224,16 @@ describe('automatic placement recovery from exchange evidence', () => {
     assert.equal(diskPosition().celestialBodies[0].tpOrderId, 'resting-tp');
   });
 
+  it('keeps the intent when a resting match reports a terminal unfilled status', async () => {
+    seedBody();
+    const intent = ageIntent(makeIntent('body_tp', { bodyId: 'body-1', side: 'sell' }));
+    adapter.findOrderByClientOrderId = historyBudgetExceeded;
+    const resting = { orderId: 'resting-tp', side: 'SELL', price: 120, size: 0.9, originalSize: 0.9, createdTime: new Date(intent.createdAt + 500).toISOString() };
+    withExchange({ openOrders: [resting], order: { ...resting, status: 'CANCELLED', filledSize: 0 } });
+    await engine._test.reconcilePendingPlacements();
+    assert.equal(state.loadPlacementIntents('coinbase', PAIR).length, 1, 'a live-listed order is never released on a stale status');
+  });
+
   it('keeps the intent when both the client-id lookup and the exchange search fail', async () => {
     ageIntent(makeIntent('entry_bid', { side: 'buy' }));
     adapter.findOrderByClientOrderId = historyBudgetExceeded;
