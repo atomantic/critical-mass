@@ -35,6 +35,8 @@ const RETRYABLE_HTTP_STATUSES = new Set([429, 502, 503, 504]);
 // Returned from the deadline-scoped request body to ask the attempt loop to retry.
 const HTTP_RETRY = Symbol('coinbase-http-retry');
 const CLIENT_ORDER_LOOKUP_MAX_PAGES = 64;
+// Open-order listing page budget; past it the result is marked incomplete.
+const OPEN_ORDERS_MAX_PAGES = 20;
 const ORDER_FILLS_PAGE_LIMIT = 250;
 const ORDER_FILLS_MAX_PAGES = 64;
 
@@ -604,14 +606,42 @@ const createCoinbaseAdapter = (keysPath = null, { sleep = defaultSleep, random =
   };
 
   /**
-   * Get all open orders for a product
+   * Get all open orders for a product, following pagination cursors. When the
+   * listing cannot be read to the end (page budget, or `has_next` without a
+   * usable cursor) the returned array carries a non-enumerable
+   * `incomplete: true`, so callers that must prove an order is absent
+   * (placement-evidence) never read a truncated page as "no such order".
    * @param {string} productId - Product ID
    * @returns {Promise<OpenOrder[]>} List of open orders
    */
   adapter.getOpenOrders = async (productId) => {
-    const data = await makeRequest('GET', `/api/v3/brokerage/orders/historical/batch?product_ids=${productId}&order_status=OPEN`);
+    const basePath = `/api/v3/brokerage/orders/historical/batch?product_ids=${productId}&order_status=OPEN`;
+    const rawOrders = [];
+    const seenCursors = new Set();
+    let cursor = null;
+    let truncated = false;
+    for (let page = 1; ; page++) {
+      const data = await makeRequest('GET', cursor ? `${basePath}&cursor=${encodeURIComponent(cursor)}` : basePath);
+      rawOrders.push(...(data.orders || []));
+      // A missing or false has_next is the final page (the pre-pagination contract).
+      if (data.has_next !== true) break;
+      const nextCursor = typeof data.cursor === 'string' ? data.cursor.trim() : '';
+      if (!nextCursor || seenCursors.has(nextCursor) || page >= OPEN_ORDERS_MAX_PAGES) {
+        truncated = true;
+        break;
+      }
+      seenCursors.add(nextCursor);
+      cursor = nextCursor;
+    }
+    const seenOrderIds = new Set();
+    const uniqueOrders = rawOrders.filter(order => {
+      if (!order?.order_id) return true;
+      if (seenOrderIds.has(order.order_id)) return false;
+      seenOrderIds.add(order.order_id);
+      return true;
+    });
 
-    return (data.orders || []).map(order => {
+    const orders = uniqueOrders.map(order => {
       // Extract size and price from order configuration (varies by order type)
       const cfg = order.order_configuration || {};
       const limitCfg = cfg.limit_limit_gtc || cfg.limit_limit_gtd || cfg.limit_limit_fok || {};
@@ -644,6 +674,8 @@ const createCoinbaseAdapter = (keysPath = null, { sleep = defaultSleep, random =
         createdTime: order.created_time,
       };
     });
+    if (truncated) Object.defineProperty(orders, 'incomplete', { value: true });
+    return orders;
   };
 
   /**

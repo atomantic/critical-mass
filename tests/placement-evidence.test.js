@@ -128,6 +128,40 @@ describe('findPlacementOnExchange', () => {
     assert.equal(result.verdict, 'inconclusive');
   });
 
+  it('stays inconclusive when the open-order list may be incomplete', async () => {
+    const openOrders = Object.defineProperty([], 'incomplete', { value: true });
+    assert.equal((await search(makeAdapter({ openOrders }))).verdict, 'inconclusive');
+  });
+
+  describe('exchange-rounded placements', () => {
+    // A coarse-tick product: the adapter floors 0.1234567 @ 1e-5 to 0.12345
+    // (a 5.6e-5 relative move, far past the 1e-6 price tolerance) and
+    // 512.6 @ qty tick 1 to 512 (0.12%, past the 0.1% size tolerance).
+    const coarse = { baseIncrement: '1', quoteIncrement: '0.00001' };
+    const croIntent = intent({ side: 'sell', price: 0.1234567, size: 512.6 });
+    const withIncrements = (adapter, details = coarse) => ({ ...adapter, getProductDetails: async () => details });
+    const searchCro = (adapter) => search(adapter, { intent: croIntent });
+
+    it('matches a resting order at the floored price and size', async () => {
+      const resting = openOrder({ orderId: 'floored', side: 'SELL', price: 0.12345, size: 512, originalSize: 512 });
+      const result = await searchCro(withIncrements(makeAdapter({ openOrders: [resting], orders: { floored: { orderId: 'floored', status: 'OPEN', filledSize: 0 } } })));
+      assert.equal(result.verdict, 'match');
+      assert.equal(result.verdict === 'match' && result.order.orderId, 'floored');
+    });
+
+    it('matches an untracked sell that filled at the floored limit', async () => {
+      const fills = [fill({ orderId: 'sold', side: 'sell', price: 0.12345, size: 512 })];
+      const orders = { sold: { orderId: 'sold', side: 'SELL', status: 'FILLED', filledSize: 512, completionPercentage: 100, createdTime: iso(400) } };
+      const result = await searchCro(withIncrements(makeAdapter({ fills, orders })));
+      assert.equal(result.verdict, 'match');
+    });
+
+    it('stays inconclusive when the product increments cannot be read', async () => {
+      const adapter = { ...makeAdapter(), getProductDetails: async () => { throw new Error('503'); } };
+      assert.equal((await searchCro(adapter)).verdict, 'inconclusive');
+    });
+  });
+
   it('stays inconclusive rather than looking up an unbounded number of filled orders', async () => {
     const fills = Array.from({ length: 21 }, (_, i) => fill({ tradeId: `t-${i}`, orderId: `o-${i}`, size: 0.0001 }));
     const adapter = makeAdapter({ fills });

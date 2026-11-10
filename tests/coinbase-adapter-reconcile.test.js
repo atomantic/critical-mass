@@ -234,3 +234,50 @@ describe('coinbase fill-drift reconciliation (issue #609)', () => {
     }]);
   });
 });
+
+// Placement-evidence proves a stuck placement is absent from the open-order
+// list, so a truncated list must say so instead of reading as "not resting".
+describe('coinbase getOpenOrders pagination', () => {
+  const rawOrder = (orderId) => ({
+    order_id: orderId, product_id: 'BTC-USDC', side: 'SELL', status: 'OPEN', filled_size: '0',
+    created_time: '2026-11-10T00:18:56Z',
+    order_configuration: { limit_limit_gtc: { base_size: '0.01', limit_price: '75000' } },
+  });
+
+  it('follows cursors to the last page and returns a complete list', async () => {
+    const adapter = createCoinbaseAdapter(keysPath, { sleep: async () => {} });
+    const { calls } = installFetchMock((url) => {
+      assert.equal(url.searchParams.get('order_status'), 'OPEN');
+      return url.searchParams.get('cursor') === 'c2'
+        ? { has_next: false, orders: [rawOrder('b'), rawOrder('a')] }
+        : { has_next: true, cursor: 'c2', orders: [rawOrder('a')] };
+    });
+    const orders = await adapter.getOpenOrders('BTC-USDC');
+    assert.deepEqual(orders.map(o => o.orderId), ['a', 'b'], 'pages joined, repeated order dropped');
+    assert.equal(orders.incomplete, undefined);
+    assert.equal(calls.length, 2);
+  });
+
+  it('keeps a single page without has_next as the complete list', async () => {
+    const adapter = createCoinbaseAdapter(keysPath, { sleep: async () => {} });
+    installFetchMock(() => ({ orders: [rawOrder('a')] }));
+    const orders = await adapter.getOpenOrders('BTC-USDC');
+    assert.equal(orders.length, 1);
+    assert.equal(orders.incomplete, undefined);
+  });
+
+  it('marks the list incomplete when more pages exist but no cursor is usable', async () => {
+    const adapter = createCoinbaseAdapter(keysPath, { sleep: async () => {} });
+    installFetchMock(() => ({ has_next: true, cursor: '', orders: [rawOrder('a')] }));
+    const orders = await adapter.getOpenOrders('BTC-USDC');
+    assert.equal(orders.length, 1);
+    assert.equal(orders.incomplete, true);
+  });
+
+  it('marks the list incomplete on a repeated cursor', async () => {
+    const adapter = createCoinbaseAdapter(keysPath, { sleep: async () => {} });
+    installFetchMock(() => ({ has_next: true, cursor: 'same', orders: [rawOrder('a')] }));
+    const orders = await adapter.getOpenOrders('BTC-USDC');
+    assert.equal(orders.incomplete, true);
+  });
+});
