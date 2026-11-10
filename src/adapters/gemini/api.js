@@ -707,12 +707,17 @@ const createGeminiAdapter = (keysPath = null, { sleep = defaultSleep } = {}) => 
     // window yields finite pages. Cap iterations anyway to guarantee
     // termination against a pathological response.
     const MAX_PAGES = 10000;
+    // Set only when the window was read to its end; an unreachable same-second
+    // cluster or an exhausted page cap leaves the result incomplete.
+    let complete = false;
     for (let page = 0; page < MAX_PAGES; page++) {
       const params = { limit_trades: PAGE_SIZE, timestamp: Math.floor(sinceMs / 1000) };
       if (symbol) params.symbol = symbol;
       const trades = await makeRestRequest('/v1/mytrades', params);
 
-      if (!Array.isArray(trades) || trades.length === 0) break;
+      // Only a real empty array is an empty page; any other body leaves the scan incomplete.
+      if (!Array.isArray(trades)) break;
+      if (trades.length === 0) { complete = true; break; }
 
       let newestMs = -1;
       for (const trade of trades) {
@@ -724,7 +729,7 @@ const createGeminiAdapter = (keysPath = null, { sleep = defaultSleep } = {}) => 
       }
 
       // Partial page → the whole window is covered, we're done.
-      if (trades.length < PAGE_SIZE) break;
+      if (trades.length < PAGE_SIZE) { complete = true; break; }
 
       // Full page. Advance `since` to the newest timestamp reached so the next
       // slice starts where this one ended (boundary trades dedup by tid).
@@ -745,7 +750,11 @@ const createGeminiAdapter = (keysPath = null, { sleep = defaultSleep } = {}) => 
       sinceMs = newestMs;
     }
 
-    return Array.from(byTid.values());
+    const result = Array.from(byTid.values());
+    // Callers that must prove a fill is absent (placement-evidence) check this;
+    // non-enumerable so the array still compares and serializes as before.
+    if (!complete) Object.defineProperty(result, 'incomplete', { value: true });
+    return result;
   };
 
   /**
@@ -985,7 +994,7 @@ const createGeminiAdapter = (keysPath = null, { sleep = defaultSleep } = {}) => 
   adapter.getReconciliationFills = async (productId, startTimestampMs) => {
     const trades = await fetchTradesSince(productId ? toGeminiSymbol(productId) : 'btcusd', startTimestampMs);
     const seenTrades = new Set();
-    return trades.flatMap(raw => {
+    const fills = trades.flatMap(raw => {
       const tradeId = String(raw.tid || '');
       if (!tradeId || seenTrades.has(tradeId)) return [];
       seenTrades.add(tradeId);
@@ -1004,6 +1013,8 @@ const createGeminiAdapter = (keysPath = null, { sleep = defaultSleep } = {}) => 
         liquidityIndicator: raw.is_maker ? 'MAKER' : 'TAKER',
       }];
     });
+    if (trades.incomplete) Object.defineProperty(fills, 'incomplete', { value: true });
+    return fills;
   };
 
   adapter.capabilities.fillReconciliation = true;

@@ -12,6 +12,8 @@
  * anything ambiguous leaves it blocking.
  */
 
+const { floorToIncrement } = require('./shared-utils');
+
 // Exchange order timestamps may skew slightly ahead of ours, and a dispatch can
 // sit in retries or a slow response for a while after the intent was written.
 const CREATED_BEFORE_INTENT_MS = 10_000;
@@ -57,16 +59,38 @@ const createdWithDispatch = (createdTime, intentCreatedAt) => {
 const sameSide = (order, side) => !order.side || String(order.side).toLowerCase() === side;
 
 /**
+ * The values an intent's order could carry on the exchange. The intent records
+ * the requested size and price, but adapters floor both to the product's
+ * increments before sending, which can move them well past the matching
+ * tolerances on coarse-tick products (e.g. a ~$0.10 price on a 1e-5 tick).
+ * Both the requested and the floored value are candidates.
+ * @typedef {{sizes: number[], prices: number[]}} PlacementCandidates
+ * @param {Object} intent
+ * @param {{baseIncrement?: string|number, quoteIncrement?: string|number}|null} increments
+ * @returns {PlacementCandidates}
+ */
+const placementCandidates = (intent, increments) => {
+  const floored = (value, increment) => {
+    const inc = Number(increment);
+    return inc > 0 && Number.isFinite(value) ? floorToIncrement(value, inc) : value;
+  };
+  const sizes = [intent.size, floored(intent.size, increments?.baseIncrement)];
+  const prices = intent.price == null ? [] : [intent.price, floored(intent.price, increments?.quoteIncrement)];
+  return { sizes: [...new Set(sizes)], prices: [...new Set(prices)] };
+};
+
+/**
  * Whether a resting order is the intent's placement.
  * @param {import('./types').OpenOrder} order
  * @param {Object} intent
  * @param {string} side
+ * @param {PlacementCandidates} candidates
  * @returns {boolean}
  */
-const openOrderMatches = (order, intent, side) =>
+const openOrderMatches = (order, intent, side, candidates) =>
   String(order.side).toLowerCase() === side
-  && (intent.price == null || withinTolerance(order.price, intent.price, PRICE_TOLERANCE))
-  && withinTolerance(order.originalSize ?? order.size, intent.size, SIZE_TOLERANCE)
+  && (intent.price == null || candidates.prices.some(p => withinTolerance(order.price, p, PRICE_TOLERANCE)))
+  && candidates.sizes.some(s => withinTolerance(order.originalSize ?? order.size, s, SIZE_TOLERANCE))
   && createdWithDispatch(order.createdTime, intent.createdAt);
 
 /**
@@ -82,22 +106,28 @@ const derivedOrderSize = (order) => (
 /**
  * Whether one order's fills could have come from the intent's placement: no
  * fill on the wrong side of the limit, and no more filled than was requested.
+ * The limit is the loosest candidate price, so a fill at the floored limit of a
+ * sell still fits (a buy's floored limit is lower, so its requested price is
+ * already the looser bound).
  * @param {Array<import('./types').ReconciliationFill>} fills
  * @param {Object} intent
  * @param {string} side
+ * @param {PlacementCandidates} candidates
  * @returns {boolean}
  */
-const fillsFitIntent = (fills, intent, side) => {
+const fillsFitIntent = (fills, intent, side, candidates) => {
   const filled = fills.reduce((sum, f) => sum + f.size, 0);
-  if (filled > intent.size * (1 + SIZE_TOLERANCE) + 1e-12) return false;
+  if (filled > Math.max(...candidates.sizes) * (1 + SIZE_TOLERANCE) + 1e-12) return false;
   if (intent.price == null) return true;
-  const limit = intent.price * (side === 'buy' ? 1 + PRICE_TOLERANCE : 1 - PRICE_TOLERANCE);
+  const limit = side === 'buy'
+    ? Math.max(...candidates.prices) * (1 + PRICE_TOLERANCE)
+    : Math.min(...candidates.prices) * (1 - PRICE_TOLERANCE);
   return fills.every(f => (side === 'buy' ? f.price <= limit : f.price >= limit));
 };
 
 /**
  * @typedef {{verdict: 'absent'}
- *   | {verdict: 'match', order: import('./types').OrderDetails}
+ *   | {verdict: 'match', order: import('./types').OrderDetails, resting: boolean}
  *   | {verdict: 'inconclusive', reason: string}} PlacementEvidence
  */
 
@@ -125,14 +155,25 @@ const findPlacementOnExchange = async ({ adapter, productId, intent, isKnownOrde
     return inconclusive('this exchange adapter cannot list open orders and fills');
   }
 
+  // Without the product's increments the exchange-rounded order may not match.
+  let increments = null;
+  if (typeof adapter.getProductDetails === 'function') {
+    increments = await adapter.getProductDetails(productId).catch(() => null);
+    if (!increments) return inconclusive('product increments are unavailable to match the exchange-rounded order');
+  }
+  const placement = placementCandidates(intent, increments);
+
   /** @type {Set<string>} */
   const candidates = new Set();
   const openOrders = await adapter.getOpenOrders(productId);
+  // A truncated listing cannot prove the placement is not resting.
+  if (openOrders?.incomplete) return inconclusive('the exchange returned an incomplete open-order list');
   for (const order of openOrders ?? []) {
-    if (order?.orderId && !isKnownOrder(order.orderId) && openOrderMatches(order, intent, side)) {
+    if (order?.orderId && !isKnownOrder(order.orderId) && openOrderMatches(order, intent, side, placement)) {
       candidates.add(order.orderId);
     }
   }
+  const restingIds = new Set(candidates);
 
   /** @type {Map<string, Array<import('./types').ReconciliationFill>>} */
   const untrackedFills = new Map();
@@ -144,7 +185,7 @@ const findPlacementOnExchange = async ({ adapter, productId, intent, isKnownOrde
     if (candidates.has(fill.orderId)) continue;
     untrackedFills.set(fill.orderId, [...(untrackedFills.get(fill.orderId) ?? []), fill]);
   }
-  const fillOrderIds = [...untrackedFills].filter(([, orderFills]) => fillsFitIntent(orderFills, intent, side)).map(([orderId]) => orderId);
+  const fillOrderIds = [...untrackedFills].filter(([, orderFills]) => fillsFitIntent(orderFills, intent, side, placement)).map(([orderId]) => orderId);
   if (fillOrderIds.length > MAX_ORDER_LOOKUPS) {
     return inconclusive(`${fillOrderIds.length} untracked orders filled since the dispatch; too many to inspect`);
   }
@@ -156,7 +197,7 @@ const findPlacementOnExchange = async ({ adapter, productId, intent, isKnownOrde
     // own size to match before treating it as the placement.
     const size = derivedOrderSize(order);
     if (size === null) unsizedCandidates += 1;
-    else if (withinTolerance(size, intent.size, DERIVED_SIZE_TOLERANCE)) candidates.add(orderId);
+    else if (placement.sizes.some(s => withinTolerance(size, s, DERIVED_SIZE_TOLERANCE))) candidates.add(orderId);
   }
   if (unsizedCandidates > 0) {
     return inconclusive(`${unsizedCandidates} untracked order(s) filled at dispatch time without a reported size to compare`);
@@ -167,7 +208,9 @@ const findPlacementOnExchange = async ({ adapter, productId, intent, isKnownOrde
     return inconclusive(`${candidates.size} untracked exchange orders (${[...candidates].join(', ')}) match the intent`);
   }
   const [orderId] = candidates;
-  return { verdict: 'match', order: await adapter.getOrder(orderId) };
+  // `resting` records that the open-order list showed this order live, so a
+  // status that contradicts it is not taken as proof the placement is gone.
+  return { verdict: 'match', order: await adapter.getOrder(orderId), resting: restingIds.has(orderId) };
 };
 
 module.exports = {

@@ -267,9 +267,12 @@ const createPlacementReconciler = ({
    * Automatic recovery of one unresolved placement intent, run by the periodic
    * reconciler. Uses the same durable adoption path as the operator, and also
    * clears positively identified terminal orders with zero fills. When there is
-   * no client order id, the adapter cannot look one up, or the lookup finds
-   * nothing, it searches open orders and fill history instead
-   * (resolveFromExchangeEvidence).
+   * no client order id, the adapter cannot look one up, the lookup finds
+   * nothing, or the lookup itself fails (e.g. Coinbase's order history is too
+   * long to scan within its page budget), it searches open orders and fill
+   * history instead (resolveFromExchangeEvidence). A failed lookup must not
+   * leave the fund blocked forever: the evidence search is the same standard
+   * already trusted for intents that never recorded a client order id.
    * @param {string} intentId
    * @returns {Promise<{success: boolean, deferred?: boolean, message?: string, error?: string, adoptedOrderId?: string}>}
    */
@@ -282,7 +285,11 @@ const createPlacementReconciler = ({
     }
 
     const lookup = await lookupPlacementByClientOrderId(intent);
-    if ('lookupError' in lookup) return lookupFailed(lookup.lookupError);
+    if ('lookupError' in lookup) {
+      const evidence = await resolveFromExchangeEvidence(intentId, intent);
+      if (evidence.success || evidence.deferred) return evidence;
+      return { ...evidence, error: `${lookupFailed(lookup.lookupError).error}; ${evidence.error}` };
+    }
     const classification = classifyAutomaticLookup(lookup.found);
     if (classification === 'clear-unfilled-terminal') return clearUnfilledTerminalIntent(intentId);
     if (classification === 'status-unknown') return { success: false, error: 'Exchange order status remains unknown; retrying automatically' };
@@ -335,6 +342,13 @@ const createPlacementReconciler = ({
       return { success: false, error: `Placement intent ${intentId} was already resolved` };
     }
     if (evidence.verdict === 'absent') {
+      // Evidence skips orders this fund already tracks, so an adoption that is
+      // tracked in memory but failed to save would read as absent here. Make
+      // tracking durable first; a failed save throws and keeps the intent.
+      if (!isDryRun) {
+        saveLiveState();
+        fillLedger.persist();
+      }
       const removed = releasePlacementIntent(intentId);
       logger.warn(`🧹 [${exchange}] Cleared placement intent ${intentId} (${intent.action ?? 'order'}) — no matching open order or untracked fill on the exchange; placements resume`, {
         intentId,
@@ -347,7 +361,15 @@ const createPlacementReconciler = ({
       return { success: Boolean(removed), message: 'No matching order on the exchange; intent cleared' };
     }
     const classification = classifyAutomaticLookup(evidence.order);
-    if (classification === 'clear-unfilled-terminal') return clearUnfilledTerminalIntent(intentId);
+    if (classification === 'clear-unfilled-terminal') {
+      // The open-order list just showed this order live; a terminal status
+      // read right after may be stale. Retry rather than release the intent:
+      // once the order really is gone it drops off the list and settles there.
+      if (evidence.resting) {
+        return { success: false, error: `Matched resting order ${evidence.order.orderId} but its status reads ${evidence.order.status}; retrying automatically` };
+      }
+      return clearUnfilledTerminalIntent(intentId);
+    }
     if (classification === 'status-unknown') {
       return { success: false, error: `Matched exchange order ${evidence.order.orderId} but its status is unknown; retrying automatically` };
     }

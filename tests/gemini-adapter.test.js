@@ -205,6 +205,39 @@ describe('gemini getOrderFills', () => {
     assert.equal(warnings.length, 1, 'same-second saturation must emit a visible warning');
   });
 
+  it('marks reconciliation fills incomplete when the same-second cluster is unreachable', async () => {
+    // Placement evidence reads an ordinary array as the whole fill history, so
+    // the scan's unreachable tail must be flagged rather than only logged.
+    const adapter = createGeminiAdapter(keysPath);
+    const at = 1750000000000;
+    const origLog = console.log;
+    const origWarn = console.warn;
+    console.log = () => {};
+    console.warn = () => {};
+    let saturated;
+    let complete;
+    try {
+      installFetchMock((endpoint) => {
+        if (endpoint !== '/v1/mytrades') throw new Error(`unexpected endpoint ${endpoint}`);
+        return Array.from({ length: 500 }, (_, i) => makeTrade({ tid: 30000 + i, symbol: 'btcusd', timestampms: at }));
+      });
+      saturated = await adapter.getReconciliationFills('BTCUSD', at);
+      installFetchMock(() => [makeTrade({ tid: 1, symbol: 'btcusd', timestampms: at })]);
+      complete = await adapter.getReconciliationFills('BTCUSD', at);
+    } finally {
+      console.log = origLog;
+      console.warn = origWarn;
+    }
+    installFetchMock(() => ({ result: 'error', reason: 'Maintenance' }));
+    const malformed = await adapter.getReconciliationFills('BTCUSD', at);
+    assert.equal(malformed.length, 0);
+    assert.equal(malformed.incomplete, true, 'a non-array body is not an empty fill history');
+    assert.equal(saturated.length, 500);
+    assert.equal(saturated.incomplete, true);
+    assert.equal(complete.length, 1);
+    assert.equal(complete.incomplete, undefined);
+  });
+
   it('preserves order_id/tid exceeding MAX_SAFE_INTEGER as exact strings', async () => {
     const adapter = createGeminiAdapter(keysPath);
     const bigOrderId = '9223372036854775807';
