@@ -8,7 +8,7 @@
   },
   "overrides": {
     "js-yaml": "4.3.2",
-    "basic-ftp": "^6.2.3",
-    "follow-redirects": "^1.16.2"
+    "basic-ftp": "^6.2.6",
+    "follow-redirects": "^1.16.3"
   }
 }
