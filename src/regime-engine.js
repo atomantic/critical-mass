@@ -376,10 +376,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   let priceIncrement = 0.01; // Updated from product details in start()
   let productDetails = null; // Cached from start() for min-order-size checks
 
-  // Track if cycle buys limit warning has been logged (to avoid log spam)
-  let cycleBuysLimitWarningLogged = false;
-  // Track if USDC cap exceeded warning has been logged (to avoid log spam)
-  let usdcCapWarningLogged = false;
+  // Entry-block kinds (risk-manager reason prefixes, e.g. 'drawdown_paused')
+  // already logged for the current block episode. Entries are evaluated on
+  // every tick, so a persistent block would otherwise log several times a
+  // second. A kind is forgotten once a check no longer reports it.
+  let loggedEntryBlockKinds = new Set();
   // Track if budget exhausted warning has been logged (to avoid log spam)
   let budgetExhaustedWarningLogged = false;
   // Cap types (CAP_ALERT_LABELS keys) currently blocking entries and already
@@ -5369,23 +5370,22 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     if (riskCheck.shouldResetCycleBuys) {
       logger.info(`🔄 [${exchange}] Cycle buys auto-reset triggered, resetting buys ${positionState.cycleBuys} -> 0`);
       positionState.cycleBuys = 0;
-      cycleBuysLimitWarningLogged = false;
     }
 
     announceCapTransitions(riskCheck.allowed ? '' : riskCheck.reason);
 
     if (!riskCheck.allowed) {
-      // Only log certain warnings once until they reset (to avoid log spam)
-      const isLadderLimit = riskCheck.reason.startsWith('cycle_buys_limit_reached');
-      const isUsdcCap = riskCheck.reason.startsWith('usdc_cap_exceeded');
-      const shouldSkipLog = (isLadderLimit && cycleBuysLimitWarningLogged) || (isUsdcCap && usdcCapWarningLogged);
-      if (!shouldSkipLog) {
+      // Log once per block episode: only when a new block kind appears, not on
+      // every tick while the same caps/pauses persist (values like the drawdown
+      // % drift tick to tick, so key on the kind, not the full reason).
+      const kinds = new Set(riskCheck.reason.split(',').map((part) => part.trim().split(':')[0]));
+      if ([...kinds].some((kind) => !loggedEntryBlockKinds.has(kind))) {
         logger.warn(`⚠️ [${exchange}] Entry blocked: ${riskCheck.reason}`);
-        if (isLadderLimit) cycleBuysLimitWarningLogged = true;
-        if (isUsdcCap) usdcCapWarningLogged = true;
       }
+      loggedEntryBlockKinds = kinds;
       return;
     }
+    loggedEntryBlockKinds = new Set();
 
     // Check for zero/budget-exhausted (with spam protection)
     if (sizing.sizeUsdc <= 0) {
@@ -6027,8 +6027,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     positionState.anchorPrice = 0;
     positionState.scalingDisabled = false;
     positionState.scalingDisabledReason = null;
-    cycleBuysLimitWarningLogged = false;
-    usdcCapWarningLogged = false;
+    loggedEntryBlockKinds = new Set();
     budgetExhaustedWarningLogged = false;
     announcedCaps = new Set();
     // Reset the low-balance pause throttle on cycle reset too (not only on the

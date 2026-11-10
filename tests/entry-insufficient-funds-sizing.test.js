@@ -136,6 +136,28 @@ describe('executeEntry insufficient-funds cooldown (#1233)', () => {
   });
 });
 
+describe('executeEntry risk-block logging', () => {
+  const blockedLines = () => logLines.filter((l) => l.includes('Entry blocked'));
+
+  it('logs a persistent block once per episode, and again after it clears', async () => {
+    const { eng, calls } = await makeEngine({ config: { maxAssetExposure: 1 } });
+    eng._getPositionState().totalAsset = 5;
+    logLines.length = 0;
+    for (let i = 0; i < 3; i++) await eng._test.evaluateEntryTrigger();
+    assert.equal(calls.length, 0);
+    assert.equal(blockedLines().length, 1, 'same block kind across ticks logs once');
+    assert.match(blockedLines()[0], /asset_cap_exceeded/);
+
+    eng._getPositionState().totalAsset = 0; // block clears; the entry proceeds
+    await eng._test.evaluateEntryTrigger();
+    assert.equal(calls.length, 1);
+
+    eng._getPositionState().totalAsset = 5; // a new episode logs again
+    await eng._test.evaluateEntryTrigger();
+    assert.equal(blockedLines().length, 2);
+  });
+});
+
 describe('executeEntry sizing (#1233)', () => {
   it('uses the remaining budget when it fits between 1x and 2x the minimum size', async () => {
     const { eng, calls } = await makeEngine({ config: { maxUsdcDeployed: 15, minOrderSizeUsdc: 10 } });
