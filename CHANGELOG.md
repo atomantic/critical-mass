@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- Update Vite to 8.3.8 and refresh compatible Express and admin transitive dependencies, including request parsing, routing, rendering helpers and the build toolchain.
+
 - Require Alpine zlib 1.4-r0 or newer in both container stages for the upstream security fixes, including CVE-2026-4738. The pinned Node image still includes zlib 1.3.2-r1.
 
 - Upgrade the pinned PM2 log-rotation module to 3.0.1 for fresh native installs and Docker/Umbrel images. This fixes PMX boolean compression, concurrent rotations and archive retention; native startup replaces the broken 3.0.0 release with 3.0.1 and continues reusing other installed versions.
