@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- Update the admin test DOM to jsdom 31.0.1 for focus, style and selector fixes, and refresh compatible URL encoding, rendering helper, module resolution and domain parsing dependencies.
+
 - Update Vite to 8.3.8 and refresh compatible Express and admin transitive dependencies, including request parsing, routing, rendering helpers and the build toolchain.
 
 - Require Alpine zlib 1.4-r0 or newer in both container stages for the upstream security fixes, including CVE-2026-4738. The pinned Node image still includes zlib 1.3.2-r1.
