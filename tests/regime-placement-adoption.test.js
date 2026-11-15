@@ -205,12 +205,14 @@ describe('automatic placement recovery from exchange evidence', () => {
 
   it('clears a stuck body TP from exchange evidence when the client-id lookup cannot finish', async () => {
     seedBody();
-    ageIntent(makeIntent('body_tp', { bodyId: 'body-1', side: 'sell' }));
-    adapter.findOrderByClientOrderId = historyBudgetExceeded;
+    const intent = ageIntent(makeIntent('body_tp', { bodyId: 'body-1', side: 'sell' }));
+    let lookupOptions;
+    adapter.findOrderByClientOrderId = (...args) => { lookupOptions = args[2]; return historyBudgetExceeded(); };
     withExchange();
     await engine._test.reconcilePendingPlacements();
     assert.equal(state.loadPlacementIntents('coinbase', PAIR).length, 0);
     assert.equal(engine._getPositionState().celestialBodies[0].tpOrderId, null, 'nothing adopted — the body re-places its TP');
+    assert.equal(lookupOptions?.placedAt, intent.createdAt, 'the lookup is scoped to the dispatch time');
   });
 
   it('adopts the resting TP that matches a stuck intent when the client-id lookup cannot finish', async () => {

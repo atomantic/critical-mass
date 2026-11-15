@@ -398,7 +398,7 @@ const createManualTradeImporter = ({
     let found = null;
     for (let attempt = 0; ; attempt++) {
       try {
-        found = await adapter.findOrderByClientOrderId(intent.clientOrderId, intent.productId);
+        found = await adapter.findOrderByClientOrderId(intent.clientOrderId, intent.productId, { placedAt: intent.createdAt });
       } catch (err) {
         return block(`the client order id lookup failed (${err.message})`);
       }

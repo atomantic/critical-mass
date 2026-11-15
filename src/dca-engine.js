@@ -1375,7 +1375,7 @@ const reconcilePlacementIntent = async (exchange, pair, intentId, action) => {
   }
 
   const config = loadConfig(exchange, pair);
-  const found = await adapter.findOrderByClientOrderId(intent.clientOrderId, config.productId).catch((err) => ({ __lookupError: err }));
+  const found = await adapter.findOrderByClientOrderId(intent.clientOrderId, config.productId, { placedAt: intent.createdAt }).catch((err) => ({ __lookupError: err }));
   if (found?.__lookupError) {
     return { success: false, error: `Lookup failed (${found.__lookupError.message}) — the intent stays pending; we must not assume the order is absent` };
   }

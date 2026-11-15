@@ -854,7 +854,7 @@
  * @property {(productId: string, quoteAmount: number) => Promise<MarketBuyResult>} placeMarketBuy - Place market buy
  * @property {(productId: string, baseAmount: number, price: number, options?: {postOnly?: boolean}) => Promise<LimitSellResult>} placeLimitSell - Place limit sell
  * @property {(orderId: string) => Promise<OrderDetails>} getOrder - Get order details
- * @property {(clientOrderId: string, productId?: string|null) => Promise<OrderDetails|null>} [findOrderByClientOrderId] - Resolve an ambiguous placement by the client order id we sent; null only when the exchange positively has no such order
+ * @property {(clientOrderId: string, productId?: string|null, options?: {placedAt?: number}) => Promise<OrderDetails|null>} [findOrderByClientOrderId] - Resolve an ambiguous placement by the client order id we sent (placedAt: dispatch time in ms, lets history-scanning adapters bound the search); null only when the exchange positively has no such order
  * @property {(productId: string) => Promise<OpenOrder[]>} getOpenOrders - Get open orders
  * @property {(orderId: string) => Promise<CancelResult>} cancelOrder - Cancel an order
  * @property {(orderId: string) => Promise<OrderFill[]>} getOrderFills - Get order fills

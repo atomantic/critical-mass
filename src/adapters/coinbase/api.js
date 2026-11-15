@@ -35,6 +35,10 @@ const RETRYABLE_HTTP_STATUSES = new Set([429, 502, 503, 504]);
 // Returned from the deadline-scoped request body to ask the attempt loop to retry.
 const HTTP_RETRY = Symbol('coinbase-http-retry');
 const CLIENT_ORDER_LOOKUP_MAX_PAGES = 64;
+// Created-time window searched around a known dispatch time. An unbounded scan
+// of a busy product's history never completes, so without it an absent order
+// could never be proven absent. The window tolerates clock skew and a slow POST.
+const CLIENT_ORDER_LOOKUP_WINDOW_MS = 30 * 60_000;
 // Open-order listing page budget; past it the result is marked incomplete.
 const OPEN_ORDERS_MAX_PAGES = 20;
 const ORDER_FILLS_PAGE_LIMIT = 250;
@@ -555,14 +559,20 @@ const createCoinbaseAdapter = (keysPath = null, { sleep = defaultSleep, random =
    * null; incomplete or malformed history throws so callers retain ownership.
    * @param {string} clientOrderId - Deterministic client order ID we submitted
    * @param {string|null} [productId] - Optional product to scope the lookup
+   * @param {{placedAt?: number}} [options] - placedAt: when the order was dispatched (ms); scopes the scan to orders created around then
    * @returns {Promise<OrderDetails|null>} Normalized order details, or null if absent
    */
-  adapter.findOrderByClientOrderId = async (clientOrderId, productId = null) => {
+  adapter.findOrderByClientOrderId = async (clientOrderId, productId = null, { placedAt } = {}) => {
     if (!clientOrderId) return null;
 
-    const params = productId
-      ? `?product_ids=${encodeURIComponent(productId)}&limit=100`
-      : '?limit=100';
+    const query = [];
+    if (productId) query.push(`product_ids=${encodeURIComponent(productId)}`);
+    if (Number.isFinite(placedAt)) {
+      query.push(`start_date=${encodeURIComponent(new Date(placedAt - CLIENT_ORDER_LOOKUP_WINDOW_MS).toISOString())}`);
+      query.push(`end_date=${encodeURIComponent(new Date(placedAt + CLIENT_ORDER_LOOKUP_WINDOW_MS).toISOString())}`);
+    }
+    query.push('limit=100');
+    const params = `?${query.join('&')}`;
     let cursor = null;
     const seenCursors = new Set();
     let match;
@@ -839,6 +849,8 @@ const createCoinbaseAdapter = (keysPath = null, { sleep = defaultSleep, random =
       if (data.has_next === false) break;
 
       const nextCursor = data.cursor;
+      // List Fills carries no has_next field: an empty cursor is its last page.
+      if (data.has_next === undefined && !nextCursor) break;
       if (!nextCursor) {
         // Coinbase has returned has_next=true without a cursor for otherwise
         // complete responses. There is no safe request to make for a page the
