@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useLayoutEffect, useRef } from 'react'
 import Button from '../ui/Button'
 import { Link } from '../../lib/router'
 import { apiGet } from '../../utils/apiClient'
@@ -23,7 +23,9 @@ export default function AlertBanner() {
 
   // The banner is fixed (out of flow), so reserve its height as body padding
   // while visible; otherwise it permanently covers the last rows of the page.
-  useEffect(() => {
+  // A layout effect applies it in the banner's own commit, so no frame (or
+  // test observing the committed banner) sees the banner without its padding.
+  useLayoutEffect(() => {
     if (!visible) return undefined
     const prev = document.body.style.paddingBottom
     document.body.style.paddingBottom = `${bannerRef.current?.offsetHeight || 40}px`
