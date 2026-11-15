@@ -534,6 +534,7 @@ const placeWithUnknownReconcile = async (adapter, productId, placeFn, options = 
     return accepted;
   };
 
+  const dispatchedAt = Date.now();
   const placement = await placeFn().catch((err) => {
     // Only the ambiguous order-POST outcome is reconcilable; anything else
     // (validation errors, hard network failure on non-order POSTs) propagates.
@@ -587,7 +588,7 @@ const placeWithUnknownReconcile = async (adapter, productId, placeFn, options = 
     // A lookup that THROWS means "we could not check" — per the adapter
     // contract only a positive not-found returns null. Treating a failed check
     // as absence is the double-placement this whole path exists to prevent.
-    found = await adapter.findOrderByClientOrderId(clientOrderId, productId).catch((lookupErr) => {
+    found = await adapter.findOrderByClientOrderId(clientOrderId, productId, { placedAt: dispatchedAt }).catch((lookupErr) => {
       lookupError = lookupErr;
       return null;
     });

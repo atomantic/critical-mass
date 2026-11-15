@@ -179,6 +179,19 @@ describe('coinbase unknown-outcome reconciliation (issue #226)', () => {
     assert.equal(calls.length, 64);
   });
 
+  // An unbounded scan of a busy product's history never completes, so an
+  // order that never landed could not be proven absent and the fund stayed blocked.
+  it('scopes the scan to orders created around the dispatch time, so absence is provable', async () => {
+    const adapter = createCoinbaseAdapter(keysPath, { sleep: async () => {} });
+    const placedAt = Date.parse('2026-11-10T00:18:56.581Z');
+    const { calls } = installFetchMock(() => ({ orders: [{ client_order_id: 'other' }], has_next: false }));
+    assert.equal(await adapter.findOrderByClientOrderId('missing', 'BTC-USDC', { placedAt }), null);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].searchParams.get('start_date'), '2026-11-09T23:48:56.581Z');
+    assert.equal(calls[0].searchParams.get('end_date'), '2026-11-10T00:48:56.581Z');
+    assert.equal(calls[0].searchParams.get('product_ids'), 'BTC-USDC');
+  });
+
   it('short-circuits an empty clientOrderId without any network call', async () => {
     const adapter = createCoinbaseAdapter(keysPath, { sleep: async () => {} });
     let called = false;
@@ -232,6 +245,31 @@ describe('coinbase fill-drift reconciliation (issue #609)', () => {
       timestamp: Date.parse('2026-09-20T00:00:00.000Z'),
       liquidityIndicator: 'TAKER',
     }]);
+  });
+});
+
+describe('coinbase reconciliation fill pagination', () => {
+  const fill = (id) => ({ trade_id: id, order_id: `order-${id}`, side: 'SELL', price: '75000', size: '0.01', trade_time: '2026-11-10T00:18:50.000Z' });
+
+  // List Fills returns only {fills, cursor}; reading its last page as truncated
+  // left placement-evidence permanently inconclusive.
+  it('treats an empty cursor without has_next as the complete last page', async () => {
+    const adapter = createCoinbaseAdapter(keysPath, { sleep: async () => {} });
+    const { calls } = installFetchMock((_url, _opts, requests) => (requests.length === 1
+      ? { fills: [fill('a')], cursor: 'next' }
+      : { fills: [fill('b')], cursor: '' }));
+    const fills = await adapter.getReconciliationFills('BTC-USDC', Date.parse('2026-11-10T00:00:00.000Z'));
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1].searchParams.get('cursor'), 'next');
+    assert.deepEqual(fills.map(f => f.tradeId), ['a', 'b']);
+    assert.notEqual(fills.incomplete, true);
+  });
+
+  it('still marks has_next=true without a cursor as incomplete', async () => {
+    const adapter = createCoinbaseAdapter(keysPath, { sleep: async () => {} });
+    installFetchMock(() => ({ fills: [fill('a')], has_next: true, cursor: '' }));
+    const fills = await adapter.getReconciliationFills('BTC-USDC', Date.parse('2026-11-10T00:00:00.000Z'));
+    assert.equal(fills.incomplete, true);
   });
 });
 

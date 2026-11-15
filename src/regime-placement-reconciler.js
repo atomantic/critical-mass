@@ -219,7 +219,7 @@ const createPlacementReconciler = ({
    * `{ lookupError }` so callers keep the intent instead of reading it as absent.
    * @returns {Promise<{found: Object|null}|{lookupError: Error}>}
    */
-  const lookupPlacementByClientOrderId = (intent) => getAdapter().findOrderByClientOrderId(intent.clientOrderId, productId)
+  const lookupPlacementByClientOrderId = (intent) => getAdapter().findOrderByClientOrderId(intent.clientOrderId, productId, { placedAt: intent.createdAt })
     .then(found => ({ found }), lookupError => ({ lookupError }));
 
   const lookupFailed = (lookupError) => ({
