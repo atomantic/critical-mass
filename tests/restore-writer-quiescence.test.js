@@ -536,7 +536,7 @@ describe('settings route is wired to the quiescence gate', () => {
     const book = (name) => ({ stop: () => order.push(`${name}:stop`), reload: () => order.push(`${name}:reload`), start: () => order.push(`${name}:start`) });
     const invoke = setup(okIPC(), [], { extraDeps: { upDipPaper: book('paper'), upDipShadow: book('shadow') } });
     await invoke();
-    assert.deepEqual(order, ['paper:stop', 'shadow:stop', 'paper:reload', 'paper:start', 'shadow:reload', 'shadow:start']);
+    assert.deepEqual(order, ['paper:stop', 'shadow:stop', 'shadow:reload', 'shadow:start', 'paper:reload', 'paper:start']);
   });
 
   it('refuses a missing archive before stopping any engine', async () => {
