@@ -11,6 +11,7 @@ import SignalPanel from './SignalPanel'
 import SignalBanner from './SignalBanner'
 import TimeframeGrid from './TimeframeGrid'
 import TradeHistory from './TradeHistory'
+import UpDipPanel from './UpDipPanel'
 import ScorecardPanel from './ScorecardPanel'
 import TimeWarningBanner, { parseExpiry } from './TimeWarningBanner'
 import { calculateManualPositionPnl, isFreshTick } from './position-tracker-math'
@@ -339,6 +340,7 @@ export default function UpDownDashboard() {
             timeRemaining={msLeft}
             position={status?.position}
           />
+          <UpDipPanel />
           <ScorecardPanel
             scorecard={socketScorecard || status?.scorecard}
             perp={rawIndicators?.perp || tick?.perp || status?.perp}

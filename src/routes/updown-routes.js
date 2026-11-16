@@ -150,6 +150,7 @@ module.exports = (app, deps) => {
   const {
     updownService,
     candleCache,
+    upDipPaper = null,
     readJSON,
     writeJSON,
     DATA_DIR,
@@ -503,6 +504,12 @@ module.exports = (app, deps) => {
   app.get('/api/updown/signals', (req, res) => {
     const status = updownService.getStatus();
     res.json({ success: true, signals: status.signalHistory });
+  });
+
+  // --- Up dip setup: PAPER recommendations only (no order paths) ---
+  app.get('/api/updown/up-dip', (req, res) => {
+    if (!upDipPaper) return res.status(503).json({ success: false, error: 'Up dip paper tracker not running' });
+    res.json({ success: true, ...upDipPaper.getStatus() });
   });
 
   // --- Trade History ---
