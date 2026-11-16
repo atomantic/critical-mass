@@ -201,7 +201,12 @@ describe('image scan evidence', () => {
           env: { ...env, STUB_ARCH: evidence.archOf(t.platform) },
         });
       }
+      writeSelfTest(dir, { passed: true, generatedAt: when.toISOString() });
       return dir;
+    };
+    const writeSelfTest = (dir, summary) => {
+      fs.mkdirSync(path.join(dir, 'selftest'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'selftest', evidence.SELFTEST_FILE), JSON.stringify({ schemaVersion: 1, controls: [], ...summary }));
     };
     const verify = (dir, now = NOW) => evidence.verifyEvidenceDir({ evidenceRoot: dir, root: ROOT, now });
     const patchResult = (dir, id, mutate) => {
@@ -271,6 +276,31 @@ describe('image scan evidence', () => {
       assert.ok(problems.includes('[umbrel-amd64] artifact findings.json is missing or does not match its recorded hash'));
     });
 
+    it('rejects a scanned result that omits a required artifact from its record', () => {
+      const dir = buildEvidence();
+      patchResult(dir, 'runtime-amd64', (r) => { delete r.artifacts['findings.json']; });
+      fs.rmSync(path.join(dir, 'runtime-amd64', 'findings.json'));
+      const verdict = verify(dir);
+      assert.equal(verdict.current, false);
+      assert.deepEqual(verdict.problems, ['[runtime-amd64] artifact findings.json is not recorded']);
+    });
+
+    it('requires passing, fresh scanner controls alongside the targets', () => {
+      const missing = buildEvidence();
+      fs.rmSync(path.join(missing, 'selftest'), { recursive: true });
+      assert.deepEqual(verify(missing).problems, ['[selftest] no scanner control evidence (selftest.json) in the bundle']);
+
+      const failed = buildEvidence();
+      writeSelfTest(failed, { passed: false, generatedAt: NOW.toISOString() });
+      const verdict = verify(failed);
+      assert.equal(verdict.current, false);
+      assert.deepEqual(verdict.problems, ['[selftest] scanner controls did not pass, so zero findings cannot be trusted']);
+
+      const stale = buildEvidence();
+      writeSelfTest(stale, { passed: true, generatedAt: new Date(NOW.getTime() - 15 * DAY).toISOString() });
+      assert.match(verify(stale).problems[0], /\[selftest\] control evidence is older than 14 days/);
+    });
+
     it('rejects unreadable result files', () => {
       const dir = buildEvidence();
       fs.writeFileSync(path.join(dir, 'runtime-arm64', 'result.json'), '{');
@@ -286,6 +316,9 @@ describe('image scan evidence', () => {
       const stale = spawnSync(process.execPath, [cli, dir, '--now', new Date(Date.now() + 15 * DAY).toISOString()], { encoding: 'utf8' });
       assert.equal(stale.status, 1);
       assert.equal(JSON.parse(stale.stdout).current, false);
+      const loosened = spawnSync(process.execPath, [cli, dir, '--max-age-days', '365'], { encoding: 'utf8' });
+      assert.equal(loosened.status, 1);
+      assert.match(loosened.stderr, /no greater than 14/);
     });
   });
 
@@ -316,6 +349,9 @@ describe('image scan evidence', () => {
       assert.match(workflow, /image-security-scan\.js selftest/);
       assert.match(workflow, /aggregate:\n[\s\S]*?needs: \[plan, scan, selftest\]\n    if: always\(\)/);
       assert.match(workflow, /name: image-security-evidence/);
+      assert.match(workflow, /name: selftest-evidence\n          path: downloaded-selftest/);
+      assert.match(workflow, /image-security-evidence\/selftest\/selftest\.json/);
+      assert.match(workflow, /matrix="\$\(node scripts\/image-security-scan\.js plan\)"/);
     });
 
     it('installs the scanner versions and hashes pinned in the install script', () => {

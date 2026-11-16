@@ -42,7 +42,7 @@ Evidence is only citable if this passes against the checkout being audited:
 node scripts/verify-image-scan-evidence.js evidence
 ```
 
-It exits non-zero and lists every problem when evidence is **older than 14 days**, was produced from **different recipe hashes**, names a **different Umbrel digest** than `umbrel/docker-compose.yml`, lacks a target, has an empty inventory, has files that no longer match their recorded hashes, or records unavailable coverage. Otherwise state the run, its source commit and the Grype database date alongside the results.
+It exits non-zero and lists every problem when evidence is **older than 14 days**, was produced from **different recipe hashes**, names a **different Umbrel digest** than `umbrel/docker-compose.yml`, lacks a target, has an empty inventory, has files that are unrecorded or no longer match their recorded hashes, records unavailable coverage, or lacks a passing scanner control run (`selftest/selftest.json`, which the aggregate job copies into the bundle). `--max-age-days` can only tighten the 14-day limit, and `--now` is a diagnostic override; a citation must pass without it. Otherwise state the run, its source commit and the Grype database date alongside the results.
 
 ## Reproducing a scan locally
 

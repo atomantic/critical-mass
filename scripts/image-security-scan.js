@@ -148,7 +148,7 @@ function scanTarget({ target, outDir, source, upstreamFailure, syftBin, grypeBin
 
   /** @type {Record<string,string>} */
   const artifacts = {};
-  for (const name of [SBOM_FILE, FINDINGS_RAW_FILE, 'os-inventory.json', 'app-inventory.json', 'findings.json']) {
+  for (const name of evidence.SCAN_ARTIFACTS) {
     artifacts[name] = evidence.sha256File(path.join(outDir, name));
   }
 
@@ -255,7 +255,7 @@ function selfTest({ outDir, env = process.env }) {
   });
   fs.rmSync(work, { recursive: true, force: true });
   const summary = { schemaVersion: evidence.SCHEMA_VERSION, generatedAt: new Date().toISOString(), passed: report.every((c) => c.passed), controls: report };
-  fs.writeFileSync(path.join(outDir, 'selftest.json'), `${JSON.stringify(summary, null, 2)}\n`);
+  fs.writeFileSync(path.join(outDir, evidence.SELFTEST_FILE), `${JSON.stringify(summary, null, 2)}\n`);
   return summary;
 }
 

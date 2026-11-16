@@ -25,6 +25,10 @@ const MAX_EVIDENCE_AGE_DAYS = 14;
 const MS_PER_DAY = 86_400_000;
 /** Tolerated clock skew between the runner that wrote the evidence and the verifier. */
 const FUTURE_SKEW_MS = 5 * 60_000;
+/** Every file a scanned target must record and hash; a result that omits one is incomplete. */
+const SCAN_ARTIFACTS = ['syft.json', 'grype.json', 'os-inventory.json', 'app-inventory.json', 'findings.json'];
+/** The scanner controls' summary, which the aggregate job places in the evidence bundle. */
+const SELFTEST_FILE = 'selftest.json';
 
 /** Files whose content defines what the scanned images contain. */
 const RECIPE_FILES = [
@@ -342,6 +346,9 @@ function verifyEvidence({ results, root, now = new Date(), maxAgeDays = MAX_EVID
     if (!r.scanner?.grype?.db?.built) problems.push(`${tag} scanner database build time was not recorded`);
     if (!r.scanner?.syft?.version || !r.scanner?.grype?.version) problems.push(`${tag} scanner versions were not recorded`);
     if (!(r.findings?.total >= 0) || !r.sourceCommit) problems.push(`${tag} findings count or source commit missing`);
+    for (const name of SCAN_ARTIFACTS) {
+      if (typeof r.artifacts?.[name] !== 'string') problems.push(`${tag} artifact ${name} is not recorded`);
+    }
 
     if (fileHashes) {
       const actual = fileHashes(r);
@@ -389,11 +396,44 @@ function loadEvidenceDir(evidenceRoot) {
 }
 
 /**
- * verifyEvidence over an evidence directory, including artifact hash checks.
+ * The scanner controls must have passed in the same run: findings of zero mean
+ * nothing if the vulnerable fixture went undetected (e.g. an empty Grype database).
+ * Looks for selftest.json at the evidence root or one directory below it.
+ * @param {{evidenceRoot:string, now:Date, maxAgeDays:number}} p
+ * @returns {string[]}
+ */
+function verifySelfTest({ evidenceRoot, now, maxAgeDays }) {
+  const candidates = [path.join(evidenceRoot, SELFTEST_FILE)];
+  for (const entry of fs.readdirSync(evidenceRoot, { withFileTypes: true })) {
+    if (entry.isDirectory()) candidates.push(path.join(evidenceRoot, entry.name, SELFTEST_FILE));
+  }
+  const found = candidates.filter((file) => fs.existsSync(file));
+  if (found.length === 0) return ['[selftest] no scanner control evidence (selftest.json) in the bundle'];
+  if (found.length > 1) return ['[selftest] more than one selftest.json in the bundle'];
+  let summary;
+  try {
+    summary = JSON.parse(fs.readFileSync(found[0], 'utf8'));
+  } catch (err) {
+    return [`[selftest] selftest.json is not valid JSON: ${/** @type {Error} */ (err).message}`];
+  }
+  /** @type {string[]} */
+  const problems = [];
+  if (summary?.passed !== true) problems.push('[selftest] scanner controls did not pass, so zero findings cannot be trusted');
+  const at = Date.parse(summary?.generatedAt);
+  if (Number.isNaN(at)) problems.push('[selftest] generatedAt is missing or invalid');
+  else if (at - now.getTime() > FUTURE_SKEW_MS) problems.push('[selftest] generatedAt is in the future');
+  else if (now.getTime() - at > maxAgeDays * MS_PER_DAY) problems.push(`[selftest] control evidence is older than ${maxAgeDays} days (${summary.generatedAt})`);
+  return problems;
+}
+
+/**
+ * verifyEvidence over an evidence directory, including artifact hash checks
+ * and the scanner controls' result.
  * @param {{evidenceRoot:string, root:string, now?:Date, maxAgeDays?:number}} p
  */
-function verifyEvidenceDir({ evidenceRoot, root, now, maxAgeDays }) {
+function verifyEvidenceDir({ evidenceRoot, root, now = new Date(), maxAgeDays = MAX_EVIDENCE_AGE_DAYS }) {
   const { results, dirByTarget, errors } = loadEvidenceDir(evidenceRoot);
+  const selfTestProblems = verifySelfTest({ evidenceRoot, now, maxAgeDays });
   const verdict = verifyEvidence({
     results,
     root,
@@ -410,7 +450,8 @@ function verifyEvidenceDir({ evidenceRoot, root, now, maxAgeDays }) {
       return out;
     },
   });
-  return { results, current: verdict.current && errors.length === 0, problems: [...errors, ...verdict.problems] };
+  const problems = [...errors, ...verdict.problems, ...selfTestProblems];
+  return { results, current: problems.length === 0, problems };
 }
 
 module.exports = {
@@ -418,6 +459,8 @@ module.exports = {
   verifyEvidenceDir,
   SCHEMA_VERSION,
   MAX_EVIDENCE_AGE_DAYS,
+  SCAN_ARTIFACTS,
+  SELFTEST_FILE,
   RECIPE_FILES,
   PLATFORMS,
   archOf,
