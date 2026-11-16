@@ -1,5 +1,5 @@
 import Button from '../ui/Button'
-import { useState, useEffect, useCallback, useId } from 'react'
+import { Fragment, useState, useEffect, useCallback, useId } from 'react'
 import DestructiveConfirmation from '../DestructiveConfirmation'
 import { plural } from '../../utils/plural.mjs'
 import { History, Plus, Trash2, Edit3, Check, X, ArrowUp, ArrowDown } from '../icons'
@@ -19,6 +19,24 @@ function fmtDate(d) {
   // "Mar 9" instead of "2026-03-09"
   const dt = new Date(d + 'T00:00:00')
   return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+}
+
+const kUsd = (v) => `${(v / 1000).toFixed(1)}k`
+const EXIT_LABEL = { closed: 'closed', take_profit: 'TP', knocked_out: 'KO' }
+
+function fmtTime(iso) {
+  if (!iso) return '---'
+  return new Date(iso).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+}
+
+// "63.6k–65.6k ×2 · TP" for app-imported trades; null for manual ones.
+function contractLine(t) {
+  const c = t.contract
+  if (!c?.floor || !c?.ceiling) return null
+  const parts = [`${kUsd(c.floor)}–${kUsd(c.ceiling)}`]
+  if (t.contracts) parts[0] += ` ×${t.contracts}`
+  if (t.exitType) parts.push(EXIT_LABEL[t.exitType] || t.exitType)
+  return parts.join(' · ')
 }
 
 function isExpression(str) {
@@ -61,6 +79,7 @@ export default function TradeHistory() {
   const [editId, setEditId] = useState(null)
   const [form, setForm] = useState({ date: '', cost: '', returnAmount: '', note: '', direction: '', boughtTime: '' })
   const [validationErrors, setValidationErrors] = useState({})
+  const [expandedId, setExpandedId] = useState(null)
   const parsedCost = parseTradeAmountExpression(form.cost)
   const parsedReturnAmount = parseTradeAmountExpression(form.returnAmount)
 
@@ -221,6 +240,11 @@ export default function TradeHistory() {
             <div className="font-mono font-medium text-white">{fmt(summary.totalReturn)}</div>
           </div>
         </div>
+        {summary.totalFees > 0 && (
+          <div className="text-2xs text-gray-400 mb-2">
+            Fees {formatUsd(summary.totalFees)} across {plural(summary.appSourcedCount, 'app-imported trade')}
+          </div>
+        )}
         {(summary.upCount > 0 || summary.downCount > 0) && (
           <div className="grid grid-cols-2 gap-2 mb-3 text-xs">
             <div className="bg-gray-900 rounded-sm px-2 py-1.5 flex items-center gap-1.5">
@@ -398,9 +422,20 @@ export default function TradeHistory() {
               </tr>
             </thead>
             <tbody>
-              {[...trades].reverse().map(t => (
-                <tr key={t.id} className="border-b border-gray-700/50 hover:bg-gray-700/20" title={t.note || undefined}>
-                  <td className="py-1 pr-1 text-gray-300 whitespace-nowrap">{fmtDate(t.date)}</td>
+              {[...trades].reverse().map(t => {
+                const line = contractLine(t)
+                const expanded = expandedId === t.id
+                return (<Fragment key={t.id}>
+                <tr className="border-b border-gray-700/50 hover:bg-gray-700/20" title={t.note || t.appNote || undefined}>
+                  <td className="py-1 pr-1 text-gray-300 whitespace-nowrap">
+                    {t.fills?.length ? (
+                      <button type="button" onClick={() => setExpandedId(expanded ? null : t.id)} aria-expanded={expanded}
+                        aria-label={`${expanded ? 'Hide' : 'Show'} fills for trade from ${fmtDate(t.date)}`} className="text-left">
+                        {fmtDate(t.date)}
+                        <div className="text-2xs text-gray-400">{line}</div>
+                      </button>
+                    ) : fmtDate(t.date)}
+                  </td>
                   <td className="py-1 px-1 text-right font-mono text-gray-300">{fmt(t.cost)}</td>
                   <td className="py-1 px-1 text-right font-mono text-gray-300">{fmt(t.returnAmount)}</td>
                   <td className={`py-1 px-1 text-right font-mono font-medium whitespace-nowrap ${pnlColor(t.pnl)}`}>
@@ -417,7 +452,35 @@ export default function TradeHistory() {
                     </div>
                   </td>
                 </tr>
-              ))}
+                {expanded && (
+                  <tr className="border-b border-gray-700/50 bg-gray-900/60">
+                    <td colSpan={5} className="py-1.5 px-1 text-2xs text-gray-300">
+                      <div className="mb-1 text-gray-400">
+                        BTC {t.btcPriceAtEntry?.toLocaleString() ?? '---'} → {t.btcPriceAtExit?.toLocaleString() ?? '---'}
+                        {t.holdMinutes != null && ` · ${Math.round(t.holdMinutes)} min`}
+                        {t.fees != null && ` · fees ${formatUsd(t.fees)}`}
+                        {t.contract?.expiryDate && ` · exp ${fmtDate(t.contract.expiryDate)}`}
+                      </div>
+                      {t.fills.map((f, i) => (
+                        <div key={i} className="font-mono flex justify-between gap-2">
+                          <span className={f.side === 'buy' ? 'text-emerald-400' : 'text-amber-400'}>
+                            {f.side === 'buy' ? 'Buy' : `Sell${f.exitType ? ` (${EXIT_LABEL[f.exitType] || f.exitType})` : ''}`} ×{f.qty}
+                          </span>
+                          <span>@ {f.btcPrice.toLocaleString()}</span>
+                          <span>{formatUsd(f.amount)}</span>
+                          <span className="text-gray-400">{fmtTime(f.time)}</span>
+                        </div>
+                      ))}
+                      {t.tpOrders?.length > 0 && (
+                        <div className="mt-1 text-gray-400">
+                          TP orders: {t.tpOrders.map(o => `${o.qty}@${o.btcPrice.toLocaleString()} ${o.status}`).join(', ')}
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                )}
+                </Fragment>)
+              })}
             </tbody>
           </table>
         </div>

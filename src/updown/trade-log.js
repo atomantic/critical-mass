@@ -7,6 +7,7 @@
  */
 
 const fs = require('fs');
+const { APP_SOURCE } = require('./app-order-history');
 
 const toPercent2 = (n) => Math.round(n * 10000) / 100;
 
@@ -54,10 +55,14 @@ const createTradeLog = ({ path: tradesPath, writeJSON }) => {
       downWinRate: downTrades.length > 0 ? toPercent2(downWins / downTrades.length) : null,
       upCount: upTrades.length,
       downCount: downTrades.length,
+      // Only app-imported trades record fees; manual ones have no fee data.
+      totalFees: sum('fees'),
+      appSourcedCount: trades.filter(t => t.source === APP_SOURCE).length,
     };
   };
 
   const has = (id) => list().some(t => t.id === id);
+  const get = (id) => list().find(t => t.id === id) || null;
 
   /**
    * Build, persist and return a new trade. Input values are pre-validated/parsed.
@@ -146,7 +151,7 @@ const createTradeLog = ({ path: tradesPath, writeJSON }) => {
     return true;
   };
 
-  return { list, summary: () => summarize(list()), summarize, has, add, update, remove };
+  return { list, summary: () => summarize(list()), summarize, has, get, add, update, remove };
 };
 
 module.exports = { createTradeLog };

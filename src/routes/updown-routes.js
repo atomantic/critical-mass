@@ -563,7 +563,13 @@ module.exports = (app, deps) => {
     const id = parseInt(req.params.id, 10);
     const body = req.body || {};
     try {
-      if (!tradeLog.has(id)) return res.status(404).json({ success: false, error: 'Trade not found' });
+      const existing = tradeLog.get(id);
+      if (!existing) return res.status(404).json({ success: false, error: 'Trade not found' });
+      // Imported amounts are the app's fills; editing them would desync fills from pnl.
+      if (existing.source === 'app-order-history' && (body.cost != null || body.returnAmount != null)
+        && (Number(body.cost ?? existing.cost) !== existing.cost || Number(body.returnAmount ?? existing.returnAmount) !== existing.returnAmount)) {
+        return res.status(409).json({ success: false, error: 'cost and returnAmount of an app-imported trade come from its fills; re-import instead of editing' });
+      }
 
       const descriptionError = validateTradeDescription(body);
       if (descriptionError) return res.status(400).json({ success: false, error: descriptionError });

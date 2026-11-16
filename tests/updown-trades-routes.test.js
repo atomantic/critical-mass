@@ -493,3 +493,26 @@ describe('Atomic write safety (issue #417) — corrupt trades file is detected a
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 });
+
+describe('app-imported trades', () => {
+  afterEach(() => mock.restoreAll());
+  const imported = { id: 1, date: '2026-03-12', cost: 712.49, returnAmount: 751.51, pnl: 39.02, source: 'app-order-history', fees: 3.98, note: '' };
+
+  it('refuses amount edits but allows notes', async () => {
+    const { app, getWritten } = setup({ trades: [imported], nextId: 2 });
+    const bad = await invoke(app, 'PUT /api/updown/trades/:id', { params: { id: '1' }, body: { cost: 700 } });
+    assert.equal(bad.statusCode, 409);
+    assert.equal(getWritten(), null);
+    // The edit form resends unchanged amounts with a note.
+    const ok = await invoke(app, 'PUT /api/updown/trades/:id', { params: { id: '1' }, body: { cost: '712.49', returnAmount: 751.51, note: 'dip buy' } });
+    assert.equal(ok.statusCode, 200);
+    assert.equal(ok.body.trade.note, 'dip buy');
+  });
+
+  it('summarizes fees and app-sourced count', async () => {
+    const { app } = setup({ trades: [imported, { id: 2, date: '2026-03-13', cost: 1, returnAmount: 2, pnl: 1 }], nextId: 3 });
+    const res = await invoke(app, 'GET /api/updown/trades');
+    assert.equal(res.body.summary.totalFees, 3.98);
+    assert.equal(res.body.summary.appSourcedCount, 1);
+  });
+});
