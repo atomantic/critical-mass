@@ -162,6 +162,83 @@ describe('findPlacementOnExchange', () => {
     });
   });
 
+  describe('an order that fills between the open-order and fill reads', () => {
+    /**
+     * A simulated exchange on a stepping clock. The placement rested until just
+     * before the first open-order read and is gone from every listing after
+     * that; the fill history lags, reporting a bound before that read, and
+     * only shows the fill on a later call.
+     */
+    const makeRacingExchange = ({ restingOnRead = [], historyLagCalls = 1 } = {}) => {
+      let tick = DISPATCHED_AT + 3 * 60 * 60_000;
+      const clock = () => tick;
+      const calls = /** @type {string[]} */ ([]);
+      const filledAt = tick;
+      let openReads = 0;
+      let fillReads = 0;
+      const adapter = {
+        getOpenOrders: async () => {
+          tick += 1_000;
+          calls.push('open');
+          openReads += 1;
+          return restingOnRead[openReads - 1] ? [openOrder({ orderId: 'raced' })] : [];
+        },
+        getReconciliationFills: async () => {
+          tick += 1_000;
+          calls.push('fills');
+          fillReads += 1;
+          if (fillReads <= historyLagCalls) return Object.defineProperty([], 'coveredThrough', { value: filledAt - 5_000 });
+          return Object.defineProperty([fill({ orderId: 'raced', timestamp: filledAt })], 'coveredThrough', { value: tick });
+        },
+        getOrder: async (orderId) => ({ orderId, side: 'BUY', status: 'FILLED', filledSize: 0.013293, completionPercentage: 100, createdTime: iso(400) }),
+      };
+      return { adapter, clock, calls };
+    };
+
+    it('stays inconclusive while the fill history lags the first open-order read, then matches once the fill appears', async () => {
+      const { adapter, clock, calls } = makeRacingExchange();
+      const first = await search(adapter, { clock });
+      assert.equal(first.verdict, 'inconclusive');
+      assert.match(first.verdict === 'inconclusive' ? first.reason : '', /fill history/);
+
+      const second = await search(adapter, { clock });
+      assert.equal(second.verdict, 'match');
+      assert.equal(second.verdict === 'match' && second.order.orderId, 'raced');
+      assert.equal(second.verdict === 'match' && second.resting, false);
+      assert.deepEqual(calls, ['open', 'fills', 'open', 'fills']);
+    });
+
+    it('stays inconclusive when the re-read lists a matching order the first listing missed', async () => {
+      const { adapter, clock, calls } = makeRacingExchange({ restingOnRead: [false, true], historyLagCalls: 0 });
+      // The history call returns the fill too; isolate the re-read by treating it as booked.
+      const result = await search(adapter, { clock, isKnownTrade: () => true });
+      assert.equal(result.verdict, 'inconclusive');
+      assert.match(result.verdict === 'inconclusive' ? result.reason : '', /raced/);
+      assert.deepEqual(calls, ['open', 'fills', 'open']);
+    });
+
+    it('stays inconclusive when the re-read open-order list may be incomplete', async () => {
+      let reads = 0;
+      const adapter = {
+        ...makeAdapter(),
+        getOpenOrders: async () => (++reads === 1 ? [] : Object.defineProperty([], 'incomplete', { value: true })),
+      };
+      assert.equal((await search(adapter)).verdict, 'inconclusive');
+      assert.equal(reads, 2);
+    });
+
+    it('reports absent only after a second open-order read that follows the fills', async () => {
+      const calls = /** @type {string[]} */ ([]);
+      const adapter = {
+        ...makeAdapter(),
+        getOpenOrders: async () => { calls.push('open'); return []; },
+        getReconciliationFills: async () => { calls.push('fills'); return []; },
+      };
+      assert.deepEqual(await search(adapter), { verdict: 'absent' });
+      assert.deepEqual(calls, ['open', 'fills', 'open']);
+    });
+  });
+
   it('stays inconclusive rather than looking up an unbounded number of filled orders', async () => {
     const fills = Array.from({ length: 21 }, (_, i) => fill({ tradeId: `t-${i}`, orderId: `o-${i}`, size: 0.0001 }));
     const adapter = makeAdapter({ fills });

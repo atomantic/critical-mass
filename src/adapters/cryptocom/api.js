@@ -1023,7 +1023,7 @@ const createCryptocomAdapter = (keysPath = null) => {
     const rawFills = scan.rawFills;
 
     const seenTrades = new Set();
-    return rawFills.flatMap(raw => {
+    const fills = rawFills.flatMap(raw => {
       const tradeId = String(raw.trade_id || '');
       if (!tradeId || seenTrades.has(tradeId)) return [];
       seenTrades.add(tradeId);
@@ -1043,6 +1043,11 @@ const createCryptocomAdapter = (keysPath = null) => {
         liquidityIndicator: raw.taker_side || raw.liquidity_indicator || 'TAKER',
       }];
     });
+    // The scan walks a range fixed when it started; placement-evidence needs
+    // that upper bound to tell whether the history reaches past an earlier
+    // read. Non-enumerable so the array still compares and serializes as before.
+    Object.defineProperty(fills, 'coveredThrough', { value: Number(scan.endNs / NS_PER_MS) });
+    return fills;
   };
 
   adapter.capabilities.fillReconciliation = true;

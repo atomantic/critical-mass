@@ -10,6 +10,12 @@
  * size and was created when the intent was dispatched, either still resting or
  * visible through fills. One match is adopted, none clears the intent, and
  * anything ambiguous leaves it blocking.
+ *
+ * Open orders and fills are separate reads, so an order that fills just before
+ * the open-order read can be missing from both if the fill history lags. An
+ * absent verdict therefore needs the fill history to cover a moment after the
+ * first open-order read, and a second open-order read taken after the fills
+ * that also shows no match; any disagreement is left to the next pass.
  */
 
 const { floorToIncrement } = require('./shared-utils');
@@ -140,9 +146,10 @@ const fillsFitIntent = (fills, intent, side, candidates) => {
  * @param {(orderId: string) => boolean} params.isKnownOrder - True for orders this fund already owns
  * @param {(tradeId: string) => boolean} params.isKnownTrade - True for fills already in this fund's ledger
  * @param {number} [params.now] - Clock override for tests
+ * @param {() => number} [params.clock] - Read-time clock override for tests
  * @returns {Promise<PlacementEvidence>}
  */
-const findPlacementOnExchange = async ({ adapter, productId, intent, isKnownOrder, isKnownTrade, now = Date.now() }) => {
+const findPlacementOnExchange = async ({ adapter, productId, intent, isKnownOrder, isKnownTrade, now = Date.now(), clock = Date.now }) => {
   const inconclusive = (reason) => ({ verdict: /** @type {const} */ ('inconclusive'), reason });
   const side = String(intent?.side ?? '').toLowerCase();
   if ((side !== 'buy' && side !== 'sell') || !(intent.size > 0) || !Number.isFinite(intent.createdAt)) {
@@ -163,23 +170,40 @@ const findPlacementOnExchange = async ({ adapter, productId, intent, isKnownOrde
   }
   const placement = placementCandidates(intent, increments);
 
-  /** @type {Set<string>} */
-  const candidates = new Set();
-  const openOrders = await adapter.getOpenOrders(productId);
-  // A truncated listing cannot prove the placement is not resting.
-  if (openOrders?.incomplete) return inconclusive('the exchange returned an incomplete open-order list');
-  for (const order of openOrders ?? []) {
-    if (order?.orderId && !isKnownOrder(order.orderId) && openOrderMatches(order, intent, side, placement)) {
-      candidates.add(order.orderId);
+  /**
+   * Untracked resting orders that match the intent, or null when the listing
+   * may be truncated (it then cannot prove the placement is not resting).
+   * @returns {Promise<Set<string>|null>}
+   */
+  const readRestingMatches = async () => {
+    const openOrders = await adapter.getOpenOrders(productId);
+    if (openOrders?.incomplete) return null;
+    /** @type {Set<string>} */
+    const ids = new Set();
+    for (const order of openOrders ?? []) {
+      if (order?.orderId && !isKnownOrder(order.orderId) && openOrderMatches(order, intent, side, placement)) {
+        ids.add(order.orderId);
+      }
     }
-  }
-  const restingIds = new Set(candidates);
+    return ids;
+  };
+
+  const restingIds = await readRestingMatches();
+  if (!restingIds) return inconclusive('the exchange returned an incomplete open-order list');
+  const firstOpenReadAt = clock();
+  const candidates = new Set(restingIds);
 
   /** @type {Map<string, Array<import('./types').ReconciliationFill>>} */
   const untrackedFills = new Map();
+  const fillsRequestedAt = clock();
   const fills = await adapter.getReconciliationFills(productId, intent.createdAt - CREATED_BEFORE_INTENT_MS);
   // A partial history cannot prove that the placement never filled.
   if (fills?.incomplete) return inconclusive('the exchange returned an incomplete fill history');
+  // A history read reaches the present when requested unless the adapter
+  // reports an earlier bound (`coveredThrough`, ms). Only a history reaching
+  // past the first open-order read accounts for an order that filled just
+  // before that read.
+  const fillsCoveredThrough = Number.isFinite(fills?.coveredThrough) ? fills.coveredThrough : fillsRequestedAt;
   for (const fill of fills ?? []) {
     if (!fill?.orderId || fill.side !== side || isKnownTrade(fill.tradeId) || isKnownOrder(fill.orderId)) continue;
     if (candidates.has(fill.orderId)) continue;
@@ -203,7 +227,20 @@ const findPlacementOnExchange = async ({ adapter, productId, intent, isKnownOrde
     return inconclusive(`${unsizedCandidates} untracked order(s) filled at dispatch time without a reported size to compare`);
   }
 
-  if (candidates.size === 0) return { verdict: 'absent' };
+  if (candidates.size === 0) {
+    if (!(fillsCoveredThrough >= firstOpenReadAt)) {
+      return inconclusive('the fill history does not yet reach past the open-order read');
+    }
+    // An order that filled between the reads can be missing from the first
+    // listing and from a lagging history; only a second listing taken after
+    // the fills that agrees (still no match) lets the intent be cleared.
+    const restingAfterFills = await readRestingMatches();
+    if (!restingAfterFills) return inconclusive('the exchange returned an incomplete open-order list on the re-read');
+    if (restingAfterFills.size > 0) {
+      return inconclusive(`untracked order(s) ${[...restingAfterFills].join(', ')} matching the intent appeared between open-order reads`);
+    }
+    return { verdict: 'absent' };
+  }
   if (candidates.size > 1) {
     return inconclusive(`${candidates.size} untracked exchange orders (${[...candidates].join(', ')}) match the intent`);
   }
