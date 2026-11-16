@@ -75,3 +75,60 @@ per trade. The operator's real record (51 selective trades, 50 wins) implies
 discretion the rule does not capture: which weeks to trade, and when not to.
 Watch the paper panel for consistency before considering anything live. Do not
 automate it.
+
+## Selection research (`scripts/research-up-selection.js`)
+
+Features at each entry: MA20/50/200 distance and slope on 1m–1d, drawdown from the
+1h/4h/24h high, 1h/24h realized volatility, RSI on 5m/15m/1h, calendar, days to
+expiry, and floor distance in 24h-volatility units. Three groups are compared: the
+operator's 51 entries; 537 stateless rule ENTER signals (first per hour), each traded
+standalone (514 wins, 23 floor knock-outs, only 4 of those in train); and 3,000 random minutes.
+
+**Operator vs rule (stable in both halves, AUC 0.75–0.83).** The operator enters
+after the dip has stabilized, while the rule fires mid-dip:
+
+| | operator median | rule median |
+|---|---|---|
+| 5m RSI | 53 | 36 |
+| 1m MA50 slope | 0.00% | −0.06% |
+| vs 3m MA20 | −0.01% | −0.28% |
+| drop from 1h high | 0.40% | 0.74% |
+
+The operator also trades when 1h volatility is high (AUC 0.70 train, 0.77 test vs random).
+
+**Winners vs knock-outs: no stable separator.** With 4 train knock-outs, the
+train-best features (1d MA50 distance and slope, hour) fall to AUC 0.55–0.63 in test.
+
+**Train-only filter fit (1–2 thresholds over the top features):** the selected
+`hourUtc >= 4` is an artifact of those 4 knock-outs. Test +$1,423 vs +$819 unfiltered,
+but hour ≥ 1 gives +$444 and hour ≥ 6 gives +$727: not robust.
+
+**Stabilization filters copied from the operator** lose money or rarely trade:
+
+| filter | test cycles | test P&L |
+|---|---|---|
+| 5m RSI ≥ 45 | 52 | −$1,549 |
+| 1m MA50 slope ≥ 0 | 10 | +$411 |
+
+The operator's edge is not reproduced by entering at the same moment on every dip.
+
+**Daily-trend filter (post hoc; test was visible when it was chosen).** Requiring
+price ≥ 4% below the 1d MA50 at most gives test 125 cycles, 96.8% wins, +$2,672,
+drawdown $1,803 and 4 knock-outs (vs 226, 94.3%, +$819, $3,473, 12). Thresholds of
+−3% and −5% are similar. It works by standing aside through whole downtrends: June
+and November in test. That is two regime episodes, not a clear edge. The 1d MA50 is
+undefined before about Mar 6 in this candle set, so its February result is missing
+data, not a signal. It would also have blocked the operator's winning February and
+November trades. **Not shipped.**
+
+**Floor and exit variants (unfiltered, test):**
+
+| variant | P&L | drawdown | knock-outs | worst loss |
+|---|---|---|---|---|
+| floor offset $1,000 | −$143 | — | — | — |
+| floor offset $1,440 (operator median) | +$376 | — | — | — |
+| floor offset $1,850 (≈ lowest floor the operator used) | +$1,286 | $2,552 | 8 | −$977 |
+| momentum-fade exit (exit on the first red 1m bar once at target), offset $1,440 | +$1,121 | — | — | — |
+| momentum-fade exit, offset $1,000 | −$1,846 | — | — | — |
+
+Train ranks these differently from test, so none is a robust improvement.

@@ -47,8 +47,11 @@ function buildFeatures(candles, params) {
   return out
 }
 
-/** Run the strategy over candles[from..to). */
-function simulate(candles, features, from, to, params) {
+/**
+ * Run the strategy over candles[from..to). `decide` defaults to decideUpDip;
+ * research variants wrap it (it also receives the bar index).
+ */
+function simulate(candles, features, from, to, params, { decide = decideUpDip } = {}) {
   let pos = null, lastExitAt = null, pending = null
   const cycles = [], fills = []
   let realized = 0, peak = 0, maxDd = 0
@@ -86,7 +89,7 @@ function simulate(candles, features, from, to, params) {
     const mtm = realized + (pos ? markPosition(pos, c.close).pnl : 0)
     peak = Math.max(peak, mtm)
     maxDd = Math.max(maxDd, peak - mtm)
-    const d = decideUpDip({ features: features[i], position: pos, now, lastExitAt, params })
+    const d = decide({ features: features[i], position: pos, now, lastExitAt, params }, i)
     if (d.action === 'ENTER' || d.action === 'ADD' || d.action === 'EXIT') pending = d
   }
   if (pos) { const c = candles[to - 1]; close(c.timestamp + MINUTE_MS, pos.contracts * (contractValue(c.close, pos.contract) - FEE_PER_CONTRACT), 'end_of_period', c.close) }
