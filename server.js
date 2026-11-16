@@ -53,6 +53,7 @@ const { performBackup } = require('./src/backup-coordinator');
 const { drainPendingWrites, trackPendingWrite } = require('./src/pending-writes');
 const { maintenanceGuard, isMaintenanceActive } = require('./src/restore-maintenance');
 const { createUpDownService } = require('./src/updown/updown-service');
+const { createUpDipPaper } = require('./src/updown/up-dip-paper');
 const { JOURNAL_WRITE_LABEL: SCORECARD_JOURNAL_WRITE_LABEL } = require('./src/updown/scorecard');
 const { createCandleCache } = require('./src/candle-cache');
 const { createSentinelService } = require('./src/sentinel/sentinel-service');
@@ -362,6 +363,17 @@ ipcEventListeners.push((name, msg) => {
 
 const updownService = createUpDownService(io, { exchangeIPCMap, readJSON, writeJSON, DATA_DIR, candleCache });
 
+// Paper-only Up dip recommendations (no order paths); fed by the Coinbase candle cache.
+const upDipPaper = createUpDipPaper({
+  getCandles: (tf) => (candleCache.isSeeded('coinbase') ? candleCache.getCandles('coinbase', tf) : []),
+  statePath: path.join(DATA_DIR, 'updown', 'up-dip-paper.json'),
+  backtestPath: path.join(DATA_DIR, 'updown', 'backtest', 'up-dip-report.json'),
+  writeJSON,
+  logger: createContextLogger({ module: 'up-dip-paper' }),
+  onChange: () => io.to('updown').emit('updown:up-dip', {}),
+});
+upDipPaper.start();
+
 // Forward coinbase BTC price data to updown service for realtime emission + P&L.
 // Only the default (BTC) pair — a second coinbase fund must not drive the BTC
 // UpDown predictor with its own asset's price (issue #110 M3).
@@ -390,7 +402,7 @@ require('./src/routes/sentinel-routes')(routes, { ...sharedDeps, sentinelService
 require('./src/routes/ai-routes')(routes, sharedDeps);
 require('./src/routes/settings-routes')(routes, { ...sharedDeps, updownService, sentinelService, candleCache, runBackup, getBackupSchedulerStatus: () => backupScheduler.getStatus() });
 require('./src/routes/candle-routes')(routes, { candleCache });
-require('./src/routes/updown-routes')(routes, { ...sharedDeps, updownService, candleCache });
+require('./src/routes/updown-routes')(routes, { ...sharedDeps, updownService, candleCache, upDipPaper });
 require('./src/routes/exchange-routes')(routes, sharedDeps);
 require('./src/routes/regime-routes')(routes, sharedDeps);
 require('./src/routes/keys-routes')(routes, sharedDeps);
