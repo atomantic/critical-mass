@@ -10,6 +10,7 @@ const fs = require('fs');
 const { APP_SOURCE } = require('./app-order-history');
 
 const toPercent2 = (n) => Math.round(n * 10000) / 100;
+const cents = (n) => Math.round(n * 100) / 100;
 
 /**
  * @param {{ path: string, writeJSON: (path: string, data: any) => void }} deps
@@ -84,7 +85,7 @@ const createTradeLog = ({ path: tradesPath, writeJSON }) => {
       date: date || new Date().toISOString().slice(0, 10),
       cost,
       returnAmount,
-      pnl: returnAmount - cost,
+      pnl: cents(returnAmount - cost),
       note: note ?? '',
       direction: inferredDirection || null,
       // Without an operator buy time, entryTime/btcPriceAtEntry are the log
@@ -136,7 +137,9 @@ const createTradeLog = ({ path: tradesPath, writeJSON }) => {
     for (const field of ['date', 'cost', 'returnAmount', 'note', 'direction', 'exitTime', 'btcPriceAtExit']) {
       if (patch[field] != null) trade[field] = patch[field];
     }
-    trade.pnl = trade.returnAmount - trade.cost;
+    // Rounded like the app-history importer, so an edit that keeps cost and
+    // return unchanged leaves pnl byte-identical and a re-import stays a no-op.
+    trade.pnl = cents(trade.returnAmount - trade.cost);
     writeJSON(tradesPath, data);
     return trade;
   };

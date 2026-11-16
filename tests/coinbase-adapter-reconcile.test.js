@@ -265,6 +265,21 @@ describe('coinbase reconciliation fill pagination', () => {
     assert.notEqual(fills.incomplete, true);
   });
 
+  for (const [name, page] of [
+    ['an empty body', {}],
+    ['an error body', { error: 'INTERNAL', message: 'try again' }],
+    ['a non-array fills field', { fills: 'x', cursor: '' }],
+    ['a page with no cursor field', { fills: [] }],
+  ]) {
+    it(`marks a later page with ${name} incomplete instead of complete`, async () => {
+      const adapter = createCoinbaseAdapter(keysPath, { sleep: async () => {} });
+      installFetchMock((_url, _opts, requests) => (requests.length === 1 ? { fills: [fill('a')], cursor: 'next' } : page));
+      const fills = await adapter.getReconciliationFills('BTC-USDC', Date.parse('2026-11-10T00:00:00.000Z'));
+      assert.deepEqual(fills.map(f => f.tradeId), ['a']);
+      assert.equal(fills.incomplete, true);
+    });
+  }
+
   it('still marks has_next=true without a cursor as incomplete', async () => {
     const adapter = createCoinbaseAdapter(keysPath, { sleep: async () => {} });
     installFetchMock(() => ({ fills: [fill('a')], has_next: true, cursor: '' }));

@@ -844,13 +844,23 @@ const createCoinbaseAdapter = (keysPath = null, { sleep = defaultSleep, random =
     while (true) {
       const apiPath = cursor ? `${basePath}&cursor=${encodeURIComponent(cursor)}` : basePath;
       const data = await makeRequest('GET', apiPath);
-      rawFills.push(...(data.fills || []));
+      // A page without a fills array ({}, an error body) proves nothing about the
+      // history; never let it end pagination as if the history were complete.
+      if (!Array.isArray(data?.fills)) {
+        logger.warn(`Coinbase reconciliation response for ${normalizedProductId} carried no fills array; treating the history as incomplete`, {
+          productId: normalizedProductId,
+          fills: rawFills.length,
+        });
+        truncated = true;
+        break;
+      }
+      rawFills.push(...data.fills);
 
       if (data.has_next === false) break;
 
       const nextCursor = data.cursor;
-      // List Fills carries no has_next field: an empty cursor is its last page.
-      if (data.has_next === undefined && !nextCursor) break;
+      // List Fills carries no has_next field: an explicit empty cursor is its last page.
+      if (data.has_next === undefined && typeof nextCursor === 'string' && nextCursor.trim() === '') break;
       if (!nextCursor) {
         // Coinbase has returned has_next=true without a cursor for otherwise
         // complete responses. There is no safe request to make for a page the

@@ -41,7 +41,11 @@ jobs:
       # storage smoke test, so an image reference is never copied into this file.
       - name: Derive scan matrix
         id: plan
-        run: echo "matrix=$(node scripts/image-security-scan.js plan)" >> "$GITHUB_OUTPUT"
+        # Assign first: inside echo's argument a planning failure would be masked.
+        run: |
+          set -euo pipefail
+          matrix="$(node scripts/image-security-scan.js plan)"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
   scan:
     name: Scan ${{ matrix.id }}
@@ -177,6 +181,15 @@ jobs:
           pattern: image-scan-*
           path: downloaded
 
+      # The verifier requires a passing selftest.json: zero findings are not
+      # trustworthy from a run whose vulnerable-fixture control failed.
+      - name: Download control evidence
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: selftest-evidence
+          path: downloaded-selftest
+
       # Re-verifies every target against this checkout (recipe hashes, Umbrel
       # digest, inventories, artifact hashes). A target with no uploaded
       # evidence, e.g. a runner that died, is reported as a coverage gap.
@@ -188,6 +201,10 @@ jobs:
             [ -d "$dir" ] || continue
             cp -R "$dir" "image-security-evidence/${dir#downloaded/image-scan-}"
           done
+          if [ -f downloaded-selftest/selftest.json ]; then
+            mkdir -p image-security-evidence/selftest
+            cp downloaded-selftest/selftest.json image-security-evidence/selftest/selftest.json
+          fi
           node scripts/image-security-scan.js aggregate --in image-security-evidence --out image-security-evidence
           status=$?
           cat image-security-evidence/summary.md >> "$GITHUB_STEP_SUMMARY"

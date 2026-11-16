@@ -6,9 +6,14 @@
  * cited as current for THIS checkout. It rejects evidence that is older than 14
  * days, was produced from different recipe files (Dockerfile, lockfiles, Umbrel
  * manifest), names a different Umbrel image digest, is missing a target, has an
- * empty inventory, or records unavailable coverage. Output is JSON on stdout.
+ * empty inventory, records unavailable coverage, or lacks a passing scanner
+ * control (selftest.json). Output is JSON on stdout.
  *
  *   node scripts/verify-image-scan-evidence.js <evidence-dir> [--max-age-days N] [--now ISO-8601]
+ *
+ * --max-age-days can only tighten the 14-day limit. --now is a diagnostic
+ * override (e.g. "would this still be current next week?"); an audit citation
+ * must pass without it.
  *
  * Exit status: 0 current, 1 not current or unreadable.
  */
@@ -24,7 +29,9 @@ function main() {
     return i === -1 ? undefined : args[i + 1];
   };
   const maxAgeDays = opt('--max-age-days') === undefined ? MAX_EVIDENCE_AGE_DAYS : Number(opt('--max-age-days'));
-  if (!Number.isFinite(maxAgeDays) || maxAgeDays <= 0) throw new Error('--max-age-days must be a positive number');
+  if (!Number.isFinite(maxAgeDays) || maxAgeDays <= 0 || maxAgeDays > MAX_EVIDENCE_AGE_DAYS) {
+    throw new Error(`--max-age-days must be a positive number no greater than ${MAX_EVIDENCE_AGE_DAYS}`);
+  }
   const nowFlag = opt('--now');
   const now = nowFlag ? new Date(nowFlag) : new Date();
   if (Number.isNaN(now.getTime())) throw new Error('--now must be an ISO-8601 timestamp');

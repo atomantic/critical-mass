@@ -82,7 +82,15 @@ const validateAppOrder = (o) => {
       return `invalid fill ${JSON.stringify(f)}`;
     }
   }
-  if (o.fills[o.fills.length - 1].side !== 'sell') return 'last fill must be a sell (open positions are not imported)';
+  if (o.fills[o.fills.length - 1].side !== 'sell') return 'last fill must be a sell (an order with an open position cannot be imported; remove it from the file until it closes)';
+  // Each sell closes exactly the contracts bought since the previous sell; anything
+  // else would book one cycle's cost against another's proceeds.
+  let open = 0;
+  for (const f of o.fills) {
+    if (f.side === 'buy') { open += f.qty; continue; }
+    if (open === 0 || Math.abs(f.qty - open) > 1e-9) return `sell of ${f.qty} at ${f.time} does not close the ${open} contract(s) bought since the previous sell`;
+    open = 0;
+  }
   const net = o.fills.reduce((s, f) => s + (f.side === 'sell' ? f.amount : -f.amount), 0);
   if (!Number.isFinite(o.pnl) || Math.abs(net - o.pnl) > 0.01) return `sells − buys (${round2(net)}) != pnl (${o.pnl})`;
   return null;
