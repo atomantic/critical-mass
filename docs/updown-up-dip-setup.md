@@ -119,7 +119,8 @@ drawdown $1,803 and 4 knock-outs (vs 226, 94.3%, +$819, $3,473, 12). Thresholds 
 and November in test. That is two regime episodes, not a clear edge. The 1d MA50 is
 undefined before about Mar 6 in this candle set, so its February result is missing
 data, not a signal. It would also have blocked the operator's winning February and
-November trades. **Not shipped.**
+November trades. **Not shipped** in the base rule; it runs only as the shadow
+paper book below.
 
 **Floor and exit variants (unfiltered, test):**
 
@@ -132,3 +133,25 @@ November trades. **Not shipped.**
 | momentum-fade exit, offset $1,000 | −$1,846 | — | — | — |
 
 Train ranks these differently from test, so none is a robust improvement.
+
+## Shadow paper book: daily-trend filter (live test)
+
+Because the daily-trend filter was found after the held-out results were visible,
+it runs as a second, separately labelled paper book instead of changing the rule.
+`src/updown/up-dip-trend-filter.js` wraps the same `decideUpDip` decision:
+
+- ENTER → STAND_ASIDE and ADD → HOLD while BTC is more than 4% below the simple
+  average of the last 50 completed Coinbase daily closes (the gateway candle
+  cache keeps 365). EXIT, HOLD and knock-outs are unchanged, so an open shadow
+  position exits exactly as in the base book.
+- With fewer than 50 daily candles the book shows "insufficient daily history" and
+  blocks new entries rather than guessing.
+- Threshold: `UPDOWN_SHADOW_MAX_BELOW_SMA_PCT` (gateway env, default 4).
+
+State: `data/updown/up-dip-paper-shadow.json`, separate from
+`data/updown/up-dip-paper.json`; the base book's file and tally are untouched.
+`GET /api/updown/up-dip` returns the base book at the top level as before plus
+`shadow` (its own position, tally, cycles and `filter`: `sma`, `distancePct`,
+`blocking`, `sufficient`, `dailyCandles`). `/updown` shows it under the base panel
+as "SHADOW · PAPER ONLY · daily-trend filter". Paper only, BTC Up only; nothing
+places orders.

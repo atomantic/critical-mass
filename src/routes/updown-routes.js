@@ -151,6 +151,7 @@ module.exports = (app, deps) => {
     updownService,
     candleCache,
     upDipPaper = null,
+    upDipShadow = null,
     readJSON,
     writeJSON,
     DATA_DIR,
@@ -509,7 +510,8 @@ module.exports = (app, deps) => {
   // --- Up dip setup: PAPER recommendations only (no order paths) ---
   app.get('/api/updown/up-dip', (req, res) => {
     if (!upDipPaper) return res.status(503).json({ success: false, error: 'Up dip paper tracker not running' });
-    res.json({ success: true, ...upDipPaper.getStatus() });
+    // shadow: the daily-trend-filtered SHADOW paper book (null when not running).
+    res.json({ success: true, ...upDipPaper.getStatus(), shadow: upDipShadow ? upDipShadow.getStatus() : null });
   });
 
   // --- Trade History ---

@@ -6,7 +6,8 @@ import { formatUsd } from '../../utils/format.mjs'
 import { signedPrefix } from '../../utils/pnlFormat.mjs'
 
 // Paper-only: shows what the Up dip setup would do and how its paper book is
-// doing. Nothing here (or behind /api/updown/up-dip) places an order.
+// doing, plus the SHADOW book (same rule + daily-trend filter) beside it.
+// Nothing here (or behind /api/updown/up-dip) places an order.
 
 const ACTION_STYLE = {
   ENTER: 'text-green-400 border-green-700 bg-green-900/30',
@@ -35,6 +36,111 @@ function BacktestLine({ label, s }) {
   )
 }
 
+function CyclesTable({ cycles }) {
+  if (!cycles?.length) return null
+  return (
+    <div className="overflow-x-auto max-h-48 mb-2">
+      <table className="w-full text-2xs">
+        <thead>
+          <tr className="text-gray-400 border-b border-gray-700">
+            <th className="text-left py-0.5">Closed</th>
+            <th className="text-right">BTC in→out</th>
+            <th className="text-right">How</th>
+            <th className="text-right">P&L</th>
+          </tr>
+        </thead>
+        <tbody>
+          {cycles.map((c) => (
+            <tr key={`${c.openedAt}-${c.closedAt}`} className="border-b border-gray-700/50">
+              <td className="py-0.5 whitespace-nowrap">{when(c.closedAt)}</td>
+              <td className="text-right font-mono">{c.entryBtc?.toLocaleString()}→{c.exitBtc?.toLocaleString()}</td>
+              <td className="text-right">{REASON_LABEL[c.reason] || c.reason}</td>
+              <td className={`text-right font-mono ${pnlColor(c.pnl)}`}>{signedUsd(c.pnl)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function ShadowBook({ book }) {
+  const f = book.filter
+  const decision = book.latest?.decision
+  const pos = book.position
+  const s = book.summary
+  return (
+    <div className="bg-gray-800 rounded-lg p-4 border border-dashed border-purple-700">
+      <div className="flex items-center justify-between mb-2 gap-2">
+        <h3 className="text-sm font-semibold">Up Dip Setup</h3>
+        <span className="text-2xs uppercase tracking-wide text-purple-300 border border-purple-700 rounded-sm px-1.5 py-0.5 text-right">Shadow · paper only · daily-trend filter</span>
+      </div>
+      <div className="text-2xs text-amber-300/80 mb-2">This filter was found after seeing held-out results and is under live test.</div>
+
+      {f && (
+        <div className={`text-xs rounded-sm px-2 py-1 mb-2 border ${f.blocking ? 'border-amber-700 bg-amber-900/20' : 'border-gray-700 bg-gray-900'}`}>
+          {f.sufficient ? (
+            <>
+              <div className="flex justify-between">
+                <span className="text-gray-400">{f.smaPeriod}-day avg</span>
+                <span className="font-mono">{f.sma?.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-400">BTC vs avg</span>
+                <span className={`font-mono ${pnlColor(f.distancePct)}`}>{signedPrefix(f.distancePct)}{f.distancePct?.toFixed(2)}%</span>
+              </div>
+            </>
+          ) : (
+            <div className="text-amber-300">Insufficient daily history ({f.dailyCandles}/{f.smaPeriod} daily candles)</div>
+          )}
+          <div className={`font-semibold ${f.blocking ? 'text-amber-300' : 'text-green-400'}`}>
+            {f.blocking ? 'Blocking new entries and adds' : 'Not blocking'} <span className="font-normal text-gray-400">(stand aside below −{f.maxBelowSmaPct}%)</span>
+          </div>
+        </div>
+      )}
+
+      {decision && (
+        <div className="text-xs mb-2">
+          <span className="text-gray-400">Now: </span>
+          <span className="font-semibold">{decision.action.replace('_', ' ')}</span>
+          {decision.reasons?.[0] && <span className="text-gray-400"> · {decision.reasons[0]}</span>}
+        </div>
+      )}
+
+      {pos && (
+        <div className="bg-gray-900 rounded-sm px-2 py-1.5 mb-2 text-xs flex justify-between">
+          <span>Up {k(pos.contract.floor)}–{k(pos.contract.ceiling)} ×{pos.contracts} @ {pos.entryPrice?.toLocaleString()}</span>
+          <span className={`font-mono ${pnlColor(pos.pnl)}`}>{signedUsd(pos.pnl)}</span>
+        </div>
+      )}
+
+      {s && (
+        <div className="grid grid-cols-4 gap-1.5 mb-2 text-xs">
+          <div className="bg-gray-900 rounded-sm px-2 py-1">
+            <div className="text-gray-400 text-2xs">Trades</div>
+            <div className="font-mono">{s.cycles}</div>
+          </div>
+          <div className="bg-gray-900 rounded-sm px-2 py-1">
+            <div className="text-gray-400 text-2xs">Wins</div>
+            <div className="font-mono">{s.wins}</div>
+          </div>
+          <div className="bg-gray-900 rounded-sm px-2 py-1">
+            <div className="text-gray-400 text-2xs">Losses</div>
+            <div className="font-mono">{s.losses}</div>
+          </div>
+          <div className="bg-gray-900 rounded-sm px-2 py-1">
+            <div className="text-gray-400 text-2xs">P&L</div>
+            <div className={`font-mono font-semibold ${pnlColor(s.pnl)}`}>{signedUsd(s.pnl)}</div>
+          </div>
+        </div>
+      )}
+
+      <CyclesTable cycles={book.cycles} />
+      {book.startedAt && <div className="text-2xs text-gray-400 mt-1">Shadow tracking since {when(book.startedAt)}</div>}
+    </div>
+  )
+}
+
 export default function UpDipPanel() {
   const [data, setData] = useState(null)
   const [error, setError] = useState(null)
@@ -59,6 +165,7 @@ export default function UpDipPanel() {
   const s = data?.summary
 
   return (
+    <>
     <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2">
@@ -121,30 +228,7 @@ export default function UpDipPanel() {
         </div>
       )}
 
-      {data?.cycles?.length > 0 && (
-        <div className="overflow-x-auto max-h-48 mb-2">
-          <table className="w-full text-2xs">
-            <thead>
-              <tr className="text-gray-400 border-b border-gray-700">
-                <th className="text-left py-0.5">Closed</th>
-                <th className="text-right">BTC in→out</th>
-                <th className="text-right">How</th>
-                <th className="text-right">P&L</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.cycles.map((c) => (
-                <tr key={`${c.openedAt}-${c.closedAt}`} className="border-b border-gray-700/50">
-                  <td className="py-0.5 whitespace-nowrap">{when(c.closedAt)}</td>
-                  <td className="text-right font-mono">{c.entryBtc?.toLocaleString()}→{c.exitBtc?.toLocaleString()}</td>
-                  <td className="text-right">{REASON_LABEL[c.reason] || c.reason}</td>
-                  <td className={`text-right font-mono ${pnlColor(c.pnl)}`}>{signedUsd(c.pnl)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+      <CyclesTable cycles={data?.cycles} />
 
       {data?.backtest && (
         <div className="text-2xs border-t border-gray-700 pt-1.5 space-y-0.5">
@@ -156,5 +240,7 @@ export default function UpDipPanel() {
       )}
       {data?.startedAt && <div className="text-2xs text-gray-400 mt-1">Paper tracking since {when(data.startedAt)}</div>}
     </div>
+    {data?.shadow && <ShadowBook book={data.shadow} />}
+    </>
   )
 }
