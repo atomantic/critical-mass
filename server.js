@@ -377,8 +377,10 @@ const upDipPaper = createUpDipPaper({
 upDipPaper.start();
 // SHADOW paper book: same rule plus the daily-trend stand-aside filter (chosen after
 // seeing held-out results, so it is under live test). Separate state file; the base
-// book above is untouched. UPDOWN_SHADOW_MAX_BELOW_SMA_PCT overrides the 4% default.
-const shadowMaxBelowPct = Number(process.env.UPDOWN_SHADOW_MAX_BELOW_SMA_PCT);
+// book above is untouched. UPDOWN_SHADOW_MAX_BELOW_SMA_PCT overrides the 4% default
+// (0 = stand aside whenever below the average; unset or blank keeps the default).
+const shadowMaxBelowRaw = process.env.UPDOWN_SHADOW_MAX_BELOW_SMA_PCT?.trim();
+const shadowMaxBelowPct = shadowMaxBelowRaw ? Number(shadowMaxBelowRaw) : NaN;
 const upDipShadow = createUpDipPaper({
   getCandles: getUpDipCandles,
   statePath: path.join(DATA_DIR, 'updown', 'up-dip-paper-shadow.json'),
@@ -387,7 +389,7 @@ const upDipShadow = createUpDipPaper({
   label: 'up-dip shadow',
   entryFilter: createDailyTrendEntryFilter({
     ...DAILY_TREND_PARAMS,
-    ...(Number.isFinite(shadowMaxBelowPct) && shadowMaxBelowPct > 0 ? { maxBelowSmaPct: shadowMaxBelowPct } : {}),
+    ...(Number.isFinite(shadowMaxBelowPct) && shadowMaxBelowPct >= 0 ? { maxBelowSmaPct: shadowMaxBelowPct } : {}),
   }),
   onChange: () => io.to('updown').emit('updown:up-dip', {}),
 });

@@ -59,4 +59,10 @@ describe('createTradeLog', () => {
     assert.equal(log.remove(1), false);
     assert.equal(log.has(2), true);
   });
+
+  it('keeps pnl at cents so an unchanged edit does not perturb an imported trade', () => {
+    const t = log.add({ cost: 1285.98, returnAmount: 1507.02, direction: 'up', exitTime: null });
+    assert.equal(t.pnl, 221.04);
+    assert.equal(log.update(t.id, { note: 'edited', cost: 1285.98, returnAmount: 1507.02 }).pnl, 221.04);
+  });
 });

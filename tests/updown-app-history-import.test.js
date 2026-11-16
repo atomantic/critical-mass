@@ -63,6 +63,15 @@ describe('deriveCycles', () => {
     assert.match(validateAppOrder({ ...NARROW, fills: [NARROW.fills[0], NARROW.fills[0]] }), /last fill/);
     assert.throws(() => deriveCycles([{ ...NARROW, pnl: 1 }]), /App order 2/);
   });
+  it('rejects a sell that does not close exactly the contracts bought since the previous sell', () => {
+    const [buy1, sell1, buy2, sell2] = TWO_CYCLE.fills;
+    // A sell before any buy would otherwise crash deriveCycles on an empty buy list.
+    assert.match(validateAppOrder({ ...TWO_CYCLE, fills: [sell1, buy1, buy2, sell2] }), /does not close the 0 contract/);
+    // buy 2, sell 1, buy 1, sell 2: totals agree but per-cycle cost would be misattributed.
+    const skewed = [{ ...buy1, qty: 2 }, sell1, buy2, { ...sell2, qty: 2 }];
+    assert.match(validateAppOrder({ ...TWO_CYCLE, fills: skewed }), /sell of 1 .* does not close the 2 contract/);
+    assert.equal(validateAppOrder(TWO_CYCLE), null);
+  });
   it('parses JSONL', () => {
     assert.equal(parseOrderHistory(`${JSON.stringify(NARROW)}\n\n`).length, 1);
   });

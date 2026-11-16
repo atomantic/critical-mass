@@ -67,7 +67,7 @@ function main(argv) {
   }
   console.log('\nvalidation: ok')
   if (!apply) { console.log('dry run — nothing written (pass --apply)'); return }
-  if (ledgerPath === DEFAULT_LEDGER && gatewayOnline()) {
+  if (path.resolve(ledgerPath) === path.resolve(DEFAULT_LEDGER) && gatewayOnline()) {
     console.error('refusing --apply: PM2 critical-mass (owner of the trades file) is online; stop it first')
     process.exitCode = 1
     return
