@@ -54,6 +54,7 @@ const { drainPendingWrites, trackPendingWrite } = require('./src/pending-writes'
 const { maintenanceGuard, isMaintenanceActive } = require('./src/restore-maintenance');
 const { createUpDownService } = require('./src/updown/updown-service');
 const { createUpDipPaper } = require('./src/updown/up-dip-paper');
+const { DAILY_TREND_PARAMS, createDailyTrendEntryFilter } = require('./src/updown/up-dip-trend-filter');
 const { JOURNAL_WRITE_LABEL: SCORECARD_JOURNAL_WRITE_LABEL } = require('./src/updown/scorecard');
 const { createCandleCache } = require('./src/candle-cache');
 const { createSentinelService } = require('./src/sentinel/sentinel-service');
@@ -364,8 +365,9 @@ ipcEventListeners.push((name, msg) => {
 const updownService = createUpDownService(io, { exchangeIPCMap, readJSON, writeJSON, DATA_DIR, candleCache });
 
 // Paper-only Up dip recommendations (no order paths); fed by the Coinbase candle cache.
+const getUpDipCandles = (tf) => (candleCache.isSeeded('coinbase') ? candleCache.getCandles('coinbase', tf) : []);
 const upDipPaper = createUpDipPaper({
-  getCandles: (tf) => (candleCache.isSeeded('coinbase') ? candleCache.getCandles('coinbase', tf) : []),
+  getCandles: getUpDipCandles,
   statePath: path.join(DATA_DIR, 'updown', 'up-dip-paper.json'),
   backtestPath: path.join(DATA_DIR, 'updown', 'backtest', 'up-dip-report.json'),
   writeJSON,
@@ -373,6 +375,23 @@ const upDipPaper = createUpDipPaper({
   onChange: () => io.to('updown').emit('updown:up-dip', {}),
 });
 upDipPaper.start();
+// SHADOW paper book: same rule plus the daily-trend stand-aside filter (chosen after
+// seeing held-out results, so it is under live test). Separate state file; the base
+// book above is untouched. UPDOWN_SHADOW_MAX_BELOW_SMA_PCT overrides the 4% default.
+const shadowMaxBelowPct = Number(process.env.UPDOWN_SHADOW_MAX_BELOW_SMA_PCT);
+const upDipShadow = createUpDipPaper({
+  getCandles: getUpDipCandles,
+  statePath: path.join(DATA_DIR, 'updown', 'up-dip-paper-shadow.json'),
+  writeJSON,
+  logger: createContextLogger({ module: 'up-dip-shadow' }),
+  label: 'up-dip shadow',
+  entryFilter: createDailyTrendEntryFilter({
+    ...DAILY_TREND_PARAMS,
+    ...(Number.isFinite(shadowMaxBelowPct) && shadowMaxBelowPct > 0 ? { maxBelowSmaPct: shadowMaxBelowPct } : {}),
+  }),
+  onChange: () => io.to('updown').emit('updown:up-dip', {}),
+});
+upDipShadow.start();
 
 // Forward coinbase BTC price data to updown service for realtime emission + P&L.
 // Only the default (BTC) pair — a second coinbase fund must not drive the BTC
@@ -402,7 +421,7 @@ require('./src/routes/sentinel-routes')(routes, { ...sharedDeps, sentinelService
 require('./src/routes/ai-routes')(routes, sharedDeps);
 require('./src/routes/settings-routes')(routes, { ...sharedDeps, updownService, sentinelService, candleCache, runBackup, getBackupSchedulerStatus: () => backupScheduler.getStatus() });
 require('./src/routes/candle-routes')(routes, { candleCache });
-require('./src/routes/updown-routes')(routes, { ...sharedDeps, updownService, candleCache, upDipPaper });
+require('./src/routes/updown-routes')(routes, { ...sharedDeps, updownService, candleCache, upDipPaper, upDipShadow });
 require('./src/routes/exchange-routes')(routes, sharedDeps);
 require('./src/routes/regime-routes')(routes, sharedDeps);
 require('./src/routes/keys-routes')(routes, sharedDeps);

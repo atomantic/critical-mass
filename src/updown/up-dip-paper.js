@@ -10,7 +10,10 @@
  * rules as scripts/backtest-up-dip.js. It never places, modifies or cancels an
  * order; there is no exchange or app client here.
  *
- * State lives in its own file (default data/updown/up-dip-paper.json).
+ * State lives in its own file (default data/updown/up-dip-paper.json). An
+ * optional `entryFilter` post-processes each decision (the shadow book's
+ * daily-trend filter in up-dip-trend-filter.js); without it the book is the
+ * plain rule.
  */
 
 const fs = require('fs');
@@ -27,15 +30,17 @@ const r2 = (n) => Math.round(n * 100) / 100;
 /**
  * @param {{getCandles: (tf: string) => any[], statePath: string,
  *   writeJSON: (p: string, d: any) => void, backtestPath?: string,
- *   params?: typeof UP_DIP_PARAMS, logger?: {warn: Function}, onChange?: () => void}} deps
+ *   params?: typeof UP_DIP_PARAMS, logger?: {warn: Function}, onChange?: () => void,
+ *   entryFilter?: (input: {tf: Record<string, any[]>, features: any, decision: any}) => {decision: any, filter: any},
+ *   label?: string}} deps
  */
-const createUpDipPaper = ({ getCandles, statePath, writeJSON, backtestPath, params = UP_DIP_PARAMS, logger, onChange }) => {
+const createUpDipPaper = ({ getCandles, statePath, writeJSON, backtestPath, params = UP_DIP_PARAMS, logger, onChange, entryFilter, label = 'up-dip paper' }) => {
   const empty = () => ({ position: null, pending: null, lastExitAt: null, lastBarTs: 0, cycles: [], events: [], latest: null, startedAt: null });
   let state = empty();
   try {
     if (fs.existsSync(statePath)) state = { ...empty(), ...JSON.parse(fs.readFileSync(statePath, 'utf8')) };
   } catch (err) {
-    logger?.warn?.(`⚠️ 📊 up-dip paper state unreadable, starting fresh err=${err.message}`, { action: 'up-dip-load', error: err.message });
+    logger?.warn?.(`⚠️ 📊 ${label} state unreadable, starting fresh err=${err.message}`, { action: 'up-dip-load', error: err.message });
   }
 
   const save = () => writeJSON(statePath, state);
@@ -92,9 +97,10 @@ const createUpDipPaper = ({ getCandles, statePath, writeJSON, backtestPath, para
     // Decide on the newest bar with the full buffers.
     const now = last.timestamp + MINUTE_MS;
     const features = computeUpDipFeatures(tf, params);
-    const decision = decideUpDip({ features, position: state.position, now, lastExitAt: state.lastExitAt, params });
+    const raw = decideUpDip({ features, position: state.position, now, lastExitAt: state.lastExitAt, params });
+    const { decision, filter = null } = entryFilter ? entryFilter({ tf, features, decision: raw }) : { decision: raw };
     const prev = state.latest?.decision?.action;
-    state.latest = { at: now, decision, features };
+    state.latest = { at: now, decision, features, ...(entryFilter ? { filter } : {}) };
     if (['ENTER', 'ADD', 'EXIT'].includes(decision.action)) {
       state.pending = decision;
       event({ at: now, action: decision.action, btc: features?.price ?? null, reasons: decision.reasons, expected: decision.expected ?? null });
@@ -123,6 +129,7 @@ const createUpDipPaper = ({ getCandles, statePath, writeJSON, backtestPath, para
     return {
       paperOnly: true,
       params,
+      ...(entryFilter ? { filter: state.latest?.filter ?? null } : {}),
       startedAt: state.startedAt,
       latest: state.latest,
       pending: state.pending ? { action: state.pending.action } : null,
@@ -139,7 +146,7 @@ const createUpDipPaper = ({ getCandles, statePath, writeJSON, backtestPath, para
   /** Poll for newly completed 1m bars every intervalMs; returns a stop function. */
   const start = (intervalMs = 15_000) => {
     const run = () => {
-      try { step(); } catch (err) { logger?.warn?.(`⚠️ 📊 up-dip paper step failed err=${err.message}`, { action: 'up-dip-step', error: err.message }); }
+      try { step(); } catch (err) { logger?.warn?.(`⚠️ 📊 ${label} step failed err=${err.message}`, { action: 'up-dip-step', error: err.message }); }
     };
     const timer = setInterval(run, intervalMs);
     timer.unref?.();
