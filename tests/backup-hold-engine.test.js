@@ -11,7 +11,9 @@
 //   - nothing under the fund's data directory changes between the pause
 //     confirming quiescence and the resume, checked by content hash + mtime;
 //   - every parked writer (fill, dust consolidation, deferred state save) runs
-//     once after the resume.
+//     once after the resume;
+//   - the recovered-row growth chain and the stale-order timer park at the
+//     fence too (#1959).
 //
 // Disk safety: every fund file lives under a disposable temp root.
 const { describe, it, after, afterEach } = require('node:test');
@@ -30,7 +32,9 @@ configUtils.updateRegimeConfig = () => {};
 
 const { createRegimeEngine } = require('../src/regime-engine');
 const { registerEngineBackupHandlers } = require('../src/engine-backup-window');
-const { drainPendingWrites } = require('../src/pending-writes');
+const { drainPendingWrites, isParkedWrite, getPendingWrites } = require('../src/pending-writes');
+const { getAdapter } = require('../src/adapters');
+const { useVirtualClock } = require('./virtual-clock');
 const { setEngineMaintenance, setEngineBackupPaused } = require('../src/engine-maintenance');
 
 const engines = [];
@@ -72,7 +76,7 @@ const makeExecutor = (over = {}) => ({
 });
 
 /** A running live engine with mock exchange deps, registered with a real backup window. */
-const setup = (pair, { executor = {}, adapter = {} } = {}) => {
+const setup = (pair, { executor = {}, adapter = {}, realExecutor = false } = {}) => {
   const eng = createRegimeEngine('coinbase', pair, { dryRun: false, productId: pair }, {});
   eng._test.setRunning(true);
   eng._test.setProductDetails(PRODUCT_DETAILS);
@@ -83,7 +87,7 @@ const setup = (pair, { executor = {}, adapter = {} } = {}) => {
     getPositions: async () => [],
     ...adapter,
   });
-  eng._test.setOrderExecutor(makeExecutor(executor));
+  if (!realExecutor) eng._test.setOrderExecutor(makeExecutor(executor));
   engines.push(eng);
   // Publish a baseline generation so every fund file exists before the hold.
   eng.flushForBackup();
@@ -220,5 +224,115 @@ describe('in-place backup hold with a real regime engine (#1945)', () => {
     assert.equal(h.eng.isBackupHeld(), false);
     await assert.rejects(parked, (err) => err.code === 'FILL_GATE_CLOSED', 'the parked fill is refused and recovered on the next start');
     assert.equal((await h.resume()).success, true);
+  });
+  it('a recovered-row growth chain pending when a backup starts parks at the fence instead of stalling the drain (#1959)', async () => {
+    const firstCancel = deferred();
+    const cancelled = [];
+    const h = setup('__testbackupholdgrowth__', { executor: {
+      cancelBodyTpOrder: async (bodyId) => {
+        cancelled.push(bodyId);
+        // The chain's first extend is past the fence when the hold begins.
+        if (cancelled.length === 1) await firstCancel.promise;
+        return { cancelled: true };
+      },
+      getPendingLadderOrders: () => [],
+    } });
+    // Two bodies, each owning a recovered (null-cycle) partial row of its own
+    // buy order (#752), so the growth chain extends them one after the other.
+    const ledger = h.eng.getFillLedger();
+    ledger.setCurrentCycleId('cycle-1', Date.parse('2026-01-01T00:00:00.000Z'));
+    const pos = h.eng._getPositionState();
+    pos.activeCycleId = 'cycle-1';
+    pos.activeCycleStartedAt = Date.parse('2026-01-01T00:00:00.000Z');
+    pos.celestialBodies = ['A', 'B'].map((id, i) => {
+      const buy = `${id}-buy`;
+      const ingest = (tradeId, minute, size, cycleId) => ledger.ingestFill({ tradeId, orderId: buy, side: 'buy', price: '50000', size,
+        tradeTime: `2026-01-01T0${i + 1}:${minute}:00.000Z` }, null, { cycleId, skipPersist: true });
+      ingest(`${id}-1`, '00', '0.01', 'cycle-1');
+      ledger.annotateFillsByOrderId(buy, { isBodyOwned: true, bodyId: `body-${id}`, bodyTier: 'asteroid', sellOrderId: `${id}-tp` });
+      ingest(`${id}-2`, '06', '0.005', null);
+      return { id: `body-${id}`, tier: 'asteroid', assetQty: 0.01, costBasis: 500, avgPrice: 50000, tpPrice: 50500,
+        tpOrderId: `${id}-tp`, assetOnOrder: 0.009, mergeCount: 0, sourceOrderIds: [buy],
+        buyOrders: [{ orderId: buy, price: 50000, assetQty: 0.01, sizeUsdc: 500, consumedQty: 0 }] };
+    });
+    h.eng.flushForBackup();
+
+    h.eng.recalculateAndRefresh();
+    for (let i = 0; i < 200 && cancelled.length === 0; i++) await new Promise((r) => setImmediate(r));
+    assert.equal(cancelled.length, 1, 'the first extend is mid-cancel');
+    const [first, second] = cancelled[0] === 'body-A' ? ['body-A', 'body-B'] : ['body-B', 'body-A'];
+    const bodyById = (id) => pos.celestialBodies.find((b) => b.id === id);
+
+    setEngineMaintenance({ active: true, reason: 'backup test' });
+    const startedAt = Date.now();
+    const pausing = h.pause();
+    await settle();
+    assert.equal(h.eng.isBackupHeld(), true);
+    firstCancel.resolve();
+    const paused = await pausing;
+    assert.deepEqual(paused, { success: true, quiesced: true });
+    assert.ok(Date.now() - startedAt < 5_000, `pause confirmed in ${Date.now() - startedAt}ms, not after the 30 s drain bound`);
+    assert.equal(bodyById(first).assetQty, 0.015, 'the extend already past the fence finished before the flush');
+    assert.deepEqual(cancelled, [first], 'the next extend parked before cancelling its TP');
+    assert.equal(bodyById(second).assetQty, 0.01);
+    const growth = getPendingWrites().filter((w) => w.label.startsWith('engine-growth:'));
+    assert.equal(growth.length, 1, 'the growth chain is still a tracked write');
+
+    const before = fingerprint(h.fundDir);
+    await new Promise((r) => setTimeout(r, 20));
+    assert.deepEqual(fingerprint(h.fundDir), before, 'no fund file changes while the backup holds the fence');
+
+    assert.equal((await h.resume()).success, true);
+    await drainPendingWrites(5_000);
+    assert.deepEqual(cancelled, [first, second], 'the parked extend runs once after resume');
+    assert.equal(bodyById(second).assetQty, 0.015);
+    assert.equal(bodyById(second).costBasis, 750);
+  });
+
+  it('a stale-order timer that fires during the hold performs no cancel until release, then re-checks the order (#1959)', async (t) => {
+    // The engine's own live executor, not the setup mock: it is the one wired
+    // to the engine's fence. Its exchange calls go to the cached adapter,
+    // stubbed here so nothing reaches the network.
+    const exchangeCalls = [];
+    const cancelledIds = new Set();
+    const coinbase = getAdapter('coinbase');
+    t.mock.method(coinbase, 'getOrder', async (id) => {
+      exchangeCalls.push(`getOrder:${id}`);
+      return cancelledIds.has(id) ? { status: 'CANCELLED', filledSize: 0 } : { status: 'OPEN', filledSize: 0 };
+    });
+    t.mock.method(coinbase, 'cancelOrder', async (id) => {
+      exchangeCalls.push(`cancel:${id}`);
+      cancelledIds.add(id);
+      return { success: true };
+    });
+    const h = setup('__testbackupholdstale__', { realExecutor: true });
+    const exec = h.eng._test.getOrderExecutor();
+    const clock = useVirtualClock(t);
+    t.after(() => exec.clearTimers());
+
+    assert.deepEqual(await h.eng.holdForBackup(), { quiesced: true });
+    // Restored resting entries well past their window: each timer fires at the
+    // restored minimum (5 s), inside the hold.
+    const entry = { type: 'entry', side: 'buy', price: 2000, size: 0.01, placedAt: Date.now() - 600_000, staleMs: 60_000 };
+    exec.restorePendingOrder('stale-held', { ...entry });
+    exec.restorePendingOrder('stale-settled', { ...entry });
+    await clock.advance(6_000);
+
+    assert.deepEqual(exchangeCalls, [], 'no status read or cancel while the backup holds the fence');
+    assert.equal(exec.getPendingCounts().entries, 2, 'both orders stay tracked');
+    const stale = getPendingWrites().filter((w) => w.label.startsWith('engine-stale-order:'));
+    assert.equal(stale.length, 2, 'each fired timer is a tracked write');
+    const drain = await clock.run(drainPendingWrites(1_000, (entry) => !isParkedWrite(entry)));
+    assert.equal(drain.drained, true, 'parked stale checks never stall the backup drain');
+
+    // One order settles through another path during the hold.
+    exec.handleOrderCancel('stale-settled');
+    h.eng.releaseBackupHold();
+    await clock.advance(3_000);
+
+    assert.deepEqual(exchangeCalls.filter((c) => c.endsWith('stale-settled')), [], 'a settled order is re-checked and left alone');
+    assert.ok(exchangeCalls.includes('cancel:stale-held'), 'the still-resting order is cancelled after release');
+    assert.equal(exec.getPendingCounts().entries, 0);
+    assert.equal(getPendingWrites().filter((w) => w.label.startsWith('engine-stale-order:')).length, 0);
   });
 });

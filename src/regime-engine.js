@@ -501,6 +501,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         onFillDetected: (orderId, status) => liveCallbacks.onFillDetected && liveCallbacks.onFillDetected(orderId, status),
         getRecordedSizeForOrder: (orderId) => fillLedger.getRecordedSizeForOrder(orderId),
         onEntryCancelled: (orderId, info) => handleEntryCancelled(orderId, info),
+        // A stale-order timer is a top-level writer (#1959): during a backup
+        // hold it parks before cancelling, then re-checks the order.
+        withStaleCheckFence: (run) => fencedWrite(`engine-stale-order:${fundLabel}`, run),
       }, pair);
 
   validateExecutor(orderExecutor, isDryRun ? 'dry-run' : 'live');
@@ -6558,12 +6561,19 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * don't wait on exchange round trips) but serialized, and idempotent —
    * extendBody merges only the order's remaining shortfall, so a failed or
    * repeated attempt is simply retried by the next recalc or start.
+   *
+   * Backup fence (#1959): each run is its own tracked write, registered once
+   * the previous run settles and executed inside that write's context.
+   * extendBody passes the fence per body, so a hold parks the run before its
+   * next TP cancel/re-place and marks this write parked: the process-wide
+   * drain skips it instead of waiting out its bound. A run queued behind a
+   * parked one is not registered yet, so it cannot stall the drain either.
    * @returns {Promise<void>}
    */
   const extendBodiesFromRecoveredBuyRows = () => {
-    // Chain onto any earlier run so back-to-back recalcs never overlap; each
-    // run plans against the bodies as they are when it starts.
-    recoveredGrowthChain = recoveredGrowthChain.then(async () => {
+    // Each run plans against the bodies as they are when it starts; extendBody
+    // re-finds the body and recomputes its shortfall after any park.
+    const runGrowth = async () => {
       const { plans, skipped } = planBodyGrowthFromRecoveredBuyRows({ fillLedger, celestialBodies: positionState.celestialBodies });
       for (const { buyOrderId, reason } of skipped) {
         logger.warn(`⚠️ [${exchange}] Recovered buy rows of ${String(buyOrderId).slice(0, 8)} not merged into a body (${reason}) — manual review`, { buyOrderId, reason });
@@ -6576,10 +6586,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           logger.error(`❌ [${exchange}] Growing body ${body.id.slice(-8)} from recovered rows of buy ${String(buyOrderId).slice(0, 8)} failed: ${err.message}`, { bodyId: body.id, buyOrderId, error: err.message });
         }
       }
-    }).catch((err) => {
-      logger.error(`❌ [${exchange}] Recovered-row body growth failed: ${err.message}`, { error: err.message });
-    });
-    return trackPendingWrite(`engine-growth:${fundLabel}`, () => recoveredGrowthChain);
+    };
+    // Chain onto any earlier run so back-to-back recalcs never overlap.
+    recoveredGrowthChain = recoveredGrowthChain
+      .then(() => trackPendingWrite(`engine-growth:${fundLabel}`, runGrowth))
+      .catch((err) => {
+        logger.error(`❌ [${exchange}] Recovered-row body growth failed: ${err.message}`, { error: err.message });
+      });
+    return recoveredGrowthChain;
   };
 
   /**
@@ -7464,12 +7478,26 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * buyOrderId, in whatever order relative to crashes or new fills, the
    * body converges to exactly `totals` — never more.
    *
+   * A top-level accounting writer like a fill or a merge (#1959): while a
+   * backup holds the fence it parks BEFORE cancelling the body's TP, then
+   * re-checks the engine and the body once the hold is released.
+   *
    * @param {string} bodyId - Body to extend (must still be live in this engine)
    * @param {{assetQty:number, costBasis:number, avgPrice:number}} totals - buyOrderId's FULL current fill totals (not a delta)
    * @param {string} buyOrderId - The buy order `totals` describes
    * @returns {Promise<{success: boolean, error?: string, bodyId?: string, tier?: string, alreadyApplied?: boolean, tpPlaced?: boolean}>}
    */
-  const extendBody = async (bodyId, totals, buyOrderId) => {
+  const extendBody = (bodyId, totals, buyOrderId) =>
+    engineLocks.withBackupFence(() => extendBodyFenced(bodyId, totals, buyOrderId));
+
+  /**
+   * extendBody past the backup fence.
+   * @param {string} bodyId
+   * @param {{assetQty:number, costBasis:number, avgPrice:number}} totals
+   * @param {string} buyOrderId
+   * @returns {Promise<{success: boolean, error?: string, bodyId?: string, tier?: string, alreadyApplied?: boolean, tpPlaced?: boolean}>}
+   */
+  const extendBodyFenced = async (bodyId, totals, buyOrderId) => {
     if (!isRunning) return { success: false, error: 'Engine not running' };
     const body = (positionState.celestialBodies || []).find((b) => b.id === bodyId);
     if (!body) return { success: false, error: 'Body not found' };
