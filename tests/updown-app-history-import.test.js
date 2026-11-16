@@ -113,6 +113,21 @@ describe('reconcile', () => {
   });
 });
 
+describe('orphaned imports', () => {
+  it('reports an imported trade whose importKey left the history instead of ignoring it', () => {
+    const cycles = deriveCycles([TWO_CYCLE, NARROW]);
+    const first = reconcile({ trades: [], nextId: 1 }, cycles).ledger;
+    assert.deepEqual(reconcile(first, cycles).diff.orphanedImports, []);
+    // Correcting a line in the JSONL (here the first fill time) changes its importKey.
+    const corrected = deriveCycles([{ ...NARROW, fills: [{ ...NARROW.fills[0], time: '2026-03-15T20:46:13-07:00' }, NARROW.fills[1]] }, TWO_CYCLE]);
+    const { diff } = reconcile(first, corrected);
+    assert.equal(diff.added.length, 1);
+    assert.equal(diff.orphanedImports.length, 1);
+    assert.equal(diff.orphanedImports[0].importKey, cycles.find(c => c.cost === 294.99).importKey);
+    assert.ok(!diff.unmatchedManual.some(r => r.id === diff.orphanedImports[0].id));
+  });
+});
+
 describe('validateTradeRecord', () => {
   it('keeps legacy manual records valid', () => {
     assert.deepEqual(validateTradeRecord({ id: 1, date: '2026-02-19', cost: 187.99, returnAmount: 261.01, pnl: 73.02, note: '' }), []);

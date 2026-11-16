@@ -35,13 +35,24 @@ const r2 = (n) => Math.round(n * 100) / 100;
  *   label?: string}} deps
  */
 const createUpDipPaper = ({ getCandles, statePath, writeJSON, backtestPath, params = UP_DIP_PARAMS, logger, onChange, entryFilter, label = 'up-dip paper' }) => {
-  const empty = () => ({ position: null, pending: null, lastExitAt: null, lastBarTs: 0, cycles: [], events: [], latest: null, startedAt: null });
+  const empty = () => ({ position: null, pending: null, lastExitAt: null, lastBarTs: 0, cycles: [], events: [], latest: null, startedAt: null, totals: null, gaps: 0 });
   let state = empty();
-  try {
-    if (fs.existsSync(statePath)) state = { ...empty(), ...JSON.parse(fs.readFileSync(statePath, 'utf8')) };
-  } catch (err) {
-    logger?.warn?.(`⚠️ 📊 ${label} state unreadable, starting fresh err=${err.message}`, { action: 'up-dip-load', error: err.message });
-  }
+  const load = () => {
+    state = empty();
+    try {
+      if (fs.existsSync(statePath)) state = { ...empty(), ...JSON.parse(fs.readFileSync(statePath, 'utf8')) };
+    } catch (err) {
+      state = empty();
+      logger?.warn?.(`⚠️ 📊 ${label} state unreadable, starting fresh err=${err.message}`, { action: 'up-dip-load', error: err.message });
+    }
+    // State saved before running aggregates existed: seed them from the retained cycles.
+    if (!state.totals) {
+      const pnls = state.cycles.map(c => c.pnl);
+      state.totals = { cycles: pnls.length, wins: pnls.filter(x => x > 0).length, losses: pnls.filter(x => x <= 0).length,
+        pnl: r2(pnls.reduce((a, b) => a + b, 0)), worst: pnls.length ? Math.min(...pnls) : null };
+    }
+  };
+  load();
 
   const save = () => writeJSON(statePath, state);
   const event = (e) => {
@@ -53,6 +64,12 @@ const createUpDipPaper = ({ getCandles, statePath, writeJSON, backtestPath, para
     const cycle = { openedAt: p.openedAt, closedAt: at, contracts: p.contracts, cost: r2(p.cost), proceeds: r2(proceeds),
       pnl: r2(proceeds - p.cost), reason, entryBtc: p.entryPrice, exitBtc: btc, contract: p.contract };
     state.cycles.push(cycle);
+    // Running aggregates survive the MAX_CYCLES trim below, so book totals never drop history.
+    const t = state.totals;
+    t.cycles++;
+    if (cycle.pnl > 0) t.wins++; else t.losses++;
+    t.pnl = r2(t.pnl + cycle.pnl);
+    t.worst = t.worst === null ? cycle.pnl : Math.min(t.worst, cycle.pnl);
     if (state.cycles.length > MAX_CYCLES) state.cycles.splice(0, state.cycles.length - MAX_CYCLES);
     event({ at, action: 'CLOSED', reason, pnl: cycle.pnl, btc });
     state.position = null;
@@ -67,9 +84,20 @@ const createUpDipPaper = ({ getCandles, statePath, writeJSON, backtestPath, para
     const last = m1[m1.length - 1];
     if (last.timestamp <= state.lastBarTs) return false;
     state.startedAt ??= last.timestamp;
-    // Replay only the bars since the last step (normally one) so a fill uses that bar's open.
+    // Replay every bar still in the buffer since the last step (normally one), in order, so
+    // fills, knock-outs and expiry in a restart gap are priced on their own bars.
     const fresh = m1.filter(c => c.timestamp > state.lastBarTs);
-    for (const bar of fresh.slice(-5)) {
+    if (state.lastBarTs > 0 && fresh[0].timestamp - state.lastBarTs > MINUTE_MS) {
+      // Bars between lastBarTs and the buffer start are gone: their knock-outs / fills cannot be
+      // replayed. Mark it visibly and drop a pending fill that would otherwise price at a late bar.
+      const missing = Math.round((fresh[0].timestamp - state.lastBarTs) / MINUTE_MS) - 1;
+      state.gaps = (state.gaps || 0) + 1;
+      event({ at: fresh[0].timestamp, action: 'GAP', missingBars: missing, from: state.lastBarTs + MINUTE_MS,
+        to: fresh[0].timestamp - MINUTE_MS, droppedPending: state.pending?.action ?? null, openPosition: !!state.position });
+      logger?.warn?.(`⚠️ 📊 ${label} candle gap: ${missing} bars missing after restart`, { action: 'up-dip-gap', missingBars: missing });
+      state.pending = null;
+    }
+    for (const bar of fresh) {
       const pending = state.pending;
       if (pending) {
         const px = bar.open;
@@ -125,7 +153,7 @@ const createUpDipPaper = ({ getCandles, statePath, writeJSON, backtestPath, para
   const getStatus = () => {
     const price = state.latest?.features?.price;
     const cycles = state.cycles;
-    const pnls = cycles.map(c => c.pnl);
+    const t = state.totals;
     return {
       paperOnly: true,
       params,
@@ -135,8 +163,7 @@ const createUpDipPaper = ({ getCandles, statePath, writeJSON, backtestPath, para
       pending: state.pending ? { action: state.pending.action } : null,
       position: state.position ? { ...state.position, cost: r2(state.position.cost),
         ...(price ? { markBtc: price, pnl: r2(markPosition(state.position, price).pnl) } : {}) } : null,
-      summary: { cycles: cycles.length, wins: pnls.filter(p => p > 0).length, losses: pnls.filter(p => p <= 0).length,
-        pnl: r2(pnls.reduce((a, b) => a + b, 0)), worst: pnls.length ? Math.min(...pnls) : null },
+      summary: { cycles: t.cycles, wins: t.wins, losses: t.losses, pnl: t.pnl, worst: t.worst, gaps: state.gaps || 0 },
       cycles: cycles.slice(-50).reverse(),
       events: state.events.slice(-30).reverse(),
       backtest: readBacktest(),
@@ -144,17 +171,26 @@ const createUpDipPaper = ({ getCandles, statePath, writeJSON, backtestPath, para
   };
 
   /** Poll for newly completed 1m bars every intervalMs; returns a stop function. */
+  let timer = null;
+  const stop = () => {
+    if (timer) clearInterval(timer);
+    timer = null;
+  };
   const start = (intervalMs = 15_000) => {
+    stop();
     const run = () => {
       try { step(); } catch (err) { logger?.warn?.(`⚠️ 📊 ${label} step failed err=${err.message}`, { action: 'up-dip-step', error: err.message }); }
     };
-    const timer = setInterval(run, intervalMs);
+    timer = setInterval(run, intervalMs);
     timer.unref?.();
     run();
-    return () => clearInterval(timer);
+    return stop;
   };
 
-  return { step, getStatus, start };
+  /** Re-read the state file (after a restore) so in-memory state never overwrites it. */
+  const reload = () => { load(); };
+
+  return { step, getStatus, start, stop, reload };
 };
 
 module.exports = { createUpDipPaper };

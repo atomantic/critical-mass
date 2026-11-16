@@ -466,7 +466,7 @@ describe('settings route is wired to the quiescence gate', () => {
   const BASE_CONFIG_FILE = path.join(__dirname, '..', 'config.json');
   const CONFIG = { exchanges: { coinbase: { pairs: { 'BTC-USDC': { productId: 'BTC-USDC' } } } } };
 
-  const setup = (ipc, recoveryCalls = [], { preflightCalls = [], realPreflight = false } = {}) => {
+  const setup = (ipc, recoveryCalls = [], { preflightCalls = [], realPreflight = false, extraDeps = {} } = {}) => {
     configUtils._resetConfigCacheForTests();
     mock.method(fs, 'existsSync', (p) => p === BASE_CONFIG_FILE);
     mock.method(fs, 'readFileSync', (p) => {
@@ -494,7 +494,7 @@ describe('settings route is wired to the quiescence gate', () => {
     const checkRestorePreconditions = realPreflight
       ? undefined
       : async (filename, options) => { preflightCalls.push({ filename, options }); return { ok: true }; };
-    registerSettingsRoutes(app, { exchangeIPCMap: { coinbase: ipc }, rescheduleBackupTimer: () => {}, createRecoveryPoint, checkRestorePreconditions });
+    registerSettingsRoutes(app, { exchangeIPCMap: { coinbase: ipc }, rescheduleBackupTimer: () => {}, createRecoveryPoint, checkRestorePreconditions, ...extraDeps });
     return async (body = {}) => {
       const res = { statusCode: 200, body: null, status(c) { this.statusCode = c; return this; }, json(b) { this.body = b; return this; } };
       await handler({ params: { filename: 'backup-2026-01-01.zip' }, body }, res);
@@ -529,6 +529,14 @@ describe('settings route is wired to the quiescence gate', () => {
     assert.equal(res.body.error, 'Backup not found. Engines stopped for the restore were restarted: coinbase BTC-USDC.');
     assert.deepEqual(res.body.stoppedEngines, ['coinbase BTC-USDC']);
     assert.deepEqual(res.body.restartedEngines, ['coinbase BTC-USDC']);
+  });
+
+  it('stops both UpDown paper books before the archive and reloads them from the restored files after', async () => {
+    const order = [];
+    const book = (name) => ({ stop: () => order.push(`${name}:stop`), reload: () => order.push(`${name}:reload`), start: () => order.push(`${name}:start`) });
+    const invoke = setup(okIPC(), [], { extraDeps: { upDipPaper: book('paper'), upDipShadow: book('shadow') } });
+    await invoke();
+    assert.deepEqual(order, ['paper:stop', 'shadow:stop', 'paper:reload', 'paper:start', 'shadow:reload', 'shadow:start']);
   });
 
   it('refuses a missing archive before stopping any engine', async () => {
