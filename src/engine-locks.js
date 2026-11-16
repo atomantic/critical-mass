@@ -28,8 +28,9 @@
  *     lock (it takes it only when free, otherwise runs unserialised).
  *
  * Backup fence (#1945): while a backup holds it (holdBackupFence), every NEW
- * top-level writer — fills, merges, entries, ladder sweeps, reconcile — parks
- * before taking any lock above, and the holder waits (bounded) for the writers
+ * top-level writer — fills, merges, entries, ladder sweeps, reconcile, body
+ * extends (#1959), stale-order checks (#1959) — parks before taking any lock
+ * above, and the holder waits (bounded) for the writers
  * already past the fence to finish (waitForBackupIdle). Parking happens before
  * a lock is acquired and before a lock flag is set, and work nested in a
  * writer that already passed (its AsyncLocalStorage context) runs through, so

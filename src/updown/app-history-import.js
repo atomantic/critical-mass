@@ -94,7 +94,7 @@ const reconcile = (ledger, cycles, { now = new Date().toISOString() } = {}) => {
     if (!matched.has(c.importKey)) pick(c, t => same(t.returnAmount, c.returnAmount) || same(t.cost, c.cost), 'near', NEAR_DAYS);
   }
 
-  const diff = { enriched: [], corrected: [], added: [], unchanged: [], unmatchedManual: [] };
+  const diff = { enriched: [], corrected: [], added: [], unchanged: [], unmatchedManual: [], orphanedImports: [] };
   for (const c of cycles) {
     const next = cycleFields(c);
     const m = matched.get(c.importKey);
@@ -120,6 +120,14 @@ const reconcile = (ledger, cycles, { now = new Date().toISOString() } = {}) => {
       diff.corrected.push({ ...row, from: Object.fromEntries(amountChanges.map(k => [k, trade.importedFrom.previous[k]])),
         to: Object.fromEntries(amountChanges.map(k => [k, next[k]])) });
     } else diff.enriched.push(row);
+  }
+  // An imported trade whose key is no longer in the history (the JSONL line was corrected) would
+  // otherwise sit beside the re-added corrected trade, double-counting it. Report it; never delete.
+  const liveKeys = new Set(cycles.map(c => c.importKey));
+  for (const t of trades) {
+    if (t.importKey && !liveKeys.has(t.importKey)) {
+      diff.orphanedImports.push({ id: t.id, date: t.date, cost: t.cost, returnAmount: t.returnAmount, pnl: t.pnl, importKey: t.importKey });
+    }
   }
   for (const t of trades) {
     if (!used.has(t.id) && !t.importKey) diff.unmatchedManual.push({ id: t.id, date: t.date, cost: t.cost, returnAmount: t.returnAmount, pnl: t.pnl });

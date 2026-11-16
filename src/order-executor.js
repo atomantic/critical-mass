@@ -33,6 +33,7 @@ const { createExecutorOrderState } = require('./executor-order-state');
  * @param {Function} [callbacks.onFillDetected] - Called when fill is detected via polling: (orderId, orderStatus). Returning/resolving false leaves an unchanged partial retryable.
  * @param {(orderId: string) => number} [callbacks.getRecordedSizeForOrder] - Durable fill-ledger size, used to distinguish detected partials from booked partials during a cancel sweep
  * @param {Function} [callbacks.onEntryCancelled] - Called when an entry order is cancelled (stale timeout, refresh, etc.): (orderId, {filledSize})
+ * @param {(run: () => Promise<void>) => Promise<void>} [callbacks.withStaleCheckFence] - Runs each fired stale-order check, so the consumer can hold it behind a backup fence (#1959); defaults to running it directly
  * @param {string} [pair] - Fund pair name (the `data/<exchange>/<pair>/` directory), used to scope durable placement intents; defaults to productId
  * @returns {Object} Order executor instance
  */
@@ -61,6 +62,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     getPendingLadderOrders, getActiveTpOrderId, isTrackedTpOrder, isBodyTpOrder,
     getBodyByTpOrderId, removeBodyTracking, markSettled, handleOrderFill, handleOrderCancel } = orderState;
   const baseCurrency = getBaseCurrency(productId);
+  const withStaleCheckFence = callbacks.withStaleCheckFence || ((run) => run());
 
   let staleTimeoutMultiplier = 1.0; // Can be adjusted by regime
   let priceIncrement = 0.01; // Updated via setPriceIncrement from product details
@@ -709,7 +711,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
   // loops / .then chains). handleCancelledOrder is async, so any rejection
   // (throwing callback, null status) would otherwise surface as an unhandled
   // rejection and take down the whole exchange engine.
-  const settleCancelled = (orderId, order, status, context) => {
+  const settleCancelled = (orderId, order, status, context) =>
     Promise.resolve()
       .then(() => handleCancelledOrder(orderId, order, status, context))
       .catch(err => {
@@ -720,7 +722,6 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
           error: err?.message || String(err),
         });
       });
-  };
 
   /**
    * Schedule stale order timeout for entry order
@@ -735,91 +736,107 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     const timer = setTimeout(() => {
       staleTimers.delete(timer);
       if (staleTimerByOrder.get(orderId) === timer) staleTimerByOrder.delete(orderId);
-      const order = pendingOrders.get(orderId);
-      if (!order || order.type !== 'entry') return;
-
-      adapter.getOrder(orderId)
-        .then(status => {
-          // Normalize status to uppercase for comparison
-          const normalizedStatus = (status.status || '').toUpperCase();
-
-          if (isFilledStatus(status)) {
-            // Order filled but WebSocket missed it - notify regime engine
-            logger.info(`✅ [${exchange}] Stale check detected filled order ${orderId} (WebSocket missed)`, {
-              orderId,
-              orderType: order.type,
-              status: status.status || 'FILLED',
-              reconciliationContext: 'Stale check',
-            });
-            // Capture placedAt BEFORE deleting from pendingOrders
-            const placedAt = order.placedAt;
-            pendingOrders.delete(orderId);
-            markSettled(orderId, order.type);
-            if (callbacks.onFillDetected) {
-              callbacks.onFillDetected(orderId, { ...status, placedAt });
-            }
-          } else if (normalizedStatus === 'CANCELLED') {
-            settleCancelled(orderId, order, status, 'Stale check');
-          } else if (normalizedStatus === 'OPEN' || normalizedStatus === 'PARTIALLY_FILLED') {
-            // Still resting past its stale window — cancel, including a bid that
-            // has partially filled (Coinbase reports that as OPEN with
-            // completionPercentage > 0): the timer is one-shot, so leaving it
-            // would keep it resting and block every new reactive entry until
-            // price returns. The cancel result routes any filled portion
-            // through onFillDetected below. Use safeCancelOrder
-            // instead of a raw adapter.cancelOrder: the exchange refuses a cancel
-            // when the order already filled, and a fill (full or partial) can also
-            // land while the cancel is in flight. Either race must be routed
-            // through the fill handlers instead of silently dropping the order
-            // from tracking (issue #674, mirrors handleCancelledOrder's other
-            // callers). Entry orders are always buy-side.
-            logger.info(`⏰ [${exchange}] Stale order timeout, cancelling unfilled order ${orderId}`, {
-              orderId,
-              orderType: order.type,
-              status: normalizedStatus,
-              staleMs,
-            });
-            return safeCancelOrder(orderId).then(result => {
-              const details = {
-                filledSize: result.filledSize || 0,
-                filledValue: result.filledValue || 0,
-                averageFilledPrice: result.averageFilledPrice || 0,
-                totalFees: result.totalFees || 0,
-              };
-              if (result.filled) {
-                logger.info(`📋 [${exchange}] Order ${orderId.slice(0, 8)} filled during stale-timeout cancel`, {
-                  orderId,
-                  orderType: order.type,
-                  filledSize: details.filledSize,
-                });
-                const placedAt = order.placedAt;
-                pendingOrders.delete(orderId);
-                partialFillTracker.delete(orderId);
-                markSettled(orderId, order.type);
-                if (callbacks.onFillDetected) {
-                  callbacks.onFillDetected(orderId, { status: 'FILLED', side: 'buy', ...details, placedAt });
-                }
-                return;
-              }
-              if (result.cancelled) {
-                settleCancelled(orderId, order, { status: 'CANCELLED', side: 'buy', ...details }, 'Stale check');
-                return;
-              }
-              // Neither filled nor cancelled (ack'd but never settled, or the
-              // cancel call itself errored) — keep it tracked so the polling
-              // backstop (checkPendingOrderFills) can still catch it.
-              logger.warn(`⚠️ [${exchange}] Stale order cancel for ${orderId} left in unknown state — keeping tracked for polling backstop`, { orderId });
-            }).catch(err => logger.error(`❌ [${exchange}] Stale order cancel failed for ${orderId}: ${err.message}`, { orderId, error: err.message }));
-          }
-        })
-        .catch(err => {
-          logger.error(`❌ [${exchange}] Stale order check failed for ${orderId}: ${err.message}`, { orderId, error: err.message });
-        });
+      // Backup fence (#1959): a timer that fires during a hold waits for the
+      // release, then re-checks the order, instead of cancelling while the
+      // durability save it triggers is deferred.
+      Promise.resolve()
+        .then(() => withStaleCheckFence(() => runStaleCheck(orderId, staleMs)))
+        .catch(err => logger.error(`❌ [${exchange}] Stale order check failed for ${orderId}: ${err?.message || err}`, { orderId, error: err?.message || String(err) }));
     }, staleMs);
     // Pending stale checks must not keep the process alive on their own
     timer.unref?.();
     staleTimers.add(timer);
     staleTimerByOrder.set(orderId, timer);
+  };
+
+  /**
+   * The stale-timeout check itself: re-read the order and settle it. Returns
+   * once every callback it fires has settled, so a fenced caller counts the
+   * whole check (cancel, fill routing, cancel bookkeeping) as one writer.
+   * @param {string} orderId
+   * @param {number} staleMs
+   * @returns {Promise<void>}
+   */
+  const runStaleCheck = async (orderId, staleMs) => {
+    const order = pendingOrders.get(orderId);
+    if (!order || order.type !== 'entry') return;
+
+    await adapter.getOrder(orderId)
+      .then(status => {
+        // Normalize status to uppercase for comparison
+        const normalizedStatus = (status.status || '').toUpperCase();
+
+        if (isFilledStatus(status)) {
+          // Order filled but WebSocket missed it - notify regime engine
+          logger.info(`✅ [${exchange}] Stale check detected filled order ${orderId} (WebSocket missed)`, {
+            orderId,
+            orderType: order.type,
+            status: status.status || 'FILLED',
+            reconciliationContext: 'Stale check',
+          });
+          // Capture placedAt BEFORE deleting from pendingOrders
+          const placedAt = order.placedAt;
+          pendingOrders.delete(orderId);
+          markSettled(orderId, order.type);
+          if (callbacks.onFillDetected) {
+            return callbacks.onFillDetected(orderId, { ...status, placedAt });
+          }
+        } else if (normalizedStatus === 'CANCELLED') {
+          return settleCancelled(orderId, order, status, 'Stale check');
+        } else if (normalizedStatus === 'OPEN' || normalizedStatus === 'PARTIALLY_FILLED') {
+          // Still resting past its stale window — cancel, including a bid that
+          // has partially filled (Coinbase reports that as OPEN with
+          // completionPercentage > 0): the timer is one-shot, so leaving it
+          // would keep it resting and block every new reactive entry until
+          // price returns. The cancel result routes any filled portion
+          // through onFillDetected below. Use safeCancelOrder
+          // instead of a raw adapter.cancelOrder: the exchange refuses a cancel
+          // when the order already filled, and a fill (full or partial) can also
+          // land while the cancel is in flight. Either race must be routed
+          // through the fill handlers instead of silently dropping the order
+          // from tracking (issue #674, mirrors handleCancelledOrder's other
+          // callers). Entry orders are always buy-side.
+          logger.info(`⏰ [${exchange}] Stale order timeout, cancelling unfilled order ${orderId}`, {
+            orderId,
+            orderType: order.type,
+            status: normalizedStatus,
+            staleMs,
+          });
+          return safeCancelOrder(orderId).then(result => {
+            const details = {
+              filledSize: result.filledSize || 0,
+              filledValue: result.filledValue || 0,
+              averageFilledPrice: result.averageFilledPrice || 0,
+              totalFees: result.totalFees || 0,
+            };
+            if (result.filled) {
+              logger.info(`📋 [${exchange}] Order ${orderId.slice(0, 8)} filled during stale-timeout cancel`, {
+                orderId,
+                orderType: order.type,
+                filledSize: details.filledSize,
+              });
+              const placedAt = order.placedAt;
+              pendingOrders.delete(orderId);
+              partialFillTracker.delete(orderId);
+              markSettled(orderId, order.type);
+              if (callbacks.onFillDetected) {
+                return callbacks.onFillDetected(orderId, { status: 'FILLED', side: 'buy', ...details, placedAt });
+              }
+              return;
+            }
+            if (result.cancelled) {
+              return settleCancelled(orderId, order, { status: 'CANCELLED', side: 'buy', ...details }, 'Stale check');
+            }
+            // Neither filled nor cancelled (ack'd but never settled, or the
+            // cancel call itself errored) — keep it tracked so the polling
+            // backstop (checkPendingOrderFills) can still catch it.
+            logger.warn(`⚠️ [${exchange}] Stale order cancel for ${orderId} left in unknown state — keeping tracked for polling backstop`, { orderId });
+          }).catch(err => logger.error(`❌ [${exchange}] Stale order cancel failed for ${orderId}: ${err.message}`, { orderId, error: err.message }));
+        }
+      })
+      .catch(err => {
+        logger.error(`❌ [${exchange}] Stale order check failed for ${orderId}: ${err.message}`, { orderId, error: err.message });
+      });
   };
 
   /**

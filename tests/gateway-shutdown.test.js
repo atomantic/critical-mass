@@ -72,15 +72,18 @@ describe('gateway shutdown owns admitted work', () => {
     // A running service under maintenance belongs to a fund-state snapshot,
     // which never stops it, so shutdown must still persist it.
     for (const [maintenance, running, expected] of [
-      [true, false, ['logs']],
-      [true, true, ['updown', 'sentinel', 'logs']],
-      [false, false, ['updown', 'sentinel', 'logs']],
+      // The paper books never persist on stop, so they always stop.
+      [true, false, ['paper', 'shadow', 'logs']],
+      [true, true, ['updown', 'sentinel', 'paper', 'shadow', 'logs']],
+      [false, false, ['updown', 'sentinel', 'paper', 'shadow', 'logs']],
     ]) {
       const calls = [];
       const context = vm.createContext({
         isMaintenanceActive: () => maintenance,
         updownService: { getStatus: () => ({ running }), stop: () => calls.push('updown') },
         sentinelService: { getStatus: () => ({ running }), stop: () => calls.push('sentinel') },
+        upDipPaper: { stop: () => calls.push('paper') },
+        upDipShadow: { stop: () => calls.push('shadow') },
         activeLogStreams: { stopAll: () => calls.push('logs') },
       });
       vm.runInContext(`({${block}}).stopProducers()`, context);
