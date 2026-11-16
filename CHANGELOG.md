@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- **[issue-1961] UpDown paper books and app-history import fixes** — the paper books now replay every buffered 1m bar after a restart (previously only the last 5), so floor knock-outs, fills and expiry in the gap are priced on their own bars; if the buffer lost bars, a visible `GAP` event is recorded and a stale pending fill is dropped. Book totals (cycles, W/L, P&L, worst) come from running aggregates that survive the 500-cycle list cap. A restore now stops both paper books and reloads them from the restored `up-dip-paper*.json` (they also stop on gateway shutdown). The app-history import reports `orphanedImports` (imported trades whose `importKey` no longer appears in the history) and `--apply` refuses while any exist unless `--allow-orphaned-imports` is passed.
+
 - Update the admin test DOM to jsdom 31.0.1 for focus, style and selector fixes, and refresh compatible URL encoding, rendering helper, module resolution and domain parsing dependencies.
 
 - Update Vite to 8.3.8 and refresh compatible Express and admin transitive dependencies, including request parsing, routing, rendering helpers and the build toolchain.

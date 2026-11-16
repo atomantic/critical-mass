@@ -159,6 +159,8 @@ const gatewayShutdown = createGatewayShutdown({
       ...[['UpDown', updownService], ['Sentinel', sentinelService]]
         .filter(([, service]) => !ownedByMaintenance(service))
         .map(([serviceName, service]) => [serviceName, () => service.stop()]),
+      ['UpDown paper book', () => upDipPaper.stop()],
+      ['UpDown shadow book', () => upDipShadow.stop()],
       ['log streams', () => activeLogStreams.stopAll()],
     ]) {
       try {
@@ -421,7 +423,7 @@ const sharedDeps = { trackBackgroundWork: gatewayShutdown.track, io, parseTSV, c
 
 require('./src/routes/sentinel-routes')(routes, { ...sharedDeps, sentinelService, getSentinelConfig, updateSentinelConfig });
 require('./src/routes/ai-routes')(routes, sharedDeps);
-require('./src/routes/settings-routes')(routes, { ...sharedDeps, updownService, sentinelService, candleCache, runBackup, getBackupSchedulerStatus: () => backupScheduler.getStatus() });
+require('./src/routes/settings-routes')(routes, { ...sharedDeps, updownService, sentinelService, upDipPaper, upDipShadow, candleCache, runBackup, getBackupSchedulerStatus: () => backupScheduler.getStatus() });
 require('./src/routes/candle-routes')(routes, { candleCache });
 require('./src/routes/updown-routes')(routes, { ...sharedDeps, updownService, candleCache, upDipPaper, upDipShadow });
 require('./src/routes/exchange-routes')(routes, sharedDeps);

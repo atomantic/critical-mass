@@ -238,7 +238,7 @@ export default function UpDipPanel() {
           <div className="text-amber-300/80">High win rate, rare full-cost floor knock-outs; not robust out of sample. Watch, don&apos;t trade it.</div>
         </div>
       )}
-      {data?.startedAt && <div className="text-2xs text-gray-400 mt-1">Paper tracking since {when(data.startedAt)}</div>}
+      {data?.startedAt && <div className="text-2xs text-gray-400 mt-1">Paper tracking since {when(data.startedAt)}{s?.gaps > 0 && <span className="text-amber-300/80"> · {s.gaps} candle gap{s.gaps === 1 ? '' : 's'} (restart outage, bars missed)</span>}</div>}
     </div>
     {data?.shadow && <ShadowBook book={data.shadow} />}
     </>

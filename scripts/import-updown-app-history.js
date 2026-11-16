@@ -11,7 +11,9 @@
  * --apply backs the ledger up next to itself (updown-trades.json.bak-<ts>) and
  * writes atomically. The gateway (PM2 `critical-mass`) owns this file — stop it
  * first (see CLAUDE.md / UPGRADE.md); --apply refuses while it is online unless
- * --ledger points elsewhere.
+ * --ledger points elsewhere. --apply also refuses while the dry run lists
+ * orphaned imports (imported trades whose importKey is no longer in the history,
+ * e.g. after a JSONL line was corrected) unless --allow-orphaned-imports is passed.
  */
 const fs = require('fs')
 const path = require('path')
@@ -40,6 +42,7 @@ const totals = (trades) => ({
 function main(argv) {
   const arg = (name, def) => { const i = argv.indexOf(`--${name}`); return i >= 0 ? argv[i + 1] : def }
   const apply = argv.includes('--apply')
+  const allowOrphans = argv.includes('--allow-orphaned-imports')
   const file = arg('file', DEFAULT_FILE)
   const ledgerPath = arg('ledger', DEFAULT_LEDGER)
 
@@ -60,6 +63,7 @@ function main(argv) {
   for (const r of diff.added) console.log(`  ${fmt(r)} cost ${r.cost} return ${r.returnAmount} (${r.importKey})`)
   console.log(`\nunchanged (already imported): ${diff.unchanged.length}`)
   console.log(`unmatched manual trades left as-is (${diff.unmatchedManual.length}): ${diff.unmatchedManual.map(fmt).join(', ') || '-'}`)
+  console.log(`orphaned imports, key no longer in the history (${diff.orphanedImports.length}): ${diff.orphanedImports.map(r => `${fmt(r)} (${r.importKey})`).join(', ') || '-'}`)
   if (errors.length) {
     console.error(`\nVALIDATION FAILED:\n  ${errors.join('\n  ')}`)
     process.exitCode = 1
@@ -69,6 +73,11 @@ function main(argv) {
   if (!apply) { console.log('dry run — nothing written (pass --apply)'); return }
   if (path.resolve(ledgerPath) === path.resolve(DEFAULT_LEDGER) && gatewayOnline()) {
     console.error('refusing --apply: PM2 critical-mass (owner of the trades file) is online; stop it first')
+    process.exitCode = 1
+    return
+  }
+  if (diff.orphanedImports.length && !allowOrphans) {
+    console.error('refusing --apply: orphaned imports would double-count a corrected trade; delete or fix them, or pass --allow-orphaned-imports')
     process.exitCode = 1
     return
   }
