@@ -4,6 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- **[issue-1960] Placement evidence no longer clears an intent whose order filled between the open-order and fill reads** — an order that filled just before the open-order read, while the fill history had not caught up, was missing from both reads, so the stuck placement intent was released (and placements resumed) while a filled order existed. An `absent` verdict now requires the fill history to reach past the first open-order read (Crypto.com reports its scan bound) and a second open-order read, taken after the fills, that also shows no match; any disagreement stays inconclusive for the next reconcile pass.
 - Update the admin test DOM to jsdom 31.0.1 for focus, style and selector fixes, and refresh compatible URL encoding, rendering helper, module resolution and domain parsing dependencies.
 
 - Update Vite to 8.3.8 and refresh compatible Express and admin transitive dependencies, including request parsing, routing, rendering helpers and the build toolchain.
