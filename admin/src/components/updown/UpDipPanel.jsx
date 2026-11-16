@@ -1,12 +1,12 @@
 import { useState, useEffect, useCallback } from 'react'
 import { TrendingUp } from '../icons'
 import { apiGet } from '../../utils/apiClient'
+import useRealtimeRefresh from '../../hooks/useRealtimeRefresh'
 import { formatUsd } from '../../utils/format.mjs'
 import { signedPrefix } from '../../utils/pnlFormat.mjs'
 
 // Paper-only: shows what the Up dip setup would do and how its paper book is
 // doing. Nothing here (or behind /api/updown/up-dip) places an order.
-const POLL_MS = 30_000
 
 const ACTION_STYLE = {
   ENTER: 'text-green-400 border-green-700 bg-green-900/30',
@@ -48,9 +48,11 @@ export default function UpDipPanel() {
   useEffect(() => {
     let active = true
     load(() => active)
-    const timer = setInterval(() => load(() => active), POLL_MS)
-    return () => { active = false; clearInterval(timer) }
+    return () => { active = false }
   }, [load])
+
+  // The gateway emits updown:up-dip after each completed 1m bar it evaluates.
+  useRealtimeRefresh({ events: ['updown:up-dip'], rooms: ['updown'], minIntervalMs: 5000, onRefresh: load })
 
   const decision = data?.latest?.decision
   const pos = data?.position
@@ -152,7 +154,7 @@ export default function UpDipPanel() {
           <div className="text-amber-300/80">High win rate, rare full-cost floor knock-outs; not robust out of sample. Watch, don&apos;t trade it.</div>
         </div>
       )}
-      {data?.startedAt && <div className="text-2xs text-gray-500 mt-1">Paper tracking since {when(data.startedAt)}</div>}
+      {data?.startedAt && <div className="text-2xs text-gray-400 mt-1">Paper tracking since {when(data.startedAt)}</div>}
     </div>
   )
 }

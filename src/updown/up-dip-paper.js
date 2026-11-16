@@ -27,9 +27,9 @@ const r2 = (n) => Math.round(n * 100) / 100;
 /**
  * @param {{getCandles: (tf: string) => any[], statePath: string,
  *   writeJSON: (p: string, d: any) => void, backtestPath?: string,
- *   params?: typeof UP_DIP_PARAMS, logger?: {warn: Function}}} deps
+ *   params?: typeof UP_DIP_PARAMS, logger?: {warn: Function}, onChange?: () => void}} deps
  */
-const createUpDipPaper = ({ getCandles, statePath, writeJSON, backtestPath, params = UP_DIP_PARAMS, logger }) => {
+const createUpDipPaper = ({ getCandles, statePath, writeJSON, backtestPath, params = UP_DIP_PARAMS, logger, onChange }) => {
   const empty = () => ({ position: null, pending: null, lastExitAt: null, lastBarTs: 0, cycles: [], events: [], latest: null, startedAt: null });
   let state = empty();
   try {
@@ -102,6 +102,7 @@ const createUpDipPaper = ({ getCandles, statePath, writeJSON, backtestPath, para
       event({ at: now, action: decision.action, btc: features?.price ?? null, reasons: decision.reasons.slice(0, 2) });
     }
     save();
+    onChange?.();
     return true;
   };
 

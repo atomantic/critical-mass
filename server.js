@@ -370,6 +370,7 @@ const upDipPaper = createUpDipPaper({
   backtestPath: path.join(DATA_DIR, 'updown', 'backtest', 'up-dip-report.json'),
   writeJSON,
   logger: createContextLogger({ module: 'up-dip-paper' }),
+  onChange: () => io.to('updown').emit('updown:up-dip', {}),
 });
 upDipPaper.start();
 

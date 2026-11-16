@@ -429,7 +429,7 @@ export default function TradeHistory() {
                 <tr className="border-b border-gray-700/50 hover:bg-gray-700/20" title={t.note || t.appNote || undefined}>
                   <td className="py-1 pr-1 text-gray-300 whitespace-nowrap">
                     {t.fills?.length ? (
-                      <button type="button" onClick={() => setExpandedId(expanded ? null : t.id)} aria-expanded={expanded}
+                      <button type="button" disabled={busy} onClick={() => setExpandedId(expanded ? null : t.id)} aria-expanded={expanded}
                         aria-label={`${expanded ? 'Hide' : 'Show'} fills for trade from ${fmtDate(t.date)}`} className="text-left">
                         {fmtDate(t.date)}
                         <div className="text-2xs text-gray-400">{line}</div>
