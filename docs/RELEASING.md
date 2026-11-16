@@ -29,4 +29,6 @@ The Umbrel manifests (`umbrel/docker-compose.yml`, `umbrel/umbrel-app.yml`) have
 3. Run `npm test`. `tests/umbrel-packaging-contract.test.js` checks, offline and without credentials, that the image is digest-pinned, that both manifests record the same version, that the selected release is not older than the gateway port migration, and that `APP_PORT`, `umbrel-app.yml` `port`, the Dockerfile `EXPOSE` and `ecosystem.config.cjs` `PORTS.API` all agree.
 4. Smoke-test the pinned image the way Umbrel runs it: start it with a fresh disposable data directory bound to `/app/data`, confirm `GET /` on the gateway port returns the dashboard and a protected API route returns HTTP 401, then read `data/operator-bootstrap-secret` from the mounted directory and complete operator enrollment. Restart the container against the same data directory and confirm the enrolled operator and configuration survive the upgrade path.
 
+After changing the pinned Umbrel digest, run **Actions → Image Security** so the new image's inventories and findings replace the old evidence; `scripts/verify-image-scan-evidence.js` rejects evidence whose Umbrel digest no longer matches the manifest (see `docs/IMAGE_SECURITY.md`).
+
 The Umbrel store copies these manifests verbatim, so a mismatch between the pinned version and the proxy port ships an installation that cannot reach its own dashboard.
