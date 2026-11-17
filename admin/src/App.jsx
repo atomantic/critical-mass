@@ -238,6 +238,39 @@ function AppContent() {
   const currentStrategy = resolveStrategy(currentExchangeConfig)
   const currentPair = urlPair || currentExchangeConfig?.productId || 'BTC-USDC'
 
+  // Only /:exchange/:pair routes belong to a fund. Every other page (Overview,
+  // Backups, Notifications, Systems, ...) is global: it must not fetch fund
+  // data, wait on it, or show fund-only banners and controls. currentExchange /
+  // currentPair above are guesses off these routes, never a reason to fetch.
+  const isFundRoute = Boolean(urlExchange && urlPair)
+  const urlFund = isFundRoute
+    ? exchanges.find((e) => e.name === urlExchange && (e.pair ?? e.productId)?.toUpperCase() === urlPair.toUpperCase())
+    : undefined
+  // Fund data is read only once the fund list has loaded and names this fund,
+  // so a mistyped or removed fund never costs a request (the gateway answers
+  // an unknown fund with 400) and strategy is known before any status read.
+  const fundReady = isFundRoute && exchangesLoaded && Boolean(urlFund)
+  const fundMissing = isFundRoute && exchangesLoaded && !urlFund
+  const awaitingFundList = isFundRoute && !exchangesLoaded && !exchangesError
+
+  // Get the current sub-path (tab) without the exchange/pair prefix
+  const getSubPath = () => {
+    if (!isFundRoute) return location.pathname
+    return location.pathname.replace(`/${urlExchange}/${urlPair}`, '') || ''
+  }
+
+  const isActiveTab = (tabPath) => {
+    const subPath = getSubPath()
+    if (tabPath === '') return subPath === '' || subPath === '/'
+    return subPath.startsWith(tabPath)
+  }
+
+  // The summary feeds DCA dashboards and, for regime funds, only the Config
+  // tab (regime dashboards read their own endpoints). buildFundSummary walks
+  // the whole fill ledger, so a regime fund skips it everywhere else.
+  const summaryWanted = fundReady && (currentStrategy !== 'regime' || isActiveTab('/config'))
+  const pollRegime = fundReady && currentStrategy === 'regime'
+
   // Committed navigation and request generations. These refs are only advanced
   // in event handlers or layout effects: an abandoned concurrent render must
   // never invalidate requests belonging to the still-committed screen.
@@ -396,7 +429,7 @@ function AppContent() {
       summaryRequestRef.current.generation === requestGeneration
     try {
       const result = await apiGet(`/api/${currentExchange}/summary${pairQuery()}`, { signal: controller.signal })
-      if (!isCurrent()) return
+      if (!isCurrent()) return false
       if (!result.ok) {
         // No reply read (network failure or a non-JSON 2xx page): the gateway is unreachable.
         const unreadable = result.status === 0 || (result.status < 400 && result.data === null)
@@ -404,19 +437,25 @@ function AppContent() {
           ? `Could not reach the gateway to load ${currentExchange}/${currentPair}.`
           : `Could not load ${currentExchange}/${currentPair}: ${result.data?.error || `HTTP ${result.status}`}`)
         setLoading(false)
-        return
+        return false
       }
       const data = result.data
       setSummarySnapshot({ fund: reqFund, data })
       setLoading(false)
-
-      // Also refresh exchanges list to update badges (enabled/dryRun status)
-      fetchExchanges()
+      return true
     } catch (err) {
       if (err?.name !== 'AbortError') throw err
+      return false
     } finally {
       if (summaryRequestRef.current.controller === controller) summaryRequestRef.current.controller = null
     }
+  }
+
+  // After an operator-driven change (config save, DCA action) the fund's badges
+  // (enabled/dry-run) may have moved too, so re-read the fund list. Background
+  // refreshes do not: they would cost a second request per summary read.
+  const refreshFund = async () => {
+    if (await fetchData()) fetchExchanges()
   }
 
   // Fetch regime status (for header controls)
@@ -593,22 +632,33 @@ function AppContent() {
   // Summary: one read per fund, then re-read when the gateway reports order,
   // cycle, engine-state or trade activity for it (#1880).
   useEffect(() => {
-    if (currentExchange) fetchData()
+    if (summaryWanted) fetchData()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentExchange, currentPair])
+  }, [summaryWanted, currentExchange, currentPair])
   useRealtimeRefresh({
     events: ['regime:changed', 'regime:state', 'trade:event'],
     filter: (event) => event?.exchange === currentExchange && (!event.pair || !currentPair || event.pair === currentPair),
-    enabled: Boolean(currentExchange),
+    enabled: summaryWanted,
     minIntervalMs: 5000,
     onRefresh: fetchData,
   })
 
   // Fetch regime status when on regime strategy
-  const pollRegime = currentStrategy === 'regime' && Boolean(currentExchange)
   useEffect(() => {
-    if (!pollRegime) setRegimeRunning(false)
-  }, [pollRegime])
+    if (pollRegime) return
+    if (currentStrategy !== 'regime') {
+      setRegimeRunning(false)
+      return
+    }
+    // A regime fund whose status is not being read (a global page, or the fund
+    // list not naming it yet): its last status is no longer tracked, so a read
+    // still in flight must not land and the header must not trust it.
+    invalidateStatusRead()
+    setRegimeRunning(null)
+    setRegimeDryRun(null)
+    setRegimeLifecycle(null)
+    setStatusError(null)
+  }, [pollRegime, currentStrategy])
   // One read per fund, then pushed `regime:state` events; reconciled on socket
   // reconnect and tab visibility instead of a timer (#1878).
   useEffect(() => {
@@ -638,33 +688,6 @@ function AppContent() {
     },
     onReconcile: fetchRegimeStatus,
   })
-
-  // Get the current sub-path (tab) without the exchange/pair prefix
-  const getSubPath = () => {
-    if (!urlExchange || !urlPair) return location.pathname
-    return location.pathname.replace(`/${urlExchange}/${urlPair}`, '') || ''
-  }
-
-  const isActiveTab = (tabPath) => {
-    const subPath = getSubPath()
-    if (tabPath === '') return subPath === '' || subPath === '/'
-    return subPath.startsWith(tabPath)
-  }
-
-  // Check if on overview page
-  const isOverview = location.pathname === '/'
-
-  // Check if on AI pages
-  const isAI = location.pathname.startsWith('/ai')
-
-  // Check if on UpDown pages
-  const isUpDown = location.pathname.startsWith('/updown')
-
-  // Check if on Sentinel pages
-  const isSentinel = location.pathname.startsWith('/sentinel')
-
-  // Check if on Gateway logs page
-  const isGateway = location.pathname.startsWith('/gateway')
 
   // Build full path with exchange and pair prefix
   const buildPath = (tabPath) => `/${currentExchange}/${currentPair}${tabPath}`
@@ -759,8 +782,8 @@ function AppContent() {
           </div>
         </header>
 
-        {/* Exchange sub-nav (hidden on overview and AI pages) */}
-        {!isOverview && !isAI && !isUpDown && !isSentinel && !isGateway && (
+        {/* Fund sub-nav (fund routes only; global pages have no fund controls) */}
+        {isFundRoute && (
           <nav aria-label="Fund views" className="bg-gray-800 border-b border-gray-700">
             <div className="max-w-[95%] xl:max-w-[1400px] 2xl:max-w-[1800px] 3xl:max-w-[2000px] mx-auto px-4 2xl:px-6">
               <div className="flex flex-col xl:flex-row xl:items-center gap-0 xl:gap-2">
@@ -1041,16 +1064,26 @@ function AppContent() {
 
         {/* Main Content */}
         <main ref={mainContentRef} id="main-content" tabIndex={-1} className="max-w-[95%] xl:max-w-[1400px] 2xl:max-w-[1800px] 3xl:max-w-[2000px] mx-auto px-4 2xl:px-6 py-6 focus:outline-hidden">
-          {currentStrategy === 'regime' && statusError && (
+          {pollRegime && statusError && (
             <RetryBanner message={statusError} onRetry={fetchRegimeStatus} retryLabel="Retry engine status" />
           )}
-          {error && (!isActiveTab('/config') || summary?.config) && (
+          {summaryWanted && error && (!isActiveTab('/config') || summary?.config) && (
             <RetryBanner message={error} onRetry={fetchData} />
           )}
 
-          {loading && !summary && !isActiveTab('/config') && !isOverview && !isAI && !isUpDown && !isSentinel && !isGateway ? (
+          {awaitingFundList || (summaryWanted && loading && !summary && !isActiveTab('/config')) ? (
             <RouteLoadingFallback />
-          ) : (
+          ) : fundMissing ? (
+            <div role="alert" className="text-sm text-gray-300 space-y-3">
+              <p>
+                No configured fund matches <span className="font-mono text-yellow-400">{urlExchange}/{urlPair}</span>.
+              </p>
+              <div className="flex items-center gap-3">
+                <Button variant="secondary" size="sm" onClick={retryExchanges}>Reload fund list</Button>
+                <Link to="/" className="text-blue-400 hover:text-blue-300 underline">Back to Overview</Link>
+              </div>
+            </div>
+          ) : isFundRoute && fundsUnavailable ? null : (
             <RouteErrorBoundary key={location.pathname}>
               <Suspense fallback={<RouteLoadingFallback />}>
                 <Routes>
@@ -1065,7 +1098,7 @@ function AppContent() {
               <Route path="/:exchange/:pair" element={
                 currentStrategy === 'regime'
                   ? <RegimeDashboard key={`${currentExchange}-${currentPair}`} exchange={currentExchange} pair={currentPair} />
-                  : <Dashboard key={`${currentExchange}-${currentPair}`} summary={summary} onRefresh={fetchData} exchange={currentExchange} pair={currentPair} />
+                  : <Dashboard key={`${currentExchange}-${currentPair}`} summary={summary} onRefresh={refreshFund} exchange={currentExchange} pair={currentPair} />
               } />
               <Route path="/:exchange/:pair/cost-basis" element={
                 currentStrategy === 'regime'
@@ -1082,7 +1115,7 @@ function AppContent() {
                   ? <ChartsRegime key={`${currentExchange}-${currentPair}`} exchange={currentExchange} pair={currentPair} />
                   : <ChartsDCA summary={summary} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />
               } />
-              <Route path="/:exchange/:pair/config" element={<ConfigEditor key={`${currentExchange}-${currentPair}`} config={summary?.config} loadError={error || (!loading && !summary?.config ? 'Configuration is unavailable' : null)} onRetry={fetchData} onSave={fetchData} exchange={currentExchange} pair={currentPair} strategy={currentStrategy} engineRunning={regimeRunning} engineDryRun={regimeDryRun} onRestart={fetchRegimeStatus} />} />
+              <Route path="/:exchange/:pair/config" element={<ConfigEditor key={`${currentExchange}-${currentPair}`} config={summary?.config} loadError={error || (!loading && !summary?.config ? 'Configuration is unavailable' : null)} onRetry={fetchData} onSave={refreshFund} exchange={currentExchange} pair={currentPair} strategy={currentStrategy} engineRunning={regimeRunning} engineDryRun={regimeDryRun} onRestart={fetchRegimeStatus} />} />
 
               {/* DCA-only routes (backtest, optimizer) */}
               {simpleDcaEnabled && currentStrategy !== 'regime' && <>
