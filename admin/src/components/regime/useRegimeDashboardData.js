@@ -10,7 +10,13 @@ export default function useRegimeDashboardData(exchange, pair, pairQuery) {
   // seq of the snapshot that went STATUS_STALE_MS without a successor
   const [silentSeq, setSilentSeq] = useState(null)
   const [config, setConfig] = useState(null)
-  const [loading, setLoading] = useState(true)
+  // Latches true once status and config have each settled, so a later refetch
+  // (Retry, action, silent-engine probe) never swaps the dashboard back to the
+  // full-page loading state.
+  const [gateOpen, setGateOpen] = useState(false)
+  // Chart history and presets load behind their own placeholders (not the gate).
+  const [chartLoading, setChartLoading] = useState(true)
+  const [presetsLoading, setPresetsLoading] = useState(true)
   const [reads, setReads] = useState({
     status: { state: 'loading', hasData: false },
     config: { state: 'loading', hasData: false },
@@ -121,6 +127,8 @@ export default function useRegimeDashboardData(exchange, pair, pairQuery) {
       } else setPresetsError(`Presets unavailable${result.ok ? '' : ` (HTTP ${result.status})`}`)
     } catch {
       setPresetsError('Presets unavailable: request failed')
+    } finally {
+      setPresetsLoading(false)
     }
   }, [])
   const retry = useCallback(() => Promise.all([
@@ -159,15 +167,31 @@ export default function useRegimeDashboardData(exchange, pair, pairQuery) {
   }, [exchange, pairQuery, initializeFromCache])
 
   const isRunning = status?.isRunning
-  // Initial load only - no polling needed, socket provides live updates
+  // First paint waits only for status + config. A socket snapshot that lands
+  // before the HTTP status read satisfies the status half (the newest snapshot
+  // still wins in `latest`), and the config half is also satisfied by the config
+  // carried on a status snapshot.
+  const statusSettled = Boolean(latest.status) || reads.status.state !== 'loading'
+  const configSettled = config != null || reads.config.state !== 'loading'
+  const gateReady = statusSettled && configSettled
+  useEffect(() => { if (gateReady) setGateOpen(true) }, [gateReady])
+  const loading = !gateOpen && !gateReady
+  // Fills are still on their first read: consumers must show a loading state,
+  // never "no fills" or a zero/partial total. A refetch that already holds data
+  // keeps showing the last good snapshot instead.
+  const fillsLoading = reads.fills.state === 'loading' && !reads.fills.hasData
+
+  // Initial load only - no polling needed, socket provides live updates. All
+  // reads start in parallel; only status + config gate the first paint.
   useEffect(() => {
-    const load = async () => {
-      setLoading(true)
-      await Promise.allSettled([fetchStatus(), fetchConfig(), fetchFills(), fetchCachedChartData(), fetchPresets()])
-      setLoading(false)
-    }
-    load()
+    setChartLoading(true)
+    setPresetsLoading(true)
+    fetchStatus()
+    fetchConfig()
+    fetchFills()
+    fetchPresets()
+    fetchCachedChartData().catch(() => {}).finally(() => setChartLoading(false))
   }, [exchange, fetchStatus, fetchConfig, fetchFills, fetchCachedChartData, fetchPresets])
 
-  return { status, config, loading, error, stale, retry, reads, fillsUnavailable: Boolean(reads.fills.error), liveFills, fillAggregates, presets, presetsError, retryPresets: fetchPresets, isRunning, prevPriceRef, priceHistory, atrHistory, regimeHistory, setSocketStatus, fetchStatus, fetchConfig, fetchFills }
+  return { status, config, loading, fillsLoading, chartLoading, presetsLoading, error, stale, retry, reads, fillsUnavailable: Boolean(reads.fills.error), liveFills, fillAggregates, presets, presetsError, retryPresets: fetchPresets, isRunning, prevPriceRef, priceHistory, atrHistory, regimeHistory, setSocketStatus, fetchStatus, fetchConfig, fetchFills }
 }
