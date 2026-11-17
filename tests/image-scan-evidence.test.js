@@ -1,8 +1,9 @@
 // @ts-check
 // Contract for the container-image vulnerability scans (issue #1951).
 //
-// Runs the real scan driver and evidence verifier against stub Syft/Grype
-// executables, so it needs no registry, scanner install, vulnerability database
+// Runs the real scan driver and evidence verifier against stub Syft/Grype (an
+// in-process runner for most cases, real stub executables for one parity case and
+// the audit CLI), so it needs no registry, scanner install, vulnerability database
 // or network. It pins the guarantees the audit relies on: every target is either
 // scanned with inventories + findings or unavailable with a reason (never a
 // silent empty result), and stored evidence is rejected when stale or when it no
