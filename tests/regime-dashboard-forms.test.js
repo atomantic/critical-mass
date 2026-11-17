@@ -204,7 +204,7 @@ function createDashboard({ apy: apyOverrides = {}, intercept } = {}) {
     // (PositionCard/LadderPanel/CapitalAdjust) so their own JSX output —
     // not just the parent's `<PositionCard .../>` placeholder element — is
     // visible to the label/control assertions below. Every other function
-    // component (OpenOrdersTable, RegimeActionModals, the chart components,
+    // component (OpenOrdersTable, the regime confirmation dialogs, the chart components,
     // …) stays an external `() => null` stub per the `external` filter
     // above, so this never renders sockets/services — only the three forms
     // extraction actually moved (#760).
