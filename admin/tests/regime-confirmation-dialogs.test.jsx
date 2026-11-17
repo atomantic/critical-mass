@@ -9,7 +9,11 @@ import DcaConvertDialog from '../src/components/regime/DcaConvertDialog'
 import PlacementIntentsPanel from '../src/components/regime/PlacementIntentsPanel'
 
 beforeEach(() => {
-  HTMLDialogElement.prototype.showModal = function () { this.open = true }
+  HTMLDialogElement.prototype.showModal = function () {
+    this.open = true
+    // Model the browser's default focus on the first enabled control.
+    this.querySelector('input:not(:disabled), button:not(:disabled)')?.focus()
+  }
   HTMLDialogElement.prototype.close = function () { this.open = false; this.dispatchEvent(new Event('close')) }
 })
 afterEach(() => { cleanup(); delete HTMLDialogElement.prototype.showModal; delete HTMLDialogElement.prototype.close })
@@ -93,13 +97,10 @@ function TpHarness({ initial, busy = false, onSubmit = vi.fn() }) {
 }
 const tpState = (mode) => ({ bodyLabel: 'abcd', mode, inputValue: '2', priceValue: '102', avgPrice: 100 })
 
-it.each([['pct', 'Take-profit % above avg cost'], ['price', 'Limit sell price (USD)']])('TP editor (%s mode) labels its input (#434)', (mode, label) => {
+it.each([['pct', 'Take-profit % above avg cost'], ['price', 'Limit sell price (USD)']])('TP editor (%s mode) focuses its labelled input on open (#434)', (mode, label) => {
   render(<TpHarness initial={tpState(mode)} />)
   const dialog = screen.getByRole('dialog', { name: 'Set TP Target' })
-  // Initial focus on the active input is not asserted: jsdom/React do not emit the
-  // `autofocus` attribute showModal() honours; the autoFocus wiring is kept in
-  // tests/admin-no-window-confirm.test.js.
-  expect(within(dialog).getByLabelText(label).tagName).toBe('INPUT')
+  expect(document.activeElement).toBe(within(dialog).getByLabelText(label))
 })
 
 it('TP editor switches modes, submits with Enter and the confirm button, and gates on busy', () => {
@@ -108,6 +109,7 @@ it('TP editor switches modes, submits with Enter and the confirm button, and gat
   fireEvent.keyDown(screen.getByLabelText('Take-profit % above avg cost'), { key: 'Enter' })
   expect(onSubmit).toHaveBeenLastCalledWith('pct')
   fireEvent.click(screen.getByRole('button', { name: 'Limit Price' }))
+  expect(document.activeElement).toBe(screen.getByLabelText('Limit sell price (USD)'))
   fireEvent.click(screen.getByRole('button', { name: 'Set Price' }))
   expect(onSubmit).toHaveBeenLastCalledWith('price')
   rerender(<TpHarness initial={tpState('pct')} busy onSubmit={onSubmit} />)

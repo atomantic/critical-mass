@@ -8,7 +8,8 @@ const usd = (value) => value.toLocaleString(undefined, { minimumFractionDigits: 
 // the active mode's input, not on Cancel, and Confirm's label and enabled state
 // depend on the mode. `tp` is the editor state owned by useRegimeDashboardActions
 // (null while closed); `setTp` is its setter, so the dialog needs no per-field
-// callbacks.
+// callbacks. The initial-focus marker is used when the dialog opens. React's
+// autoFocus handles inputs mounted by a mode switch while it is open.
 export default function TpEditDialog({ tp, setTp, busy, onSubmit }) {
   if (!tp) return null
   const close = () => setTp(null)
@@ -58,6 +59,7 @@ export default function TpEditDialog({ tp, setTp, busy, onSubmit }) {
                 setTp(prev => ({ ...prev, inputValue: value, priceValue: newPrice }))
               }}
               onKeyDown={(e) => e.key === 'Enter' && onSubmit('pct')}
+              data-dialog-initial-focus
               autoFocus
             />
             <span className="text-gray-400 text-sm">%</span>
@@ -90,6 +92,7 @@ export default function TpEditDialog({ tp, setTp, busy, onSubmit }) {
                 setTp(prev => ({ ...prev, priceValue: value, inputValue: newPct }))
               }}
               onKeyDown={(e) => e.key === 'Enter' && onSubmit('price')}
+              data-dialog-initial-focus
               autoFocus
             />
           </div>

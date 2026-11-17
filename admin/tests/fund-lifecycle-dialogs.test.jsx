@@ -6,7 +6,11 @@ import FundSubNav from '../src/components/shell/FundSubNav'
 import { BrowserRouter } from '../src/lib/router'
 
 beforeEach(() => {
-  HTMLDialogElement.prototype.showModal = function () { this.open = true }
+  HTMLDialogElement.prototype.showModal = function () {
+    this.open = true
+    // Model the browser's default focus on the first enabled control.
+    this.querySelector('input:not(:disabled), button:not(:disabled)')?.focus()
+  }
   HTMLDialogElement.prototype.close = function () { this.open = false; this.dispatchEvent(new Event('close')) }
 })
 afterEach(() => { cleanup(); delete HTMLDialogElement.prototype.showModal; delete HTMLDialogElement.prototype.close })
@@ -36,7 +40,7 @@ for (const c of cases) {
     render(<FundLifecycleDialogs {...p} />)
     const dialog = screen.getByRole('dialog', { name: c.title })
     expect(dialog.getAttribute('aria-describedby')).toBeTruthy()
-    expect(dialog.contains(document.activeElement)).toBe(true)
+    expect(document.activeElement).toBe(within(dialog).getByRole('button', { name: 'Cancel' }))
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
     expect(p[c.setter]).toHaveBeenCalledWith(false)
     expect(p[c.exec]).not.toHaveBeenCalled()
