@@ -7,7 +7,7 @@
  */
 
 const { prepareConfigUpdate, persistConfigUpdate, buildClientConfig } = require('./config-update');
-const { resolvePlacementIntent } = require('../state-tracker');
+const { resolvePlacementIntent } = require('../placement-intent-storage');
 const { buildStoppedRegimeStatus } = require('../regime-status');
 const { createContextLogger } = require('../logger');
 const { readBooleanFlag } = require('../shared-utils');
@@ -85,7 +85,7 @@ const rejectRequest = (message) => ({ [REJECT]: message });
 module.exports = (app, deps) => {
   // Every regime route is fund-scoped. Wrap registrations once so a future
   // handler cannot accidentally forward an unvalidated query string to IPC,
-  // and so a thrown/rejected handler (e.g. a synchronous state-tracker file
+  // and so a thrown/rejected handler (e.g. a synchronous state file
   // error, or an IPC lookup that isn't already funneled through `.catch`)
   // reaches the JSON error middleware via `next(err)` instead of Express's
   // built-in HTML error page (issue #530).

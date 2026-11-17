@@ -122,6 +122,75 @@ test('historical recovery publishes only the versioned tag; normal release also 
   assert.match(dockerWorkflow, /publish_latest:\n        description: [^\n]*\n        required: false\n        default: false\n        type: boolean\n  workflow_dispatch:/);
   assert.doesNotMatch(dockerWorkflow.split('workflow_dispatch:')[1].split('permissions:')[0], /publish_latest/);
   assert.match(dockerWorkflow, /tags: \$\{\{ steps\.tags\.outputs\.tags \}\}/);
-  assert.match(releaseWorkflow, /release_tag: \$\{\{ needs\.release\.outputs\.release_tag \}\}\n      publish_latest: true/);
+  assert.match(releaseWorkflow, /release_tag: \$\{\{ needs\.release\.outputs\.release_tag \}\}\n      publish_latest: \$\{\{ needs\.release\.outputs\.promote_latest == 'true' \}\}/);
   assert.match(releaseDocs, /leaves `latest` unchanged/);
+});
+
+test('Docker workflow fails unless both platforms are in the pushed manifest', () => {
+  const step = dockerWorkflow.slice(dockerWorkflow.indexOf('- name: Verify multi-arch manifest'));
+  assert.ok(step.length > 0);
+  assert.match(step, /docker buildx imagetools inspect "\$IMAGE_REF"/);
+  assert.match(step, /linux\/amd64 linux\/arm64/);
+  assert.match(step, /exit 1/);
+  // Must be the last step, after the push.
+  assert.ok(dockerWorkflow.indexOf('docker/build-push-action') < dockerWorkflow.indexOf('Verify multi-arch manifest'));
+  assert.match(dockerWorkflow, /Verify immutable release tag/);
+});
+
+test('release fails before tagging when notes are missing, with no commit-list fallback', () => {
+  const req = releaseWorkflow.indexOf('- name: Require release notes for new version');
+  assert.ok(req > releaseWorkflow.indexOf('- name: Check if tag exists'));
+  assert.ok(req < releaseWorkflow.indexOf('- name: Create Release'));
+  assert.match(releaseWorkflow, /Require release notes for new version\n        if: steps\.tag-check\.outputs\.exists == 'false'/);
+  assert.doesNotMatch(releaseWorkflow, /git log \$PREV_TAG|COMMIT_LOG/);
+  assert.match(releaseDocs, /npm version X\.Y\.Z --no-git-tag-version/);
+});
+
+test('missing-notes step exits non-zero only for a new version without its notes file', () => {
+  const m = releaseWorkflow.match(/- name: Require release notes for new version[\s\S]*?run: \|\n([\s\S]*?)\n\n      - name:/);
+  assert.ok(m);
+  const script = m[1].replace(/^ {10}/gm, '');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'notes-'));
+  try {
+    const run = () => execFileSync('bash', ['-c', script], { cwd: dir, env: { PATH: process.env.PATH, VERSION: '9.9.9' }, stdio: 'pipe' });
+    assert.throws(run);
+    fs.mkdirSync(path.join(dir, '.changelogs'));
+    fs.writeFileSync(path.join(dir, '.changelogs/v9.9.9.md'), '# notes\n');
+    assert.doesNotThrow(run);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+const promoteScript = path.join(root, 'scripts/should-promote-latest.sh');
+function promote(tag, existing) {
+  return execFileSync('bash', [promoteScript, tag], {
+    input: existing.join('\n') + '\n',
+    env: { PATH: process.env.PATH },
+  }).toString().trim();
+}
+
+test('latest is promoted only when the released version is the highest stable tag', () => {
+  assert.equal(promote('v2.20.0', ['v2.19.2', 'v2.9.0', 'v1.0.0']), 'true');
+  assert.equal(promote('v2.19.2', ['v2.20.0', 'v2.19.1']), 'false');
+  assert.equal(promote('v2.9.0', ['v2.10.0']), 'false');
+  assert.equal(promote('v2.10.0', ['v2.9.0']), 'true');
+  assert.equal(promote('v1.0.0', []), 'true');
+  assert.equal(promote('v1.0.0', ['v1.0.0']), 'true');
+  assert.equal(promote('v2.20.0', ['v2.20.0', 'v2.19.2', 'v2.21.0-rc.1', 'nightly']), 'true');
+  assert.equal(promote('v2.20.0-rc.1', ['v2.19.2']), 'false');
+});
+
+test('release promotes latest through the guard and keeps release creation unconditional', () => {
+  const step = releaseWorkflow.slice(releaseWorkflow.indexOf('- name: Decide whether to promote latest'));
+  assert.match(step, /if: steps\.tag-check\.outputs\.exists == 'false'/);
+  assert.match(step, /git ls-remote --tags --refs origin/);
+  assert.match(step, /scripts\/should-promote-latest\.sh "\$TAG"/);
+  assert.ok(releaseWorkflow.indexOf('- name: Create Release') < releaseWorkflow.indexOf('- name: Decide whether to promote latest'));
+  assert.match(releaseWorkflow, /promote_latest: \$\{\{ steps\.latest-check\.outputs\.promote \}\}/);
+  assert.doesNotMatch(releaseWorkflow, /cancel-in-progress/);
+});
+
+test('release documentation explains the latest guard', () => {
+  assert.match(releaseDocs, /highest stable/);
 });

@@ -5,7 +5,7 @@
 const { it } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { updateAfterConsolidation } = require('../src/state-tracker');
+const { updateAfterConsolidation } = require('../src/dca-state');
 const { calculateCostBasis } = require('../src/shared-utils');
 
 const order = (id, buyPrice) => ({

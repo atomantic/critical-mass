@@ -8,7 +8,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const stateTracker = require('./state-tracker');
+const { atomicWriteSync } = require('./durable-write');
 const { createContextLogger } = require('./logger');
 const { resolveFundDataDir } = require('./fund-paths');
 const { jsonReadError } = require('./json-diagnostics');
@@ -70,7 +70,6 @@ const readJSON = (filepath, defaultValue = {}) => {
  * @param {string} filepath
  * @param {*} data
  */
-const { atomicWriteSync } = stateTracker;
 const writeJSON = (filepath, data) => {
   const dir = path.dirname(filepath);
   fs.mkdirSync(dir, { recursive: true });
@@ -440,7 +439,8 @@ const isFilledStatus = (order) =>
  * Statuses that mean an order left the book WITHOUT completing — the exchange
  * either cancelled it, expired it, or failed it. EXPIRED belongs here: it is a
  * terminal cancellation, not a fill (see order-manager.js:68 and
- * market-data-service.js:1421, which already classify it that way). Gemini
+ * classifyTerminal in stopped-fund-order-tracker.js, which already classify
+ * it that way). Gemini
  * normalizes any off-book, not-explicitly-cancelled order to EXPIRED, so every
  * consumer that acts on CANCELLED/FAILED must accept it too or the order is
  * never reconciled (issue #316).

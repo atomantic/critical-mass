@@ -1,4 +1,4 @@
-import { useId, useMemo } from 'react'
+import { memo, useId, useMemo } from 'react'
 import { formatTime, timeScale } from '../../lib/chart-math'
 import ChartDataAlternative from './ChartDataAlternative'
 import { useElementSize } from './primitives/Responsive'
@@ -164,4 +164,4 @@ function RegimeTimeline({
   )
 }
 
-export default RegimeTimeline
+export default memo(RegimeTimeline)

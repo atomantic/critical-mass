@@ -26,6 +26,10 @@ const routeComponents = [
   'RegimeDashboard',
 ]
 
+// The render-observable route behaviour (shared loading status, chunk-failure
+// recovery, per-fund remounts) is covered by admin/tests/app-route-loading.test.jsx.
+// What remains cannot be observed by rendering: that route modules are split
+// into lazy chunks instead of static imports.
 describe('admin route code splitting', () => {
   it('loads route-only dashboard modules through dynamic imports', () => {
     for (const component of routeComponents) {
@@ -37,46 +41,6 @@ describe('admin route code splitting', () => {
         appSource,
         new RegExp(`import ${component} from ['\"]\\./components/${component}['\"]`),
       )
-    }
-  })
-
-  it('uses one shared Suspense boundary around the route outlet', () => {
-    assert.match(
-      appSource,
-      /<RouteErrorBoundary key={location\.pathname}>\s*<Suspense fallback={<RouteLoadingFallback \/>}>\s*<Routes>/,
-    )
-    assert.equal(
-      (appSource.match(/<Suspense fallback={<RouteLoadingFallback \/>}>/g) || []).length,
-      1,
-    )
-  })
-
-  it('announces route loading and recovers from chunk failures', () => {
-    assert.match(
-      appSource,
-      /class RouteErrorBoundary extends Component/,
-    )
-    assert.match(
-      appSource,
-      /role="status" aria-live="polite"/,
-    )
-    assert.match(
-      appSource,
-      /onClick={\(\) => window\.location\.reload\(\)}/,
-    )
-  })
-
-  it('preserves fund-specific remount keys on lazy route elements', () => {
-    const keyedRoutes = [
-      '<RegimeDashboard key={`${currentExchange}-${currentPair}`}',
-      '<Dashboard key={`${currentExchange}-${currentPair}`}',
-      '<ChartsRegime key={`${currentExchange}-${currentPair}`}',
-      '<Backtest key={`${currentExchange}:${currentPair}`}',
-      '<Optimizer key={`${currentExchange}:${currentPair}`}',
-    ]
-
-    for (const route of keyedRoutes) {
-      assert.ok(appSource.includes(route), `expected App.jsx to retain ${route}`)
     }
   })
 })

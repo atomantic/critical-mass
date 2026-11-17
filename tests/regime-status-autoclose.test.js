@@ -2,7 +2,7 @@ const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { LIFECYCLE, closeDrainedEmptyPosition } = require('../src/state-tracker');
+const { LIFECYCLE, closeDrainedEmptyPosition } = require('../src/regime-state-store');
 
 describe('closeDrainedEmptyPosition (issue #1131)', () => {
   it('closes a draining position with no asset and no bodies', () => {

@@ -11,8 +11,8 @@ const path = require('path');
 
 const fundPaths = require('../src/fund-paths');
 const { ledgerOf } = require('./helpers/ledger-fixture');
-const stateTracker = require('../src/state-tracker');
-const { placeWithUnknownReconcile } = require('../src/order-manager');
+const placementIntents = require('../src/placement-intent-storage');
+const { placeWithUnknownReconcile } = require('../src/placement-reconcile');
 const {
   createFundStateBackup,
   listFundStateBackups,
@@ -55,8 +55,8 @@ const scope = { intent: { exchange: EXCHANGE, pair: PAIR, action: 'entry_bid', s
 /** Leaves one unresolved intent on disk the way a real ambiguous POST does. */
 const leaveUnresolvedIntent = async () => {
   await placeWithUnknownReconcile({ name: EXCHANGE }, PAIR, async () => { throw unknownError('coid-1'); }, scope);
-  const [intent] = stateTracker.loadPlacementIntents(EXCHANGE, PAIR);
-  assert.equal(intent.status, stateTracker.PLACEMENT_INTENT_STATUS.UNRESOLVED);
+  const [intent] = placementIntents.loadPlacementIntents(EXCHANGE, PAIR);
+  assert.equal(intent.status, placementIntents.PLACEMENT_INTENT_STATUS.UNRESOLVED);
   return intent;
 };
 
@@ -83,12 +83,12 @@ describe('fund-state snapshots preserve placement intents (#1810)', () => {
     assert.equal(listFundStateBackups({ paths })[0].placementIntentsCaptured, true);
 
     fs.rmSync(fundDir, { recursive: true, force: true });
-    assert.equal(stateTracker.getBlockingPlacementIntents(EXCHANGE, PAIR).length, 0, 'precondition: the safety record is gone');
+    assert.equal(placementIntents.getBlockingPlacementIntents(EXCHANGE, PAIR).length, 0, 'precondition: the safety record is gone');
 
     const restored = restoreFundStateBackup(backup.snapshotId, EXCHANGE, PAIR, { paths });
     assert.equal(restored.success, true, JSON.stringify(restored));
 
-    const blockers = stateTracker.getBlockingPlacementIntents(EXCHANGE, PAIR);
+    const blockers = placementIntents.getBlockingPlacementIntents(EXCHANGE, PAIR);
     assert.equal(blockers.length, 1);
     assert.equal(blockers[0].id, intent.id);
     assert.equal(blockers[0].clientOrderId, 'coid-1');
@@ -100,7 +100,7 @@ describe('fund-state snapshots preserve placement intents (#1810)', () => {
     assert.equal(blocked.result.pending, true);
     assert.equal(blocked.result.blockedByIntentId, intent.id);
 
-    stateTracker.resolvePlacementIntent(EXCHANGE, PAIR, intent.id);
+    placementIntents.resolvePlacementIntent(EXCHANGE, PAIR, intent.id);
     assert.equal((await attemptPlacement()).submitted, 1, 'normal reconciliation reopens placement');
   });
 
@@ -111,7 +111,7 @@ describe('fund-state snapshots preserve placement intents (#1810)', () => {
     const backup = snapshot();
     fs.rmSync(fundDir, { recursive: true, force: true });
     assert.equal(restoreFundStateBackup(backup.snapshotId, EXCHANGE, PAIR, { paths }).success, true);
-    assert.deepEqual(stateTracker.getBlockingPlacementIntents(EXCHANGE, PAIR).map((i) => i.id), ['dead-1']);
+    assert.deepEqual(placementIntents.getBlockingPlacementIntents(EXCHANGE, PAIR).map((i) => i.id), ['dead-1']);
   });
 
   it('never captures or restores placement ownership locks or reclaim artifacts', async () => {
@@ -133,12 +133,12 @@ describe('fund-state snapshots preserve placement intents (#1810)', () => {
   it('adds snapshot intents to destination intents without clearing either side', async () => {
     const original = await leaveUnresolvedIntent();
     const backup = snapshot();
-    stateTracker.resolvePlacementIntent(EXCHANGE, PAIR, original.id);
+    placementIntents.resolvePlacementIntent(EXCHANGE, PAIR, original.id);
     await placeWithUnknownReconcile({ name: EXCHANGE }, PAIR, async () => { throw unknownError('coid-2'); }, scope);
-    const newer = stateTracker.loadPlacementIntents(EXCHANGE, PAIR)[0];
+    const newer = placementIntents.loadPlacementIntents(EXCHANGE, PAIR)[0];
 
     assert.equal(restoreFundStateBackup(backup.snapshotId, EXCHANGE, PAIR, { paths }).success, true);
-    assert.deepEqual(stateTracker.loadPlacementIntents(EXCHANGE, PAIR).map((i) => i.id).sort(), [original.id, newer.id].sort());
+    assert.deepEqual(placementIntents.loadPlacementIntents(EXCHANGE, PAIR).map((i) => i.id).sort(), [original.id, newer.id].sort());
   });
 
   it('does not clear destination blockers when the snapshot holds no intents file', async () => {
@@ -147,7 +147,7 @@ describe('fund-state snapshots preserve placement intents (#1810)', () => {
     const intent = await leaveUnresolvedIntent();
 
     assert.equal(restoreFundStateBackup(backup.snapshotId, EXCHANGE, PAIR, { paths }).success, true);
-    assert.deepEqual(stateTracker.getBlockingPlacementIntents(EXCHANGE, PAIR).map((i) => i.id), [intent.id]);
+    assert.deepEqual(placementIntents.getBlockingPlacementIntents(EXCHANGE, PAIR).map((i) => i.id), [intent.id]);
   });
 
   describe('legacy snapshots without intent capture', () => {
@@ -184,7 +184,7 @@ describe('fund-state snapshots preserve placement intents (#1810)', () => {
       assert.equal(restored.success, true, JSON.stringify(restored));
       assert.match(restored.warnings?.[0] ?? '', /NOT recovered/);
       assert.deepEqual(readJson(path.join(fundDir, 'fill-ledger.json')), ledgerOf('fill-1'));
-      assert.deepEqual(stateTracker.getBlockingPlacementIntents(EXCHANGE, PAIR).map((i) => i.id), [intent.id]);
+      assert.deepEqual(placementIntents.getBlockingPlacementIntents(EXCHANGE, PAIR).map((i) => i.id), [intent.id]);
     });
   });
 
@@ -211,7 +211,7 @@ describe('fund-state snapshots preserve placement intents (#1810)', () => {
     const backup = snapshot();
     writeJson(path.join(fundDir, 'fill-ledger.json'), ledgerOf('live-newer'));
     writeJson(path.join(fundDir, 'regime-state.json'), { live: true });
-    stateTracker.resolvePlacementIntent(EXCHANGE, PAIR, original.id);
+    placementIntents.resolvePlacementIntent(EXCHANGE, PAIR, original.id);
     const liveBefore = Object.fromEntries(fs.readdirSync(fundDir).map((name) => [name, fs.readFileSync(path.join(fundDir, name), 'utf8')]));
     const otherFund = path.join(dataDir, EXCHANGE, 'ETH-USDC');
     writeJson(path.join(otherFund, 'fill-ledger.json'), ledgerOf('other'));
@@ -228,7 +228,7 @@ describe('fund-state snapshots preserve placement intents (#1810)', () => {
 
     assert.equal(result.success, false, JSON.stringify(result));
     assert.deepEqual(Object.fromEntries(fs.readdirSync(fundDir).map((name) => [name, fs.readFileSync(path.join(fundDir, name), 'utf8')])), liveBefore);
-    assert.deepEqual(stateTracker.loadPlacementIntents(EXCHANGE, PAIR), []);
+    assert.deepEqual(placementIntents.loadPlacementIntents(EXCHANGE, PAIR), []);
     assert.deepEqual(readJson(path.join(otherFund, 'fill-ledger.json')), ledgerOf('other'));
   });
 });

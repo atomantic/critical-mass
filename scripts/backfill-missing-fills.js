@@ -39,7 +39,7 @@ const fs = require('fs');
 const path = require('path');
 const { getAdapter } = require('../src/adapters');
 const { parseFundCli } = require('./lib/fund-cli');
-const { atomicWriteSync } = require('../src/state-tracker');
+const { atomicWriteSync } = require('../src/durable-write');
 const { resolveFundDataDir } = require('../src/fund-paths');
 const { getBaseCurrency, getQuoteCurrency } = require('../src/config-utils');
 

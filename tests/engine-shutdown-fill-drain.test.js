@@ -17,11 +17,7 @@ const { createEngineLocks, FILL_GATE_CLOSED_CODE } = require('../src/engine-lock
 after(() => { configUtils.updateRegimeConfig = oldUpdate; feedModule.createWebSocketFeed = oldFeed; dryRunState.forceSave = oldForceSave; isolated.cleanup(); });
 
 const tick = () => new Promise((r) => setTimeout(r, 5));
-const deferred = () => {
-  let resolve;
-  const promise = new Promise((r) => { resolve = r; });
-  return { promise, resolve };
-};
+const { deferred } = require('./helpers/deferred');
 
 const makeRunningEngine = async (pair) => {
   const engine = createRegimeEngine('coinbase', pair, { dryRun: true, productId: pair }, {});

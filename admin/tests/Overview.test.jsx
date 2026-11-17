@@ -16,7 +16,7 @@ vi.mock('../src/hooks/useTradeEvents', () => ({
     connected: false,
   }),
 }))
-vi.mock('../src/App', () => ({ getBaseCurrency: () => 'BTC', getQuoteCurrency: () => 'USDC' }))
+vi.mock('../src/utils/productId.mjs', () => ({ getBaseCurrency: () => 'BTC', getQuoteCurrency: () => 'USDC' }))
 vi.mock('../src/components/AddFundModal', () => ({ default: () => null }))
 vi.mock('../src/components/ClosedFundCard', () => ({ default: () => null }))
 vi.mock('../src/components/icons', () => ({ ExternalLink: () => null }))

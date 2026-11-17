@@ -23,11 +23,12 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
+const { useVirtualClock } = require('./virtual-clock');
 const { createGeminiAdapter } = require('../src/adapters/gemini/api');
 const { createCryptocomAdapter } = require('../src/adapters/cryptocom/api');
-const { placeWithUnknownReconcile } = require('../src/order-manager');
+const { placeWithUnknownReconcile } = require('../src/placement-reconcile');
 const fundPaths = require('../src/fund-paths');
-const stateTracker = require('../src/state-tracker');
+const placementIntents = require('../src/placement-intent-storage');
 
 let keysPath;
 let originalFetch;
@@ -213,11 +214,12 @@ for (const c of cases) {
       assert.equal(await adapter.findOrderByClientOrderId('', c.pair), null);
     });
 
-    it('findOrderByClientOrderId throws on an inconclusive lookup instead of reporting absent', async () => {
+    it('findOrderByClientOrderId throws on an inconclusive lookup instead of reporting absent', async (t) => {
+      const clock = useVirtualClock(t); // the adapter retries the lookup on its backoff delays
       const adapter = c.create(keysPath);
       install(() => c.inconclusive());
 
-      await assert.rejects(() => adapter.findOrderByClientOrderId('coid-427', c.pair));
+      await assert.rejects(() => clock.run(adapter.findOrderByClientOrderId('coid-427', c.pair)));
     });
 
     for (const value of [null, false, 0, '']) {
@@ -300,7 +302,8 @@ for (const c of cases) {
       assert.equal(placements.length, 1);
     });
 
-    it('keeps an unresolved placement unresolved when the reconcile lookup itself fails', async () => {
+    it('keeps an unresolved placement unresolved when the reconcile lookup itself fails', async (t) => {
+      const clock = useVirtualClock(t); // the reconcile lookup retries on its backoff delays
       const adapter = c.create(keysPath);
       stubProduct(adapter);
       const { placements } = install((kind) => {
@@ -312,12 +315,12 @@ for (const c of cases) {
       // that is the shape callers read as "safe to re-place". It comes back
       // marked `pending`, and (when the placement is fund-scoped) leaves a
       // durable intent that refuses the next placement outright (#472).
-      const result = await placeWithUnknownReconcile(
+      const result = await clock.run(placeWithUnknownReconcile(
         adapter,
         c.pair,
         () => adapter.placeLimitBuy(c.pair, 0.019, 100),
         []
-      );
+      ));
       assert.equal(result.success, false);
       assert.equal(result.pending, true, 'an inconclusive reconcile stays pending, never a clean failure');
       assert.equal(placements.length, 1);
@@ -386,17 +389,17 @@ describe('Crypto.com ambiguous terminal execution quantity keeps durable intent 
           () => adapter.placeLimitBuy(pair, 0.019, 100), opts);
         assert.equal(first.pending, true);
         assert.equal(first.success, false);
-        assert.equal(stateTracker.loadPlacementIntents(exchange, pair).length, 1);
+        assert.equal(placementIntents.loadPlacementIntents(exchange, pair).length, 1);
 
         // A different process sees the on-disk unresolved intent and refuses
         // before dispatch, even though the exchange reply had an order id.
-        const pendingRows = stateTracker.loadPlacementIntents(exchange, pair);
-        stateTracker.savePlacementIntents(pendingRows.map(row => ({ ...row, instanceId: 'restarted-process' })), exchange, pair);
+        const pendingRows = placementIntents.loadPlacementIntents(exchange, pair);
+        placementIntents.savePlacementIntents(pendingRows.map(row => ({ ...row, instanceId: 'restarted-process' })), exchange, pair);
         const second = await placeWithUnknownReconcile(adapter, pair,
           () => adapter.placeLimitBuy(pair, 0.019, 100), opts);
         assert.equal(second.pending, true);
         assert.equal(placements, 1);
-        assert.equal(stateTracker.loadPlacementIntents(exchange, pair).length, 1);
+        assert.equal(placementIntents.loadPlacementIntents(exchange, pair).length, 1);
       });
     });
   }
@@ -457,7 +460,7 @@ describe('Crypto.com ambiguous terminal execution quantity keeps durable intent 
         assert.equal(result.pending, undefined);
         assert.equal(adopted, expectedSuccess ? 1 : 0);
         assert.equal(placements, 1);
-        assert.equal(stateTracker.loadPlacementIntents(exchange, pair).length, 0);
+        assert.equal(placementIntents.loadPlacementIntents(exchange, pair).length, 0);
       });
     });
   }

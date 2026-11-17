@@ -297,7 +297,7 @@ describe('startup recovery step boundaries (#1006)', () => {
 // phases reprice or place orders. A failed price read stops at that public
 // dependency boundary and must leave the durable saved position untouched.
 describe('startup recovered position reconciliation', () => {
-  const { saveRegimeState } = require('../src/state-tracker');
+  const { saveRegimeState } = require('../src/regime-state-store');
   for (const scenario of [
     { name: 'completed cycle keeps reserves outside the active position', buys: false, owned: false, celestial: true, active: false },
     { name: 'legacy current-cycle buys override a stale completed snapshot', buys: true, owned: false, celestial: false, active: true },

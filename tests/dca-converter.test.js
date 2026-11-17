@@ -53,7 +53,8 @@ describe('categorizeOrders (issue #106 follow-up)', () => {
 //      so converting a non-default fund rewrote the DEFAULT fund's ledger.
 describe('dca-converter fund routing (issue #414)', () => {
   const DCA_CONVERTER = require.resolve('../src/dca-converter');
-  const STATE_TRACKER = require.resolve('../src/state-tracker');
+  const DCA_STATE = require.resolve('../src/dca-state');
+  const REGIME_STATE_STORE = require.resolve('../src/regime-state-store');
   const FILL_LEDGER = require.resolve('../src/fill-ledger');
 
   const fundPaths = require('../src/fund-paths');
@@ -163,7 +164,7 @@ describe('dca-converter fund routing (issue #414)', () => {
 
     // These modules destructure their collaborators at require time, so they
     // must be re-required AFTER the stubs are installed.
-    for (const mod of [STATE_TRACKER, FILL_LEDGER, DCA_CONVERTER]) delete require.cache[mod];
+    for (const mod of [DCA_STATE, REGIME_STATE_STORE, FILL_LEDGER, DCA_CONVERTER]) delete require.cache[mod];
     converter = require('../src/dca-converter');
   });
 
@@ -175,7 +176,7 @@ describe('dca-converter fund routing (issue #414)', () => {
     configUtils.setExchangeEnabled = originals.setExchangeEnabled;
     configUtils.setFundEnabled = originals.setFundEnabled;
     configUtils.loadRawConfig = originals.loadRawConfig;
-    for (const mod of [STATE_TRACKER, FILL_LEDGER, DCA_CONVERTER]) delete require.cache[mod];
+    for (const mod of [DCA_STATE, REGIME_STATE_STORE, FILL_LEDGER, DCA_CONVERTER]) delete require.cache[mod];
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -608,15 +609,15 @@ describe('dca-converter fund routing (issue #414)', () => {
       seedFund(DEFAULT_PAIR, { orders: [] });
       reseedOrders(DEFAULT_PAIR, mergeOrders()); // one filled + one pending, no persisted boundary yet
 
-      // Stub state-tracker's saveFundRegimeState to record every call's
+      // Stub regime-state-store's saveFundRegimeState to record every call's
       // activeCycleId, then force dca-converter to be re-required so its
       // own destructured reference binds to the stub (mirrors this file's
       // own "destructured at require time" re-require pattern above).
-      delete require.cache[STATE_TRACKER];
-      const stateTracker = require('../src/state-tracker');
-      const originalSaveFundRegimeState = stateTracker.saveFundRegimeState;
+      delete require.cache[REGIME_STATE_STORE];
+      const regimeStateStore = require('../src/regime-state-store');
+      const originalSaveFundRegimeState = regimeStateStore.saveFundRegimeState;
       const calls = [];
-      stateTracker.saveFundRegimeState = (exchange, pair, state) => {
+      regimeStateStore.saveFundRegimeState = (exchange, pair, state) => {
         calls.push(state.position.activeCycleId);
         return originalSaveFundRegimeState(exchange, pair, state);
       };
@@ -630,7 +631,7 @@ describe('dca-converter fund routing (issue #414)', () => {
         const result = freshConverter.mergeToRegime(EXCHANGE, DEFAULT_PAIR);
         assert.equal(result.success, true);
       } finally {
-        stateTracker.saveFundRegimeState = originalSaveFundRegimeState;
+        regimeStateStore.saveFundRegimeState = originalSaveFundRegimeState;
       }
 
       // At least two saves: the immediate boundary-correction save, and the
@@ -719,7 +720,7 @@ describe('dca-converter fund routing (issue #414)', () => {
     /** Re-require after changing a config stub (collaborators are
      * destructured at require time). */
     const reloadConverter = () => {
-      for (const mod of [STATE_TRACKER, FILL_LEDGER, DCA_CONVERTER]) delete require.cache[mod];
+      for (const mod of [DCA_STATE, REGIME_STATE_STORE, FILL_LEDGER, DCA_CONVERTER]) delete require.cache[mod];
       converter = require('../src/dca-converter');
     };
 

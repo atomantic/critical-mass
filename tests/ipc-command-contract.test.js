@@ -21,7 +21,7 @@ const { DEFAULT_TIMEOUT, MSG_TYPE, createMessage, IPC_SECRET_HEADER, getIpcSecre
 const configUtils = require('../src/config-utils');
 const { registerEngineLifecycleHandlers } = require('../src/engine-lifecycle-handlers');
 const { fundKey, fundLabel } = require('../src/shared-utils');
-const { LIFECYCLE } = require('../src/state-tracker');
+const { LIFECYCLE } = require('../src/regime-state-store');
 const {
   FakeWebSocket, installFakeWebSocket, commands, until, deferred, trackTimers, restoreTimers, startEngineIpc,
 } = require('./helpers/ipc-command-harness');

@@ -1,0 +1,293 @@
+// @ts-check
+const { describe, it, beforeEach, afterEach } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+
+// issue #108 — DCA / regime state hardening (formerly state-tracker):
+//  - unguarded JSON.parse on state files (raw SyntaxError at boot / 500s)
+//  - loadState writing from a read path (races the engine save)
+//  - saveRegimeState stamping a lower _saveVersion than disk (version regression)
+
+const dcaStatePath = require.resolve('../src/dca-state');
+const regimeStateStorePath = require.resolve('../src/regime-state-store');
+const fundPaths = require('../src/fund-paths');
+const originalGetExchangeDataDir = fundPaths.getExchangeDataDir;
+
+/** @type {string|null} */
+let tmpDir = null;
+
+// The DCA and regime owners are reloaded together; the durable writer is a leaf.
+const freshModule = () => {
+  delete require.cache[dcaStatePath];
+  delete require.cache[regimeStateStorePath];
+  return {
+    ...require('../src/dca-state'),
+    ...require('../src/regime-state-store'),
+    atomicWriteSync: require('../src/durable-write').atomicWriteSync,
+  };
+};
+
+describe('state store hardening (issue #108)', () => {
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'state-store-test-'));
+    fundPaths.getExchangeDataDir = (exchange) => {
+      const dir = path.join(tmpDir, exchange);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      return dir;
+    };
+  });
+
+  afterEach(() => {
+    fundPaths.getExchangeDataDir = originalGetExchangeDataDir;
+    if (tmpDir && fs.existsSync(tmpDir)) fs.rmSync(tmpDir, { recursive: true, force: true });
+    tmpDir = null;
+    delete require.cache[dcaStatePath];
+    delete require.cache[regimeStateStorePath];
+  });
+
+  it('atomicWriteSync fsyncs the temp file before rename and the parent directory after', () => {
+    const { atomicWriteSync } = freshModule();
+    const file = path.join(tmpDir, 'durable.json');
+    const originalFsyncSync = fs.fsyncSync;
+    const originalRenameSync = fs.renameSync;
+    const operations = [];
+
+    fs.fsyncSync = (fd) => {
+      operations.push(fs.fstatSync(fd).isDirectory() ? 'directory-fsync' : 'file-fsync');
+      return originalFsyncSync(fd);
+    };
+    fs.renameSync = (...args) => {
+      operations.push('rename');
+      return originalRenameSync(...args);
+    };
+
+    try {
+      atomicWriteSync(file, '{"durable":true}');
+    } finally {
+      fs.fsyncSync = originalFsyncSync;
+      fs.renameSync = originalRenameSync;
+    }
+
+    assert.deepEqual(operations, ['file-fsync', 'rename', 'directory-fsync']);
+    assert.equal(fs.readFileSync(file, 'utf8'), '{"durable":true}');
+  });
+
+  it('atomicWriteSync removes the temp file and rethrows when file fsync fails', () => {
+    const { atomicWriteSync } = freshModule();
+    const file = path.join(tmpDir, 'failed-fsync.json');
+    const originalFsyncSync = fs.fsyncSync;
+    fs.fsyncSync = (fd) => {
+      if (!fs.fstatSync(fd).isDirectory()) throw Object.assign(new Error('fsync failed'), { code: 'EIO' });
+      return originalFsyncSync(fd);
+    };
+
+    try {
+      assert.throws(() => atomicWriteSync(file, 'new data'), /fsync failed/);
+    } finally {
+      fs.fsyncSync = originalFsyncSync;
+    }
+
+    assert.equal(fs.existsSync(file), false);
+    assert.deepEqual(fs.readdirSync(tmpDir), []);
+  });
+
+  it('atomicWriteSync tolerates unsupported parent-directory fsync', () => {
+    const { atomicWriteSync } = freshModule();
+    const file = path.join(tmpDir, 'unsupported-dir-fsync.json');
+    const originalFsyncSync = fs.fsyncSync;
+    fs.fsyncSync = (fd) => {
+      if (fs.fstatSync(fd).isDirectory()) throw Object.assign(new Error('unsupported'), { code: 'EINVAL' });
+      return originalFsyncSync(fd);
+    };
+
+    try {
+      assert.doesNotThrow(() => atomicWriteSync(file, 'saved'));
+    } finally {
+      fs.fsyncSync = originalFsyncSync;
+    }
+
+    assert.equal(fs.readFileSync(file, 'utf8'), 'saved');
+  });
+
+  it('loadState throws a descriptive error on corrupt JSON instead of a raw SyntaxError', () => {
+    const st = freshModule();
+    const file = st.getStateFile('cb', 'BTC-USD');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, '{ this is not json');
+
+    assert.throws(
+      () => st.loadState({ totalAllocation: 1000 }, 'cb', 'BTC-USD'),
+      /corrupted or unreadable/,
+      'corrupt state must throw a descriptive, file-named error',
+    );
+  });
+
+  it('loadState throws when the file parses to a non-object', () => {
+    const st = freshModule();
+    const file = st.getStateFile('cb', 'BTC-USD');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, '[1,2,3]');
+
+    assert.throws(
+      () => st.loadState({ totalAllocation: 1000 }, 'cb', 'BTC-USD'),
+      /did not parse to an object/,
+    );
+  });
+
+  it('loadState does NOT write to disk when applying a config allocation delta (no read-path write)', () => {
+    const st = freshModule();
+    const file = st.getStateFile('cb', 'BTC-USD');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    // initialAllocation 1000 on disk; config now says 1500
+    st.saveState({ ...st.createInitialState({ totalAllocation: 1000 }) }, 'cb', 'BTC-USD');
+    const mtimeBefore = fs.statSync(file).mtimeMs;
+
+    const loaded = st.loadState({ totalAllocation: 1500 }, 'cb', 'BTC-USD');
+    // Adjustment applied in memory
+    assert.equal(loaded.initialAllocation, 1500);
+    assert.equal(loaded.usdcFundSize, 1500, 'delta applied to fund size in memory');
+    // But the file is untouched (no race with the engine save)
+    assert.equal(fs.statSync(file).mtimeMs, mtimeBefore, 'loadState must not persist from a read path');
+  });
+
+  it('loadRegimeState throws a descriptive error on corrupt JSON', () => {
+    const st = freshModule();
+    const file = st.getRegimeStateFile('cb', 'BTC-USD');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, 'not json at all');
+
+    assert.throws(
+      () => st.loadRegimeState('cb', 'BTC-USD'),
+      /corrupted or unreadable/,
+    );
+  });
+
+  it('fund regime state wrappers require an explicit pair', () => {
+    const st = freshModule();
+    assert.throws(() => st.loadFundRegimeState('cb'), /requires an explicit pair/);
+    assert.throws(() => st.loadFundRegimeState('cb', ''), /requires an explicit pair/);
+    assert.throws(() => st.saveFundRegimeState('cb', undefined, {
+      position: {}, regime: {},
+    }), /requires an explicit pair/);
+    assert.throws(() => st.saveFundRegimeState('cb', '', {
+      position: {}, regime: {},
+    }), /requires an explicit pair/);
+  });
+
+  it('fund regime state wrappers round-trip named bundles without crossing pairs', () => {
+    const st = freshModule();
+    const btcState = {
+      position: { ...st.createInitialRegimePositionState(), activeCycleId: 'cycle-1' },
+      regime: { mode: 'HARVEST' },
+      tpOptimizer: { target: 0.01 },
+      sizeOptimizer: { scale: 2 },
+    };
+    const ethState = {
+      position: { ...st.createInitialRegimePositionState(), activeCycleId: 'cycle-7' },
+      regime: { mode: 'TREND' },
+      tpOptimizer: { target: 0.02 },
+      sizeOptimizer: { scale: 4 },
+    };
+
+    st.saveFundRegimeState('cb', 'BTC-USD', btcState);
+    st.saveFundRegimeState('cb', 'ETH-USD', ethState);
+
+    assert.equal(st.loadFundRegimeState('cb', 'BTC-USD').position.activeCycleId, 'cycle-1');
+    assert.deepEqual(st.loadFundRegimeState('cb', 'BTC-USD').tpOptimizer, btcState.tpOptimizer);
+    assert.deepEqual(st.loadFundRegimeState('cb', 'ETH-USD').tpOptimizer, ethState.tpOptimizer);
+
+    const updatedBtcState = { ...btcState, position: { ...btcState.position, activeCycleId: 'cycle-2' } };
+    st.saveFundRegimeState('cb', 'BTC-USD', updatedBtcState);
+    assert.equal(st.loadFundRegimeState('cb', 'ETH-USD').position.activeCycleId, 'cycle-7');
+    assert.deepEqual(st.loadFundRegimeState('cb', 'ETH-USD').sizeOptimizer, ethState.sizeOptimizer);
+
+    assert.equal(typeof st.loadRegimeState, 'function');
+    assert.equal(typeof st.saveRegimeState, 'function');
+    st.saveRegimeState({ activeCycleId: 'legacy-cycle' }, { mode: 'HARVEST' }, 'cb', null, null, 'DOGE-USD');
+    assert.equal(st.loadRegimeState('cb', 'DOGE-USD').position.activeCycleId, 'legacy-cycle');
+  });
+
+  it('saveRegimeState stamps a version greater than a higher on-disk version (no regression)', () => {
+    const st = freshModule();
+    const file = st.getRegimeStateFile('cb', 'BTC-USD');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+
+    // First save establishes in-memory version 1.
+    const position = { ...st.createInitialRegimePositionState(), realizedPnL: 10 };
+    const regime = st.createInitialRegimeState();
+    st.saveRegimeState(position, regime, 'cb', null, null, 'BTC-USD');
+
+    // Simulate an external writer bumping the on-disk version far ahead with a
+    // protected-field edit the operator made out-of-band.
+    const disk = JSON.parse(fs.readFileSync(file, 'utf8'));
+    disk.position._saveVersion = 99;
+    disk.position.realizedPnL = 42;
+    fs.writeFileSync(file, JSON.stringify(disk));
+
+    // Next save must (a) merge the protected field and (b) stamp > 99.
+    const position2 = { ...st.createInitialRegimePositionState(), realizedPnL: 11 };
+    st.saveRegimeState(position2, regime, 'cb', null, null, 'BTC-USD');
+
+    const after = JSON.parse(fs.readFileSync(file, 'utf8'));
+    assert.ok(after.position._saveVersion > 99,
+      `version must exceed the observed disk version 99, got ${after.position._saveVersion}`);
+    assert.equal(after.position.realizedPnL, 42,
+      'protected field from the higher-versioned disk write must be preserved');
+  });
+
+  it('saveRegimeState preserves unreadable bytes when quarantine fails, then recovers on retry', (t) => {
+    const st = freshModule();
+    const file = st.getRegimeStateFile('cb', 'BTC-USD');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const original = '{"position":{"depositedCapital":1234},"truncated":';
+    fs.writeFileSync(file, original);
+    const position = st.createInitialRegimePositionState();
+    const regime = st.createInitialRegimeState();
+    const rename = fs.renameSync;
+    const failure = t.mock.method(fs, 'renameSync', (source, dest) => {
+      if (source === file) throw Object.assign(new Error('quarantine denied'), { code: 'EACCES' });
+      return rename(source, dest);
+    });
+
+    assert.throws(() => st.saveRegimeState(position, regime, 'cb', null, null, 'BTC-USD'),
+      /Cannot save regime state.*quarantine.*Repair.*retry/i);
+    assert.equal(fs.readFileSync(file, 'utf8'), original, 'the only recovery copy must survive');
+    assert.equal(position._saveVersion, undefined, 'a failed save must not acknowledge a version');
+
+    failure.mock.restore();
+    st.saveRegimeState(position, regime, 'cb', null, null, 'BTC-USD');
+    const quarantined = fs.readdirSync(path.dirname(file)).filter(name => name.includes('.corrupt-'));
+    assert.equal(quarantined.length, 1);
+    assert.equal(fs.readFileSync(path.join(path.dirname(file), quarantined[0]), 'utf8'), original);
+    assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).position._saveVersion, 1);
+  });
+
+  it('saveRegimeState preserves an external edit after a failed write and retries from the committed version', (t) => {
+    const st = freshModule();
+    const file = st.getRegimeStateFile('cb', 'BTC-USD');
+    const position = { ...st.createInitialRegimePositionState(), realizedPnL: 10 };
+    const regime = st.createInitialRegimeState();
+    st.saveRegimeState(position, regime, 'cb', null, null, 'BTC-USD');
+    const rename = fs.renameSync;
+    const failure = t.mock.method(fs, 'renameSync', (source, dest) => {
+      if (dest === file) throw Object.assign(new Error('disk write failed'), { code: 'EIO' });
+      return rename(source, dest);
+    });
+    assert.throws(() => st.saveRegimeState(position, regime, 'cb', null, null, 'BTC-USD'), /disk write failed/);
+    failure.mock.restore();
+    assert.equal(position._saveVersion, 1, 'failed write must leave the acknowledged version unchanged');
+
+    // Another writer commits version 2 while the engine still owns version 1.
+    const disk = JSON.parse(fs.readFileSync(file, 'utf8'));
+    disk.position._saveVersion = 2;
+    disk.position.realizedPnL = 42;
+    fs.writeFileSync(file, JSON.stringify(disk));
+    st.saveRegimeState(position, regime, 'cb', null, null, 'BTC-USD');
+    const after = JSON.parse(fs.readFileSync(file, 'utf8'));
+    assert.equal(after.position.realizedPnL, 42, 'retry must preserve the committed external accounting edit');
+    assert.equal(after.position._saveVersion, 3);
+    assert.equal(position._saveVersion, 3);
+  });
+});

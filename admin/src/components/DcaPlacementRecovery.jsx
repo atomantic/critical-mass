@@ -1,6 +1,6 @@
 import Button from './ui/Button'
 import { useRef, useState } from 'react'
-import ModalDialog from './ModalDialog'
+import ConfirmDialog from './ui/ConfirmDialog'
 import { pairQuery } from '../utils/api'
 import { apiPost } from '../utils/apiClient'
 
@@ -91,25 +91,26 @@ function DcaPlacementRecovery({ intents = [], exchange, pair, onResolved }) {
       {notice && <p role="status" className="mt-3 text-sm text-green-300">{notice}</p>}
       {!confirmation && error && <p role="alert" className="mt-3 text-sm text-red-300">{error}</p>}
       {confirmation && (
-        <ModalDialog onClose={() => { if (!pendingRef.current) setConfirmation(null) }} dismissible={!pending}
-          labelledBy="dca-reconcile-title" describedBy="dca-reconcile-description">
-          <h3 id="dca-reconcile-title" className="text-lg font-medium mb-3">
-            Discard the placement intent
-          </h3>
-          <p id="dca-reconcile-description" className="text-sm text-gray-300 mb-3">
-            Only discard after checking the exchange and confirming this placement has no live order and any fills have been accounted for. Clearing it allows new orders against this capital. This does not cancel an exchange order or book its fills.
-          </p>
+        <ConfirmDialog
+          id="dca-reconcile"
+          title="Discard the placement intent"
+          description="Only discard after checking the exchange and confirming this placement has no live order and any fills have been accounted for. Clearing it allows new orders against this capital. This does not cancel an exchange order or book its fills."
+          confirmLabel="Discard intent"
+          busyLabel="Working…"
+          confirmVariant="caution"
+          cancelVariant="secondary"
+          touchTarget="always"
+          busy={pending}
+          error={error}
+          titleClassName="text-lg font-medium mb-3"
+          descriptionClassName="text-sm text-gray-300 mb-3"
+          errorClassName="text-sm text-red-300 mb-3"
+          actionsClassName="flex flex-wrap justify-end gap-3"
+          onClose={() => { if (!pendingRef.current) setConfirmation(null) }}
+          onConfirm={reconcile}
+        >
           <p className="font-mono text-xs break-all mb-3">Intent {confirmation.intent.id}</p>
-          {error && <p role="alert" className="text-sm text-red-300 mb-3">{error}</p>}
-          <div className="flex flex-wrap justify-end gap-3">
-            <Button type="button" autoFocus disabled={pending} onClick={() => setConfirmation(null)}
-              variant="secondary" size="md" touchTarget="always">Cancel</Button>
-            <Button type="button" disabled={pending} onClick={reconcile}
-              variant="caution" size="md" touchTarget="always">
-              {pending ? 'Working…' : 'Discard intent'}
-            </Button>
-          </div>
-        </ModalDialog>
+        </ConfirmDialog>
       )}
     </section>
   )

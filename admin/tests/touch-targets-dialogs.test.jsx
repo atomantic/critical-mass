@@ -48,7 +48,8 @@ it('gives the DCA export dialog confirm/cancel buttons a touch-sized target', as
 // Fully migrated files take their touch target (and colours/radius) from the
 // shared Button, so a raw <button> reappearing there would drift again.
 it.each([
-  ['src/components/regime/RegimeActionModals.jsx'],
+  ['src/components/ui/ConfirmDialog.jsx'],
+  ['src/components/regime/TpEditDialog.jsx'],
   ['src/components/ActivityFeed.jsx'],
   ['src/components/ManualTrades.jsx', 1],
   ['src/components/sentinel/Dashboard.jsx', 1],

@@ -1,6 +1,7 @@
 const { before, describe, it } = require('node:test')
 const assert = require('node:assert/strict')
 const { asHookModule } = require('./hook-module-harness')
+const { ConfirmDialogFixture, expand } = require('./confirm-dialog-fixture')
 const path = require('node:path')
 const vm = require('node:vm')
 const { createRequire } = require('node:module')
@@ -65,6 +66,7 @@ function view(name, fetchImpl, extra = {}) {
     react: hooks,
     './ui/Button': 'button',
     './ModalDialog': () => null,
+    './ui/ConfirmDialog': ConfirmDialogFixture,
     './ui/touchTarget': { TOUCH_TARGET: 'min-h-11' },
     '../utils/api': { pairQuery: pair => `?pair=${encodeURIComponent(pair)}` },
     '../utils/plural.mjs': { plural: (n, s, p = `${s}s`) => `${n} ${n === 1 ? s : p}` },
@@ -87,7 +89,7 @@ function view(name, fetchImpl, extra = {}) {
     './Toast': { useToast: () => ({ addToast() {} }) },
     './regime/useDcaConversion': { fetchConvertPreview: async () => null },
     './charts/chartUtils': { formatCurrency: String, formatPrice: String, formatAsset: String },
-    '../App': { getBaseCurrency: () => 'ETH', getQuoteCurrency: () => 'USDC' },
+    '../utils/productId.mjs': { getBaseCurrency: () => 'ETH', getQuoteCurrency: () => 'USDC' },
   }
   const m = { exports: {} }
   vm.runInNewContext(compiled[name], {
@@ -109,10 +111,12 @@ function view(name, fetchImpl, extra = {}) {
   }
 }
 function elements(tree) {
+  tree = expand(tree)
   if (Array.isArray(tree)) return tree.flatMap(elements)
   return React.isValidElement(tree) ? [tree, ...elements(tree.props.children)] : []
 }
 function text(tree) {
+  tree = expand(tree)
   if (Array.isArray(tree)) return tree.map(text).join('')
   if (React.isValidElement(tree)) return text(tree.props.children)
   return typeof tree === 'string' || typeof tree === 'number' ? String(tree) : ''

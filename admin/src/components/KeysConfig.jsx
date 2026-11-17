@@ -1,6 +1,6 @@
 import Button from './ui/Button'
 import { useState, useEffect, useRef } from 'react'
-import ModalDialog from './ModalDialog'
+import ConfirmDialog from './ui/ConfirmDialog'
 import { plural } from '../utils/plural.mjs'
 import { apiGet, apiPost, apiPut, apiDelete, describeMutationFailure } from '../utils/apiClient'
 import { useNotify } from './Toast'
@@ -435,39 +435,29 @@ function KeysConfig({ exchange, funds = [], onSave }) {
 
         {/* Delete Confirmation Modal */}
         {confirmDelete && (
-          <ModalDialog
-            onClose={() => { setConfirmDelete(false); setDeleteError(null) }}
-            labelledBy="delete-keys-title"
-            describedBy="delete-keys-desc"
-            dismissible={!deleting}
-          >
-            <h3 id="delete-keys-title" className="text-lg font-semibold text-white mb-2">Delete {exchangeName} API keys?</h3>
-            <p id="delete-keys-desc" className="text-gray-400 mb-4">
+          <ConfirmDialog
+            id="delete-keys"
+            title={`Delete ${exchangeName} API keys?`}
+            description={<>
               Every {exchangeName} fund ({pairList}) uses these keys. {runningFunds > 0 && `${plural(runningFunds, 'running fund')} will immediately fail to place, cancel or check orders until new keys are saved. `}
               {exchange === 'gemini' && 'If this key has "Requires Heartbeat" enabled, Gemini cancels its open orders about 5 minutes after heartbeats stop. '}
               Exchanges show the secret only once, so reconnecting usually means creating a new key.
-            </p>
-            {deleteError && <p role="alert" className="text-red-300 mb-4">{deleteError}</p>}
-            <div className="flex flex-col-reverse sm:flex-row gap-3 sm:justify-end">
-              <Button
-                type="button"
-                autoFocus
-                onClick={() => { setConfirmDelete(false); setDeleteError(null) }}
-                disabled={deleting}
-                variant="secondary" size="md" touchTarget="always" className="font-medium"
-              >
-                Keep keys
-              </Button>
-              <Button
-                type="button"
-                onClick={handleDelete}
-                disabled={deleting}
-                variant="destructive" size="md" touchTarget="always" className="font-medium"
-              >
-                {deleting ? 'Deleting…' : `Delete ${exchangeName} keys`}
-              </Button>
-            </div>
-          </ModalDialog>
+            </>}
+            cancelLabel="Keep keys"
+            cancelVariant="secondary"
+            confirmLabel={`Delete ${exchangeName} keys`}
+            busyLabel="Deleting…"
+            busy={deleting}
+            error={deleteError}
+            touchTarget="always"
+            titleClassName="text-lg font-semibold text-white mb-2"
+            descriptionClassName="text-gray-400 mb-4"
+            errorClassName="text-red-300 mb-4"
+            actionsClassName="flex flex-col-reverse sm:flex-row gap-3 sm:justify-end"
+            buttonClassName="font-medium"
+            onClose={() => { setConfirmDelete(false); setDeleteError(null) }}
+            onConfirm={handleDelete}
+          />
         )}
       </div>
 

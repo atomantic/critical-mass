@@ -1,6 +1,6 @@
 // @ts-check
-// Filesystem persistence only. Domain defaults/migrations are supplied by the
-// facade; this module never requires state-tracker (including during startup).
+// Filesystem persistence only. Domain defaults/migrations are supplied by
+// regime-state-store and dca-state; this module never requires either (including during startup).
 const fs = require('fs');
 const path = require('path');
 const { resolveFundDataDir } = require('./fund-paths');
@@ -239,4 +239,125 @@ const saveRegimeState = (position, regime, exchange = 'coinbase', tpOptimizer = 
   saveVersions.set(stateFile, nextVersion);
 };
 
-module.exports = { getStateFile, loadState, saveState, getRegimeStateFile, loadRegimeState, saveRegimeState };
+// ---------------------------------------------------------------------------
+// Read-only parsed regime-state cache (status path for stopped funds)
+// ---------------------------------------------------------------------------
+
+/**
+ * Upper bound on how long a cached parse may be served without re-reading,
+ * even when the stat signature is unchanged. The signature (nanosecond
+ * mtime + ctime, size, inode) already catches an operator edit, including an
+ * atomic rename-replace (new inode) and a same-size in-place rewrite (ctime
+ * moves on every write and is not settable from userspace, unlike mtime). The
+ * max-age is the backstop for filesystems with coarse timestamp granularity.
+ */
+const READ_ONLY_REGIME_MAX_AGE_MS = 10_000;
+/** An entry untouched this long belongs to a fund nobody polls (e.g. removed); swept on the next insert. */
+const READ_ONLY_REGIME_ABANDONED_MS = 6 * READ_ONLY_REGIME_MAX_AGE_MS;
+
+/**
+ * One entry per fund file (keyed by absolute path), so the map is bounded by
+ * fund count. Entries are never written to by saveRegimeState and never touch
+ * `saveVersions`: this cache takes no part in optimistic locking.
+ * @type {Map<string, {signature: string, loadedAt: number, state: Object}>}
+ */
+const readOnlyRegimeCache = new Map();
+
+/** @param {string} file @returns {string|null} stat signature, or null when the file is missing/unreadable */
+const statSignature = (file) => {
+  try {
+    const st = fs.statSync(file, { bigint: true });
+    return `${st.mtimeNs}:${st.ctimeNs}:${st.size}:${st.ino}`;
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Read-only counterpart of loadRegimeState for status builders. Returns a deep
+ * clone of the cached parse so a caller can never mutate the cache entry, and
+ * NEVER records a save version (so it can neither set nor disturb the
+ * optimistic-locking state saveRegimeState relies on). A missing file is
+ * never cached (a bogus fund name must not grow the map); a corrupt file
+ * throws like loadRegimeState and is not cached.
+ * @param {string} exchange
+ * @param {string|undefined} pair
+ * @param {{createInitialRegimePositionState: Function, createInitialRegimeState: Function, migrateLegacyPositionFields: Function, migrateRegimePosition: Function}} domain
+ * @param {{now?: number}} [options]
+ * @returns {Object}
+ */
+const loadRegimeStateReadOnly = (exchange, pair, {
+  createInitialRegimePositionState, createInitialRegimeState,
+  migrateLegacyPositionFields, migrateRegimePosition,
+}, { now = Date.now() } = {}) => {
+  const stateFile = getRegimeStateFile(exchange, pair);
+
+  // Stat BEFORE reading: a write landing between the two leaves the cached
+  // signature older than the content, so the next call re-reads (never the
+  // reverse, which would pin stale content under a fresh signature).
+  const signature = statSignature(stateFile);
+  if (signature === null) {
+    readOnlyRegimeCache.delete(stateFile);
+    return {
+      position: createInitialRegimePositionState(),
+      regime: createInitialRegimeState(),
+      tpOptimizer: null,
+      sizeOptimizer: null,
+    };
+  }
+
+  const cached = readOnlyRegimeCache.get(stateFile);
+  if (cached && cached.signature === signature && now - cached.loadedAt < READ_ONLY_REGIME_MAX_AGE_MS) {
+    return structuredClone(cached.state);
+  }
+
+  let data;
+  try {
+    data = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+  } catch (err) {
+    readOnlyRegimeCache.delete(stateFile);
+    throw new Error(`regime-state file at ${stateFile} is corrupted or unreadable: ${err.message}. Repair or move the file aside before starting.`);
+  }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    readOnlyRegimeCache.delete(stateFile);
+    throw new Error(`regime-state file at ${stateFile} did not parse to an object (got ${data === null ? 'null' : Array.isArray(data) ? 'array' : typeof data}). Repair or move the file aside before starting.`);
+  }
+
+  migrateLegacyPositionFields(data);
+  const position = { ...createInitialRegimePositionState(), ...data.position };
+  migrateRegimePosition(position, { exchange, pair, stateFile, logger: createContextLogger({ exchange, pair }) });
+
+  const state = {
+    position,
+    regime: { ...createInitialRegimeState(), ...data.regime },
+    tpOptimizer: data.tpOptimizer || null,
+    sizeOptimizer: data.sizeOptimizer || null,
+  };
+  // A removed/unpolled fund never looks itself up again, so nothing could drop
+  // its entry lazily (and a fund removed through config keeps its state dir).
+  // Every live stopped fund re-reads at least once per max age, so anything
+  // untouched for several max-ages is abandoned: sweep it on each insert.
+  for (const [file, entry] of readOnlyRegimeCache) {
+    if (now - entry.loadedAt >= READ_ONLY_REGIME_ABANDONED_MS) readOnlyRegimeCache.delete(file);
+  }
+  readOnlyRegimeCache.set(stateFile, { signature, loadedAt: now, state });
+  return structuredClone(state);
+};
+
+/**
+ * Drop the read-only cache entry for a fund (it started running, or was
+ * removed). Safe to call for a fund that has no entry.
+ * @param {string} exchange
+ * @param {string|undefined} pair
+ * @returns {boolean} whether an entry was dropped
+ */
+const evictReadOnlyRegimeState = (exchange, pair) =>
+  readOnlyRegimeCache.delete(getRegimeStateFile(exchange, pair));
+
+/** @returns {number} number of cached fund files (for tests/diagnostics) */
+const readOnlyRegimeCacheSize = () => readOnlyRegimeCache.size;
+
+module.exports = {
+  getStateFile, loadState, saveState, getRegimeStateFile, loadRegimeState, saveRegimeState,
+  loadRegimeStateReadOnly, evictReadOnlyRegimeState, readOnlyRegimeCacheSize,
+};

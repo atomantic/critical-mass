@@ -3,7 +3,7 @@ import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react'
 import { Link, useNavigate } from '../lib/router'
 import { ExternalLink } from './icons'
 import { useMultiRegimeStatuses } from '../hooks/useTradeEvents'
-import { getBaseCurrency, getQuoteCurrency } from '../App'
+import { getBaseCurrency, getQuoteCurrency } from '../utils/productId.mjs'
 import { formatCurrency, formatPrice, formatAsset } from './charts/chartUtils'
 import AddFundModal from './AddFundModal'
 import ClosedFundCard from './ClosedFundCard'
@@ -591,6 +591,7 @@ function Overview() {
                       currentPrice={card.lastPrice}
                       maxUsdcDeployed={card.maxUsdcDeployed}
                       baseCurrency={card.baseCurrency}
+                      lazyMount
                     />
                   </Suspense>
                 </div>

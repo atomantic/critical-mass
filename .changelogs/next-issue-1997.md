@@ -1,0 +1,1 @@
+- **[issue-1997] Route and deferred test helpers are shared** — the internal test suite now shares one fake-app harness and one deferred helper instead of copies in each file. No app behavior changes.

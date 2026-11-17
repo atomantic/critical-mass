@@ -14,7 +14,8 @@
  * here.
  */
 
-const { loadFundRegimeState, LIFECYCLE, describePlacementIntents } = require('./state-tracker');
+const { loadFundRegimeStateReadOnly, LIFECYCLE } = require('./regime-state-store');
+const { describePlacementIntents } = require('./placement-intent-storage');
 const { getCachedFillLedger, createFillLedger } = require('./fill-ledger');
 const { calculateApyMetrics } = require('./apy-calculator');
 const celestialHierarchy = require('./celestial-hierarchy');
@@ -63,7 +64,7 @@ const lastPriceFromLedger = (ledger) => {
  * @param {boolean} [options.cachedLedger=true] - Use the read-only cached ledger (issue #183 — cheap for the HTTP/socket poll paths that call this repeatedly) instead of constructing a fresh instance. Ignored when `options.fillLedger` is provided.
  * @param {boolean} [options.requireExistingState=false] - Return `null` instead of a synthesized default when no regime-state.json exists yet, or it fails to load — lets a genuine IPC outage on a first-time fund surface as an error rather than a fake "stopped" status
  * @param {Object} [options.config] - Pre-loaded regime config (skips `getRegimeConfig`) — mainly for tests
- * @param {Object} [options.regimeState] - Pre-loaded `{position, regime, isDryRun}` state (skips `loadFundRegimeState`) — mainly for tests
+ * @param {Object} [options.regimeState] - Pre-loaded `{position, regime, isDryRun}` state (skips the read-only cached state load) — mainly for tests
  * @param {Object} [options.fillLedger] - Pre-loaded fill ledger instance (skips `getCachedFillLedger`/`createFillLedger`) — mainly for tests
  * @returns {Object|null} Status payload shape-compatible with a running engine's `getStatus()`, or `null` when `requireExistingState` is set and there's nothing on disk to report
  */
@@ -94,13 +95,16 @@ const buildStoppedRegimeStatus = (exchange, pair, options = {}) => {
 
   let savedState;
   try {
-    savedState = options.regimeState || loadFundRegimeState(exchange, pair);
+    savedState = options.regimeState || loadFundRegimeStateReadOnly(exchange, pair);
   } catch (err) {
     if (requireExistingState) return null;
     throw err;
   }
 
-  const position = savedState?.position || null;
+  // Derived copy: `savedState` may be a caller-supplied object and the
+  // payload must never write back into it. (The cached loader already hands
+  // back a private clone, but the builder does not rely on that.)
+  const position = savedState?.position ? { ...savedState.position } : null;
   const config = options.config || getRegimeConfig(exchange, pair);
 
   // Re-derive over the ledger so realizedPnL / realizedAssetPnL /

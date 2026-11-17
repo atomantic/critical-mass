@@ -17,7 +17,7 @@ it('shows exact cycle and grand totals when a fragmented sell has no display row
       fillCycleCount: 1,
     }}
     isDryRun={false} dryRunFilled={[]} pendingOrdersList={[]}
-    market={{ lastPrice: 100 }} asset="BTC"
+    priceDecimals={2} asset="BTC"
   />)
   expect(screen.getByText(/Recent order details shown/)).toBeTruthy()
   expect(document.body.textContent).toContain('515 fills')
@@ -35,7 +35,7 @@ it('does not present a capped orphan sample as the full open-buy quantity', () =
       cycles: [{ cycleId: 'cycle-1', entryCount: 120, exitCount: 0 }],
       fillCycleGroups: [], fillCycleCount: 0 }}
     isDryRun={false} dryRunFilled={[]} pendingOrdersList={[]}
-    market={{ lastPrice: 100 }} asset="BTC"
+    priceDecimals={2} asset="BTC"
   />)
   expect(screen.getByText(/Unpaired buy details exceed the display limit/)).toBeTruthy()
   expect(screen.queryByRole('button', { name: 'Orphaned buy details' })).toBeNull()

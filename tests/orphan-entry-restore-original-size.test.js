@@ -23,6 +23,7 @@
 const { describe, it, after } = require('node:test');
 const assert = require('node:assert/strict');
 
+const { useVirtualClock } = require('./virtual-clock');
 const { createIsolatedDataDir } = require('./test-data-dir');
 const isolatedData = createIsolatedDataDir('cm-orphan-entry-restore-test');
 
@@ -82,7 +83,9 @@ const makeAdapter = (over = {}) => ({
 });
 
 describe('orphan entry with partial fills is restored at ORIGINAL size, not remaining (issue #684 follow-up)', () => {
-  it('restorePendingOrder receives order.originalSize, not the now-remaining order.size', async () => {
+  it('restorePendingOrder receives order.originalSize, not the now-remaining order.size', async (t) => {
+    // start() waits on the engine's real fill-fallback delay; run it on virtual time.
+    const clock = useVirtualClock(t);
     const restoreCalls = [];
     const eng = createRegimeEngine('coinbase', '__testorphanentry__', { dryRun: false, productId: '__testorphanentry__' }, {});
     eng._test.setAdapter(makeAdapter());
@@ -113,7 +116,7 @@ describe('orphan entry with partial fills is restored at ORIGINAL size, not rema
     });
     engines.push(eng);
 
-    const result = await eng.start();
+    const result = await clock.run(eng.start());
     assert.equal(result.success, true, `start() must succeed: ${result.error}`);
 
     const call = restoreCalls.find(c => c.orderId === ORPHAN_ORDER_ID);

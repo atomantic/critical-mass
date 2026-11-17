@@ -2,7 +2,7 @@ import Button from '../ui/Button'
 import React, { useState } from 'react'
 import { formatPriceByMagnitude } from '../charts/chartUtils'
 import { formatTimestamp } from './regimeFormat'
-import RegimeActionModals from './RegimeActionModals'
+import ConfirmDialog from '../ui/ConfirmDialog'
 import { describeActionFailure } from '../../utils/actionFailure.mjs'
 import { apiPost } from '../../utils/apiClient'
 
@@ -93,12 +93,26 @@ export default function PlacementIntentsPanel({ placementIntents, asset, exchang
           </div>
         </div>
       )}
-      <RegimeActionModals
-        intentConfirm={intentConfirm}
-        reconcilingIntent={reconcilingIntent}
-        onDismissIntent={() => setIntentConfirm(null)}
-        onExecuteIntent={handleReconcileIntent}
-      />
+      {intentConfirm && (
+        <ConfirmDialog
+          id="reconcile-intent"
+          title={intentConfirm.action === 'adopt' ? 'Adopt the exchange order' : 'Discard the placement intent'}
+          description={intentConfirm.action === 'adopt'
+            ? 'Looks this placement up on the exchange by its client order id and, only if a live or filled order comes back, brings it under normal tracking. Nothing is adopted on an empty or failed lookup.'
+            : 'Clears the record so this fund can place orders again. Do this only once you have checked the exchange yourself and confirmed no order from this placement is live — a duplicate would trade against the same capital twice.'}
+          confirmLabel={intentConfirm.action === 'adopt' ? 'Look up & adopt' : 'Discard intent'}
+          busyLabel="Working…"
+          confirmVariant={intentConfirm.action === 'adopt' ? 'primary' : 'caution'}
+          busy={reconcilingIntent}
+          onClose={() => setIntentConfirm(null)}
+          onConfirm={handleReconcileIntent}
+        >
+          <p className="text-gray-400 text-xs mb-4 font-mono break-all">
+            {intentConfirm.intent?.action || 'order'} · {intentConfirm.intent?.side || '?'}
+            {intentConfirm.intent?.clientOrderId ? ` · client order ${intentConfirm.intent.clientOrderId}` : ' · no client order id recorded'}
+          </p>
+        </ConfirmDialog>
+      )}
     </>
   )
 }

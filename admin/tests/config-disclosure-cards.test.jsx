@@ -9,7 +9,7 @@ import { DurationInput } from '../src/components/config/ConfigFormControls'
 import { DISCLOSURE_CARD_FIELDS, countChangedFromDefault, errorFieldKeys } from '../src/utils/regimeCardState.mjs'
 import { displayToMs, msToDisplay, pickDurationUnit } from '../src/utils/duration.mjs'
 
-vi.mock('../src/App', () => ({ getBaseCurrency: () => 'BTC', getQuoteCurrency: () => 'USD' }))
+vi.mock('../src/utils/productId.mjs', () => ({ getBaseCurrency: () => 'BTC', getQuoteCurrency: () => 'USD' }))
 beforeEach(() => { try { localStorage.clear() } catch { /* ignore */ } })
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 

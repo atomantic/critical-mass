@@ -81,6 +81,8 @@ replacement for a full backup archive.
 
 ## Installation
 
+Development uses the Node major pinned in `.nvmrc` (`26`). Run `nvm use` (or `fnm use`) in the repo root to pick it up before `npm ci`.
+
 ### Operator authentication
 
 The gateway starts in a fail-closed bootstrap state until the first operator password is enrolled. With no password or bootstrap credential, it binds loopback-only and generates a one-time owner-only secret at `data/operator-bootstrap-secret`; open the local admin UI and create the password there, entering that secret (a loopback connection alone is not trusted, because a same-host reverse proxy that adds no headers looks identical to a local browser; set `OPERATOR_TRUST_LOOPBACK_BOOTSTRAP=true` only when no reverse proxy is in front). The file is deleted on enrollment. Then restart the gateway to enable its default Tailscale listener. To bootstrap over Tailscale or another non-loopback listener, set a one-time `OPERATOR_BOOTSTRAP_SECRET` of at least 32 bytes (for example, `openssl rand -hex 32`) and enter it in the setup screen. The secret is accepted only before first enrollment and is never returned by the API or written to logs.
@@ -345,8 +347,22 @@ npm run test:changed                       # tests changed vs origin/main, plus 
 npm run test:admin                         # admin (vitest) suite
 npm run test:all                           # backend, then admin
 npm run lint:admin                         # ESLint on admin/ (react-hooks rules; warning ceiling in admin/package.json)
-npm run check                              # test:all, lint:admin, then the admin build
+npm run typecheck                          # tsc over the // @ts-check backend files, ratcheted against typecheck-baseline.json
+npm run check                              # test:all, lint:admin, typecheck, then the admin build
 ```
+
+**Typecheck ratchet.** `jsconfig.json` enables `checkJs`, and `npm run typecheck`
+(`scripts/typecheck.js`) runs `tsc --noEmit -p jsconfig.json` and compares the
+per-file error counts with `typecheck-baseline.json` (`{ "<posix path>": <count> }`,
+counts only). It fails when a file has more errors than its baseline or a file not in
+the baseline gains any; it does not fail when counts drop, it asks you to lower the
+baseline. After fixing errors, run `npm run typecheck -- --update` (only ever lowers
+counts) and commit the file. `--update --force` rewrites it to exactly the current
+counts; use it only when a toolchain bump legitimately shifts counts, or when a
+baselined file was renamed or split (the new path counts as a clean file), and say so in
+the PR after checking that the baseline diff only moves the existing errors. `typescript` and `@types/node` are exact-pinned devDependencies, so the image
+(`npm ci --omit=dev`) is unaffected and the counts are the same on every machine.
+Errors inside `node_modules` are ignored. CI runs the same step in the `build` job.
 
 File or directory arguments replace the default file list; `--test-*` and other
 options keep forwarding to `node --test`. Every launch goes through the runner,

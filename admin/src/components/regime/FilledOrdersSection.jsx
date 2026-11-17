@@ -5,11 +5,47 @@ import {
   compareCycleGroupsByRecency, deriveRegimeFillGroups, searchRegimeFillGroups, visibleOrphanBuys,
   deriveDryRunFillGroups, searchDryRunFillGroups,
 } from '../../utils/regimeFillGroups.mjs'
-import { getPriceDecimals, formatCurrency } from '../charts/chartUtils'
+import { formatCurrency } from '../charts/chartUtils'
 import { formatDuration, formatTimestamp } from './regimeFormat'
 import { pnlColorClass, signedPrefix } from '../../utils/pnlFormat.mjs'
+import { useLastPrice } from './LastPriceContext'
 
 const EMPTY = []
+
+// The one price-sensitive part of the section: reserves are marked to market, so
+// it reads the live price from context and re-renders on a tick by itself.
+function GrandTotalsBar({ shownSellCount, shownCycleCount, totalPnl, totalHoldback, asset }) {
+  const lastPrice = useLastPrice()
+  const reservesUsd = (totalHoldback || 0) * (lastPrice || 0)
+  const grandTotal = totalPnl + reservesUsd
+  // Signed: a stale-TP oversell can draw reserves below zero
+  // net (#770), and the grand total must include it either way.
+  const showReserves = totalHoldback !== 0
+  const reservesClass = totalHoldback < 0 ? 'text-amber-400' : 'text-cyan-400'
+  return (
+    <div className="flex items-center justify-between px-2 py-1.5 bg-gray-700/30 rounded-sm text-xs">
+      <span className="text-gray-400">{plural(shownSellCount, "sell")} across {plural(shownCycleCount, "cycle")}</span>
+      <span className="font-mono">
+        <span className={pnlColorClass(totalPnl)}>
+          {totalPnl !== 0 ? `${signedPrefix(totalPnl)}${formatCurrency(totalPnl)}` : '—'}
+        </span>
+        {showReserves && (
+          <>
+            <span className={`ml-1 ${reservesClass}`}>{totalHoldback < 0 ? '−' : '+'}{Math.abs(totalHoldback).toFixed(8)} {asset}</span>
+            {reservesUsd !== 0 && (
+              <>
+                <span className={`ml-1 ${totalHoldback < 0 ? 'text-amber-400/70' : 'text-cyan-400/70'}`}>({formatCurrency(reservesUsd)})</span>
+                <span className={`ml-2 font-bold ${grandTotal >= 0 ? 'text-green-300' : 'text-red-300'}`}>
+                  = {signedPrefix(grandTotal)}{formatCurrency(grandTotal)}
+                </span>
+              </>
+            )}
+          </>
+        )}
+      </span>
+    </div>
+  )
+}
 
 /**
  * RegimeDashboard "Filled Orders" section. Owns its cycle toggle, search and
@@ -17,7 +53,7 @@ const EMPTY = []
  * shared/cycle-pairing.mjs via deriveRegimeFillGroups; dry-run:
  * deriveDryRunFillGroups). Parent passes only fetched data.
  */
-function FilledOrdersSection({ fillsLoading = false, fillsUnavailable = false, retry, liveFills, fillAggregates, isDryRun, dryRunFilled: dryRunFilledProp, pendingOrdersList, market, asset }) {
+function FilledOrdersSection({ fillsLoading = false, fillsUnavailable = false, retry, liveFills, fillAggregates, isDryRun, dryRunFilled: dryRunFilledProp, pendingOrdersList, priceDecimals, asset }) {
   const disclosureId = useId()
   const dryRunFilled = dryRunFilledProp || EMPTY
   const [showAllCycles, setShowAllCycles] = useState(true)
@@ -233,7 +269,7 @@ function FilledOrdersSection({ fillsLoading = false, fillsUnavailable = false, r
                       {sell.size?.toFixed(8)}
                     </td>
                     <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">
-                      ${sellPrice?.toLocaleString(undefined, { minimumFractionDigits: getPriceDecimals(market.lastPrice), maximumFractionDigits: getPriceDecimals(market.lastPrice) })}
+                      ${sellPrice?.toLocaleString(undefined, { minimumFractionDigits: priceDecimals, maximumFractionDigits: priceDecimals })}
                     </td>
                     <td className="text-right py-1.5 pr-2 font-mono text-gray-400 text-xs">
                       ${sellValue.toFixed(2)}
@@ -280,7 +316,7 @@ function FilledOrdersSection({ fillsLoading = false, fillsUnavailable = false, r
                           {buy.size?.toFixed(8)}
                         </td>
                         <td className="text-right py-1 pr-2 font-mono text-xs text-gray-300">
-                          ${buyPrice?.toLocaleString(undefined, { minimumFractionDigits: getPriceDecimals(market.lastPrice), maximumFractionDigits: getPriceDecimals(market.lastPrice) })}
+                          ${buyPrice?.toLocaleString(undefined, { minimumFractionDigits: priceDecimals, maximumFractionDigits: priceDecimals })}
                         </td>
                         <td className="text-right py-1 pr-2 font-mono text-xs text-gray-400">
                           ${buyValue.toFixed(2)}
@@ -350,37 +386,10 @@ function FilledOrdersSection({ fillsLoading = false, fillsUnavailable = false, r
             return (
               <div className="overflow-x-auto space-y-2">
                 {/* Grand totals bar */}
-                {cycleGroups.length > 0 && (() => {
-                  const reservesUsd = (totalHoldback || 0) * (market.lastPrice || 0)
-                  const grandTotal = totalPnl + reservesUsd
-                  // Signed: a stale-TP oversell can draw reserves below zero
-                  // net (#770), and the grand total must include it either way.
-                  const showReserves = totalHoldback !== 0
-                  const reservesClass = totalHoldback < 0 ? 'text-amber-400' : 'text-cyan-400'
-                  return (
-                    <div className="flex items-center justify-between px-2 py-1.5 bg-gray-700/30 rounded-sm text-xs">
-                      <span className="text-gray-400">{plural(shownSellCount, "sell")} across {plural(shownCycleCount, "cycle")}</span>
-                      <span className="font-mono">
-                        <span className={pnlColorClass(totalPnl)}>
-                          {totalPnl !== 0 ? `${signedPrefix(totalPnl)}${formatCurrency(totalPnl)}` : '—'}
-                        </span>
-                        {showReserves && (
-                          <>
-                            <span className={`ml-1 ${reservesClass}`}>{totalHoldback < 0 ? '−' : '+'}{Math.abs(totalHoldback).toFixed(8)} {asset}</span>
-                            {reservesUsd !== 0 && (
-                              <>
-                                <span className={`ml-1 ${totalHoldback < 0 ? 'text-amber-400/70' : 'text-cyan-400/70'}`}>({formatCurrency(reservesUsd)})</span>
-                                <span className={`ml-2 font-bold ${grandTotal >= 0 ? 'text-green-300' : 'text-red-300'}`}>
-                                  = {signedPrefix(grandTotal)}{formatCurrency(grandTotal)}
-                                </span>
-                              </>
-                            )}
-                          </>
-                        )}
-                      </span>
-                    </div>
-                  )
-                })()}
+                {cycleGroups.length > 0 && (
+                  <GrandTotalsBar shownSellCount={shownSellCount} shownCycleCount={shownCycleCount}
+                    totalPnl={totalPnl} totalHoldback={totalHoldback} asset={asset} />
+                )}
                 {/* Orphaned buys (not linked to any sell) */}
                 {!isDryRun && orphanedBuys && orphanedBuys.length > 0 && (
                   <div className="border border-yellow-700/40 rounded-lg">
@@ -432,7 +441,7 @@ function FilledOrdersSection({ fillsLoading = false, fillsUnavailable = false, r
                                     {buy.size?.toFixed(8)}
                                   </td>
                                   <td className="text-right py-1 pr-2 font-mono text-xs text-gray-300">
-                                    ${buyPrice?.toLocaleString(undefined, { minimumFractionDigits: getPriceDecimals(market.lastPrice), maximumFractionDigits: getPriceDecimals(market.lastPrice) })}
+                                    ${buyPrice?.toLocaleString(undefined, { minimumFractionDigits: priceDecimals, maximumFractionDigits: priceDecimals })}
                                   </td>
                                   <td className="text-right py-1 pr-2 font-mono text-xs text-gray-400">
                                     ${buyValue.toFixed(2)}
@@ -539,4 +548,4 @@ function FilledOrdersSection({ fillsLoading = false, fillsUnavailable = false, r
   )
 }
 
-export default FilledOrdersSection
+export default React.memo(FilledOrdersSection)

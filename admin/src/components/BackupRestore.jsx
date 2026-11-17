@@ -3,6 +3,7 @@ import { formatBytes } from '../utils/format.mjs'
 import { plural } from '../utils/plural.mjs'
 import { apiGet, apiPost, apiPut, apiDelete, describeMutationFailure } from '../utils/apiClient'
 import ModalDialog from './ModalDialog'
+import ConfirmDialog from './ui/ConfirmDialog'
 import Button from './ui/Button'
 import { useNotify, useToast } from './Toast'
 
@@ -344,51 +345,45 @@ function BackupRestore() {
     <div className="max-w-2xl space-y-6">
       {/* Delete backup confirmation dialog */}
       {deleteConfirm && (
-        <ModalDialog
+        <ConfirmDialog
+          id="delete-backup"
+          title="Delete Backup"
+          description={<>Permanently delete backup <span className="font-mono text-yellow-400">{deleteConfirm.filename}</span>?</>}
+          confirmLabel="Delete Backup"
+          busyLabel="Deleting…"
+          busy={deleting}
           onClose={() => setDeleteConfirm(null)}
-          dismissible={!deleting}
-          labelledBy="delete-backup-title"
-          describedBy="delete-backup-description"
+          onConfirm={handleExecuteDelete}
         >
-          <h3 id="delete-backup-title" className="text-white text-lg font-medium mb-3">Delete Backup</h3>
-          <p id="delete-backup-description" className="text-gray-300 text-sm mb-4">
-            Permanently delete backup <span className="font-mono text-yellow-400">{deleteConfirm.filename}</span>?
-          </p>
           <p className="text-gray-400 text-xs mb-4">
             Size: <span className="font-mono">{formatBytes(deleteConfirm.sizeBytes || 0)}</span>. This action cannot be undone.
           </p>
-          <div className="flex justify-end gap-3">
-            <Button
-              variant="cancel"
-              onClick={() => setDeleteConfirm(null)}
-              disabled={deleting}
-              autoFocus
-            >
-              Cancel
-            </Button>
-            <Button
-              variant="destructive"
-              onClick={handleExecuteDelete}
-              disabled={deleting}
-            >
-              {deleting ? 'Deleting…' : 'Delete Backup'}
-            </Button>
-          </div>
-        </ModalDialog>
+        </ConfirmDialog>
       )}
 
       {/* Fund-state restore confirmation dialog */}
       {fundStateRestoreConfirm && (
-        <ModalDialog
+        <ConfirmDialog
+          id="fund-state-restore"
+          title="Restore Fund State"
+          description={<>Restore <span className="font-mono text-yellow-400">{fundStateRestoreConfirm.exchange}/{fundStateRestoreConfirm.pair}</span> from snapshot <span className="font-mono">{fundStateRestoreConfirm.snapshotId}</span>?</>}
+          confirmLabel={fundStateBlockedBy ? 'Retry Restore' : 'Restore Fund State'}
+          busyLabel="Restoring…"
+          confirmVariant="warning"
+          busy={fundStateRestoring}
+          confirmDisabled={fundStateRestoreConfirm.placementIntentsCaptured === false && !fundStateIntentsAcknowledged}
           onClose={cancelFundStateRestore}
-          dismissible={!fundStateRestoring}
-          labelledBy="fund-state-restore-title"
-          describedBy="fund-state-restore-description"
+          onConfirm={() => handleExecuteFundStateRestore()}
+          extraActions={fundStateBlockedBy && (
+            <Button
+              variant="destructive"
+              onClick={() => handleExecuteFundStateRestore({ force: true })}
+              disabled={fundStateRestoring || !fundStateForceAcknowledged || (fundStateRestoreConfirm.placementIntentsCaptured === false && !fundStateIntentsAcknowledged)}
+            >
+              Force Restore Anyway
+            </Button>
+          )}
         >
-          <h3 id="fund-state-restore-title" className="text-white text-lg font-medium mb-3">Restore Fund State</h3>
-          <p id="fund-state-restore-description" className="text-gray-300 text-sm mb-4">
-            Restore <span className="font-mono text-yellow-400">{fundStateRestoreConfirm.exchange}/{fundStateRestoreConfirm.pair}</span> from snapshot <span className="font-mono">{fundStateRestoreConfirm.snapshotId}</span>?
-          </p>
           <p className="text-gray-400 text-xs mb-4">
             Running engines will be stopped and state files replaced. This action cannot be undone.
           </p>
@@ -442,33 +437,7 @@ function BackupRestore() {
               </label>
             </div>
           )}
-          <div className="flex justify-end gap-3">
-            <Button
-              variant="cancel"
-              onClick={cancelFundStateRestore}
-              disabled={fundStateRestoring}
-              autoFocus
-            >
-              Cancel
-            </Button>
-            <Button
-              variant="warning"
-              onClick={() => handleExecuteFundStateRestore()}
-              disabled={fundStateRestoring || (fundStateRestoreConfirm.placementIntentsCaptured === false && !fundStateIntentsAcknowledged)}
-            >
-              {fundStateRestoring ? 'Restoring…' : fundStateBlockedBy ? 'Retry Restore' : 'Restore Fund State'}
-            </Button>
-            {fundStateBlockedBy && (
-              <Button
-                variant="destructive"
-                onClick={() => handleExecuteFundStateRestore({ force: true })}
-                disabled={fundStateRestoring || !fundStateForceAcknowledged || (fundStateRestoreConfirm.placementIntentsCaptured === false && !fundStateIntentsAcknowledged)}
-              >
-                Force Restore Anyway
-              </Button>
-            )}
-          </div>
-        </ModalDialog>
+        </ConfirmDialog>
       )}
 
       {/* Config Panel */}

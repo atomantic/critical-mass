@@ -1,16 +1,22 @@
 import Button from './ui/Button'
 import React, { useState, lazy, Suspense } from 'react'
-import { deriveDashboardStatus } from './regime/deriveDashboardStatus'
+import { useDerivedDashboardStatus } from './regime/deriveDashboardStatus'
+import { LastPriceContext } from './regime/LastPriceContext'
+import { getPriceDecimals } from './charts/chartUtils'
 import EmptyRegimeState from './regime/EmptyRegimeState'
 import AuthDeniedBanner from './regime/AuthDeniedBanner'
 import StoppedBanner from './regime/StoppedBanner'
 import { useToast } from './Toast'
-import { getBaseCurrency, getQuoteCurrency } from '../App'
+import { getBaseCurrency, getQuoteCurrency } from '../utils/productId.mjs'
 import { pairQuery as buildPairQuery } from '../utils/api'
 import RegimePriceChart from './charts/RegimePriceChart'
 import VolatilityChart from './charts/VolatilityChart'
 import RegimeTimeline from './charts/RegimeTimeline'
-import RegimeActionModals from './regime/RegimeActionModals'
+import {
+  CancelLadderConfirmation, CollapseAllConfirmation, ResetCycleConfirmation, ResumeDrawdownConfirmation, RollUpConfirmation,
+} from './regime/RegimeActionConfirmations'
+import TpEditDialog from './regime/TpEditDialog'
+import DcaConvertDialog from './regime/DcaConvertDialog'
 import OpenOrdersTable, { REGIME_ORDER_TOUCH_TARGET } from './regime/OpenOrdersTable'
 import FilledOrdersSection from './regime/FilledOrdersSection'
 import PositionCard from './regime/PositionCard'
@@ -33,6 +39,7 @@ import useRegimeDashboardActions from './regime/useRegimeDashboardActions'
 
 const CelestialVisualization = lazy(() => import('./celestial/CelestialVisualization'))
 const EMPTY_BODIES = []
+const EMPTY_FILLS = []
 
 function ChartPlaceholder({ height, label }) {
   return (
@@ -63,6 +70,10 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
     handleCancelLadder, handleExecuteCancelLadder,
   } = useRegimeDashboardActions({ exchange, pairQuery, addToast, fetchStatus, fetchConfig, fetchFills })
   const [openSearchId, setOpenSearchId] = useState('')
+  const {
+    isDryRun, market, position, regime, health, dryRunState, pendingOrdersList, placementIntents,
+    buysPaused, isDrainingOrClosed, apy, tpOptimizer, sizeOptimizer, risk, riskPosition, riskConfig, macroConfig,
+  } = useDerivedDashboardStatus(status, config)
 
   if (loading) {
     return (
@@ -74,12 +85,10 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
 
   const asset = getBaseCurrency(config?.productId)
   const quoteCurrency = getQuoteCurrency(config?.productId || pair)
-  const {
-    isDryRun, market, position, regime, health, dryRunState, pendingOrdersList, placementIntents,
-    buysPaused, isDrainingOrClosed, apy, tpOptimizer, sizeOptimizer, risk, riskPosition, riskConfig, macroConfig,
-  } = deriveDashboardStatus(status, config)
+  const priceDecimals = getPriceDecimals(market.lastPrice)
 
   return (
+    <LastPriceContext.Provider value={market.lastPrice || 0}>
     <div className="space-y-6">
       {/* Error display */}
       {error && (
@@ -266,14 +275,14 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
             <OpenOrdersTable
               fillsLoading={fillsLoading}
               pendingOrdersList={pendingOrdersList}
-              liveFills={fillAggregates?.openFillsTruncated ? [] : fillAggregates?.openFills || liveFills}
+              liveFills={fillAggregates?.openFillsTruncated ? EMPTY_FILLS : fillAggregates?.openFills || liveFills}
               openFillsTruncated={fillAggregates?.openFillsTruncated}
               dryRunFilled={dryRunState?.filledOrders}
               isDryRun={isDryRun}
               celestialBodies={status?.celestial?.bodies || EMPTY_BODIES}
-              position={position}
+              avgCostBasis={position.avgCostBasis}
               config={config}
-              market={market}
+              priceDecimals={priceDecimals}
               asset={asset}
               isRunning={isRunning}
               openSearchId={openSearchId}
@@ -298,50 +307,53 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
         isDryRun={isDryRun}
         dryRunFilled={dryRunState?.filledOrders}
         pendingOrdersList={pendingOrdersList}
-        market={market}
+        priceDecimals={priceDecimals}
         asset={asset}
       />
 
-      {/* Operational confirmation modals */}
-      <RegimeActionModals
-        cancelLadderConfirm={cancelLadderConfirm}
-        cancellingLadder={cancellingLadder}
-        onDismissCancelLadder={() => setCancelLadderConfirm(false)}
-        onExecuteCancelLadder={handleExecuteCancelLadder}
-        collapseAllConfirm={collapseAllConfirm}
-        collapsingAll={collapsingAll}
-        onDismissCollapseAll={() => setCollapseAllConfirm(false)}
-        onExecuteCollapseAll={handleCollapseAll}
-        resetCycleConfirm={resetCycleConfirm}
-        resettingCycle={resettingCycle}
-        onDismissResetCycle={() => setResetCycleConfirm(false)}
-        onExecuteResetCycle={handleResetCycle}
-        drawdownResumeConfirm={drawdownResumeConfirm}
-        onDismissResumeDrawdown={() => setDrawdownResumeConfirm(false)}
-        onExecuteResumeDrawdown={handleResumeDrawdown}
-        rollUpConfirm={rollUpConfirm}
-        rollingUp={rollingUp}
-        onDismissRollUp={() => setRollUpConfirm(null)}
-        onExecuteRollUp={handleRollUp}
-        tpEditModal={tpEditModal}
-        settingTp={settingTp}
-        onDismissSetTp={() => setTpEditModal(null)}
-        onExecuteSetTp={handleSetTp}
-        onSetTpMode={(mode) => setTpEditModal(prev => ({ ...prev, mode }))}
-        onSetTpInputValue={(inputValue, priceValue) => setTpEditModal(prev => ({ ...prev, inputValue, priceValue }))}
-        onSetTpPriceValue={(priceValue, inputValue) => setTpEditModal(prev => ({ ...prev, priceValue, inputValue }))}
-        showConvertConfirm={showConvertConfirm}
-        converting={converting}
-        convertPreview={convertPreview}
-        onDismissConvert={() => setShowConvertConfirm(false)}
-        onExecuteConvert={handleExecuteConvert}
-        status={status}
-        position={position}
-        config={config}
-        getBaseCurrency={getBaseCurrency}
-        getQuoteCurrency={getQuoteCurrency}
+      {/* Operational confirmations: each reads only its own state from the action hooks */}
+      <CancelLadderConfirmation
+        open={cancelLadderConfirm}
+        busy={cancellingLadder}
+        orderCount={status?.position?.pendingLadderOrders?.length || 0}
+        onClose={() => setCancelLadderConfirm(false)}
+        onConfirm={handleExecuteCancelLadder}
+      />
+      <CollapseAllConfirmation
+        open={collapseAllConfirm}
+        busy={collapsingAll}
+        bodyCount={status?.celestial?.bodies?.length || 0}
+        onClose={() => setCollapseAllConfirm(false)}
+        onConfirm={handleCollapseAll}
+      />
+      <ResetCycleConfirmation
+        open={resetCycleConfirm}
+        busy={resettingCycle}
+        cycleBuys={position.cycleBuys}
+        maxCycleBuys={config?.maxCycleBuys}
+        onClose={() => setResetCycleConfirm(false)}
+        onConfirm={handleResetCycle}
+      />
+      <ResumeDrawdownConfirmation
+        open={drawdownResumeConfirm}
+        onClose={() => setDrawdownResumeConfirm(false)}
+        onConfirm={handleResumeDrawdown}
+      />
+      <RollUpConfirmation
+        rollUp={rollUpConfirm}
+        busy={rollingUp}
+        onClose={() => setRollUpConfirm(null)}
+        onConfirm={handleRollUp}
+      />
+      <TpEditDialog tp={tpEditModal} setTp={setTpEditModal} busy={settingTp} onSubmit={handleSetTp} />
+      <DcaConvertDialog
+        preview={showConvertConfirm ? convertPreview : null}
+        busy={converting}
+        onClose={() => setShowConvertConfirm(false)}
+        onConfirm={handleExecuteConvert}
       />
     </div>
+    </LastPriceContext.Provider>
   )
 }
 

@@ -80,7 +80,7 @@ const resolveFundDataDir = (exchange, pair) => {
  * converter's ordinary load/save code against a private staging copy of the
  * fund's files, so the complete target generation (ledger, regime position,
  * consumed DCA source state) exists and is validated before any live file is
- * replaced. Every per-fund path in state-tracker / fill-ledger resolves through
+ * replaced. Every per-fund path in dca-state / regime-state-store / fill-ledger resolves through
  * resolveFundDataDir / getFundDataDir, so redirecting here covers them all.
  *
  * The callback must be synchronous: an async callback would let unrelated

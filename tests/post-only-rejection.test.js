@@ -3,6 +3,7 @@
 // different, case-sensitive patterns. They now share isPostOnlyRejection.
 const { describe, it, after } = require('node:test');
 const assert = require('node:assert/strict');
+const { useVirtualClock } = require('./virtual-clock');
 const { createIsolatedDataDir } = require('./test-data-dir');
 
 const isolatedData = createIsolatedDataDir('cm-post-only-rejection-test');
@@ -11,7 +12,7 @@ after(() => isolatedData.cleanup());
 const { isPostOnlyRejection } = require('../src/shared-utils');
 const { createOrderExecutor } = require('../src/order-executor');
 const { placeSellOrderWithRetry } = require('../src/order-manager');
-const { getPlacementIntentsFile } = require('../src/state-tracker');
+const { getPlacementIntentsFile } = require('../src/placement-intent-storage');
 const fs = require('fs');
 
 const REJECTIONS = [
@@ -141,7 +142,8 @@ describe('post-only rejection call paths', () => {
       entryOffsetBps: 10, entryMaxRetries: 3, orderStaleMs: 30000, cancelRateLimitMs: 0, maxOpenOrders: 20, ...over,
     });
 
-    it('retries after a post-only rejection with refreshed prices and succeeds on the second attempt', async () => {
+    it('retries after a post-only rejection with refreshed prices and succeeds on the second attempt', async (t) => {
+      const clock = useVirtualClock(t);
       const buyPrices = [];
       let bidAskCalls = 0;
       const adapter = {
@@ -156,7 +158,7 @@ describe('post-only rejection call paths', () => {
       };
       const exec = createOrderExecutor('coinbase', entryConfig(), adapter, 'BTC-USDC');
       try {
-        const result = await exec.placeEntryBid(1000, 100000, 100010);
+        const result = await clock.run(exec.placeEntryBid(1000, 100000, 100010));
         assert.equal(result.success, true);
         assert.equal(result.orderId, 'entry-retry-2');
         assert.equal(buyPrices.length, 2);
@@ -169,7 +171,8 @@ describe('post-only rejection call paths', () => {
       }
     });
 
-    it('stops retrying after entryMaxRetries and reports the rejection', async () => {
+    it('stops retrying after entryMaxRetries and reports the rejection', async (t) => {
+      const clock = useVirtualClock(t);
       let buyCalls = 0;
       let bidAskCalls = 0;
       const adapter = {
@@ -177,7 +180,7 @@ describe('post-only rejection call paths', () => {
         getBidAsk: async () => { bidAskCalls++; return { bid: 100000, ask: 100010 }; },
       };
       const exec = createOrderExecutor('coinbase', entryConfig({ entryMaxRetries: 2 }), adapter, 'BTC-USDC');
-      const result = await exec.placeEntryBid(1000, 100000, 100010);
+      const result = await clock.run(exec.placeEntryBid(1000, 100000, 100010));
       assert.equal(result.success, false);
       assert.equal(result.errorMessage, 'POST_ONLY_REJ');
       assert.equal(buyCalls, 3, 'initial attempt plus entryMaxRetries retries');
@@ -200,7 +203,8 @@ describe('post-only rejection call paths', () => {
     });
   });
 
-  it('sell retry bumps priceMultiplier on a Coinbase POST_ONLY_REJ message', async () => {
+  it('sell retry bumps priceMultiplier on a Coinbase POST_ONLY_REJ message', async (t) => {
+    const clock = useVirtualClock(t);
     const prices = [];
     const adapter = {
       getCurrentPrice: async () => 50000,
@@ -212,12 +216,13 @@ describe('post-only rejection call paths', () => {
       },
     };
     const config = { productId: 'BTC-USDC', holdbackPercent: 10, sellMarkupPercent: 2 };
-    await placeSellOrderWithRetry(config, { assetAmount: 0.01, price: 50000 }, adapter, 2);
+    await clock.run(placeSellOrderWithRetry(config, { assetAmount: 0.01, price: 50000 }, adapter, 2));
     assert.equal(prices.length, 2);
     assert.ok(prices[1] > prices[0] * 1.005, `second price ${prices[1]} should be bumped above ${prices[0]}`);
   });
 
-  it('sell retry skips (does not place) when the adapter price is NaN or 0', async () => {
+  it('sell retry skips (does not place) when the adapter price is NaN or 0', async (t) => {
+    const clock = useVirtualClock(t);
     for (const bad of [NaN, 0]) {
       let placed = 0;
       const adapter = {
@@ -226,7 +231,7 @@ describe('post-only rejection call paths', () => {
       };
       const config = { productId: 'BTC-USDC', holdbackPercent: 10, sellMarkupPercent: 2 };
       await assert.rejects(
-        () => placeSellOrderWithRetry(config, { assetAmount: 0.01, price: 50000 }, adapter, 1),
+        () => clock.run(placeSellOrderWithRetry(config, { assetAmount: 0.01, price: 50000 }, adapter, 1)),
         /Invalid current price/,
       );
       assert.equal(placed, 0);

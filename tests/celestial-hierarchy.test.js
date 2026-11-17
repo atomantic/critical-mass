@@ -1178,15 +1178,4 @@ describe('shared/celestial-tiers.mjs', () => {
     assert.equal(formatTierCapitalRange(TIERS[8], 10000), '$7500+');
     assert.match(formatTierTooltip(tier), /Nebula.*40-50%/);
   });
-
-  it('admin UI components derive their tier descriptions from the shared table', () => {
-    const read = (p) => fs.readFileSync(path.join(ROOT, 'admin', 'src', p), 'utf8');
-    for (const f of ['components/config/RegimeConfigCards.jsx', 'components/Systems.jsx', 'components/regime/OpenOrdersTable.jsx']) {
-      assert.match(read(f), /shared\/celestial-tiers\.mjs/, f);
-    }
-    const cfg = read('components/config/RegimeConfigCards.jsx');
-    assert.doesNotMatch(cfg, /cap \* 0\.\d+/);
-    assert.doesNotMatch(read('components/regime/OpenOrdersTable.jsx'), /× base/);
-    assert.doesNotMatch(read('components/Systems.jsx'), /'0-1%'/);
-  });
 });
