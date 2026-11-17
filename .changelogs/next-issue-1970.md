@@ -1,0 +1,2 @@
+- **Remove retired incident repair scripts** — deleted one-off recovery and cleanup scripts that nothing referenced, including four that crashed on import because of a removed rounding helper.
+- **Guard script loading in tests** — a new smoke test confirms every guarded script still loads, so stale imports are caught before they ship.
