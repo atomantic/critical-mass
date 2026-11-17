@@ -14,6 +14,10 @@ const releaseWorkflow = fs.readFileSync(
   path.join(root, '.github/workflows/release.yml'),
   'utf8',
 );
+const ciWorkflow = fs.readFileSync(
+  path.join(root, '.github/workflows/ci.yml'),
+  'utf8',
+);
 const releaseDocs = fs.readFileSync(
   path.join(root, 'docs/RELEASING.md'),
   'utf8',
@@ -48,9 +52,32 @@ test('release workflow passes only newly-created version tags to publication', (
   assert.equal((releaseWorkflow.match(/packages: write/g) || []).length, 1);
 });
 
+test('release runs only after CI succeeds on a main push, from the CI run head_sha', () => {
+  assert.match(releaseWorkflow, /\non:\n  workflow_run:\n    workflows: \[CI\]\n    types: \[completed\]\n    branches: \[main\]\n/);
+  assert.doesNotMatch(releaseWorkflow, /\n  push:/);
+  assert.match(releaseWorkflow, /github\.event\.workflow_run\.conclusion == 'success'/);
+  assert.match(releaseWorkflow, /github\.event\.workflow_run\.event == 'push'/);
+  assert.match(releaseWorkflow, /github\.event\.workflow_run\.head_branch == 'main'/);
+  assert.match(releaseWorkflow, /uses: actions\/checkout@[^\n]*\n        with:\n          ref: \$\{\{ github\.event\.workflow_run\.head_sha \}\}/);
+  assert.doesNotMatch(releaseWorkflow, /GITHUB_SHA|github\.sha/);
+  assert.match(releaseWorkflow, /^permissions:\n  contents: read$/m);
+  assert.equal((releaseWorkflow.match(/contents: write/g) || []).length, 1);
+  assert.match(releaseWorkflow, /release:\n    runs-on: ubuntu-latest\n    # [^\n]*\n    if: [\s\S]*?permissions:\n      contents: write/);
+  assert.match(releaseWorkflow, /workflows: \[CI\]/);
+  assert.match(ciWorkflow, /^name: CI$/m);
+});
+
+test('CI keeps the required check name and cancels only superseded pull request runs', () => {
+  assert.match(ciWorkflow, /\nconcurrency:\n  group: ci-\$\{\{ github\.event_name == 'pull_request' && github\.ref \|\| github\.sha \}\}\n  cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}\n/);
+  assert.match(ciWorkflow, /\njobs:\n  build:\n/);
+  assert.match(ciWorkflow, /node-version: \[26\.x\]/);
+  assert.doesNotMatch(ciWorkflow, /\n    name:/);
+  assert.match(releaseDocs, /workflow_run/);
+});
+
 test('release and registry login use the runner CLIs instead of third-party actions', () => {
   assert.doesNotMatch(releaseWorkflow, /softprops\//);
-  assert.match(releaseWorkflow, /- name: Create Release\n        if: steps\.tag-check\.outputs\.exists == 'false'\n        env:\n          GH_TOKEN: \$\{\{ secrets\.GITHUB_TOKEN \}\}\n          TAG: v\$\{\{ steps\.package-version\.outputs\.version \}\}\n          NOTES: \$\{\{ steps\.changelog\.outputs\.changelog \}\}\n        run: \|\n          gh release create "\$TAG" --title "\$TAG" --notes "\$NOTES" --target "\$GITHUB_SHA"/);
+  assert.match(releaseWorkflow, /- name: Create Release\n        if: steps\.tag-check\.outputs\.exists == 'false'\n        env:\n          GH_TOKEN: \$\{\{ secrets\.GITHUB_TOKEN \}\}\n          TAG: v\$\{\{ steps\.package-version\.outputs\.version \}\}\n          NOTES: \$\{\{ steps\.changelog\.outputs\.changelog \}\}\n          RELEASE_SHA: \$\{\{ github\.event\.workflow_run\.head_sha \}\}\n        run: \|\n          gh release create "\$TAG" --title "\$TAG" --notes "\$NOTES" --target "\$RELEASE_SHA"/);
   assert.doesNotMatch(releaseWorkflow, /gh release create[^\n]*(--draft|--prerelease)/);
   assert.doesNotMatch(dockerWorkflow, /docker\/login-action/);
   assert.match(dockerWorkflow, /REGISTRY_USER: \$\{\{ github\.repository_owner \}\}\n          REGISTRY_TOKEN: \$\{\{ secrets\.GITHUB_TOKEN \}\}\n        run: echo "\$REGISTRY_TOKEN" \| docker login ghcr\.io -u "\$REGISTRY_USER" --password-stdin/);

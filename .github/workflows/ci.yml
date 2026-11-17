@@ -9,6 +9,14 @@ on:
 permissions:
   contents: read
 
+# A new push to a PR cancels that PR's superseded run. Push runs (main, dev)
+# are never cancelled: Release triggers from a completed main run. Push runs get
+# a per-commit group because a shared group would still cancel a *pending* run
+# when a newer one queues, even with cancel-in-progress false.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build:
     runs-on: ubuntu-latest
