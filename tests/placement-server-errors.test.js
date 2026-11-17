@@ -7,6 +7,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { useVirtualClock } = require('./virtual-clock');
 const fundPaths = require('../src/fund-paths');
 const placementIntents = require('../src/placement-intent-storage');
 const { placeWithUnknownReconcile } = require('../src/placement-reconcile');
@@ -75,11 +76,12 @@ const scopeFor = (c, onAccepted) => ({
 
 for (const c of cases) {
   describe(`${c.name} order-placement server errors`, () => {
-    it('classifies server failures as unknown without replaying the order POST', async () => {
+    it('classifies server failures as unknown without replaying the order POST', async (t) => {
+      const clock = useVirtualClock(t); // request pacing runs on virtual time
       const adapter = adapterFor(c);
       for (const status of [500, 502, 503, 504]) {
         const { submitted, signals } = installFailure(c, status);
-        await assert.rejects(() => adapter.placeLimitBuy(product, 0.01, 100), (err) => {
+        await assert.rejects(() => clock.run(adapter.placeLimitBuy(product, 0.01, 100)), (err) => {
           assert.equal(err.unknownOutcome, true);
           assert.equal(err.status, 'unknown');
           assert.equal(err.clientOrderId, submitted[0]);

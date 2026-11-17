@@ -25,10 +25,10 @@ Buy fill (orderId: "abc123")
 
 ### Annotation Code Paths
 
-1. **Body TP placement** (`regime-engine.js:placeBodyTp`) — When a body's TP order is placed, all source buy fills get `sellOrderId` set to the new TP orderId
+1. **Body TP placement** (`regime-tp-placement.js:placeBodyTp`) — When a body's TP order is placed, all source buy fills get `sellOrderId` set to the new TP orderId
 2. **Body TP fill** (`regime-engine.js:handleOrderFill` sell path) — When a body's TP fills, source buys get linked to the fill orderId
 3. **Retroactive annotation** (`regime-engine.js:startReconciliation`) — On startup, iterates all celestial bodies and annotates their buy fills
-4. **Core TP placement** (`regime-engine.js:placeTakeProfitOrder`) — Non-satellite buys get linked to the core TP orderId
+4. **Core TP placement** (`regime-tp-placement.js:placeTakeProfitOrder`) — Non-satellite buys get linked to the core TP orderId
 5. **Offline fill detection** (`regime-engine.js:recoverFromFills`) — Bodies that filled while bot was offline get annotated
 6. **New body creation** (`regime-engine.js:handleOrderFill` buy path) — New buy fills get `bodyId` when their body is created
 

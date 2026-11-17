@@ -11,10 +11,10 @@ const { isStrandedDustBody } = require('../src/regime-engine');
 
 // Exercise the private production closure without starting an engine or loading
 // fund state. Only its external effects are replaced with in-memory doubles.
-const engineSource = fs.readFileSync(require.resolve('../src/regime-engine'), 'utf8');
-const start = engineSource.indexOf('  const placeBodyTp = async (body) => {');
-const end = engineSource.indexOf('\n  };', start) + '\n  };'.length;
-const placementSource = engineSource.slice(start, end);
+const moduleSource = fs.readFileSync(require.resolve('../src/regime-tp-placement'), 'utf8');
+const start = moduleSource.indexOf('  const placeBodyTp = async (body) => {');
+const end = moduleSource.indexOf('\n  };', start) + '\n  };'.length;
+const placementSource = moduleSource.slice(start, end);
 
 const makeHarness = (assetQty, baseMinSize = '0.29') => {
   const config = { holdbackRatio: 0.5, feeRate: 0.001, tpMaxPercent: 5 };
@@ -30,20 +30,20 @@ const makeHarness = (assetQty, baseMinSize = '0.29') => {
   const positionSizer = createPositionSizer('test', config);
   const placeBodyTp = vm.runInNewContext(placementSource + '\nplaceBodyTp;', {
     config, positionSizer, celestialHierarchy, floorToIncrement, roundAsset, roundPrice,
-    productDetails: { baseMinSize, baseIncrement: '0.01' },
-    priceIncrement: 0.01, calculateDynamicTpPercent: () => 1,
+    getProductDetails: () => ({ baseMinSize, baseIncrement: '0.01' }),
+    getPriceIncrement: () => 0.01, calculateDynamicTpPercent: () => 1,
     tpPlacementInFlight: inFlight, dustWaitLoggedQty: new Map(), negativePnlLoggedPrice: new WeakMap(),
     exchange: 'test', baseCurrency: 'TEST', fmtPrice: String,
     isDryRun: false, saveLiveStateGuarded: () => true,
     logger: { info: message => logs.push(message), warn() {} },
     positionState: { celestialBodies: [body] },
-    orderExecutor: {
+    getOrderExecutor: () => ({
       // The trailing options bag carries the ownership handoff, not order shape.
       placeBodyTpOrder: async (...args) => {
         calls.push(args.slice(0, 4));
         return { success: true, orderId: 'tp-1' };
       },
-    },
+    }),
     fillLedger: { annotateFillsByOrderIds: (...args) => annotations.push(args) },
     tradeEvents: { emitTradeEvent: (...args) => events.push(args[3]) },
   });

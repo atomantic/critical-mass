@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 
+const { useVirtualClock } = require('./virtual-clock');
 const { createIsolatedDataDir } = require('./test-data-dir');
 const isolatedData = createIsolatedDataDir('cm-executor-contract-test');
 
@@ -166,7 +167,8 @@ describe('Order Executor Contract - Interface Parity', () => {
     }
   });
 
-  it('isLadderOrder classifies ladder, entry, TP, unknown and settled ids identically on both executors', async () => {
+  it('isLadderOrder classifies ladder, entry, TP, unknown and settled ids identically on both executors', async (t) => {
+    const clock = useVirtualClock(t); // the live executor's post-place verify delays run on virtual time
     const adapter = makeMockAdapter({
       placeLimitBuy: async () => ({ success: true, orderId: `live-buy-${adapter.placeLimitBuy.calls++}` }),
       placeLimitSell: async () => ({ success: true, orderId: 'live-tp-1' }),
@@ -191,7 +193,7 @@ describe('Order Executor Contract - Interface Parity', () => {
         settledId: settled.orders[0].orderId,
       };
     };
-    const live = await place(liveExec);
+    const live = await clock.run(place(liveExec));
     const dry = await place(dryRunExec);
     assert.ok(live.entryId && live.tpId && dry.entryId && dry.tpId, 'fixtures must place every order kind');
 

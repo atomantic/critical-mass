@@ -9,7 +9,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import ToggleSwitch from './ToggleSwitch'
 import { useNotify, useToast } from './Toast'
 import Button from './ui/Button'
-import { getBaseCurrency, getQuoteCurrency } from '../App'
+import { getBaseCurrency, getQuoteCurrency } from '../utils/productId.mjs'
 
 function ConfigEditor({ config: initialConfig, regimeDefaults, onSave, exchange = 'coinbase', pair, strategy = 'dca', engineRunning = null, engineDryRun = null, onRestart, loadError, onRetry }) {
   const [config, setConfig] = useState(initialConfig)

@@ -3,7 +3,7 @@
  *
  * These are CLIENT-SIDE ESTIMATES of what the engine already computed when it placed
  * the order — they must mirror src/position-sizer.js's calculateTakeProfitSize and
- * src/regime-engine.js's placeBodyTp fee handling, or the dashboard misleads operators
+ * src/regime-tp-placement.js's placeBodyTp fee handling, or the dashboard misleads operators
  * judging Collapse-All / manual TP edits. See issue #698.
  *
  * Two things the naive formula gets wrong if not careful:
@@ -69,7 +69,7 @@ export const computeOpenOrderEstimate = (order, bodyData, ctx = {}) => {
   // (pre-TP), order.size is the TP's assetOnOrder (post-holdback) — no ratio algebra
   // needed. Only fall back to the ratio formula when we lack that exact figure.
   // Use >= (not >), clamped at 0: when the exchange-minimum guard in placeBodyTp
-  // (regime-engine.js) sells the full body with zero holdback, assetQty === order.size
+  // (regime-tp-placement.js) sells the full body with zero holdback, assetQty === order.size
   // exactly, and that must report an exact 0 rather than falling through to the ratio
   // formula's nonzero guess.
   let estHoldback = null
