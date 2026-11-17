@@ -5,7 +5,6 @@ import {
   mergeTimeSeries,
   mergeRegimeHistory,
   MAX_RETENTION_MS,
-  MAX_POINTS,
 } from '../src/hooks/useChartDataBuffer'
 
 describe('mergeTimeSeries', () => {

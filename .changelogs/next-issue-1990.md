@@ -1,0 +1,1 @@
+- **Lint the admin UI in CI** — the admin app now has ESLint with the React hooks rules, a `npm run lint:admin` script included in `npm run check`, and a "Lint admin" CI step; existing hook-dependency warnings are counted by a ceiling that can only go down, and a few unused imports and variables were removed.

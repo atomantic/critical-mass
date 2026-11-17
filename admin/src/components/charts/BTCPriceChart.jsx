@@ -170,7 +170,7 @@ export default function BTCPriceChart({
   } = useCandleData(exchange, tickPrice, tickTimestamp, hookOptions)
 
   const viewKeys = useMemo(() => Object.keys(views), [views])
-  const { bucketMs, indicatorTf } = viewConfig
+  const { indicatorTf } = viewConfig
 
   // Merge exchange tick data into the most recent chart data point
   const enrichedData = useMemo(() => {

@@ -1,6 +1,6 @@
 import Button from './ui/Button'
 import { Suspense, useRef, useState, useCallback, useMemo } from 'react'
-import { Canvas, useThree, invalidate } from '@react-three/fiber'
+import { Canvas, useThree } from '@react-three/fiber'
 import BloomEffect from './celestial/BloomEffect'
 import OrbitControlsLite from './celestial/OrbitControlsLite'
 import CelestialScene from './celestial/CelestialScene'
@@ -9,7 +9,7 @@ import BlackHole from './celestial/BlackHole'
 import GalaxyBody from './celestial/GalaxyBody'
 import NebulaBody from './celestial/NebulaBody'
 import { TIERS as CELESTIAL_TIERS, formatTierPctRange } from '../../../shared/celestial-tiers.mjs'
-import { TIER_COLORS, TIER_EMOJIS, TIER_DESCRIPTIONS, TIER_ORDER, STANDALONE_TIERS } from './celestial/celestialConstants'
+import { TIER_COLORS, TIER_EMOJIS, TIER_DESCRIPTIONS, TIER_ORDER } from './celestial/celestialConstants'
 
 const SHOWCASE_BODIES = [
   { id: 'showcase-black_hole', tier: 'black_hole', symbol: 'BTC', costBasis: 25000, tpPrice: 0, mergeCount: 8, assetQty: 0.5, avgPrice: 50000, currentPrice: 65000 },
@@ -79,7 +79,6 @@ const renderBody = (bodyProps) => {
  */
 const SingleBodyScene = ({ body }) => {
   const bodyProps = { body, showTooltip: false, onHover: NOOP, maxUsdcDeployed: MAX_USDC, baseCurrency: 'BTC' }
-  const isParticle = STANDALONE_TIERS.has(body.tier)
 
   return (
     <>
