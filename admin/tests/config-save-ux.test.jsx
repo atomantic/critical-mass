@@ -28,7 +28,7 @@ describe('config save response handling', () => {
     const hint = 'Shows the fund as Ready in the fund list. Does not start or stop trading; use Start / Stop in the fund header.'
     expect(document.getElementById(enabled.getAttribute('aria-describedby')).textContent).toBe(hint)
 
-    fireEvent.change(screen.getByLabelText('Product ID'), { target: { value: 'ETH-USD' } })
+    fireEvent.change(screen.getByLabelText('Base Size (USD)'), { target: { value: '9' } })
     expect(screen.getByText('Unsaved changes')).toBeTruthy()
     fireEvent.click(dryRun)
     expect(enabled.disabled).toBe(true)
@@ -41,11 +41,12 @@ describe('config save response handling', () => {
     expect(enabled.disabled).toBe(false)
     expect(dryRun.disabled).toBe(false)
     expect(onSave).toHaveBeenCalledTimes(1)
-    expect(screen.getByLabelText('Product ID').value).toBe('ETH-USD')
+    expect(screen.getByLabelText('Base Size (USD)').value).toBe('9')
     // The parent refreshes the saved snapshot after a confirmed toggle.
     view.rerender(<ConfigEditor config={{ ...config, dryRun: true }} strategy="regime" onSave={onSave} />)
+    fireEvent.blur(screen.getByLabelText('Base Size (USD)')) // a number field shows its typed text until blurred
     fireEvent.click(screen.getByRole('button', { name: 'Reset', exact: true }))
-    expect(screen.getByLabelText('Product ID').value).toBe('BTC-USD')
+    expect(screen.getByLabelText('Base Size (USD)').value).toBe('')
     expect(screen.queryByText('Unsaved changes')).toBeNull()
     expect(dryRun.getAttribute('aria-checked')).toBe('true')
   })
@@ -119,7 +120,9 @@ describe('config save response handling', () => {
         }))
         const onSave = vi.fn()
         const view = render(<ConfigEditor config={initial} strategy={strategy} onSave={onSave} />)
-        fireEvent.change(screen.getByLabelText('Product ID'), { target: { value: 'ETH-USD' } })
+        // Product ID is read-only on a regime fund, so use another editable field there.
+        const [editLabel, editValue, editKey] = strategy === 'regime' ? ['Base Size (USD)', '9', { regime: { baseSizeUsdc: 9 } }] : ['Product ID', 'ETH-USD', { productId: 'ETH-USD' }]
+        fireEvent.change(screen.getByLabelText(editLabel), { target: { value: editValue } })
         const orderLabel = strategy === 'regime' ? 'Min Order Size ($)' : 'Min Order (USD)'
         fireEvent.change(screen.getByLabelText(orderLabel), { target: { value: '17' } })
         // Blurring exposes the committed config value instead of FormInput's
@@ -132,17 +135,16 @@ describe('config save response handling', () => {
         // Model the parent refresh triggered by a confirmed autosave.
         if (persisted) view.rerender(<ConfigEditor config={saved} strategy={strategy} onSave={onSave} />)
         expect(screen.getByRole('switch', { name: toggle }).getAttribute('aria-checked')).toBe(String(persisted))
-        expect(screen.getByLabelText('Product ID').value).toBe('ETH-USD')
+        expect(screen.getByLabelText(editLabel).value).toBe(editValue)
         expect(screen.getByLabelText(orderLabel).value).toBe('17')
         expect(screen.getByText('Unsaved changes')).toBeTruthy()
         fireEvent.click(screen.getByRole('button', { name: /Save Configuration/ }))
         await screen.findByText('Save rejected for test')
         const [, request] = fetch.mock.calls.filter(([, options]) => ['PATCH', 'PUT'].includes(options?.method))[1]
         expect(request.method).toBe('PUT')
-        expect(JSON.parse(request.body)).toEqual({
-          productId: 'ETH-USD',
-          ...(strategy === 'regime' ? { regime: { minOrderSizeUsdc: 17 } } : { minOrderSize: 17 }),
-        })
+        expect(JSON.parse(request.body)).toEqual(strategy === 'regime'
+          ? { regime: { baseSizeUsdc: 9, minOrderSizeUsdc: 17 } }
+          : { productId: 'ETH-USD', minOrderSize: 17 })
         if (outcome === 'persisted-not-applied') expect(screen.getByText(/Restart the engine to apply it/)).toBeTruthy()
       },
     )
