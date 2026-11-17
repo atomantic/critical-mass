@@ -19,6 +19,7 @@ export const REGIME_ORDER_TOUCH_TARGET = 'min-h-11 min-w-11 inline-flex items-ce
  */
 function OpenOrdersTable({
   pendingOrdersList,
+  fillsLoading = false,
   liveFills,
   openFillsTruncated,
   dryRunFilled,
@@ -41,6 +42,12 @@ function OpenOrdersTable({
     [liveFills, dryRunFilled, isDryRun],
   )
   const bodyLookup = useMemo(() => new Map(celestialBodies.map(b => [b.tpOrderId, b])), [celestialBodies])
+
+  // Row relations (which buys a TP covers) come from the fill ledger, so hold
+  // the table back until the first fills read lands rather than show partial rows.
+  if (fillsLoading && !isDryRun) {
+    return <div role="status" className="text-gray-400 text-sm text-center py-4">Loading open orders…</div>
+  }
 
   if (pendingOrdersList.length === 0) {
     return <div className="text-gray-400 text-sm text-center py-4">No open orders</div>

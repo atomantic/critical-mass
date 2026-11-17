@@ -57,6 +57,80 @@ async function renderDashboard() {
   await screen.findByRole('heading', { name: 'Risk Limits' })
 }
 
+describe('RegimeDashboard progressive paint', () => {
+  function deferredFetch(pending) {
+    const gates = {}
+    const bodies = {
+      config: { config }, status: { status: runningStatus() },
+      'fills/cycles': { detailFills: [], fillCount: 0, fillCycleGroups: [] },
+      'chart-data': {}, presets: { presets },
+    }
+    vi.stubGlobal('fetch', vi.fn((url) => {
+      const key = Object.keys(bodies).find(k => url.includes(k.includes('/') || k === 'chart-data' || k === 'presets' ? `/${k}` : `/regime/${k}`))
+      const respond = () => ({ ok: true, json: async () => bodies[key] ?? {} })
+      if (!pending.includes(key)) return Promise.resolve(respond())
+      return new Promise(resolve => { gates[key] = () => resolve(respond()) })
+    }))
+    return gates
+  }
+
+  it('paints status and config before fills, chart history and presets resolve', async () => {
+    const gates = deferredFetch(['fills/cycles', 'chart-data', 'presets'])
+    render(<RegimeDashboard exchange="coinbase" pair="BTC-USDC" />)
+    await screen.findByRole('heading', { name: 'Risk Limits' })
+    expect(screen.queryByText('Loading regime engine status...')).toBeNull()
+    expect(screen.getByRole('heading', { name: 'Position' })).toBeTruthy()
+    // Pending reads show placeholders, never "no fills" or a total.
+    expect(screen.getByText('Loading fills…')).toBeTruthy()
+    expect(screen.getByText('Loading open orders…')).toBeTruthy()
+    expect(screen.getByText('Loading price history...')).toBeTruthy()
+    expect(screen.getByText('Loading presets…')).toBeTruthy()
+    expect(screen.queryByText('No filled orders yet')).toBeNull()
+    expect(screen.queryByText('No open orders')).toBeNull()
+    expect(screen.queryByText(/across \d+ cycles?/)).toBeNull()
+
+    await act(async () => { gates['fills/cycles']() })
+    await waitFor(() => expect(screen.queryByText('Loading fills…')).toBeNull())
+    expect(screen.getByText('No filled orders yet')).toBeTruthy()
+    expect(screen.queryByText('Loading open orders…')).toBeNull()
+    expect(screen.getByText('Loading price history...')).toBeTruthy()
+
+    await act(async () => { gates['chart-data'](); gates.presets() })
+    await waitFor(() => expect(screen.queryByText('Loading price history...')).toBeNull())
+    expect(screen.getByText('Price chart')).toBeTruthy()
+    await waitFor(() => expect(screen.queryByText('Loading presets…')).toBeNull())
+  })
+
+  it('keeps the loading screen until status and config settle', async () => {
+    fixture.status = null
+    const gates = deferredFetch(['status', 'config'])
+    const view = render(<RegimeDashboard exchange="coinbase" pair="BTC-USDC" />)
+    expect(screen.getByText('Loading regime engine status...')).toBeTruthy()
+    await act(async () => { gates.config() })
+    expect(screen.getByText('Loading regime engine status...')).toBeTruthy()
+    await act(async () => { gates.status() })
+    await screen.findByRole('heading', { name: 'Risk Limits' })
+    view.unmount()
+  })
+
+  it('lets a socket status snapshot satisfy the gate before the HTTP status read returns', async () => {
+    const gates = deferredFetch(['status', 'fills/cycles'])
+    render(<RegimeDashboard exchange="coinbase" pair="BTC-USDC" />)
+    await screen.findByRole('heading', { name: 'Risk Limits' })
+    expect(screen.getByText('Loading fills…')).toBeTruthy()
+    await act(async () => { gates.status(); gates['fills/cycles']() })
+  })
+
+  it('shows a fills error notice, not a loading state, when the first fills read fails', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url) => url.includes('/regime/fills')
+      ? { ok: false, status: 500, json: async () => ({}) }
+      : { ok: true, json: async () => url.includes('/regime/config') ? { config } : url.includes('/regime/status') ? { status: fixture.status } : url.includes('/presets/') ? { presets } : {} }))
+    render(<RegimeDashboard exchange="coinbase" pair="BTC-USDC" />)
+    await screen.findByText(/Fills unavailable/)
+    expect(screen.queryByText('Loading fills…')).toBeNull()
+  })
+})
+
 describe('RegimeDashboard behavior pin', () => {
   it('shows the resting entry timeout and falls back to the effective global timeout', async () => {
     await renderDashboard()

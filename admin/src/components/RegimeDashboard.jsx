@@ -34,11 +34,19 @@ import useRegimeDashboardActions from './regime/useRegimeDashboardActions'
 const CelestialVisualization = lazy(() => import('./celestial/CelestialVisualization'))
 const EMPTY_BODIES = []
 
+function ChartPlaceholder({ height, label }) {
+  return (
+    <div role="status" className="bg-gray-800 rounded-lg p-4 flex items-center justify-center text-xs text-gray-400" style={{ minHeight: height }}>
+      {label}
+    </div>
+  )
+}
+
 function RegimeDashboard({ exchange = 'coinbase', pair }) {
   const pairQuery = buildPairQuery(pair)
   const { addToast } = useToast()
   const {
-    status, config, loading, error, stale, retry, fillsUnavailable, liveFills, fillAggregates, presets, presetsError, retryPresets, isRunning, prevPriceRef,
+    status, config, loading, fillsLoading, chartLoading, presetsLoading, error, stale, retry, fillsUnavailable, liveFills, fillAggregates, presets, presetsError, retryPresets, isRunning, prevPriceRef,
     priceHistory, atrHistory, regimeHistory, fetchStatus, fetchConfig, fetchFills,
   } = useRegimeDashboardData(exchange, pair, pairQuery)
   const {
@@ -109,11 +117,13 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
             <VolatilityMetrics market={market} />
 
             {/* Volatility Chart */}
-            <VolatilityChart
-              atrData={atrHistory}
-              regimeData={regimeHistory}
-              height={200}
-            />
+            {chartLoading ? <ChartPlaceholder height={200} label="Loading volatility history..." /> : (
+              <VolatilityChart
+                atrData={atrHistory}
+                regimeData={regimeHistory}
+                height={200}
+              />
+            )}
 
             {/* TP Auto-Management Panel */}
             <TpOptimizerPanel tpOptimizer={tpOptimizer} />
@@ -184,9 +194,9 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
             )}
 
             {/* Regime Timeline */}
-            <RegimeTimeline data={regimeHistory} currentRegime={regime} height={60} />
+            {chartLoading ? <ChartPlaceholder height={60} label="Loading regime timeline..." /> : <RegimeTimeline data={regimeHistory} currentRegime={regime} height={60} />}
 
-            <RegimePriceChart
+            {chartLoading ? <ChartPlaceholder height={280} label="Loading price history..." /> : <RegimePriceChart
               priceData={priceHistory}
               regimeData={regimeHistory}
               currentPrice={market.lastPrice}
@@ -194,10 +204,10 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
               atr={market.atr1m}
               kFactor={config?.kFactor}
               height={280}
-            />
+            />}
 
             {/* Configuration Summary */}
-            <ConfigurationSummary config={config} exchange={exchange} pairQuery={pairQuery} fetchConfig={fetchConfig} presets={presets} presetsError={presetsError} retryPresets={retryPresets} addToast={addToast} />
+            <ConfigurationSummary config={config} exchange={exchange} pairQuery={pairQuery} fetchConfig={fetchConfig} presets={presets} presetsLoading={presetsLoading} presetsError={presetsError} retryPresets={retryPresets} addToast={addToast} />
           </div>
         </div>
 
@@ -254,6 +264,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
               fetchStatus={fetchStatus}
             />
             <OpenOrdersTable
+              fillsLoading={fillsLoading}
               pendingOrdersList={pendingOrdersList}
               liveFills={fillAggregates?.openFillsTruncated ? [] : fillAggregates?.openFills || liveFills}
               openFillsTruncated={fillAggregates?.openFillsTruncated}
@@ -279,6 +290,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
       ) : null}
 
       <FilledOrdersSection
+        fillsLoading={fillsLoading}
         fillsUnavailable={fillsUnavailable}
         retry={retry}
         liveFills={liveFills}
