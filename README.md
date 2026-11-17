@@ -356,8 +356,9 @@ counts only). It fails when a file has more errors than its baseline or a file n
 the baseline gains any; it does not fail when counts drop, it asks you to lower the
 baseline. After fixing errors, run `npm run typecheck -- --update` (only ever lowers
 counts) and commit the file. `--update --force` rewrites it to exactly the current
-counts; use it only when a toolchain bump legitimately shifts counts, and say so in the
-PR. `typescript` and `@types/node` are exact-pinned devDependencies, so the image
+counts; use it only when a toolchain bump legitimately shifts counts, or when a
+baselined file was renamed or split (the new path counts as a clean file), and say so in
+the PR after checking that the baseline diff only moves the existing errors. `typescript` and `@types/node` are exact-pinned devDependencies, so the image
 (`npm ci --omit=dev`) is unaffected and the counts are the same on every machine.
 Errors inside `node_modules` are ignored. CI runs the same step in the `build` job.
 

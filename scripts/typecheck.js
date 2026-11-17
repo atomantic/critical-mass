@@ -172,7 +172,7 @@ function main(argv) {
     for (const r of regressions) {
       console.error(`  ${r.file}: ${r.to} errors (baseline ${r.from})`);
     }
-    console.error('Fix them; do not raise the baseline.');
+    console.error('Fix them; do not raise the baseline. If a baselined file was only renamed or split, run `npm run typecheck -- --update --force` and review the baseline diff so no real regression rides along.');
     return 1;
   }
   console.log(`typecheck: ok (${total} errors in ${files} files, none worse than baseline).`);
