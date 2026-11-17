@@ -7,7 +7,7 @@ import CapitalAdjust from '../src/components/regime/CapitalAdjust'
 import AggressivenessControl from '../src/components/regime/AggressivenessControl'
 import LongTermBiasPanel from '../src/components/regime/LongTermBiasPanel'
 
-vi.mock('../src/App', () => ({ getBaseCurrency: () => 'BTC', getQuoteCurrency: () => 'USD' }))
+vi.mock('../src/utils/productId.mjs', () => ({ getBaseCurrency: () => 'BTC', getQuoteCurrency: () => 'USD' }))
 vi.mock('../src/components/regime/RegimeHelp', () => ({ ConfigTooltip: () => null, LONG_TERM_BIAS_TOOLTIP: null }))
 vi.mock('../src/components/regime/LongTermBiasDetails', () => ({ default: () => null }))
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })

@@ -34,6 +34,7 @@ const configUtils = require('../src/config-utils');
 const originalUpdateRegimeConfig = configUtils.updateRegimeConfig;
 configUtils.updateRegimeConfig = () => {};
 
+const { useVirtualClock } = require('./virtual-clock');
 const { createRegimeEngine } = require('../src/regime-engine');
 
 const TEST_PAIR = '__test367__';
@@ -283,7 +284,9 @@ describe('#367 offline recovery — error containment (#316)', () => {
     assert.equal(pos.celestialBodies.length, 1);
   });
 
-  it('an offline entry whose fill lookup fails still recovers via the order-status fallback (issue #679 follow-up)', async () => {
+  it('an offline entry whose fill lookup fails still recovers via the order-status fallback (issue #679 follow-up)', async (t) => {
+    // The failed lookup waits out the engine's 2s re-read delay; run it on virtual time.
+    const clock = useVirtualClock(t);
     // getOrderFills now REJECTS (issue #679) instead of silently returning a
     // partial/empty set when the trade-level scan fails or comes up short.
     // handleOrderFillImpl's own order-status synthetic-fill fallback (built
@@ -310,7 +313,7 @@ describe('#367 offline recovery — error containment (#316)', () => {
       },
     });
 
-    await eng._test.checkOfflineOrderFills();
+    await clock.run(eng._test.checkOfflineOrderFills());
 
     const pos = eng._getPositionState();
     assert.equal(pos.celestialBodies.length, 2, 'both entries produced a body — the failing lookup fell back to order-status data instead of losing the fill');

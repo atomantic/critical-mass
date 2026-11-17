@@ -6,6 +6,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { useVirtualClock } = require('./virtual-clock');
 const { createCryptocomAdapter } = require('../src/adapters/cryptocom/api');
 const fundPaths = require('../src/fund-paths');
 const ledgerModule = require.resolve('../src/fill-ledger');
@@ -41,7 +42,8 @@ describe('Crypto.com quote fee ingestion (#1800)', () => {
     { name: 'legacy charge', fields: { fee: '0.3' }, expected: 0.3 },
     { name: 'legacy rebate', fields: { fee: '-0.1' }, expected: -0.1 },
   ]) {
-    it(`preserves ${name} across both readers, import, reload and replay`, async () => {
+    it(`preserves ${name} across both readers, import, reload and replay`, async (t) => {
+      const clock = useVirtualClock(t); // request pacing runs on virtual time
       const now = Date.now();
       const raw = {
         trade_id: 'trade-1', order_id: 'buy-1', instrument_name: 'BTC_USDT',
@@ -65,8 +67,8 @@ describe('Crypto.com quote fee ingestion (#1800)', () => {
       const keysPath = path.join(tempDir, 'keys.json');
       fs.writeFileSync(keysPath, JSON.stringify({ apiKey: 'fixture', apiSecret: 'fixture' }));
       const adapter = createCryptocomAdapter(keysPath);
-      const fills = await adapter.getOrderFills('buy-1');
-      const reconciled = await adapter.getReconciliationFills(PAIR, now - 3000);
+      const fills = await clock.run(adapter.getOrderFills('buy-1'));
+      const reconciled = await clock.run(adapter.getReconciliationFills(PAIR, now - 3000));
       assert.equal(fills.length, 1);
       assert.equal(reconciled.length, 1);
       // +0 and -0 are equivalent economic fees.
@@ -87,8 +89,8 @@ describe('Crypto.com quote fee ingestion (#1800)', () => {
         fundConfig: { productId: PAIR },
         logger: { info() {}, warn() {}, error() {} },
       });
-      assert.equal((await importer.importBuy({ buyOrderId: 'buy-1', createBody: false })).success, true);
-      assert.equal((await importer.importBuy({ buyOrderId: 'buy-1', createBody: false })).success, true);
+      assert.equal((await clock.run(importer.importBuy({ buyOrderId: 'buy-1', createBody: false }))).success, true);
+      assert.equal((await clock.run(importer.importBuy({ buyOrderId: 'buy-1', createBody: false }))).success, true);
       const reloaded = createFillLedger('cryptocom', PAIR, PAIR);
       reloaded.load();
       const rows = reloaded.getAllFills();

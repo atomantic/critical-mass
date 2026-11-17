@@ -145,7 +145,7 @@ function createDashboard({ apy: apyOverrides = {}, intercept } = {}) {
     },
     './regime/RegimeHelp': { CONFIG_TOOLTIPS: {}, ConfigTooltip: () => null },
     './Toast': { useToast: () => ({ addToast: toast => toasts.push(toast) }) },
-    '../App': { getBaseCurrency: () => 'BTC', getQuoteCurrency: () => 'USD' },
+    '../utils/productId.mjs': { getBaseCurrency: () => 'BTC', getQuoteCurrency: () => 'USD' },
     '../utils/actionFailure.mjs': { describeActionFailure: (status, body) => body?.error || body?.message || `HTTP ${status}` },
     '../../utils/actionFailure.mjs': { describeActionFailure: (status, body) => body?.error || body?.message || `HTTP ${status}` },
     '../utils/apiClient': apiClientStub(fetch),

@@ -1,7 +1,7 @@
 import Button from './ui/Button'
 import { useState, useEffect, useRef } from 'react'
 import { formatCurrency, formatPrice, formatAsset } from './charts/chartUtils'
-import { getBaseCurrency } from '../App'
+import { getBaseCurrency } from '../utils/productId.mjs'
 import { pairQuery as buildPairQuery } from '../utils/api'
 import { apiGet } from '../utils/apiClient'
 import { pnlColorClass, signedPrefix } from '../utils/pnlFormat.mjs'
