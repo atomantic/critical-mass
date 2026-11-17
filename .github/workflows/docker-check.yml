@@ -11,6 +11,8 @@ on:
       - package*.json
       - admin/**
       - ecosystem.config.cjs
+      - config.example.json
+      - shared/**
       - scripts/docker-*.sh
       - .github/workflows/docker-check.yml
 
