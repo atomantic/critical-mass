@@ -39,7 +39,7 @@ it('reads a 100-row page and the fund config, and re-reads only on a pushed regi
   expect(new URL(fillsReads()[0], 'http://localhost').searchParams.get('pageSize')).toBe('100')
   const before = fillsReads().length
 
-  // Idle: no timer-driven re-read.
+  // Idle: no short-interval timer re-read (longer intervals are barred by tests/no-admin-polling.test.js).
   await new Promise(resolve => setTimeout(resolve, 2300))
   expect(fillsReads().length).toBe(before)
 

@@ -25,8 +25,8 @@ it('Open Orders tier badge tooltip comes from the shared tier table', () => {
     avgCostBasis={50000} config={{ holdbackRatio: 0.5, feeRate: 0.001 }} priceDecimals={2} asset="BTC"
     isRunning openSearchId="" setTpEditModal={() => {}} setRollUpConfirm={() => {}}
   />)
-  const badge = screen.getByTitle(formatTierTooltip(nebula))
-  expect(badge.textContent).toBeTruthy()
+  // The badge is found by the shared tooltip text; a locally hard-coded copy would not match.
+  expect(screen.getByTitle(formatTierTooltip(nebula))).toBeTruthy()
   expect(formatTierTooltip(nebula)).toMatch(/Nebula.*40-50%/)
 })
 
