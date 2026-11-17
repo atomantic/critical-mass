@@ -68,7 +68,7 @@ test('release runs only after CI succeeds on a main push, from the CI run head_s
 });
 
 test('CI keeps the required check name and cancels only superseded pull request runs', () => {
-  assert.match(ciWorkflow, /\nconcurrency:\n  group: ci-\$\{\{ github\.ref \}\}\n  cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}\n/);
+  assert.match(ciWorkflow, /\nconcurrency:\n  group: ci-\$\{\{ github\.event_name == 'pull_request' && github\.ref \|\| github\.sha \}\}\n  cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}\n/);
   assert.match(ciWorkflow, /\njobs:\n  build:\n/);
   assert.match(ciWorkflow, /node-version: \[26\.x\]/);
   assert.doesNotMatch(ciWorkflow, /\n    name:/);
