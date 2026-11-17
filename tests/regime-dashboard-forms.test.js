@@ -24,7 +24,7 @@ before(async () => {
   const { rolldown } = await import(pathToFileURL(adminRequire.resolve('rolldown')).href)
   const bundle = await rolldown({
     input: path.join(__dirname, '..', 'admin', 'src', 'components', 'RegimeDashboard.jsx'),
-    external: id => !/\/(PositionCard|LadderPanel|CapitalAdjust|AggressivenessControl|ConfigurationSummary|aggressiveness|deriveDashboardStatus|useRegimeDashboardData|useDcaConversion|useRegimeDashboardActions|configSaveError|regimeStatusSnapshot)(\.(?:jsx?|mjs))?$/.test(id),
+    external: id => !/\/(PositionCard|LadderPanel|CapitalAdjust|AggressivenessControl|ConfigurationSummary|aggressiveness|deriveDashboardStatus|useRegimeDashboardData|useDcaConversion|useRegimeDashboardActions|configSaveError|regimeStatusSnapshot|structuralShare|LastPriceContext)(\.(?:jsx?|mjs))?$/.test(id),
     transform: { jsx: 'react' },
   })
   try {
@@ -108,6 +108,7 @@ function createDashboard({ apy: apyOverrides = {}, intercept } = {}) {
     },
     useEffect(effect) { const inst = currentInstance; if (!inst.mounted) inst.effects.push(effect) },
     useMemo: fn => fn(),
+    useContext: () => 0,
     useCallback: fn => fn,
     useRef(initial) {
       const inst = currentInstance
@@ -217,8 +218,10 @@ function createDashboard({ apy: apyOverrides = {}, intercept } = {}) {
       // `props.children` (rather than calling it) is what the pre-#760
       // harness did for every function component, since none were ever
       // invoked.
-      if (typeof tree.type === 'function' && EXTRACTED_COMPONENT_NAMES.has(tree.type.name)) {
-        return [tree, ...this.elements(invoke(tree.type, tree.props))]
+      // React.memo wrappers (ConfigurationSummary) expose the component as `.type`.
+      const component = typeof tree.type === 'function' ? tree.type : tree.type?.type
+      if (typeof component === 'function' && EXTRACTED_COMPONENT_NAMES.has(component.name)) {
+        return [tree, ...this.elements(invoke(component, tree.props))]
       }
       return [tree, ...this.elements(tree.props.children)]
     },

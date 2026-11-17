@@ -3,6 +3,7 @@ import { useRegimeEvents } from '../../hooks/useTradeEvents'
 import { useChartDataBuffer } from '../../hooks/useChartDataBuffer'
 import { createRequestOwner } from '../../utils/requestOwner.mjs'
 import { apiGet } from '../../utils/apiClient'
+import { shareStructure } from '../../utils/structuralShare.mjs'
 import { EMPTY_SNAPSHOT, STATUS_STALE_MS, nextRegimeStatusSeq, toUnreachableStatus } from '../../utils/regimeStatusSnapshot.mjs'
 
 export default function useRegimeDashboardData(exchange, pair, pairQuery) {
@@ -50,7 +51,14 @@ export default function useRegimeDashboardData(exchange, pair, pairQuery) {
   // A running snapshot with no successor for STATUS_STALE_MS shows as an
   // unreachable engine (stopped-status fields only) until a fresh one arrives.
   const statusSilent = Boolean(latest.status) && silentSeq === latest.seq
-  const status = useMemo(() => statusSilent ? toUnreachableStatus(latest.status) : latest.status, [statusSilent, latest.status])
+  // Every push deserialises fresh objects; share unchanged subtrees with the
+  // previous status so memoised panels keep their props between pushes.
+  const sharedStatus = useRef(null)
+  const status = useMemo(() => {
+    const next = shareStructure(sharedStatus.current, statusSilent ? toUnreachableStatus(latest.status) : latest.status)
+    sharedStatus.current = next
+    return next
+  }, [statusSilent, latest.status])
 
   // Chart data buffering with cache support. Fed the received snapshot, so a
   // silent engine adds no synthetic point at its frozen price.
@@ -59,7 +67,7 @@ export default function useRegimeDashboardData(exchange, pair, pairQuery) {
   // Sync config from status updates (hot-reload without refresh)
   useEffect(() => {
     if (status?.config) {
-      setConfig(prev => prev ? { ...prev, ...status.config } : status.config)
+      setConfig(prev => prev ? shareStructure(prev, { ...prev, ...status.config }) : status.config)
     }
   }, [status?.config])
 
