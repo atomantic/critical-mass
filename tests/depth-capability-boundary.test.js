@@ -17,7 +17,7 @@ before(async () => {
   const { rolldown } = await import(pathToFileURL(adminRequire.resolve('rolldown')).href)
   for (const name of ['ConfigEditor', 'NotificationsConfig']) {
     const bundle = await rolldown({ input: path.join(__dirname, `../admin/src/components/${name}.jsx`),
-      external: id => id === 'react' || id === '../App' || id === './Toast' || id === './ui/Button' || id === '../hooks/useRealtimeRefresh', transform: { jsx: 'react' } })
+      external: id => id === 'react' || id === '../utils/productId.mjs' || id === './Toast' || id === './ui/Button' || id === '../hooks/useRealtimeRefresh', transform: { jsx: 'react' } })
     try { compiled.set(name, (await bundle.generate({ format: 'cjs' })).output[0].code) }
     finally { await bundle.close() }
   }
@@ -46,7 +46,7 @@ function view(name, props = {}, notificationConfig = {}) {
     },
     require: id => {
       if (id === 'react') return hooks
-      if (id === '../App') return { getBaseCurrency: () => 'BTC', getQuoteCurrency: () => 'USDC' }
+      if (id === '../utils/productId.mjs') return { getBaseCurrency: () => 'BTC', getQuoteCurrency: () => 'USDC' }
       if (id === './ui/Button') return 'button'
       if (id === '../hooks/useRealtimeRefresh') return asHookModule(() => {})
       if (id === './Toast') return { useNotify: () => () => null, useToast: () => ({ addToast: () => null, removeToast() {} }) }

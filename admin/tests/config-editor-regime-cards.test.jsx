@@ -4,7 +4,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { renderWithToasts as render } from './renderWithToasts'
 import ConfigEditor from '../src/components/ConfigEditor'
 
-vi.mock('../src/App', () => ({ getBaseCurrency: () => 'BTC', getQuoteCurrency: () => 'USD' }))
+vi.mock('../src/utils/productId.mjs', () => ({ getBaseCurrency: () => 'BTC', getQuoteCurrency: () => 'USD' }))
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 const setup = regime => {
   vi.stubGlobal('fetch', vi.fn(async (url, options = {}) => ({ ok: true, json: async () => options.method ? {} : { presets: {} } })))

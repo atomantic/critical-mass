@@ -8,7 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "lint": "eslint . --max-warnings 49"
+    "lint": "eslint . --max-warnings 47"
   },
   "dependencies": {
     "@react-three/fiber": "^9.8.2",
