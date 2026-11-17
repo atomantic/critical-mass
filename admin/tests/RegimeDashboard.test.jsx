@@ -5,7 +5,7 @@ import RegimeDashboard from '../src/components/RegimeDashboard'
 import useRegimeDashboardData from '../src/components/regime/useRegimeDashboardData'
 
 const fixture = vi.hoisted(() => ({ status: null, addToast: vi.fn(), setStatus: vi.fn(), initializeFromCache: vi.fn() }))
-vi.mock('../src/App', () => ({ getBaseCurrency: () => 'BTC', getQuoteCurrency: () => 'USDC' }))
+vi.mock('../src/utils/productId.mjs', () => ({ getBaseCurrency: () => 'BTC', getQuoteCurrency: () => 'USDC' }))
 vi.mock('../src/components/Toast', () => ({ useToast: () => ({ addToast: fixture.addToast }) }))
 vi.mock('../src/hooks/useTradeEvents', () => ({ useRegimeEvents: () => ({ status: fixture.status, setStatus: fixture.setStatus }) }))
 vi.mock('../src/hooks/useChartDataBuffer', () => ({ useChartDataBuffer: () => ({ priceHistory: [], atrHistory: [], regimeHistory: [], initializeFromCache: fixture.initializeFromCache }) }))

@@ -87,7 +87,7 @@ function view(name, fetchImpl, extra = {}) {
     './Toast': { useToast: () => ({ addToast() {} }) },
     './regime/useDcaConversion': { fetchConvertPreview: async () => null },
     './charts/chartUtils': { formatCurrency: String, formatPrice: String, formatAsset: String },
-    '../App': { getBaseCurrency: () => 'ETH', getQuoteCurrency: () => 'USDC' },
+    '../utils/productId.mjs': { getBaseCurrency: () => 'ETH', getQuoteCurrency: () => 'USDC' },
   }
   const m = { exports: {} }
   vm.runInNewContext(compiled[name], {
