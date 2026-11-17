@@ -18,6 +18,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 
+const { useVirtualClock } = require('./virtual-clock');
 const { createIsolatedDataDir } = require('./test-data-dir');
 const isolatedData = createIsolatedDataDir('cm-partial-entry-test');
 
@@ -90,7 +91,9 @@ const makeEngine = (adapter, executor) => {
 };
 
 describe('partially-filled entry orders stay tracked', () => {
-  it('revisits an unchanged partial when trade history initially covers only part of it', async () => {
+  it('revisits an unchanged partial when trade history initially covers only part of it', async (t) => {
+    // The executor's fill fallback waits on real timers; run them on virtual time.
+    const clock = useVirtualClock(t);
     const orderId = 'poll-delayed-executions';
     const status = { status: 'PARTIALLY_FILLED', side: 'BUY', filledSize: 0.01, averageFilledPrice: 2500 };
     const firstFill = buyFill(orderId, 'delayed-a', 0.004, 2500);
@@ -123,17 +126,17 @@ describe('partially-filled entry orders stay tracked', () => {
     };
     const bookedQty = () => pos.celestialBodies.reduce((sum, body) => sum + body.assetQty, 0);
     try {
-      await poll();
+      await clock.run(poll());
       assert.equal(bookedQty(), 0, 'an open partial with no execution history must not synthesize a body');
       fills = [firstFill];
-      await poll();
+      await clock.run(poll());
       assert.ok(Math.abs(bookedQty() - 0.004) < 1e-8, 'only confirmed executions are booked initially');
       fills = [firstFill, secondFill];
-      await poll(); // The exchange order has not advanced; its history caught up.
+      await clock.run(poll()); // The exchange order has not advanced; its history caught up.
       assert.ok(Math.abs(bookedQty() - 0.01) < 1e-8, 'the same cumulative partial must recover its missing execution');
       assert.ok(Math.abs(pos.pendingEntryOrders[0].assetQty - 0.02) < 1e-8);
       assert.equal(pos.cycleBuys, 1, 'retrying one order must not count a second cycle buy');
-      await poll();
+      await clock.run(poll());
       assert.ok(Math.abs(bookedQty() - 0.01) < 1e-8, 'a fully booked unchanged partial is not counted twice');
       assert.equal(executor.getPendingOrdersList().some(order => order.orderId === orderId), true);
     } finally {
@@ -143,7 +146,8 @@ describe('partially-filled entry orders stay tracked', () => {
 
   for (const type of ['entry', 'ladder_entry']) {
     for (const terminalStatus of ['FILLED', 'CANCELLED']) {
-      it(`keeps real ${type} polling through advancing partials until ${terminalStatus}`, async () => {
+      it(`keeps real ${type} polling through advancing partials until ${terminalStatus}`, async (t) => {
+        const clock = useVirtualClock(t);
         const orderId = `poll-${type}-${terminalStatus}`;
         let orderStatus = {
           status: 'PARTIALLY_FILLED', side: 'BUY', filledSize: 0.01,
@@ -182,13 +186,13 @@ describe('partially-filled entry orders stay tracked', () => {
         };
         const isTracked = () => executor.getPendingOrdersList().some(o => o.orderId === orderId);
         try {
-          await poll();
+          await clock.run(poll());
           assert.equal(isTracked(), true, 'the first partial must remain available to the next real executor poll');
           assert.ok(Math.abs(pos[pendingKey][0].assetQty - 0.02) < 1e-8);
 
           fills = [...fills, buyFill(orderId, `${orderId}-b`, 0.01, 2500)];
           orderStatus = { ...orderStatus, filledSize: 0.02 };
-          await poll();
+          await clock.run(poll());
           assert.equal(isTracked(), true, 'an advancing partial still has a resting remainder');
           assert.ok(Math.abs(pos[pendingKey][0].assetQty - 0.01) < 1e-8);
 
@@ -199,7 +203,7 @@ describe('partially-filled entry orders stay tracked', () => {
             ...orderStatus, status: terminalStatus,
             filledSize: terminalStatus === 'FILLED' ? 0.03 : 0.02,
           };
-          await poll();
+          await clock.run(poll());
           assert.equal(polls, 3, 'the terminal exchange status must actually be polled');
           assert.equal(isTracked(), false, 'terminal orders leave executor tracking');
           assert.deepEqual(pos[pendingKey], [], 'terminal orders leave persisted tracking, including cancelled partials');

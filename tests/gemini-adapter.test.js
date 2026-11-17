@@ -5,6 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+const { useVirtualClock } = require('./virtual-clock');
 const { createGeminiAdapter, createRestThrottle, isRetryableRateLimit } = require('../src/adapters/gemini/api');
 
 // ---------------------------------------------------------------------------
@@ -205,11 +206,12 @@ describe('gemini getOrderFills', () => {
     assert.equal(warnings.length, 1, 'same-second saturation must emit a visible warning');
   });
 
-  it('marks reconciliation fills incomplete when the same-second cluster is unreachable', async () => {
+  it('marks reconciliation fills incomplete when the same-second cluster is unreachable', async (t) => {
     // Placement evidence reads an ordinary array as the whole fill history, so
     // the scan's unreachable tail must be flagged rather than only logged.
     const adapter = createGeminiAdapter(keysPath);
     const at = 1750000000000;
+    const clock = useVirtualClock(t, { now: at + 3 * 60 * 60 * 1000 }); // scan pacing runs on virtual time
     const origLog = console.log;
     const origWarn = console.warn;
     console.log = () => {};
@@ -221,15 +223,15 @@ describe('gemini getOrderFills', () => {
         if (endpoint !== '/v1/mytrades') throw new Error(`unexpected endpoint ${endpoint}`);
         return Array.from({ length: 500 }, (_, i) => makeTrade({ tid: 30000 + i, symbol: 'btcusd', timestampms: at }));
       });
-      saturated = await adapter.getReconciliationFills('BTCUSD', at);
+      saturated = await clock.run(adapter.getReconciliationFills('BTCUSD', at));
       installFetchMock(() => [makeTrade({ tid: 1, symbol: 'btcusd', timestampms: at })]);
-      complete = await adapter.getReconciliationFills('BTCUSD', at);
+      complete = await clock.run(adapter.getReconciliationFills('BTCUSD', at));
     } finally {
       console.log = origLog;
       console.warn = origWarn;
     }
     installFetchMock(() => ({ result: 'error', reason: 'Maintenance' }));
-    const malformed = await adapter.getReconciliationFills('BTCUSD', at);
+    const malformed = await clock.run(adapter.getReconciliationFills('BTCUSD', at));
     assert.equal(malformed.length, 0);
     assert.equal(malformed.incomplete, true, 'a non-array body is not an empty fill history');
     assert.equal(saturated.length, 500);
@@ -305,7 +307,8 @@ describe('gemini getOrderFills', () => {
     });
   });
 
-  it('rejects when matched fills fall short of the order\'s own executed_amount (issue #679)', async () => {
+  it('rejects when matched fills fall short of the order\'s own executed_amount (issue #679)', async (t) => {
+    const clock = useVirtualClock(t); // fill-scan retry pacing runs on virtual time
     const adapter = createGeminiAdapter(keysPath);
     const createdMs = Date.now() - 3 * 60 * 60 * 1000;
     installFetchMock((endpoint) => {
@@ -319,7 +322,7 @@ describe('gemini getOrderFills', () => {
       throw new Error(`unexpected endpoint ${endpoint}`);
     });
 
-    await assert.rejects(adapter.getOrderFills('555'), (err) => {
+    await assert.rejects(clock.run(adapter.getOrderFills('555')), (err) => {
       assert.match(err.message, /fills incomplete for 555: 0\.5 of 1\.5/);
       assert.equal(err.incompleteFills, true);
       return true;
