@@ -16,7 +16,7 @@ const { UPDOWN_STATE_FORMAT_VERSION } = require('../persisted-payload-validation
 const { PERP_CONTRACT_SIZE_BTC, calculatePerpPnl } = require('./perp-contract');
 const { resolveAction, labelHistoryActions } = require('./signal-actions');
 const { createContextLogger } = require('../logger');
-const { quarantineIfUnreadable } = require('../state-tracker');
+const { quarantineIfUnreadable } = require('../state-file-quarantine');
 
 /**
  * UpDown runs a single paper-traded BTC perp book with no exchange behind it,

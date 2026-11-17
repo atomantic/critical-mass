@@ -148,7 +148,7 @@ describe('sell placement — unknown-outcome reconciliation (issue #226 sell-sid
     assert.equal(result.orderId, 'real-sell-1');
     assert.equal(result.reconciled, true);
     // Locally-known request params must be filled in — a reconciled lookup
-    // doesn't echo back the limit price/size, and state-tracker's
+    // doesn't echo back the limit price/size, and dca-state's
     // attachSellOrder reads sellOrder.limitPrice directly for accounting.
     assert.equal(result.baseSize, 0.01 * (1 - 20 / 100));
     assert.equal(result.limitPrice, 50000 * (1 + 5 / 100));

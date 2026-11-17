@@ -4,7 +4,7 @@
  */
 
 const { getAdapter } = require('../src/adapters');
-const { loadRegimeState } = require('../src/state-tracker');
+const { loadRegimeState } = require('../src/regime-state-store');
 
 const exchange = process.argv[2] || 'coinbase';
 const dryRun = process.argv[3] !== '--apply';
