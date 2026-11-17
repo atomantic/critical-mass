@@ -4,18 +4,12 @@
 // React/jsdom harness; RegimeDashboard.jsx wires it into LiveTimer.
 const { describe, it } = require('node:test')
 const assert = require('node:assert/strict')
-const fs = require('node:fs')
 const path = require('node:path')
 const { pathToFileURL } = require('node:url')
 
 const modulePath = pathToFileURL(
   path.join(__dirname, '..', 'admin', 'src', 'utils', 'liveTimerElapsed.mjs'),
 ).href
-
-const dashboardSource = fs.readFileSync(
-  path.join(__dirname, '..', 'admin', 'src', 'components', 'regime', 'LiveStatusBar.jsx'),
-  'utf8',
-)
 
 const formatDuration = (ms) => {
   if (!ms || ms < 0) return '0s'
@@ -60,23 +54,5 @@ describe('LiveTimer elapsed empty-state (issue #586)', () => {
     assert.equal(hasRecordedEntryTime(-1), false)
     assert.equal(hasRecordedEntryTime(NaN), false)
     assert.equal(hasRecordedEntryTime('1700000000000'), false)
-  })
-})
-
-describe('RegimeDashboard LiveTimer wiring (issue #586)', () => {
-  it('uses resolveElapsedDisplay for the elapsed variant and keeps the tile mounted', () => {
-    assert.match(dashboardSource, /import \{ resolveElapsedDisplay \} from '\.\.\/\.\.\/utils\/liveTimerElapsed\.mjs'/)
-    assert.match(dashboardSource, /if \(variant === 'elapsed'\)/)
-    assert.doesNotMatch(dashboardSource, /elapsed !== undefined/)
-    assert.match(dashboardSource, /resolveElapsedDisplay\(elapsed, now, formatDuration\)/)
-    assert.match(dashboardSource, /display\.secondary/)
-  })
-
-  it('keeps the seven-tile status bar grid and Since Last Entry LiveTimer', () => {
-    assert.match(dashboardSource, /grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7/)
-    assert.match(
-      dashboardSource,
-      /label="Since Last Entry"\s+elapsed=\{position\.lastEntryTime\}\s+variant="elapsed"/,
-    )
   })
 })

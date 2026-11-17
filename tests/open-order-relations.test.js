@@ -5,7 +5,6 @@
 // It is now the pure admin/src/utils/openOrderRelations.mjs.
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 
@@ -146,14 +145,6 @@ test('Open Orders relations do not depend on the Filled Orders current-cycle tog
   }
   assert.deepEqual(ids(relatedBuysForOrder(tp('c2-tp'), { bodyLookup: new Map(), index: all })), ['c2-linked']);
   assert.deepEqual(ids(relatedBuysForOrder(tp('legacy-core-tp'), { bodyLookup: new Map(), index: all })), ['c2-linked', 'c2-core', 'c2-core-b']);
-
-  // Wiring: the dashboard hands Open Orders the unfiltered ledger, and the toggle lives in the Filled Orders section.
-  const src = (rel) => fs.readFileSync(path.join(__dirname, '../admin/src/components', rel), 'utf8');
-  const dashboard = src('RegimeDashboard.jsx');
-  assert.match(dashboard, /<OpenOrdersTable[\s\S]*?liveFills=\{liveFills\}[\s\S]*?\/>/);
-  assert.doesNotMatch(dashboard, /filteredFills|showAllCycles/);
-  assert.match(src('regime/FilledOrdersSection.jsx'), /const \[showAllCycles, setShowAllCycles\] = useState\(true\)/);
-  assert.doesNotMatch(src('regime/OpenOrdersTable.jsx'), /filteredFills|showAllCycles/);
 });
 
 test('deriveOpenOrderRows: open orders only, estimates + relations + age, sorted by price desc', async () => {

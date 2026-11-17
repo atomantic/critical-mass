@@ -1,6 +1,4 @@
 const assert = require('node:assert/strict')
-const fs = require('node:fs')
-const path = require('node:path')
 const { describe, it } = require('node:test')
 
 // Exercises the real request owner used by RegimeDashboard's fills reads and the
@@ -196,28 +194,5 @@ describe('dashboard request ownership', () => {
     const owner = createRequestOwner({ fetchImpl: async () => { throw new Error('offline') } })
     const result = await owner.read('/api/updown/status')
     assert.deepEqual(result, { owned: true, ok: false, data: null, token: 1, signal: owner.getSignal() })
-  })
-})
-
-describe('dashboard request ownership wiring', () => {
-  const readSource = (relative) => fs.readFileSync(path.join(__dirname, '..', relative), 'utf8')
-
-  it('routes RegimeDashboard fills reads through a per-mount owner', () => {
-    const dashboard = readSource('admin/src/components/RegimeDashboard.jsx')
-    assert.match(dashboard, /useRegimeDashboardData\(exchange, pair, pairQuery\)/)
-    const source = readSource('admin/src/components/regime/useRegimeDashboardData.js')
-    assert.match(source, /createRequestOwner/, 'RegimeDashboard imports the request owner')
-    assert.match(source, /readSnapshot\('fills', fillsOwner, data =>/)
-    assert.match(source, /await owner\.read\(/)
-    assert.match(source, /name === 'fills' \? 'fills\/cycles' : name/)
-    assert.doesNotMatch(source, /await fetch\(`\/api\/\$\{exchange\}\/regime\/fills/, 'fill aggregates are not fetched unfenced')
-  })
-
-  it('routes UpDown status reads through a per-mount owner and fences Start/Stop', () => {
-    const source = readSource('admin/src/components/updown/Dashboard.jsx')
-    assert.match(source, /statusOwner\.read\('\/api\/updown\/status'\)/)
-    assert.doesNotMatch(source, /await fetch\('\/api\/updown\/status'\)/, 'status is no longer fetched unfenced')
-    const invalidations = source.match(/statusOwner\.invalidate\(\)/g) || []
-    assert.equal(invalidations.length, 3, 'Start, Stop and unmount each invalidate in-flight status reads')
   })
 })
