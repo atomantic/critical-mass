@@ -27,6 +27,7 @@ jobs:
     outputs:
       release_tag: ${{ steps.package-version.outputs.release_tag }}
       release_created: ${{ steps.tag-check.outputs.exists == 'false' }}
+      promote_latest: ${{ steps.latest-check.outputs.promote }}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -58,34 +59,30 @@ jobs:
             echo "exists=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Generate changelog
-        id: changelog
+      # Fail before any tag exists when a new version has no release notes.
+      # A no-op for ordinary merges, where the version's tag already exists.
+      - name: Require release notes for new version
         if: steps.tag-check.outputs.exists == 'false'
+        env:
+          VERSION: ${{ steps.package-version.outputs.version }}
         run: |
-          VERSION="${{ steps.package-version.outputs.version }}"
-          CHANGELOG_FILE=".changelogs/v${VERSION}.md"
-
-          if [ -f "$CHANGELOG_FILE" ]; then
-            CHANGELOG=$(cat "$CHANGELOG_FILE")
-          else
-            PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || git rev-list --max-parents=0 HEAD)
-            COMMIT_LOG=$(git log $PREV_TAG..HEAD --pretty=format:"- %s" --no-merges | grep -v "\[skip ci\]" | head -50)
-
-            CHANGELOG="# Release v${VERSION}
-
-          ## Changes
-
-          ${COMMIT_LOG}
-
-          ## Installation
-
-          Follow the [installation guide](https://github.com/atomantic/critical-mass/blob/v${VERSION}/README.md#installation) for this release, including operator authentication setup.
-          Then configure [exchange API keys and bot settings](https://github.com/atomantic/critical-mass/blob/v${VERSION}/README.md#configuration) and follow the [dashboard startup instructions](https://github.com/atomantic/critical-mass/blob/v${VERSION}/README.md#usage)."
+          if [ ! -f ".changelogs/v${VERSION}.md" ]; then
+            echo "::error::package.json is at new version ${VERSION} but .changelogs/v${VERSION}.md is missing. Run 'node scripts/fold-changelog.js ${VERSION}' (see docs/RELEASING.md). No tag was created."
+            exit 1
           fi
 
-          echo "changelog<<EOF" >> $GITHUB_OUTPUT
-          echo "$CHANGELOG" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+      - name: Read release notes
+        id: changelog
+        if: steps.tag-check.outputs.exists == 'false'
+        env:
+          VERSION: ${{ steps.package-version.outputs.version }}
+        run: |
+          {
+            echo "changelog<<RELEASE_NOTES_EOF"
+            cat ".changelogs/v${VERSION}.md"
+            echo
+            echo "RELEASE_NOTES_EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Create Release
         if: steps.tag-check.outputs.exists == 'false'
@@ -97,6 +94,20 @@ jobs:
         run: |
           gh release create "$TAG" --title "$TAG" --notes "$NOTES" --target "$RELEASE_SHA"
 
+      # CI runs for quick successive version bumps can finish out of order, so
+      # this run may release an older version after a newer one. Always publish
+      # the versioned tag, but promote `latest` only when this version is the
+      # highest stable tag on the remote (read fresh, after our tag exists).
+      - name: Decide whether to promote latest
+        id: latest-check
+        if: steps.tag-check.outputs.exists == 'false'
+        env:
+          TAG: v${{ steps.package-version.outputs.version }}
+        run: |
+          PROMOTE="$(git ls-remote --tags --refs origin | sed 's#.*refs/tags/##' | bash scripts/should-promote-latest.sh "$TAG")"
+          echo "promote=$PROMOTE" >> "$GITHUB_OUTPUT"
+          echo "Promote latest for $TAG: $PROMOTE"
+
   publish-image:
     name: Publish release image
     needs: release
@@ -104,7 +115,7 @@ jobs:
     uses: ./.github/workflows/docker-build.yml
     with:
       release_tag: ${{ needs.release.outputs.release_tag }}
-      publish_latest: true
+      publish_latest: ${{ needs.release.outputs.promote_latest == 'true' }}
     permissions:
       contents: read
       packages: write

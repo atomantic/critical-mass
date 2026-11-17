@@ -6,7 +6,7 @@ const vm = require('node:vm');
 const backend = require('../src/config-utils');
 
 // Exercise the exported pure UI helpers without loading React or mounting the app.
-const source = fs.readFileSync(path.join(__dirname, '../admin/src/App.jsx'), 'utf8');
+const source = fs.readFileSync(path.join(__dirname, '../admin/src/utils/productId.mjs'), 'utf8');
 const helpers = source.match(/export function get(?:Base|Quote)Currency\(productId\) \{[\s\S]*?\n\}/g);
 assert.equal(helpers?.length, 2);
 const frontend = vm.runInNewContext(`${helpers.join('\n').replaceAll('export function', 'function')}; ({ getBaseCurrency, getQuoteCurrency })`);

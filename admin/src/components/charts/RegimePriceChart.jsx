@@ -1,4 +1,4 @@
-import { useId, useMemo } from 'react'
+import { memo, useId, useMemo } from 'react'
 import { areaPath, extent, formatTime, linePath, linearScale, max, min, timeScale } from '../../lib/chart-math'
 import { formatPriceCompact, regimeZones } from './chartUtils'
 import InfoTooltip from '../InfoTooltip'
@@ -258,4 +258,4 @@ function RegimePriceChart({
   )
 }
 
-export default RegimePriceChart
+export default memo(RegimePriceChart)

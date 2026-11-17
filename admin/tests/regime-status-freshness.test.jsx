@@ -22,7 +22,7 @@ const emitStatus = status => act(() => {
 })
 
 vi.mock('../src/lib/realtime', () => ({ getRealtimeClient: () => socket }))
-vi.mock('../src/App', () => ({ getBaseCurrency: () => 'BTC', getQuoteCurrency: () => 'USDC' }))
+vi.mock('../src/utils/productId.mjs', () => ({ getBaseCurrency: () => 'BTC', getQuoteCurrency: () => 'USDC' }))
 const addToast = vi.hoisted(() => vi.fn())
 vi.mock('../src/components/Toast', () => ({ useToast: () => ({ addToast }) }))
 vi.mock('../src/components/charts/RegimePriceChart', () => ({ default: () => <div>Price chart</div> }))

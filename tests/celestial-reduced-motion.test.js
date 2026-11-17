@@ -85,7 +85,8 @@ describe('CelestialVisualization pause control and canvas name (issue #539)', ()
   })
 
   it('switches the Canvas frameloop to demand under motion-paused so drag input still redraws', () => {
-    assert.match(celestialVisualizationSource, /frameloop={motionPaused \? 'demand' : 'always'}/)
+    assert.match(celestialVisualizationSource, /const frameloop = motionPaused \|\| !canvasActive \? 'demand' : 'always'/)
+    assert.match(celestialVisualizationSource, /frameloop={frameloop}/)
   })
 
   it('gives the actual <canvas> DOM node a role and computed accessible name from the tier/order counts', () => {

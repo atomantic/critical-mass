@@ -6,7 +6,9 @@ const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 
-const { executeDailyBuy, placeWithUnknownReconcile, placeSellOrder, placeSellOrderWithRetry, placeFibonacciSellOrder } = require('../src/order-manager');
+const { useVirtualClock } = require('./virtual-clock');
+const { placeWithUnknownReconcile } = require('../src/placement-reconcile');
+const { executeDailyBuy, placeSellOrder, placeSellOrderWithRetry, placeFibonacciSellOrder } = require('../src/order-manager');
 const { createCoinbaseAdapter } = require('../src/adapters/coinbase/api');
 
 // ---------------------------------------------------------------------------
@@ -64,7 +66,8 @@ describe('executeDailyBuy — unknown-outcome reconciliation (issue #226)', () =
     assert.equal(result.status, 'FILLED');
   });
 
-  it('fails cleanly (throws) when no order with the client_order_id exists', async () => {
+  it('fails cleanly (throws) when no order with the client_order_id exists', async (t) => {
+    const clock = useVirtualClock(t); // the reconcile lookup retries on its production backoff
     let placeCalls = 0;
     const adapter = makeBuyAdapter({
       placeMarketBuy: async () => { placeCalls++; throw unknownError('coid-2'); },
@@ -72,7 +75,7 @@ describe('executeDailyBuy — unknown-outcome reconciliation (issue #226)', () =
     });
 
     await assert.rejects(
-      () => executeDailyBuy({ productId: 'BTC-USDC', holdbackPercent: 20 }, 100, adapter),
+      () => clock.run(executeDailyBuy({ productId: 'BTC-USDC', holdbackPercent: 20 }, 100, adapter)),
       /Market buy failed/
     );
     assert.equal(placeCalls, 1, 'placement attempted exactly once, never blind-retried');
@@ -154,7 +157,8 @@ describe('sell placement — unknown-outcome reconciliation (issue #226 sell-sid
     assert.equal(result.limitPrice, 50000 * (1 + 5 / 100));
   });
 
-  it('placeSellOrder fails cleanly when the sell genuinely never landed', async () => {
+  it('placeSellOrder fails cleanly when the sell genuinely never landed', async (t) => {
+    const clock = useVirtualClock(t); // the reconcile lookup retries on its production backoff
     const adapter = {
       placeLimitSell: async () => { throw unknownError('coid-sell-2'); },
       findOrderByClientOrderId: async () => null,
@@ -162,7 +166,7 @@ describe('sell placement — unknown-outcome reconciliation (issue #226 sell-sid
     const config = { productId: 'BTC-USDC', holdbackPercent: 20, sellMarkupPercent: 5 };
 
     await assert.rejects(
-      () => placeSellOrder(config, { assetAmount: 0.01, price: 50000 }, adapter),
+      () => clock.run(placeSellOrder(config, { assetAmount: 0.01, price: 50000 }, adapter)),
       /Limit sell failed/
     );
   });

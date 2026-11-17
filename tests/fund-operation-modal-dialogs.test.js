@@ -23,6 +23,23 @@ const appSource = fs.readFileSync(
   'utf8',
 )
 
+// The fund lifecycle dialogs live in the shell components; the executors live
+// in the fund controller hook and the Reset button in the fund sub-nav.
+const lifecycleDialogsSource = fs.readFileSync(
+  path.join(__dirname, '..', 'admin', 'src', 'components', 'shell', 'FundLifecycleDialogs.jsx'),
+  'utf8',
+)
+
+const fundSubNavSource = fs.readFileSync(
+  path.join(__dirname, '..', 'admin', 'src', 'components', 'shell', 'FundSubNav.jsx'),
+  'utf8',
+)
+
+const fundControllerSource = fs.readFileSync(
+  path.join(__dirname, '..', 'admin', 'src', 'hooks', 'useFundController.js'),
+  'utf8',
+)
+
 const regimeActionModalsSource = fs.readFileSync(
   path.join(__dirname, '..', 'admin', 'src', 'components', 'regime', 'RegimeActionModals.jsx'),
   'utf8',
@@ -69,60 +86,60 @@ describe('ModalDialog shared wrapper (issue #434)', () => {
 
 const dialogUsages = (source) => [...source.matchAll(/<ModalDialog\b/g)]
 
-describe('App.jsx fund lifecycle dialogs use ModalDialog (issue #434)', () => {
+describe('FundLifecycleDialogs.jsx fund lifecycle dialogs use ModalDialog (issue #434)', () => {
   it('imports the shared ModalDialog wrapper', () => {
-    assert.match(appSource, /import ModalDialog from '\.\/components\/ModalDialog'/)
+    assert.match(lifecycleDialogsSource, /import ModalDialog from '\.\.\/ModalDialog'/)
   })
 
   it('no longer renders the fund dialogs as bare overlay divs', () => {
-    assert.doesNotMatch(appSource, /Close Fund confirmation dialog[\s\S]{0,80}<div\s+className="fixed inset-0/)
-    assert.doesNotMatch(appSource, /Reopen Fund confirmation dialog[\s\S]{0,80}<div\s+className="fixed inset-0/)
+    assert.doesNotMatch(lifecycleDialogsSource, /Close Fund confirmation dialog[\s\S]{0,80}<div\s+className="fixed inset-0/)
+    assert.doesNotMatch(lifecycleDialogsSource, /Reopen Fund confirmation dialog[\s\S]{0,80}<div\s+className="fixed inset-0/)
   })
 
   it('renders Close Fund as a labelled, pending-aware ModalDialog with Cancel focused first', () => {
     assert.match(
-      appSource,
+      lifecycleDialogsSource,
       /closeFundDialogOpen && \(\s*<ModalDialog\s+onClose={\(\) => setCloseFundDialogOpen\(false\)}\s+dismissible={!closing}\s+labelledBy="close-fund-title"\s+describedBy="close-fund-description"/,
     )
-    assert.match(appSource, /<h3 id="close-fund-title"/)
-    assert.match(appSource, /<p id="close-fund-description"/)
-    assert.match(appSource, /<label htmlFor="close-fund-reason"/)
-    assert.match(appSource, /id="close-fund-reason"/)
+    assert.match(lifecycleDialogsSource, /<h3 id="close-fund-title"/)
+    assert.match(lifecycleDialogsSource, /<p id="close-fund-description"/)
+    assert.match(lifecycleDialogsSource, /<label htmlFor="close-fund-reason"/)
+    assert.match(lifecycleDialogsSource, /id="close-fund-reason"/)
     // Cancel (not the reason input) gets initial focus per the acceptance criteria.
     assert.match(
-      appSource,
+      lifecycleDialogsSource,
       /onClick={\(\) => setCloseFundDialogOpen\(false\)}\s+disabled={closing}\s+autoFocus/,
     )
   })
 
   it('renders Reopen Fund as a labelled, pending-aware ModalDialog with Cancel focused first', () => {
     assert.match(
-      appSource,
+      lifecycleDialogsSource,
       /reopenFundDialogOpen && \(\s*<ModalDialog\s+onClose={\(\) => setReopenFundDialogOpen\(false\)}\s+dismissible={!reopening}\s+labelledBy="reopen-fund-title"\s+describedBy="reopen-fund-description"/,
     )
-    assert.match(appSource, /<h3 id="reopen-fund-title"/)
-    assert.match(appSource, /<p id="reopen-fund-description"/)
+    assert.match(lifecycleDialogsSource, /<h3 id="reopen-fund-title"/)
+    assert.match(lifecycleDialogsSource, /<p id="reopen-fund-description"/)
     assert.match(
-      appSource,
+      lifecycleDialogsSource,
       /onClick={\(\) => setReopenFundDialogOpen\(false\)}\s+disabled={reopening}\s+autoFocus/,
     )
   })
 
   it('renders Reset Dry-Run as a labelled, pending-aware ModalDialog with Cancel focused first', () => {
     assert.match(
-      appSource,
+      lifecycleDialogsSource,
       /resetDryRunConfirm && \(\s*<ModalDialog\s+onClose={\(\) => setResetDryRunConfirm\(false\)}\s+dismissible={!resetting}\s+labelledBy="reset-dry-run-title"\s+describedBy="reset-dry-run-description"/,
     )
-    assert.match(appSource, /<h3 id="reset-dry-run-title"/)
-    assert.match(appSource, /<p id="reset-dry-run-description"/)
+    assert.match(lifecycleDialogsSource, /<h3 id="reset-dry-run-title"/)
+    assert.match(lifecycleDialogsSource, /<p id="reset-dry-run-description"/)
     assert.match(
-      appSource,
+      lifecycleDialogsSource,
       /onClick={\(\) => setResetDryRunConfirm\(false\)}\s+disabled={resetting}\s+autoFocus/,
     )
   })
 
-  it('renders exactly three ModalDialog usages in App.jsx', () => {
-    assert.equal(dialogUsages(appSource).length, 3)
+  it('renders exactly three ModalDialog usages in FundLifecycleDialogs.jsx', () => {
+    assert.equal(dialogUsages(lifecycleDialogsSource).length, 3)
   })
 })
 
@@ -227,17 +244,24 @@ describe('Destructive executors are reachable only from a dialog confirm action 
   const countOccurrences = (source, identifier) =>
     (source.match(new RegExp(`\\b${identifier}\\b`, 'g')) || []).length
 
-  it('handleExecuteResetDryRun (App.jsx) is defined once and invoked only as the Reset Dry-Run dialog confirm action', () => {
-    assert.equal(countOccurrences(appSource, 'handleExecuteResetDryRun'), 2)
+  it('handleExecuteResetDryRun (useFundController) is defined once and invoked only as the Reset Dry-Run dialog confirm action', () => {
+    assert.equal((fundControllerSource.match(/const handleExecuteResetDryRun = /g) || []).length, 1)
+    assert.doesNotMatch(fundControllerSource, /handleExecuteResetDryRun\(/)
+    // App only forwards it to the dialogs component (destructure + prop name + prop value).
+    assert.equal(countOccurrences(appSource, 'handleExecuteResetDryRun'), 3)
+    assert.doesNotMatch(appSource, /handleExecuteResetDryRun\(/)
+    assert.equal(countOccurrences(lifecycleDialogsSource, 'handleExecuteResetDryRun'), 2)
     assert.match(
-      appSource,
+      lifecycleDialogsSource,
       /resetDryRunConfirm && \([\s\S]*?onClick={handleExecuteResetDryRun}[\s\S]*?<\/ModalDialog>/,
     )
   })
 
-  it('the Reset button in App.jsx only opens the confirm dialog (calls handleResetDryRun, not the executor)', () => {
-    assert.match(appSource, /onClick={handleResetDryRun}/)
-    assert.doesNotMatch(appSource, /onClick={handleResetDryRun}[\s\S]{0,400}handleExecuteResetDryRun\(\)/)
+  it('the Reset button in FundSubNav.jsx only opens the confirm dialog (calls onResetDryRun, wired to handleResetDryRun, not the executor)', () => {
+    assert.match(fundSubNavSource, /onClick={onResetDryRun}/)
+    assert.doesNotMatch(fundSubNavSource, /handleExecuteResetDryRun/)
+    assert.match(appSource, /onResetDryRun={handleResetDryRun}/)
+    assert.doesNotMatch(appSource, /onResetDryRun={handleExecuteResetDryRun}/)
   })
 
   it("handleExecuteCancelLadder (RegimeDashboard.jsx) is defined once and passed only to the Cancel Ladder dialog's confirm prop", () => {

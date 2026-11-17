@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect } from 'vitest'
 import { formatUsd, formatPercent, formatLocalStamp, formatBytes } from '../src/utils/format.mjs'
 

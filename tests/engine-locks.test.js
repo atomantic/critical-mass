@@ -224,11 +224,7 @@ describe('createEngineLocks — constants', () => {
 });
 
 /** A promise plus its resolver, for holding a lock open deterministically. */
-const deferred = () => {
-  let resolve;
-  const promise = new Promise((r) => { resolve = r; });
-  return { promise, resolve };
-};
+const { deferred } = require('./helpers/deferred');
 
 describe('createEngineLocks — ladder lock (#766)', () => {
   it('queues a second sweep behind the first instead of refusing it', async () => {

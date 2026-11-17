@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { placeWithUnknownReconcile } = require('../src/order-manager');
+const { placeWithUnknownReconcile } = require('../src/placement-reconcile');
 
 // ---------------------------------------------------------------------------
 // #253 — core trading modules log through the canonical context logger, so

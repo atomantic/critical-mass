@@ -7,7 +7,7 @@ import ConfigEditor from '../src/components/ConfigEditor'
 
 const require = createRequire(import.meta.url)
 const { createPositionSizer } = require('../../src/position-sizer')
-vi.mock('../src/App', () => ({ getBaseCurrency: () => 'BTC', getQuoteCurrency: () => 'USD' }))
+vi.mock('../src/utils/productId.mjs', () => ({ getBaseCurrency: () => 'BTC', getQuoteCurrency: () => 'USD' }))
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
 it('explains profit allocation with an example matching the production sizer', async () => {

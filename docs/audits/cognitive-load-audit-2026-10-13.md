@@ -1,3 +1,5 @@
+Historical snapshot from 2026-10-13; not a current task list.
+
 # Cognitive load audit — 2026-10-13
 
 ## Scope and method

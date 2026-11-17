@@ -107,7 +107,7 @@ function createView(props = {}) {
     '../hooks/useTradeEvents': { useRegimeEvents: () => ({ status: null }) },
     '../utils/apiClient': apiClientStub(fetchImpl),
     './charts/chartUtils': { formatCurrency: value => `$${value}`, formatPrice: value => `$${value}`, formatAsset: String },
-    '../App': {
+    '../utils/productId.mjs': {
       getBaseCurrency: productId => productId?.split('-')[0] || 'BTC',
       getQuoteCurrency: productId => productId?.split('-')[1] || 'USDC',
     },

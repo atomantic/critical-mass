@@ -5,7 +5,7 @@ import { formatCurrency, formatPrice, formatDateTime } from './charts/chartUtils
 import { pairQuery as buildPairQuery } from '../utils/api'
 import { plural } from '../utils/plural.mjs'
 import { apiGet, apiPost, describeMutationFailure as mutationError } from '../utils/apiClient'
-import { getBaseCurrency, getQuoteCurrency } from '../App'
+import { getBaseCurrency, getQuoteCurrency } from '../utils/productId.mjs'
 import { runUnaccountedFillsScan, describeScanProgress } from '../utils/unaccountedFillsScan.mjs'
 import { pnlColorClass, signedPrefix } from '../utils/pnlFormat.mjs'
 import { useNotify } from './Toast'

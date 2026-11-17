@@ -1,5 +1,5 @@
 import { useMemo, useEffect } from 'react'
-import * as THREE from 'three'
+import { BackSide, Color, EdgesGeometry, IcosahedronGeometry } from 'three'
 import { getRockTexture } from './rockTexture'
 
 /**
@@ -18,7 +18,7 @@ const AsteroidGeometry = ({ size, color, emissiveInt }) => {
       { pos: [size * 0.2, -size * 0.9, -size * 0.6], scale: 0.25, seed: 321 },
     ].map(chunk => {
       // Create chunky geometry for each piece
-      const geo = new THREE.IcosahedronGeometry(size * chunk.scale, 1)
+      const geo = new IcosahedronGeometry(size * chunk.scale, 1)
       const posAttr = geo.getAttribute('position')
       const arr = posAttr.array
 
@@ -39,7 +39,7 @@ const AsteroidGeometry = ({ size, color, emissiveInt }) => {
       
       posAttr.needsUpdate = true
       geo.computeVertexNormals()
-      const edges = new THREE.EdgesGeometry(geo, 22)
+      const edges = new EdgesGeometry(geo, 22)
       return { ...chunk, geo, edges }
     })
   }, [size])
@@ -65,9 +65,9 @@ const AsteroidGeometry = ({ size, color, emissiveInt }) => {
               bumpMap={textures.bumpMap}
               bumpScale={0.15}
               emissiveMap={textures.emissiveMap}
-              color={new THREE.Color(color).lerp(new THREE.Color('#8A5530'), 0.65)}
+              color={new Color(color).lerp(new Color('#8A5530'), 0.65)}
               emissiveIntensity={Math.max(emissiveInt * 7, 1.3)}
-              emissive={new THREE.Color('#9A3412')}
+              emissive={new Color('#9A3412')}
               roughness={0.78}
               metalness={0.18}
               flatShading
@@ -85,7 +85,7 @@ const AsteroidGeometry = ({ size, color, emissiveInt }) => {
               color="#EA580C"
               transparent
               opacity={0.07}
-              side={THREE.BackSide}
+              side={BackSide}
             />
           </mesh>
           <lineSegments geometry={chunk.edges} scale={1.025}>

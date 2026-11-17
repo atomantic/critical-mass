@@ -9,7 +9,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 ENTRYPOINT="$REPO_ROOT/docker-entrypoint.sh"
-NODE_IMAGE="${NODE_IMAGE:-node:22-alpine}"
+NODE_IMAGE="${NODE_IMAGE:-node:26-alpine}"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/critical-mass-docker-stop-order.XXXXXX")"
 CONTAINER="critical-mass-stop-order-smoke-$$"
 

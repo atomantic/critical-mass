@@ -1,4 +1,4 @@
-import * as THREE from 'three'
+import { CanvasTexture, RepeatWrapping } from 'three'
 
 let cachedTextures = null
 
@@ -148,15 +148,15 @@ export const getMoonTexture = () => {
   }
 
   cachedTextures = {
-    map: new THREE.CanvasTexture(canvas),
-    bumpMap: new THREE.CanvasTexture(bumpCanvas),
-    roughnessMap: new THREE.CanvasTexture(roughCanvas)
+    map: new CanvasTexture(canvas),
+    bumpMap: new CanvasTexture(bumpCanvas),
+    roughnessMap: new CanvasTexture(roughCanvas)
   }
   
   // Set texture properties for all
   Object.values(cachedTextures).forEach(t => {
-    t.wrapS = THREE.RepeatWrapping
-    t.wrapT = THREE.RepeatWrapping
+    t.wrapS = RepeatWrapping
+    t.wrapT = RepeatWrapping
     t.anisotropy = 4 // Sharper detail at angles
   })
 

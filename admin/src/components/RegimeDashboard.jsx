@@ -1,11 +1,13 @@
 import Button from './ui/Button'
 import React, { useState, lazy, Suspense } from 'react'
-import { deriveDashboardStatus } from './regime/deriveDashboardStatus'
+import { useDerivedDashboardStatus } from './regime/deriveDashboardStatus'
+import { LastPriceContext } from './regime/LastPriceContext'
+import { getPriceDecimals } from './charts/chartUtils'
 import EmptyRegimeState from './regime/EmptyRegimeState'
 import AuthDeniedBanner from './regime/AuthDeniedBanner'
 import StoppedBanner from './regime/StoppedBanner'
 import { useToast } from './Toast'
-import { getBaseCurrency, getQuoteCurrency } from '../App'
+import { getBaseCurrency, getQuoteCurrency } from '../utils/productId.mjs'
 import { pairQuery as buildPairQuery } from '../utils/api'
 import RegimePriceChart from './charts/RegimePriceChart'
 import VolatilityChart from './charts/VolatilityChart'
@@ -33,6 +35,7 @@ import useRegimeDashboardActions from './regime/useRegimeDashboardActions'
 
 const CelestialVisualization = lazy(() => import('./celestial/CelestialVisualization'))
 const EMPTY_BODIES = []
+const EMPTY_FILLS = []
 
 function ChartPlaceholder({ height, label }) {
   return (
@@ -63,6 +66,10 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
     handleCancelLadder, handleExecuteCancelLadder,
   } = useRegimeDashboardActions({ exchange, pairQuery, addToast, fetchStatus, fetchConfig, fetchFills })
   const [openSearchId, setOpenSearchId] = useState('')
+  const {
+    isDryRun, market, position, regime, health, dryRunState, pendingOrdersList, placementIntents,
+    buysPaused, isDrainingOrClosed, apy, tpOptimizer, sizeOptimizer, risk, riskPosition, riskConfig, macroConfig,
+  } = useDerivedDashboardStatus(status, config)
 
   if (loading) {
     return (
@@ -74,12 +81,10 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
 
   const asset = getBaseCurrency(config?.productId)
   const quoteCurrency = getQuoteCurrency(config?.productId || pair)
-  const {
-    isDryRun, market, position, regime, health, dryRunState, pendingOrdersList, placementIntents,
-    buysPaused, isDrainingOrClosed, apy, tpOptimizer, sizeOptimizer, risk, riskPosition, riskConfig, macroConfig,
-  } = deriveDashboardStatus(status, config)
+  const priceDecimals = getPriceDecimals(market.lastPrice)
 
   return (
+    <LastPriceContext.Provider value={market.lastPrice || 0}>
     <div className="space-y-6">
       {/* Error display */}
       {error && (
@@ -266,14 +271,14 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
             <OpenOrdersTable
               fillsLoading={fillsLoading}
               pendingOrdersList={pendingOrdersList}
-              liveFills={fillAggregates?.openFillsTruncated ? [] : fillAggregates?.openFills || liveFills}
+              liveFills={fillAggregates?.openFillsTruncated ? EMPTY_FILLS : fillAggregates?.openFills || liveFills}
               openFillsTruncated={fillAggregates?.openFillsTruncated}
               dryRunFilled={dryRunState?.filledOrders}
               isDryRun={isDryRun}
               celestialBodies={status?.celestial?.bodies || EMPTY_BODIES}
-              position={position}
+              avgCostBasis={position.avgCostBasis}
               config={config}
-              market={market}
+              priceDecimals={priceDecimals}
               asset={asset}
               isRunning={isRunning}
               openSearchId={openSearchId}
@@ -298,7 +303,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
         isDryRun={isDryRun}
         dryRunFilled={dryRunState?.filledOrders}
         pendingOrdersList={pendingOrdersList}
-        market={market}
+        priceDecimals={priceDecimals}
         asset={asset}
       />
 
@@ -342,6 +347,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
         getQuoteCurrency={getQuoteCurrency}
       />
     </div>
+    </LastPriceContext.Provider>
   )
 }
 

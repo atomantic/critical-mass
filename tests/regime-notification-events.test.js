@@ -86,11 +86,7 @@ const evaluateEntry = async (eng) => {
   await eng._test.evaluateEntryTrigger();
 };
 
-const deferred = () => {
-  let resolve;
-  const promise = new Promise((r) => { resolve = r; });
-  return { promise, resolve };
-};
+const { deferred } = require('./helpers/deferred');
 
 describe('regime engine publishes advertised notification events (issue #1030)', () => {
   it('publishes SAFE before a stalled cancel resolves, and SAFE/ACTIVE once per transition', async (t) => {
