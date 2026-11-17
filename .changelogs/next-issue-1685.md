@@ -1,1 +1,0 @@
-- **[issue-1685] Index fills by order ID** — Order lookups avoid full-ledger scans during fill recovery while preserving chronological results and synthetic reconciliation rollback.

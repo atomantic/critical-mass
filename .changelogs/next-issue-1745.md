@@ -1,1 +1,0 @@
-- **[issue-1745] Document native backup archive prerequisites** — list `zip` and `unzip`, show how to check their availability, and distinguish full archives from hourly fund-state snapshots.

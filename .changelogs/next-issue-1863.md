@@ -1,1 +1,0 @@
-- **[issue-1863] Keep status telemetry out of the admin shell** — the shared shell now tracks realtime connect and disconnect events without subscribing to regime status updates.
