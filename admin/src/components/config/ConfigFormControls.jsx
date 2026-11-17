@@ -1,7 +1,8 @@
-import { useId, useState } from 'react'
+import { useId, useRef, useState } from 'react'
+import { DURATION_UNITS, displayToMs, msToDisplay, pickDurationUnit } from '../../utils/duration.mjs'
 
 // Input component defined OUTSIDE ConfigEditor to prevent re-creation on every render
-export function FormInput({ label, hint, value, onChange, type = 'text', className = '' }) {
+export function FormInput({ label, hint, value, onChange, type = 'text', className = '', readOnly = false }) {
   const inputId = useId()
   const hintId = `${inputId}-hint`
   // For number inputs, hold the raw string locally while editing so partial
@@ -19,8 +20,9 @@ export function FormInput({ label, hint, value, onChange, type = 'text', classNa
           type={type}
           aria-describedby={hint ? hintId : undefined}
           value={value ?? ''}
-          onChange={(e) => onChange(e.target.value)}
-          className="w-full px-2 py-1.5 bg-gray-700 border border-gray-600 rounded-sm text-sm text-white focus:outline-hidden focus:border-blue-500"
+          readOnly={readOnly}
+          onChange={(e) => { if (!readOnly) onChange(e.target.value) }}
+          className={`w-full px-2 py-1.5 bg-gray-700 border border-gray-600 rounded-sm text-sm text-white focus:outline-hidden focus:border-blue-500${readOnly ? ' opacity-70 cursor-not-allowed' : ''}`}
         />
         {hint && <div id={hintId} className="text-2xs text-gray-400 mt-0.5 leading-tight">{hint}</div>}
       </div>
@@ -86,3 +88,62 @@ export function SectionCard({ title, children, className = '' }) {
   )
 }
 
+
+// Millisecond setting entered as seconds or minutes. The value in and out is
+// always milliseconds, so the saved payload is unchanged. Like FormInput's
+// number mode it keeps the raw text while editing and commits only parsed
+// finite values.
+export function DurationInput({ label, hint, value, onChange, className = '' }) {
+  const inputId = useId()
+  const hintId = `${inputId}-hint`
+  const [unit, setUnit] = useState(() => pickDurationUnit(value))
+  const [draft, setDraft] = useState(null)
+  const pickedRef = useRef(false)
+  const emittedRef = useRef(value)
+  // A value that did not come from this input (Reset, reload) re-picks the unit
+  // unless the operator chose one explicitly.
+  if (value !== emittedRef.current) {
+    emittedRef.current = value
+    if (!pickedRef.current && draft == null) {
+      const next = pickDurationUnit(value)
+      if (next !== unit) setUnit(next)
+    }
+  }
+  const handleChange = (e) => {
+    const raw = e.target.value
+    setDraft(raw)
+    if (raw.trim() === '') return
+    const n = parseFloat(raw)
+    if (!Number.isFinite(n)) return
+    const ms = displayToMs(n, unit)
+    emittedRef.current = ms
+    onChange(ms)
+  }
+  const display = draft != null ? draft : msToDisplay(value, unit)
+  return (
+    <div className={className}>
+      <label htmlFor={inputId} className="block text-xs text-gray-400 mb-1">{label}</label>
+      <div className="flex gap-1">
+        <input
+          id={inputId}
+          type="text"
+          inputMode="decimal"
+          aria-describedby={hint ? hintId : undefined}
+          value={display}
+          onChange={handleChange}
+          onBlur={() => setDraft(null)}
+          className="min-w-0 flex-1 px-2 py-1.5 bg-gray-700 border border-gray-600 rounded-sm text-sm text-white focus:outline-hidden focus:border-blue-500"
+        />
+        <select
+          aria-label={`${label} unit`}
+          value={unit}
+          onChange={(e) => { pickedRef.current = true; setDraft(null); setUnit(e.target.value) }}
+          className="px-1 py-1.5 bg-gray-700 border border-gray-600 rounded-sm text-sm text-white focus:outline-hidden focus:border-blue-500"
+        >
+          {DURATION_UNITS.map(u => <option key={u.value} value={u.value}>{u.label}</option>)}
+        </select>
+      </div>
+      {hint && <div id={hintId} className="text-2xs text-gray-400 mt-0.5 leading-tight">{hint}</div>}
+    </div>
+  )
+}
