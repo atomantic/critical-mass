@@ -42,7 +42,7 @@ const { createTpOptimizer } = require('./tp-optimizer');
 const { createSizeOptimizer } = require('./size-optimizer');
 const { validateSizingFields } = require('./regime-sizing-contract');
 const { createLadderCalculator, applyAutoLadderSizing } = require('./ladder-calculator');
-const { applyMarketMetrics, clamp, computeAdaptiveStaleMs, roundAsset, roundUSDC, roundPrice } = require('./volatility-utils');
+const { applyMarketMetrics, roundAsset, roundUSDC, roundPrice } = require('./volatility-utils');
 const { createMacroRegime } = require('./macro-regime');
 const { calculateApyMetrics: _calculateApyMetrics, initializeApyTracking: _initializeApyTracking } = require('./apy-calculator');
 const { tradeEvents } = require('./trade-events');
@@ -59,33 +59,25 @@ const { createPlacementReconciler } = require('./regime-placement-reconciler');
 const { createStartupRecovery } = require('./regime-startup-recovery');
 const { createOperatorActions } = require('./regime-operator-actions');
 const { createReconcileLoop } = require('./regime-reconcile');
+const { createEntryEvaluator, CAP_ALERT_LABELS } = require('./regime-entry');
+const { createTpPlacement } = require('./regime-tp-placement');
 const celestialHierarchy = require('./celestial-hierarchy');
 const { createDryRunFillHandlers } = require('./regime-dry-run-fills');
 const { DEFAULT_FEE_RATE_PER_SIDE } = require('../shared/fee-defaults.mjs');
-const { fmtCurrency: fmtPrice, ENTRY_NOT_ADMITTED, isFilledStatus, isCancelledStatus, isTerminalStatus, isOrderNotFoundError, isOrderStillOpen, floorToIncrement, sleep } = require('./shared-utils');
+const { fmtCurrency: fmtPrice, isFilledStatus, isTerminalStatus, isOrderStillOpen, sleep } = require('./shared-utils');
 const { createContextLogger } = require('./logger');
 const { DEFAULT_MAX_USDC_DEPLOYED } = require('./fund-defaults');
 const { createEngineLocks, FILL_DRAIN_MS } = require('./engine-locks');
 const { classifyResetSupersession, selectCarryForwardBuys } = require('./regime-cycle-reset');
 const { createTtlStore } = require('./ttl-store');
-const { buildPartialFillData, makeFillDedupKey, resolveEntryBudget, isInsufficientFundsMessage, sizeEntry, entryOffsetBps, isBuyAlreadyCommitted, isUnsettledBuyRow, collectBuyBookingBatch, measureUnbookedOrderQty, boundRecoveredBuyRows, isFullTpExecution, pruneStaleTpCancelMarkers, isStrandedDustBody, snapshotBody, shouldSkipOwnedBuyRecommit, shouldSkipBuyRecommit } = require('./regime-pure-helpers');
+const { buildPartialFillData, makeFillDedupKey, resolveEntryBudget, isBuyAlreadyCommitted, isUnsettledBuyRow, collectBuyBookingBatch, measureUnbookedOrderQty, boundRecoveredBuyRows, isFullTpExecution, pruneStaleTpCancelMarkers, isStrandedDustBody, snapshotBody, shouldSkipOwnedBuyRecommit, shouldSkipBuyRecommit } = require('./regime-pure-helpers');
 const { restorePersistedCycleId, repairHistoricalFillAnnotations, planBodyGrowthFromRecoveredBuyRows } = require('./regime-fill-annotations');
 const { classifyTpFill, planBodyTpBooking, planPartialBodyRemainder, collectBodyLinkedBuyOrderIds, buildBodyTpClosedTrade, isMergedSnapshotClosed, planLiveMergedDeduction, planClosedSnapshotDetach, buildMergedSnapshotSellBooking, isSellBookedAsBody, isOwnLegacyCoreTp, untrackedSellRejectReason, planCoreTpClose, collectCoreCycleBuyOrderIds, buildCoreTpClosedTrade, planTerminalFillGap, buildSyntheticGapFill } = require('./regime-sell-booking');
-const { LIVE_STATE_SAVE_INTERVAL_MS, DRY_RUN_STATE_SAVE_INTERVAL_MS, FILL_RETRY_DELAY_MS, PLACEMENT_RETRY_DELAY_MS } = require('./timing-constants');
+const { LIVE_STATE_SAVE_INTERVAL_MS, DRY_RUN_STATE_SAVE_INTERVAL_MS, FILL_RETRY_DELAY_MS } = require('./timing-constants');
 
 /** Interval between periodic metrics/regime-classification updates (ms) */
 const METRICS_INTERVAL_MS = 60000;
 const HOURLY_SUMMARY_EVENT_MS = 60 * 60 * 1000;
-
-/**
- * Risk-manager block-reason prefixes that are cap conditions, mapped to the
- * label a cap_reached notification shows. Drawdown pauses are not caps.
- */
-const CAP_ALERT_LABELS = {
-  asset_cap_exceeded: 'Asset',
-  usdc_cap_exceeded: 'USDC',
-  cycle_buys_limit_reached: 'Cycle buys',
-};
 
 /**
  * Freeze a partial sell before changing its body. A cancel acknowledgement is
@@ -676,7 +668,6 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   // Most recent "does the model cover what we actually hold" verdict, surfaced
   // on getState() alongside fillDrift. null until the first sweep completes.
   let positionCoverage = null;
-  let insufficientFundsCooldownUntil = 0; // Cooldown after InsufficientFunds to prevent rapid retry spam
   const MERGE_SNAPSHOT_TTL_MS = 5 * 60 * 1000;
   const FILL_DEDUP_TTL_MS = 5 * 60 * 1000;
   const POLL_FILL_DEDUP_TTL_MS = 60 * 1000;
@@ -704,7 +695,6 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   // flow / trading behavior is unchanged; the placement/entry attempts still run
   // every cycle so the state recovers the moment it can.
   let lastTpNeedKey = null;            // sorted body-ids currently lacking a TP
-  const negativePnlLoggedPrice = new WeakMap(); // body -> last rejected TP price; no persisted state
   const dustWaitLoggedQty = new Map(); // bodyId -> last-logged sub-min rounded qty
   let lowBalancePauseLogged = false;   // true while inside an already-logged low-balance pause
 
@@ -4560,826 +4550,28 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     }, config.reconcileIntervalMs);
   };
 
-  /**
-   * Evaluate volatility-based entry trigger (mode-aware)
-   * Delegates to either reactive or ladder entry evaluation based on config
-   */
-  const evaluateEntryTrigger = async () => {
-    // Prevent concurrent entry evaluations (race condition from rapid ticker updates)
-    if (engineLocks.isEntryInProgress()) return;
-
-    // A placement whose outcome we could not establish (ambiguous response we
-    // could not reconcile, or a crash inside the dispatch window) leaves a
-    // durable intent on disk. While one is outstanding, an order we cannot see
-    // may be resting live against this fund's capital, so no new entry may be
-    // submitted — and because the record is on disk, the guard survives a
-    // restart. Monitoring, fill processing, TP repair, cancels and lifecycle
-    // operations all keep running; only NEW entries are held.
-    if (blockingPlacementIntents().length > 0) return;
-
-    // Determine effective entry mode
-    let effectiveMode = config.entryMode || 'reactive';
-
-    // Auto-switch to ladder mode if enabled and volatility is expanded
-    if (config.ladderAutoSwitch && marketState.volBaseline > 0) {
-      const volExpansion = marketState.realizedVol / marketState.volBaseline;
-      const volThreshold = config.ladderAutoSwitchVolMult || 2.0;
-      if (volExpansion >= volThreshold) {
-        if (effectiveMode !== 'ladder') {
-          logger.info(`🔀 [${exchange}] Auto-switch: reactive→ladder (volExpansion=${volExpansion.toFixed(2)}x >= ${volThreshold}x threshold, rVol=${marketState.realizedVol.toFixed(4)} baseline=${marketState.volBaseline.toFixed(4)})`);
-        }
-        effectiveMode = 'ladder';
-      }
-    }
-
-    // Don't switch modes mid-cycle if we have an active position
-    // (prevents inconsistent behavior during a trade cycle)
-    if (positionState.totalAsset > 0) {
-      // If ladder is active, stay in ladder mode
-      if (positionState.ladderActive) {
-        effectiveMode = 'ladder';
-      } else {
-        // Otherwise stay in reactive mode
-        effectiveMode = 'reactive';
-      }
-    }
-
-    if (effectiveMode === 'ladder') {
-      await evaluateLadderEntry();
-    } else {
-      await evaluateReactiveEntry();
-    }
-  };
-
-  /**
-   * Evaluate reactive entry trigger (original volatility-based logic)
-   */
-  const evaluateReactiveEntry = async () => {
-    const now = Date.now();
-
-    // Fund lifecycle guard: when draining/closed, never place new entries
-    if (positionState.lifecycle && positionState.lifecycle !== LIFECYCLE.ACTIVE) return;
-    // A flash-cancel sweep is pulling reactive bids (#1028): placing one now
-    // would race it. The next tick after the sweep settles re-evaluates.
-    if (flashCancelSweep) return;
-    const isAdmitted = captureReactiveEntryAdmission();
-
-    // Don't place a new reactive entry if there's already a pending entry OR a
-    // resting ladder rung on the exchange. ladder_entry orders were previously
-    // invisible to this guard, so after ladderAutoSwitch reverted to reactive
-    // mode (vol dropped before any rung filled, totalAsset still 0) reactive
-    // entries stacked on top of the full-budget ladder — over-committing
-    // beyond maxUsdcDeployed (issue #107 M5).
-    const pending = orderExecutor.getPendingCounts();
-    if (pending.entries > 0 || pending.ladderEntries > 0) return;
-
-    // Skip if in insufficient funds cooldown (prevents rapid retry spam on 406 errors)
-    if (now < insufficientFundsCooldownUntil) return;
-
-    const timeSinceLastEntry = now - positionState.lastEntryTime;
-
-    // Minimum interval guard
-    if (timeSinceLastEntry < config.minIntervalMs) return;
-
-    // Check health
-    const healthCheck = healthMonitor.canPlaceEntry();
-    if (!healthCheck.allowed) return;
-
-    // Check tail events
-    const tailCheck = tailEvents.canPlaceEntry(positionState.cycleBuys);
-    if (!tailCheck.allowed) return;
-
-    // Check regime allows entries
-    if (!regimeDetector.allowsEntries()) return;
-
-    // Calculate price move from anchor
-    const priceMove = positionState.anchorPrice > 0
-      ? Math.abs(marketState.lastPrice - positionState.anchorPrice)
-      : Infinity;
-
-    const volTrigger = marketState.atr1m > 0 && priceMove >= config.kFactor * marketState.atr1m;
-    const timeTrigger = timeSinceLastEntry >= config.maxIntervalMs;
-
-    if (volTrigger || timeTrigger) {
-      await engineLocks.withEntryLock(() =>
-        executeEntry(volTrigger ? 'volatility' : 'timer', isAdmitted)
-      );
-    }
-  };
-
-  /**
-   * Evaluate ladder entry - pre-position liquidity ladder
-   */
-  const evaluateLadderEntry = async () => {
-    // Fund lifecycle guard: when draining/closed, never place new entries
-    if (positionState.lifecycle && positionState.lifecycle !== LIFECYCLE.ACTIVE) return;
-    const isAdmitted = captureEntryAdmission();
-
-    // Skip if in insufficient funds cooldown
-    if (Date.now() < insufficientFundsCooldownUntil) return;
-
-    // Skip if ladder already active with pending orders
-    if (positionState.ladderActive && positionState.pendingLadderOrders.length > 0) {
-      return;
-    }
-
-    // Check health
-    const healthCheck = healthMonitor.canPlaceEntry();
-    if (!healthCheck.allowed) return;
-
-    // Skip tail events check — ladder IS the flash event strategy,
-    // orders should stay in place regardless of spread/depth/flash conditions
-
-    // Fund drawdown pause blocks NEW ladders too (the reactive path gets it via
-    // canPlaceEntry). Already-resting rungs are left alone.
-    if (riskManager.getState().isDrawdownPaused) return;
-
-    // Check regime allows entries
-    if (!regimeDetector.allowsEntries()) return;
-
-    // Claim the entry lock BEFORE the first await. Ticker events fire many
-    // times per second; the balance fetch below is an async gap, and the
-    // evaluateEntryTrigger guard (`if (engineLocks.isEntryInProgress()) return`)
-    // only blocks re-entry once this flag is set. Setting it after the await
-    // (the old bug) let every tick that landed during the balance round-trip
-    // place its own full-budget ladder — multi-x budget over-commitment, with
-    // only the last ladder's orders tracked (issue #98). All early-returns from
-    // here must clear it, so the rest of the function runs under withEntryLock.
-    if (engineLocks.isEntryInProgress()) return;
-    // A rebuild/cancel/cycle-reset sweep in flight owns the ladder (#766): it
-    // may have cleared ladderActive mid-sweep, and placing here would stack a
-    // second ladder on the one it is about to place. Skip — the next tick
-    // re-evaluates — rather than queue: taken without waiting, so held for the
-    // whole placement and a sweep requested meanwhile runs after it.
-    await engineLocks.withEntryLock(() => engineLocks.withLadderLock(async () => {
-      // Calculate remaining budget, capped at actual available balance
-      let remainingBudget = config.maxUsdcDeployed - getAllocatedCapital();
-      const quoteCurrency = getQuoteCurrency(productId);
-      const quoteBalance = await lookupOrNull('getAccountBalance', quoteCurrency, adapter.getAccountBalance(quoteCurrency));
-      if (!quoteBalance) {
-        // Can't verify balance — skip ladder to avoid placing orders we can't fund
-        return;
-      }
-      // A stop/close that landed during the balance await closes admission (#1009).
-      if (!isAdmitted()) {
-        logger.info(`🚦 [${exchange}] Ladder skipped during the balance preflight — ${ENTRY_NOT_ADMITTED}`);
-        return;
-      }
-      const availableQuote = parseFloat(quoteBalance.available) || 0;
-      if (availableQuote < remainingBudget) {
-        remainingBudget = availableQuote;
-      }
-
-      // Quick sanity check - need at least 1 order worth of budget
-      if (remainingBudget < config.baseSizeUsdc) {
-        if (!budgetExhaustedWarningLogged) {
-          logger.info(`ℹ️ [${exchange}] Insufficient budget for ladder: $${remainingBudget.toFixed(2)} available (${quoteCurrency}=${availableQuote.toFixed(2)}) < $${config.baseSizeUsdc}`);
-          budgetExhaustedWarningLogged = true;
-        }
-        return;
-      }
-
-      const placeLadder = async () => {
-        // Build ladder first to determine actual level count (may be fewer than config due to min-size filtering)
-        const ladder = buildLadderFromMarket(marketState, remainingBudget, priceIncrement);
-
-        if (ladder.levels.length === 0) {
-          if (!budgetExhaustedWarningLogged) {
-            logger.info(`ℹ️ [${exchange}] Ladder build produced 0 levels for budget $${remainingBudget.toFixed(2)}`);
-            budgetExhaustedWarningLogged = true;
-          }
-          return;
-        }
-
-        // Check order limit using actual built level count
-        const pendingCounts = orderExecutor.getPendingCounts();
-        const requiredSlots = ladder.levels.length + 1; // +1 for TP order
-
-        if (pendingCounts.total + requiredSlots > config.maxOpenOrders) {
-          logger.warn(`⚠️ [${exchange}] Insufficient order slots for ladder: need ${requiredSlots}, max=${config.maxOpenOrders}, current=${pendingCounts.total}`);
-          return;
-        }
-
-        logger.info(`📊 [${exchange}] Building ladder: ${ladderCalculator.getSummary(ladder)}`);
-
-        // Place ladder orders
-        const generationAtPlace = cycleResetGeneration;
-        const result = await orderExecutor.placeLadderOrders(ladder.levels, { isAdmitted });
-        if (await abandonLadderPlacedAcrossReset(generationAtPlace, 'Ladder placement')) return;
-        // Admission closed before any rung went out: nothing to track. Rungs
-        // that DID go out are recorded below like any ladder, so their fills
-        // and cancels reconcile normally.
-        if (result.notAdmitted && result.orders.length === 0) {
-          logger.info(`🚦 [${exchange}] Ladder not placed — ${ENTRY_NOT_ADMITTED}`);
-          return;
-        }
-
-        // Update position state
-        positionState.ladderActive = true;
-        positionState.ladderPlacedAt = Date.now();
-        positionState.ladderLowerBound = ladder.lowerBound;
-        positionState.pendingLadderOrders = result.orders;
-
-        logger.info(`📊 [${exchange}] Ladder placed: ${result.orders.length} levels from ${fmtPrice(marketState.lastPrice)} to ${fmtPrice(ladder.lowerBound)}${result.failedCount > 0 ? ` (${result.failedCount} failed)` : ''}`);
-
-        tradeEvents.emitTradeEvent('ladder_placed', exchange, `${result.orders.length} levels to ${fmtPrice(ladder.lowerBound)}`, {
-          levels: result.orders.length,
-          topPrice: marketState.lastPrice,
-          bottomPrice: ladder.lowerBound,
-          lowerBoundPct: ladder.lowerBoundPct,
-          totalBudget: ladder.totalBudget,
-          failedCount: result.failedCount,
-        });
-
-        // Persist state
-        saveLiveState();
-      };
-
-      await placeLadder();
-    }, { wait: false }));
-  };
-
-  /**
-   * Publish cap_reached once per cap-block episode (issue #1030). The risk
-   * manager re-evaluates every cap on each entry check, so `reason` (its
-   * comma-joined block reasons, '' when allowed) is the complete set of caps
-   * blocking right now: a newly present cap alerts, and a cap that cleared is
-   * forgotten so hitting it again later alerts again.
-   * @param {string} reason
-   */
-  const announceCapTransitions = (reason) => {
-    const blocking = new Map();
-    for (const part of reason.split(',')) {
-      const match = part.trim().match(/^(\w+):(.+?)>=?(.+)$/);
-      if (match && CAP_ALERT_LABELS[match[1]]) {
-        blocking.set(match[1], { current: Number(match[2]), limit: Number(match[3]) });
-      }
-    }
-    for (const [capKey, { current, limit }] of blocking) {
-      if (!announcedCaps.has(capKey)) {
-        tradeEvents.capReached(exchange, CAP_ALERT_LABELS[capKey], current, limit, fundEventData);
-      }
-    }
-    announcedCaps = new Set(blocking.keys());
-  };
-
-  /** Arm the insufficient-funds cooldown; returns its duration in ms. */
-  const startInsufficientFundsCooldown = () => {
-    const cooldownMs = config.insufficientFundsCooldownMs || 60000;
-    insufficientFundsCooldownUntil = Date.now() + cooldownMs;
-    return cooldownMs;
-  };
-
-  const logInsufficientFundsPause = () => {
-    const cooldownMs = startInsufficientFundsCooldown();
-    logger.info(`⏸️ [${exchange}] Insufficient funds — pausing entries for ${cooldownMs / 1000}s`);
-  };
-
-  /**
-   * Execute entry
-   * @param {string} triggerType - What triggered the entry
-   * @param {() => boolean} isAdmitted - Entry admission captured when the evaluation began (#1009)
-   */
-  const executeEntry = async (triggerType, isAdmitted) => {
-    const regime = regimeDetector.getMode();
-
-    // Calculate size (apply macro multiplier to sizing)
-    const sizing = positionSizer.calculateEntrySize({
-      regime,
-      cycleBuys: positionState.cycleBuys,
-      totalCostBasis: positionState.totalCostBasis,
-      currentPrice: marketState.bid,
-      avgCostBasis: positionState.avgCostBasis,
-    });
-
-    // Apply macro regime size multiplier, then the minimum-size floor / last-order rule
-    const macroMult = macroRegime ? macroRegime.getMultipliers() : { sizeMult: 1.0, tpMult: 1.0, offsetMult: 1.0 };
-    const minSize = config.minOrderSizeUsdc || exchangeConfig.minOrderSize || 1;
-    const remainingBudget = roundUSDC(Math.max(0, config.maxUsdcDeployed - positionState.totalCostBasis));
-    // Auto-aggressiveness (Phase 3): depression-score multiplier damped by the capital governor
-    const deployedRatio = config.maxUsdcDeployed > 0 ? positionState.totalCostBasis / config.maxUsdcDeployed : 1;
-    const autoMult = macroRegime?.getAutoSizeMult ? macroRegime.getAutoSizeMult(deployedRatio) : { active: false, multiplier: 1 };
-    const entryMult = { ...macroMult, sizeMult: macroMult.sizeMult * autoMult.multiplier };
-    sizing.sizeUsdc = sizeEntry({ sizing, macroMult: entryMult, minSize, remainingBudget });
-    // A boost must never push a buy past the remaining budget
-    if (autoMult.active && remainingBudget >= minSize) sizing.sizeUsdc = Math.min(sizing.sizeUsdc, remainingBudget);
-
-    // Check risk caps
-    const assetQty = positionSizer.calculateBTCQuantity(sizing.sizeUsdc, marketState.bid);
-    const riskCheck = riskManager.canPlaceEntry(positionState, assetQty, sizing.sizeUsdc);
-
-    // Handle cycle buys auto-reset (time-based reset after being at max limit)
-    if (riskCheck.shouldResetCycleBuys) {
-      logger.info(`🔄 [${exchange}] Cycle buys auto-reset triggered, resetting buys ${positionState.cycleBuys} -> 0`);
-      positionState.cycleBuys = 0;
-    }
-
-    announceCapTransitions(riskCheck.allowed ? '' : riskCheck.reason);
-
-    if (!riskCheck.allowed) {
-      // Log once per block episode: only when a new block kind appears, not on
-      // every tick while the same caps/pauses persist (values like the drawdown
-      // % drift tick to tick, so key on the kind, not the full reason).
-      const kinds = new Set(riskCheck.reason.split(',').map((part) => part.trim().split(':')[0]));
-      if ([...kinds].some((kind) => !loggedEntryBlockKinds.has(kind))) {
-        logger.warn(`⚠️ [${exchange}] Entry blocked: ${riskCheck.reason}`);
-      }
-      loggedEntryBlockKinds = kinds;
-      return;
-    }
-    loggedEntryBlockKinds = new Set();
-
-    // Check for zero/budget-exhausted (with spam protection)
-    if (sizing.sizeUsdc <= 0) {
-      if (!budgetExhaustedWarningLogged) {
-        logger.info(`ℹ️ [${exchange}] Budget exhausted`);
-        budgetExhaustedWarningLogged = true;
-      }
-      return;
-    }
-
-    // Real-balance preflight (see resolveEntryBudget): cap entries at the real
-    // available quote balance so a maxUsdcDeployed cap above funded capital can't
-    // make the engine hot-loop on unfundable orders. Mirror the ladder path.
-    const quoteCurrency = getQuoteCurrency(productId);
-    const quoteBalance = await lookupOrNull('getAccountBalance', quoteCurrency, adapter.getAccountBalance(quoteCurrency));
-    const availableQuote = quoteBalance ? (quoteBalance.available || 0) : null;
-    const budget = resolveEntryBudget(sizing.sizeUsdc, availableQuote, minSize);
-    if (budget.action === 'skip') {
-      // Balance unverifiable — skip this entry rather than risk an unfundable order.
-      return;
-    }
-    if (budget.action === 'cooldown') {
-      const cooldownMs = startInsufficientFundsCooldown();
-      // Log once per low-balance episode, not on every cooldown re-trigger — the
-      // pause re-fires each cycle while the wallet stays underfunded (#187). The
-      // flag resets below once an entry can be funded again.
-      if (!lowBalancePauseLogged) {
-        logger.info(`⏸️ [${exchange}] Wallet ${quoteCurrency} balance $${(availableQuote || 0).toFixed(2)} below min order $${minSize} — pausing entries for ${cooldownMs / 1000}s`);
-        lowBalancePauseLogged = true;
-      }
-      return;
-    }
-    lowBalancePauseLogged = false;
-    sizing.sizeUsdc = budget.sizeUsdc;
-
-    // A stop/close that landed during the balance await closes admission (#1009).
-    if (!isAdmitted()) {
-      logger.info(`🚦 [${exchange}] Entry skipped during the balance preflight — ${ENTRY_NOT_ADMITTED}`);
-      return;
-    }
-
-    // Dynamic offset based on momentum direction, scaled by the macro offset multiplier
-    const momentumDirection = marketState.momentum?.direction || 'neutral';
-    const effectiveOffsetBps = entryOffsetBps(momentumDirection, config, macroMult);
-
-    // Give the bid time proportional to how far below mid it rests: a deep
-    // momentum-down bid on the fixed orderStaleMs timer gets cancelled long
-    // before price can plausibly reach it (~8% fill at 18bps/120s), defeating
-    // the catch-the-dip intent. Floor orderStaleMs, cap maxIntervalMs.
-    const entryStaleMs = computeAdaptiveStaleMs(effectiveOffsetBps, marketState.atr1m, marketState.lastPrice, config);
-
-    // Place entry with dynamic offset
-    let result;
-    try {
-      result = await orderExecutor.placeEntryBid(sizing.sizeUsdc, marketState.bid, marketState.ask, 0, effectiveOffsetBps, entryStaleMs, { isAdmitted });
-    } catch (err) {
-      if (isInsufficientFundsMessage(err.message) || err.status === 406) {
-        logInsufficientFundsPause();
-        return;
-      }
-      throw err; // Re-throw other errors
-    }
-
-    // Coinbase returns insufficient-funds as {success:false, errorMessage:"INSUFFICIENT_FUND"}
-    // rather than throwing — apply the same cooldown so we don't hot-loop on a drained wallet.
-    if (result && result.success === false && isInsufficientFundsMessage(result.errorMessage)) {
-      logInsufficientFundsPause();
-      return;
-    }
-
-    if (result.notAdmitted) {
-      logger.info(`🚦 [${exchange}] Entry not placed — ${ENTRY_NOT_ADMITTED}`);
-      return;
-    }
-
-    // An accepted bid is tracked even if admission closed while its response
-    // was pending: the order is live on the exchange and must reconcile.
-    if (result.success) {
-      positionState.lastEntryTime = Date.now();
-      positionState.anchorPrice = marketState.lastPrice;
-
-      // Persist entry order to state for recovery across restarts
-      if (!isDryRun) {
-        if (!positionState.pendingEntryOrders) positionState.pendingEntryOrders = [];
-        positionState.pendingEntryOrders.push({
-          orderId: result.orderId,
-          price: result.price,
-          assetQty: result.assetQty,
-          sizeUsdc: sizing.sizeUsdc,
-          placedAt: Date.now(),
-          // The adaptive window this bid was placed with, so a restart re-arms
-          // the same deadline instead of the orderStaleMs floor.
-          staleMs: entryStaleMs,
-        });
-        saveLiveState();
-      }
-
-      const macroLabel = macroRegime ? ` macro=${macroRegime.getMode()}(×${macroMult.sizeMult})` : '';
-      const autoLabel = autoMult.active ? ` auto=×${autoMult.multiplier.toFixed(2)}(gov ${autoMult.governor.toFixed(2)})` : '';
-      logger.info(`📝 [${exchange}] Entry placed: regime=${regime}${macroLabel}${autoLabel} buys=${positionState.cycleBuys} size=$${sizing.sizeUsdc} price=${fmtPrice(result.price)} trigger=${triggerType} momentum=${momentumDirection} offset=${effectiveOffsetBps}bps`);
-
-      tradeEvents.emitTradeEvent('entry_placed', exchange, `$${sizing.sizeUsdc} @ ${fmtPrice(result.price)}`, {
-        regime,
-        macroMode: macroRegime ? macroRegime.getMode() : null,
-        macroSizeMult: macroMult.sizeMult,
-        autoSizeMult: autoMult.multiplier,
-        step: positionState.cycleBuys,
-        sizeUsdc: sizing.sizeUsdc,
-        price: result.price,
-        trigger: triggerType,
-        momentum: momentumDirection,
-        offsetBps: effectiveOffsetBps,
-      });
-    }
-  };
-
-  /**
-   * Calculate base dynamic TP percentage (without tier adjustments)
-   * Used for candidate TP calculations and merge proximity checks
-   * @returns {number} TP percentage
-   */
-  const calculateDynamicTpPercent = () => {
-    const { recentSwing, lastPrice } = marketState;
-    let tpPercent = recentSwing > 0 && lastPrice > 0
-      ? (config.tpMult * recentSwing / lastPrice) * 100
-      : config.tpMinPercent;
-
-    const regime = regimeDetector.getMode();
-    if (regime === 'CAUTION') tpPercent *= 1.5;
-    else if (regime === 'TREND') tpPercent *= 0.8;
-
-    const macroTpMult = macroRegime ? macroRegime.getMultipliers().tpMult : 1.0;
-    tpPercent *= macroTpMult;
-
-    return clamp(tpPercent, config.tpMinPercent, config.tpMaxPercent);
-  };
-
-  /**
-   * Place or update TP order for a celestial body
-   * Calculates tier-specific TP, applies holdback, places via executor
-   * @param {Object} body - CelestialBody
-   * @returns {Promise<boolean>} Whether TP was successfully placed
-   */
-  const placeBodyTp = async (body) => {
-    // Extract hints immediately so they never leak if we return early
-    const mergeMaxTpPct = body._maxTpPct ?? null;
-    const overrideTpPct = body._overrideTpPct ?? null;
-    delete body._maxTpPct;
-    delete body._overrideTpPct;
-
-    if (body.tpOrderId) {
-      logger.warn(`⚠️ [${exchange}] Body ${body.id.slice(-8)} already has TP ${body.tpOrderId.slice(0, 8)}, skipping duplicate placement`);
-      return false;
-    }
-
-    // Prevent concurrent TP placement for the same body (race between fill handler and safety-net loop)
-    if (tpPlacementInFlight.has(body.id)) {
-      logger.warn(`⚠️ [${exchange}] Body ${body.id.slice(-8)} TP placement already in-flight, skipping`);
-      return false;
-    }
-
-    tpPlacementInFlight.add(body.id);
-    try {
-
-    // Get tier-specific TP percentage
-    const baseTpPct = calculateDynamicTpPercent();
-    const { tpPercent: tierTpPct } = celestialHierarchy.calculateBodyTpPercent(baseTpPct, body.tier, config.tpMaxPercent);
-
-    // Get tier holdback scale
-    const tierCfg = celestialHierarchy.getTierConfig(body.tier);
-
-    // Holdback ratio (needed for fee floor calculation below)
-    const holdbackRatio = Math.min((config.holdbackRatio ?? 0.5) * (tierCfg.holdbackScale || 1), 0.95);
-
-    // Minimum profit floor: TP% must clear round-trip fees + $0.01 net USDC profit.
-    // Because holdback retains BTC, only (1-h) of gross profit becomes USDC proceeds,
-    // so the required TP% = (roundTripFees + minProfit/costBasis) / (1-h)
-    const feeRatePerSide = config.feeRate ?? DEFAULT_FEE_RATE_PER_SIDE; // ?? so an explicit 0 (zero-fee) is honored, matching dry-run-executor
-    const feeFloorPct = ((2 * feeRatePerSide) + (0.01 / body.costBasis)) / (1 - holdbackRatio) * 100;
-
-    // Holdback floor: TP% must generate enough profit for at least 1 satoshi holdback
-    // Only applied when achievable within the tier's effective max TP —
-    // tiny bodies that can't produce 1 sat holdback at a reasonable price just get normal TP
-    const holdbackFloorPct = (0.00000001 * body.avgPrice) / (body.assetQty * holdbackRatio) * 100;
-    const effectiveMax = config.tpMaxPercent * (tierCfg.tpMaxScale || 1);
-
-    const minTpPct = holdbackFloorPct <= effectiveMax
-      ? Math.max(feeFloorPct, holdbackFloorPct)
-      : feeFloorPct;
-    let finalTpPct = Math.min(Math.max(tierTpPct, minTpPct), effectiveMax);
-
-    if (overrideTpPct != null) {
-      // User-specified override: use exactly this TP%, subject to fee floor only
-      finalTpPct = Math.max(overrideTpPct, minTpPct);
-    } else if (body.manualTpPct != null) {
-      // Persisted manual override: re-use the user's last manual TP% on re-placement
-      finalTpPct = Math.max(body.manualTpPct, minTpPct);
-    } else if (mergeMaxTpPct != null) {
-      // Merge cap: after a manual merge, TP% must not exceed the pre-merge target's TP%.
-      // This guarantees the combined sell price is lower (lower avgPrice × capped TP%).
-      finalTpPct = Math.max(Math.min(finalTpPct, mergeMaxTpPct), minTpPct);
-    }
-
-    let tpPrice = roundPrice(body.avgPrice * (1 + finalTpPct / 100), priceIncrement);
-
-    // Guard: never place a TP at or below the body's avg price (would realize a loss)
-    if (tpPrice <= body.avgPrice) {
-      logger.info(`🚫 [${exchange}] Body ${body.id.slice(-8)} TP price ${fmtPrice(tpPrice)} <= avgPrice ${fmtPrice(body.avgPrice)}, skipping placement to prevent negative P&L`);
-      return false;
-    }
-
-    // Calculate sell qty with tier-specific holdback
-    let { sellQty, holdbackQty } = positionSizer.calculateTakeProfitSize(
-      body.assetQty,
-      body.avgPrice,
-      tpPrice,
-      tierCfg.holdbackScale
-    );
-
-    // Post-hoc P&L validation: simulate the fill and bump TP% if rounding
-    // still causes negative USDC P&L or insufficient holdback
-    for (let bump = 0; bump < 10; bump++) {
-      const estSellProceeds = sellQty * tpPrice * (1 - feeRatePerSide);
-      const estPnl = estSellProceeds - body.costBasis;
-      if (estPnl >= 0.01 && holdbackQty >= 0.00000001) break;
-      finalTpPct += 0.01;
-      tpPrice = roundPrice(body.avgPrice * (1 + finalTpPct / 100), priceIncrement);
-      ({ sellQty, holdbackQty } = positionSizer.calculateTakeProfitSize(
-        body.assetQty, body.avgPrice, tpPrice, tierCfg.holdbackScale
-      ));
-    }
-
-    // Final guard: skip if estimated P&L is still negative (e.g. effectiveMax too low)
-    const finalEstProceeds = sellQty * tpPrice * (1 - feeRatePerSide);
-    const finalEstPnl = finalEstProceeds - body.costBasis;
-    if (finalEstPnl < 0.01) {
-      if (negativePnlLoggedPrice.get(body) !== tpPrice) {
-        logger.info(`🚫 [${exchange}] Body ${body.id.slice(-8)} estimated PnL $${finalEstPnl.toFixed(4)} < $0.01 at TP ${fmtPrice(tpPrice)} (${finalTpPct.toFixed(3)}%), skipping to prevent negative P&L`);
-        negativePnlLoggedPrice.set(body, tpPrice);
-      }
-      return false;
-    }
-
-    if (sellQty <= 0) {
-      logger.warn(`⚠️ [${exchange}] Body ${body.id.slice(-8)} sell qty is 0 after holdback`);
-      return false;
-    }
-
-    // Pre-check sell qty against exchange minimum order size to avoid failed placements.
-    // If holdback pushes qty below minimum, sell the full body (zero holdback).
-    // If even the full body is below minimum, skip — it needs more buys to consolidate.
-    if (productDetails?.baseMinSize) {
-      const baseMinSize = parseFloat(productDetails.baseMinSize);
-      const baseIncrement = parseFloat(productDetails.baseIncrement) || 0.00000001;
-      const roundedSellQty = floorToIncrement(sellQty, baseIncrement);
-
-      if (roundedSellQty < baseMinSize) {
-        const fullQty = roundAsset(body.assetQty);
-        const roundedFullQty = floorToIncrement(fullQty, baseIncrement);
-
-        if (roundedFullQty >= baseMinSize) {
-          const fullProceeds = fullQty * tpPrice * (1 - feeRatePerSide);
-          const fullPnl = fullProceeds - body.costBasis;
-          if (fullPnl >= 0.01) {
-            logger.info(`📏 [${exchange}] Body ${body.id.slice(-8)} sellQty ${sellQty} below exchange min ${baseMinSize}, selling full qty ${fullQty} (no holdback)`);
-            sellQty = fullQty;
-            holdbackQty = 0;
-          } else {
-            logger.info(`🚫 [${exchange}] Body ${body.id.slice(-8)} full qty ${fullQty} PnL $${fullPnl.toFixed(4)} < $0.01 even without holdback, skipping`);
-            return false;
-          }
-        } else {
-          // Re-log only when this body's rounded qty changes (consolidation
-          // progress); otherwise a permanently-stranded dust body floods the
-          // log every cycle (#187).
-          if (dustWaitLoggedQty.get(body.id) !== roundedFullQty) {
-            logger.info(`📏 [${exchange}] Body ${body.id.slice(-8)} assetQty ${fullQty} (rounded ${roundedFullQty}) below exchange min ${baseMinSize}, waiting for consolidation`);
-            dustWaitLoggedQty.set(body.id, roundedFullQty);
-          }
-          return false;
-        }
-      }
-    }
-
-    // The body owns its TP from the moment the exchange accepts it. Live mode
-    // persists that ownership inside the placement handoff, before the dispatch
-    // intent is released: otherwise the order id lived only in memory until the
-    // 5-minute save, and a crash in that window restarted the body with no TP,
-    // so startup placed a second sell beside the untracked original.
-    const adoptTpOrder = (orderId) => {
-      body.tpOrderId = orderId;
-      body.tpPrice = tpPrice;
-      body.assetOnOrder = sellQty;
-
-      // Re-aggregate position-level fields so positionState.assetOnOrder reflects
-      // ALL bodies' TP orders, not just the most-recently-placed one. Without this,
-      // satellite bodies created after the main body's TP leave assetOnOrder stale,
-      // making the dashboard's "On Order" panel under-report by the satellite size.
-      celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
-    };
-
-    let result;
-    try {
-      // body.avgPrice is the body's real, already-tracked average buy price —
-      // pass it through so the dry-run executor can seed this body's own
-      // cost basis from it instead of falling back to a global cross-body
-      // running average that drifts in a trending market (issue #213E
-      // follow-up: that fallback is the PRIMARY path in a celestial-hierarchy
-      // engine, since it never trades through the legacy single-cycle path
-      // that resets it). No-op for the live executor, which already tracks
-      // cost basis on `body.costBasis` independently of order placement.
-      result = await orderExecutor.placeBodyTpOrder(sellQty, tpPrice, body.id, body.avgPrice, {
-        // Guarded: the order is already resting, so a failed save must not
-        // turn it into a pending placement the executor stops tracking; the
-        // failure counts toward the health monitor's persistence limit instead.
-        onAccepted: isDryRun ? null : ({ orderId }) => {
-          adoptTpOrder(orderId);
-          saveLiveStateGuarded('body-tp-placed');
-        },
-      });
-    } catch (err) {
-      logger.warn(
-        `⚠️ [${exchange}] Body TP placement error for ${body.id.slice(-8)}: ${err.message}`,
-        { bodyId: body.id, orderType: 'body_tp', error: err.message }
-      );
-      return false;
-    }
-
-    if (result.success) {
-      adoptTpOrder(result.orderId);
-
-      // Link all source buy fills to this sell order (use both sourceOrderIds and buyOrders for coverage)
-      // A large merged body can own hundreds of buys. Persist all links in one
-      // ledger write before reporting success, rather than blocking the engine
-      // with a full-ledger rewrite for every buy (and timing out the gateway).
-      const sourceIds = new Set(body.sourceOrderIds || []);
-      for (const buyOrder of (body.buyOrders || [])) {
-        if (buyOrder.orderId && buyOrder.orderId !== 'core-migration') sourceIds.add(buyOrder.orderId);
-      }
-      fillLedger.annotateFillsByOrderIds(sourceIds, {
-        sellOrderId: result.orderId, bodyId: body.id, bodyTier: body.tier,
-      });
-
-      logger.info(`${tierCfg.emoji} [${exchange}] Body TP placed (${body.tier}): ${sellQty} ${baseCurrency} @ ${fmtPrice(tpPrice)} (holdback=${holdbackQty.toFixed(6)} ${baseCurrency}, body=${body.id.slice(-8)})`);
-
-      tradeEvents.emitTradeEvent('body_tp_placed', exchange, `${tierCfg.emoji} ${sellQty} ${baseCurrency} @ ${fmtPrice(tpPrice)}`, {
-        bodyId: body.id,
-        bodyTier: body.tier,
-        assetQty: body.assetQty,
-        costBasis: body.costBasis,
-        avgPrice: body.avgPrice,
-        tpPrice,
-        sellQty,
-        holdbackQty,
-      });
-
-      return true;
-    }
-
-    logger.warn(
-      `⚠️ [${exchange}] Failed to place body TP for ${body.id.slice(-8)}: ${result.errorMessage}`,
-      { bodyId: body.id, orderType: 'body_tp', error: result.errorMessage }
-    );
-    return false;
-
-    } finally {
-      tpPlacementInFlight.delete(body.id);
-    }
-  };
-
-  /** Place body TP with a single retry on failure to avoid leaving body without sell */
-  const placeBodyTpWithRetry = async (body, context) => {
-    let placed = await placeBodyTp(body);
-    if (!placed && !body.tpOrderId) {
-      logger.warn(`⚠️ [${exchange}] ${context} TP placement failed for body ${body.id.slice(-8)}, retrying after 1s...`);
-      await sleep(PLACEMENT_RETRY_DELAY_MS);
-      placed = await placeBodyTp(body);
-      if (!placed && !body.tpOrderId) {
-        logger.error(
-          `🚨 [${exchange}] ${context} TP retry failed for body ${body.id.slice(-8)} — body has no sell order, will re-place on next reconcile`,
-          { bodyId: body.id, orderType: 'body_tp', operation: context }
-        );
-      }
-    }
-    return placed;
-  };
-
-  /**
-   * Place or update take-profit order (legacy compat for untracked core position)
-   * In celestial mode, body TPs are managed via placeBodyTp()
-   * @param {Object} [options] - Options
-   * @param {boolean} [options.forceUpdate] - Bypass anti-churn (use after buy fills)
-   */
-  const placeTakeProfitOrder = async (options = {}) => {
-    // In celestial mode, update all body TPs instead
-    if (positionState.celestialBodies && positionState.celestialBodies.length > 0) {
-      // Cancel any lingering legacy TP order — but only if no body owns it
-      if (positionState.activeTpOrderId) {
-        const ownedByBody = positionState.celestialBodies.some(b => b.tpOrderId === positionState.activeTpOrderId);
-        if (!ownedByBody) {
-          logger.info(`🧹 [${exchange}] Cancelling legacy TP ${positionState.activeTpOrderId.substring(0, 8)} — celestial mode active`);
-          await orderExecutor.cancelTpOrder();
-        }
-        positionState.activeTpOrderId = null;
-        positionState.lastTpPrice = 0;
-        positionState.assetOnOrder = 0;
-      }
-
-      // Snapshot the array to avoid visiting bodies added concurrently by fill handlers
-      const bodiesToCheck = [...positionState.celestialBodies];
-      for (const body of bodiesToCheck) {
-        if (!body.tpOrderId) {
-          await placeBodyTp(body);
-        }
-      }
-      return;
-    }
-
-    // Legacy path for untracked core position
-    const tpPrice = calculateDynamicTP();
-
-    const { sellQty, holdbackQty, profitAssetValue } = positionSizer.calculateTakeProfitSize(
-      positionState.totalAsset,
-      positionState.avgCostBasis,
-      tpPrice
-    );
-
-    if (sellQty <= 0) return;
-
-    const result = await orderExecutor.placeTakeProfitOrder(sellQty, tpPrice, options);
-
-    if (result.filledDuringCancel && result.filledOrderId) {
-      // Old TP filled while we were trying to cancel-and-replace — route to fill handler.
-      // The cancel-replace path already removed the order from pendingOrders, so the
-      // engine's terminal handleOrderFill cleanup would log a spurious "orphan" warning
-      // without this markSettled.
-      logger.info(`📋 [${exchange}] TP filled during cancel-and-replace, routing to fill handler: ${result.filledOrderId}`);
-      // placeTakeProfitOrder's cancel attempt already fetched this order's terminal
-      // status to discover the fill — use those fields directly rather than
-      // re-fetching via a second, redundant getOrder() call whose own failure
-      // would otherwise silently drop the fill entirely (issue #227 follow-up).
-      // Fall back to a fresh fetch only if that data is missing for some reason.
-      let fillData = result.filledSize > 0 ? result : null;
-      if (!fillData) {
-        fillData = await lookupOrNull('getOrder', result.filledOrderId, adapter.getOrder(result.filledOrderId));
-      }
-      if (fillData) {
-        orderExecutor.markSettled(result.filledOrderId);
-        await handleOrderFill({
-          orderId: result.filledOrderId,
-          side: 'sell',
-          status: 'FILLED',
-          filledSize: parseFloat(fillData.filledSize || 0),
-          filledValue: parseFloat(fillData.filledValue || 0),
-          averageFilledPrice: parseFloat(fillData.averageFilledPrice || 0),
-          totalFees: parseFloat(fillData.totalFees || 0),
-        });
-      }
-      return;
-    }
-
-    if (result.success) {
-      positionState.activeTpOrderId = result.orderId;
-      positionState.lastTpPrice = tpPrice;
-      positionState.assetOnOrder = sellQty;
-
-      // Link all current-cycle non-body buys to this sell order (skip body-owned buys)
-      const cycleFills = fillLedger.getCurrentCycleFills();
-      const coreBuyOrderIds = new Set();
-      for (const fill of cycleFills) {
-        // Timestamp-folded buys (#705) are not in the core position this TP sells.
-        if (fill.side === 'buy' && !(fill.isBodyOwned || fill.isSatellite) && !fill.bodyId && fill.cycleAttribution !== 'timeframe') {
-          coreBuyOrderIds.add(fill.orderId);
-        }
-      }
-      fillLedger.annotateFillsByOrderIds(coreBuyOrderIds, { sellOrderId: result.orderId });
-
-      if (result.updated) {
-        logger.info(`📝 [${exchange}] TP ${result.orderId ? 'updated' : 'placed'}: ${sellQty} ${baseCurrency} @ ${fmtPrice(tpPrice)} (holdback=${holdbackQty.toFixed(6)} ${baseCurrency} ≈$${profitAssetValue.toFixed(2)})`);
-      }
-    }
-  };
-
-  /**
-   * Calculate dynamic take-profit price (legacy for core position)
-   * @returns {number}
-   */
-  const calculateDynamicTP = () => {
-    const { avgCostBasis } = positionState;
-    const tpPercent = calculateDynamicTpPercent();
-    return roundPrice(avgCostBasis * (1 + tpPercent / 100), priceIncrement);
-  };
+  // Take-profit placement (regime-tp-placement): the dynamic TP percent, the
+  // per-body TP (sized after the tier holdback) with its single retry, and
+  // placeTakeProfitOrder with the legacy single-TP fall-through. The in-flight
+  // placement guard and the dust-wait log map are the engine's own, passed by
+  // reference. Built here, after every collaborator it captures is declared
+  // and before the dry-run fill handlers, the reconcile loop, startup recovery
+  // and the operator actions, which all take these functions.
+  const {
+    calculateDynamicTpPercent, placeBodyTp, placeBodyTpWithRetry, placeTakeProfitOrder,
+  } = createTpPlacement({
+    exchange, baseCurrency, isDryRun, config, logger,
+    positionState, fillLedger, regimeDetector, macroRegime, positionSizer,
+    tpPlacementInFlight, dustWaitLoggedQty,
+    getAdapter: () => adapter,
+    getOrderExecutor: () => orderExecutor,
+    getMarketState: () => marketState,
+    getPriceIncrement: () => priceIncrement,
+    getProductDetails: () => productDetails,
+    lookupOrNull,
+    handleOrderFill,
+    saveLiveStateGuarded,
+  });
 
   /**
    * Finish a cycle reset a body TP close still owes (#766) — its fill booked
@@ -6089,6 +5281,36 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     saveLiveState();
     return true;
   };
+
+  // Entry evaluation (regime-entry): the mode-aware trigger, the reactive and
+  // ladder entry paths and executeEntry. handleTicker still decides when an
+  // evaluation runs and wraps it in the backup fence; the entry and ladder
+  // locks and the admission captures are the engine's own. The log / alert
+  // latches stay here (a cycle reset clears them, the episode state persists
+  // announcedCaps), so the evaluator reads and replaces them through accessors.
+  // Built here, after every collaborator it captures is declared.
+  const { evaluateEntryTrigger, evaluateLadderEntry } = createEntryEvaluator({
+    exchange, productId, isDryRun, config, exchangeConfig, logger, fundEventData,
+    positionState, engineLocks,
+    healthMonitor, tailEvents, regimeDetector, macroRegime, positionSizer, riskManager, ladderCalculator,
+    getAdapter: () => adapter,
+    getOrderExecutor: () => orderExecutor,
+    getMarketState: () => marketState,
+    getPriceIncrement: () => priceIncrement,
+    getCycleResetGeneration: () => cycleResetGeneration,
+    getFlashCancelSweep: () => flashCancelSweep,
+    getLoggedEntryBlockKinds: () => loggedEntryBlockKinds,
+    setLoggedEntryBlockKinds: (v) => { loggedEntryBlockKinds = v; },
+    getBudgetExhaustedWarningLogged: () => budgetExhaustedWarningLogged,
+    setBudgetExhaustedWarningLogged: (v) => { budgetExhaustedWarningLogged = v; },
+    getAnnouncedCaps: () => announcedCaps,
+    setAnnouncedCaps: (v) => { announcedCaps = v; },
+    getLowBalancePauseLogged: () => lowBalancePauseLogged,
+    setLowBalancePauseLogged: (v) => { lowBalancePauseLogged = v; },
+    lookupOrNull, blockingPlacementIntents, captureEntryAdmission, captureReactiveEntryAdmission,
+    getAllocatedCapital, buildLadderFromMarket, abandonLadderPlacedAcrossReset,
+    saveLiveState,
+  });
 
   // Operator-triggered actions (position update/recalc, roll-up / Collapse All,
   // cycle reset, TP edits, ladder preview/rebuild/cancel, body inject/extend).
