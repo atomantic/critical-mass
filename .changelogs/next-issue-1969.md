@@ -1,0 +1,1 @@
+- **Fewer, grouped dependency update PRs** — Dependabot now batches minor and patch updates into one PR per directory and keeps at most 3 open PRs per ecosystem; major updates and security alerts still arrive as separate PRs.
