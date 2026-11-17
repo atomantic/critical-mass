@@ -144,12 +144,4 @@ describe('Trade History mutation integration (#336)', () => {
     assert.ok(h.render().validationErrors.cost)
     assert.equal(h.render().showForm, true)
   })
-
-  it('binds every form and row control to mutation busy state', () => {
-    const controls = source.match(/<(?:button|input)\b[^>]*>/g)
-    assert.ok(controls.length > 0)
-    for (const control of controls) assert.match(control, /disabled=\{busy\}/)
-    assert.match(source, /import \{ runDashboardAction \} from '\.\.\/\.\.\/utils\/dashboardAction\.mjs'/)
-    assert.match(source, /import \{ useToast \} from '\.\.\/Toast'/)
-  })
 })

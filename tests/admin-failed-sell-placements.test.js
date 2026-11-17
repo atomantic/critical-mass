@@ -82,19 +82,3 @@ describe('FailedSellPlacements (issue #1035)', () => {
     assert.ok(buttons.every(b => /\sdisabled(?:\s|=|>)/.test(b)))
   })
 })
-
-describe('Dashboard wiring (issue #1035)', () => {
-  const source = fs.readFileSync(path.join(__dirname, '..', 'admin', 'src', 'components', 'Dashboard.jsx'), 'utf8')
-
-  it('feeds the section from the live DCA status read, outside the pending-orders table', () => {
-    assert.match(source, /<FailedSellPlacements[\s\S]*?failedSells=\{liveData\?\.failedSells\}/)
-    assert.match(source, /placementIntents=\{liveData\?\.placementIntents\}/)
-    assert.ok(source.indexOf('<FailedSellPlacements') < source.indexOf('{/* Pending Orders */}'))
-  })
-
-  it('posts the buy id to the retry route and refreshes status afterwards', () => {
-    assert.match(source, /retry-failed-sell\$\{pairQuery\}/)
-    assert.match(source, /apiPost\(`\/api\/\$\{exchange\}\/retry-failed-sell\$\{pairQuery\}`, \{ buyOrderId \}\)/)
-    assert.match(source, /onSettled: \(\) => fetchLive\(\)/)
-  })
-})

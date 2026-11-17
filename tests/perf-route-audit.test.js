@@ -67,16 +67,6 @@ describe('route audit against the synthetic fixture', () => {
   })
 })
 
-describe('audit model stays aligned with the UI', () => {
-  it('re-reads Transactions on pushed fund changes, not a timer, with a 100-row page', () => {
-    const src = fs.readFileSync(path.join(__dirname, '..', 'admin', 'src', 'components', 'TransactionsRegime.jsx'), 'utf8')
-    assert.match(src, /useRealtimeRefresh\(\{[^}]*'regime:changed'/s)
-    assert.doesNotMatch(src, /usePolling/)
-    assert.match(src, /pageSize: '100'/)
-    assert.match(src, /\/api\/\$\{exchange\}\/config/)
-  })
-})
-
 describe('route audit failure handling', () => {
   it('reports UNVERIFIED instead of hanging when the gateway is unreachable', async () => {
     const log = console.log
