@@ -5,26 +5,33 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-// issue #108 — state-tracker hardening:
+// issue #108 — DCA / regime state hardening (formerly state-tracker):
 //  - unguarded JSON.parse on state files (raw SyntaxError at boot / 500s)
 //  - loadState writing from a read path (races the engine save)
 //  - saveRegimeState stamping a lower _saveVersion than disk (version regression)
 
-const stateTrackerPath = require.resolve('../src/state-tracker');
+const dcaStatePath = require.resolve('../src/dca-state');
+const regimeStateStorePath = require.resolve('../src/regime-state-store');
 const fundPaths = require('../src/fund-paths');
 const originalGetExchangeDataDir = fundPaths.getExchangeDataDir;
 
 /** @type {string|null} */
 let tmpDir = null;
 
+// The DCA and regime owners are reloaded together; the durable writer is a leaf.
 const freshModule = () => {
-  delete require.cache[stateTrackerPath];
-  return require('../src/state-tracker');
+  delete require.cache[dcaStatePath];
+  delete require.cache[regimeStateStorePath];
+  return {
+    ...require('../src/dca-state'),
+    ...require('../src/regime-state-store'),
+    atomicWriteSync: require('../src/durable-write').atomicWriteSync,
+  };
 };
 
-describe('state-tracker hardening (issue #108)', () => {
+describe('state store hardening (issue #108)', () => {
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'state-tracker-test-'));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'state-store-test-'));
     fundPaths.getExchangeDataDir = (exchange) => {
       const dir = path.join(tmpDir, exchange);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -36,7 +43,8 @@ describe('state-tracker hardening (issue #108)', () => {
     fundPaths.getExchangeDataDir = originalGetExchangeDataDir;
     if (tmpDir && fs.existsSync(tmpDir)) fs.rmSync(tmpDir, { recursive: true, force: true });
     tmpDir = null;
-    delete require.cache[stateTrackerPath];
+    delete require.cache[dcaStatePath];
+    delete require.cache[regimeStateStorePath];
   });
 
   it('atomicWriteSync fsyncs the temp file before rename and the parent directory after', () => {

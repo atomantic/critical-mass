@@ -10,7 +10,7 @@ const path = require('path');
 const { resolveFundDataDir } = require('./fund-paths');
 const { createContextLogger } = require('./logger');
 const { fundKey } = require('./shared-utils');
-const { atomicWriteSync } = require('./state-tracker');
+const { atomicWriteSync } = require('./durable-write');
 
 const chartDataLogger = createContextLogger();
 

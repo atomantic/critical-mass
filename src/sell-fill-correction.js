@@ -100,7 +100,7 @@ const applySellCorrectionCapital = (exchange, pair, correction) => {
 
 /** Persisted fallback used by manual/sync ingestion when no engine is live. */
 const applyPersistedSellCorrection = (exchange, pair, correction, derived) => {
-  const { loadFundRegimeState, saveFundRegimeState } = require('./state-tracker');
+  const { loadFundRegimeState, saveFundRegimeState } = require('./regime-state-store');
   const { createClosedTrades } = require('./closed-trades');
   const saved = loadFundRegimeState(exchange, pair);
   const next = structuredClone(saved.position || {});

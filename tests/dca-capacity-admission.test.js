@@ -5,7 +5,8 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const config = require('../src/config-utils');
 const adapters = require('../src/adapters');
-const tracker = require('../src/state-tracker');
+const dcaState = require('../src/dca-state');
+const placementIntents = require('../src/placement-intent-storage');
 const manager = require('../src/order-manager');
 const conversion = require('../src/dca-conversion-transaction');
 const logger = require('../src/logger');
@@ -63,23 +64,23 @@ describe('DCA operation capacity and admission bounds (issue #1814)', () => {
     mock.method(logger, 'logSellOrder', () => {});
     mock.method(logger, 'logSellFilled', () => {});
 
-    durable = tracker.createInitialState(fund);
-    tracker.recordBuyFill(durable, { orderId: 'failed-buy', assetAmount: 1, price: 100, usdcAmount: 100 }, fund);
-    tracker.markSellPlacementFailed(durable, 'failed-buy', 'rejected');
-    tracker.recordBuyFill(durable, { orderId: 'other-buy', assetAmount: 1, price: 100, usdcAmount: 100 }, fund);
-    tracker.attachSellOrder(durable, 'other-buy', { orderId: 'other-sell', limitPrice: 102 });
+    durable = dcaState.createInitialState(fund);
+    dcaState.recordBuyFill(durable, { orderId: 'failed-buy', assetAmount: 1, price: 100, usdcAmount: 100 }, fund);
+    dcaState.markSellPlacementFailed(durable, 'failed-buy', 'rejected');
+    dcaState.recordBuyFill(durable, { orderId: 'other-buy', assetAmount: 1, price: 100, usdcAmount: 100 }, fund);
+    dcaState.attachSellOrder(durable, 'other-buy', { orderId: 'other-sell', limitPrice: 102 });
 
     scopes = [];
-    mock.method(tracker, 'loadState', (_config, exchange, pair) => {
+    mock.method(dcaState, 'loadState', (_config, exchange, pair) => {
       scopes.push(['load', exchange, pair]);
       return structuredClone(durable);
     });
-    mock.method(tracker, 'saveState', (state, exchange, pair) => {
+    mock.method(dcaState, 'saveState', (state, exchange, pair) => {
       scopes.push(['save', exchange, pair]);
       durable = structuredClone(state);
     });
-    mock.method(tracker, 'getBlockingPlacementIntents', () => []);
-    mock.method(tracker, 'describePlacementIntents', () => []);
+    mock.method(placementIntents, 'getBlockingPlacementIntents', () => []);
+    mock.method(placementIntents, 'describePlacementIntents', () => []);
 
     engine = require('../src/dca-engine');
   });

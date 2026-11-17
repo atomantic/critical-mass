@@ -36,7 +36,7 @@ websocketFeedModule.createWebSocketFeed = () => ({ connect: () => {}, disconnect
 
 const { createRegimeEngine, measureUnbookedOrderQty } = require('../src/regime-engine');
 const { createFillLedger } = require('../src/fill-ledger');
-const { saveRegimeState, loadRegimeState } = require('../src/state-tracker');
+const { saveRegimeState, loadRegimeState } = require('../src/regime-state-store');
 const { tradeEvents } = require('../src/trade-events');
 const { createRecoveryModule } = require('../src/recovery');
 const { createClosedTrades } = require('../src/closed-trades');

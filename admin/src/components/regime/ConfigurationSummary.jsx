@@ -2,7 +2,7 @@ import React from 'react'
 import AggressivenessControl from './AggressivenessControl'
 import { ConfigTooltip, CONFIG_TOOLTIPS } from './RegimeHelp'
 
-export default function ConfigurationSummary({ config, exchange, pairQuery, fetchConfig, presets, presetsLoading, presetsError, retryPresets, addToast }) {
+function ConfigurationSummary({ config, exchange, pairQuery, fetchConfig, presets, presetsLoading, presetsError, retryPresets, addToast }) {
   return (
     <>
       {config && (
@@ -83,3 +83,5 @@ export default function ConfigurationSummary({ config, exchange, pairQuery, fetc
     </>
   )
 }
+
+export default React.memo(ConfigurationSummary)

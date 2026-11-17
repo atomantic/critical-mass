@@ -24,7 +24,7 @@
  */
 
 const { createNewBody, syncPositionState, mergeIntoBody, computeBuyOrderShortfall } = require('./celestial-hierarchy');
-const { loadFundRegimeState, saveFundRegimeState } = require('./state-tracker');
+const { loadFundRegimeState, saveFundRegimeState } = require('./regime-state-store');
 const { STATUS, INTENT_PHASE, SIZE_EPSILON, getUncoveredSize } = require('./manual-trades');
 const { FillValidationError, validateFillInput, LEGACY_CONSUMPTION_KEY } = require('./fill-ledger');
 const { readBooleanFlag, isFilledStatus, isCancelledStatus, sleep } = require('./shared-utils');

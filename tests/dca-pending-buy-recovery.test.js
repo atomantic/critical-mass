@@ -22,7 +22,8 @@ const path = require('node:path');
 const fundPaths = require('../src/fund-paths');
 const configUtils = require('../src/config-utils');
 const orderManager = require('../src/order-manager');
-const stateTracker = require('../src/state-tracker');
+const dcaState = require('../src/dca-state');
+const placementIntents = require('../src/placement-intent-storage');
 const adapters = require('../src/adapters');
 const logger = require('../src/logger');
 const { getRunIdentifier } = require('../src/interval-utils');
@@ -48,13 +49,13 @@ let exchange;
 
 const stateFile = () => path.join(tmpDir, EXCHANGE, PAIR, 'state.json');
 const readState = () => JSON.parse(fs.readFileSync(stateFile(), 'utf8'));
-const readIntents = () => stateTracker.loadPlacementIntents(EXCHANGE, PAIR);
+const readIntents = () => placementIntents.loadPlacementIntents(EXCHANGE, PAIR);
 
 /** Seed a fund's state.json in the per-fund layout. */
 const seedState = (extra = {}) => {
   fs.mkdirSync(path.dirname(stateFile()), { recursive: true });
   fs.writeFileSync(stateFile(), JSON.stringify({
-    ...stateTracker.createInitialState(fundConfig),
+    ...dcaState.createInitialState(fundConfig),
     ...extra,
   }, null, 2));
 };
@@ -125,7 +126,7 @@ beforeEach(() => {
     placeFibonacciSellOrder: orderManager.placeFibonacciSellOrder,
     checkFilledOrders: orderManager.checkFilledOrders,
     checkFibonacciSellFill: orderManager.checkFibonacciSellFill,
-    saveState: stateTracker.saveState,
+    saveState: dcaState.saveState,
     logBuy: logger.logBuy,
     logSellOrder: logger.logSellOrder,
     logFibBuy: logger.logFibBuy,
@@ -182,7 +183,7 @@ afterEach(() => {
   orderManager.placeFibonacciSellOrder = originals.placeFibonacciSellOrder;
   orderManager.checkFilledOrders = originals.checkFilledOrders;
   orderManager.checkFibonacciSellFill = originals.checkFibonacciSellFill;
-  stateTracker.saveState = originals.saveState;
+  dcaState.saveState = originals.saveState;
   logger.logBuy = originals.logBuy;
   logger.logSellOrder = originals.logSellOrder;
   logger.logFibBuy = originals.logFibBuy;
@@ -395,7 +396,7 @@ describe('handoff and bookkeeping failure boundaries (issue #963)', () => {
   it('a failed accepted-buy handoff leaves a blocking dispatch intent, never a rejection', async () => {
     seedState();
     let saves = 0;
-    stateTracker.saveState = (...args) => {
+    dcaState.saveState = (...args) => {
       saves += 1;
       if (saves === 1) throw new Error('ENOSPC: no space left on device');
       return originals.saveState(...args);
@@ -413,7 +414,7 @@ describe('handoff and bookkeeping failure boundaries (issue #963)', () => {
     assert.equal(intents[0].status, 'unresolved');
     assert.equal(intents[0].orderId, 'buy-1');
     assert.equal(intents[0].clientOrderId, 'coid-1');
-    assert.equal(stateTracker.getBlockingPlacementIntents(EXCHANGE, PAIR).length, 1);
+    assert.equal(placementIntents.getBlockingPlacementIntents(EXCHANGE, PAIR).length, 1);
 
     const again = await dcaEngine.runIntervalCycle(EXCHANGE, PAIR);
     assert.equal(again.status, 'placement_unresolved');
@@ -425,9 +426,9 @@ describe('handoff and bookkeeping failure boundaries (issue #963)', () => {
     await dcaEngine.runIntervalCycle(EXCHANGE, PAIR);
     exchange.statusMode = 'filled';
 
-    stateTracker.saveState = () => { throw new Error('EIO: i/o error'); };
+    dcaState.saveState = () => { throw new Error('EIO: i/o error'); };
     await assert.rejects(() => dcaEngine.runIntervalCycle(EXCHANGE, PAIR), /EIO/);
-    stateTracker.saveState = originals.saveState;
+    dcaState.saveState = originals.saveState;
     assertPendingOnly('buy-1');
 
     restartEngine();
@@ -441,8 +442,8 @@ describe('handoff and bookkeeping failure boundaries (issue #963)', () => {
 
   it('a pending record for an already-booked buy is retired without a second credit', async () => {
     const config = { ...fundConfig };
-    const booked = stateTracker.createInitialState(config);
-    stateTracker.bookDcaBuy(booked, {
+    const booked = dcaState.createInitialState(config);
+    dcaState.bookDcaBuy(booked, {
       orderId: 'old-buy', price: 52368.42, assetAmount: 0.0019, usdcAmount: 99.5, fees: 0.6, rebates: 0.1, netFees: 0.5,
     }, config, { strategy: 'fixed', runId: 'daily-2000-01-01' });
     booked.orders[0].status = 'pending';
@@ -461,29 +462,29 @@ describe('handoff and bookkeeping failure boundaries (issue #963)', () => {
   });
 });
 
-describe('state-tracker pending-buy helpers (issue #963)', () => {
+describe('dca-state pending-buy helpers (issue #963)', () => {
   const config = { productId: PAIR, totalAllocation: 1000, intervalsToSpread: 10, intervalType: 'daily', holdbackPercent: 10 };
   const fill = { orderId: 'b1', price: 50000, assetAmount: 0.002, usdcAmount: 100, fees: 0.2, rebates: 0, netFees: 0.2 };
 
   it('bookDcaBuy books once and retires the pending record in the same mutation', () => {
-    const state = stateTracker.createInitialState(config);
-    stateTracker.recordPendingDcaBuy(state, { orderId: 'b1', requestedUsdc: 100, runId: 'daily-x' });
+    const state = dcaState.createInitialState(config);
+    dcaState.recordPendingDcaBuy(state, { orderId: 'b1', requestedUsdc: 100, runId: 'daily-x' });
 
-    assert.equal(stateTracker.bookDcaBuy(state, fill, config, { strategy: 'fixed', runId: 'daily-x' }), true);
+    assert.equal(dcaState.bookDcaBuy(state, fill, config, { strategy: 'fixed', runId: 'daily-x' }), true);
     assert.equal(state.pendingDcaBuy, undefined);
     assert.equal(state.lastRunId, 'daily-x');
     assert.equal(state.totalAllocated, 100);
 
-    assert.equal(stateTracker.bookDcaBuy(state, fill, config, { strategy: 'fixed', runId: 'daily-x' }), false);
+    assert.equal(dcaState.bookDcaBuy(state, fill, config, { strategy: 'fixed', runId: 'daily-x' }), false);
     assert.equal(state.totalAllocated, 100);
     assert.equal(state.orders.length, 1);
   });
 
   it('recognises buys booked before the booked-id history existed', () => {
-    const state = stateTracker.createInitialState(config);
-    stateTracker.recordBuyFill(state, fill, config);
+    const state = dcaState.createInitialState(config);
+    dcaState.recordBuyFill(state, fill, config);
     delete state.bookedDcaBuyOrderIds;
-    assert.equal(stateTracker.isDcaBuyBooked(state, 'b1'), true);
+    assert.equal(dcaState.isDcaBuyBooked(state, 'b1'), true);
   });
 
   it('a retained intent blocks this process even while its row reads as our own dispatch', () => {
@@ -491,12 +492,12 @@ describe('state-tracker pending-buy helpers (issue #963)', () => {
     const prev = fundPaths.getExchangeDataDir;
     fundPaths.getExchangeDataDir = () => tmp;
     try {
-      const intent = stateTracker.recordPlacementIntent({ exchange: EXCHANGE, pair: PAIR, action: 'dca_buy' });
-      assert.equal(stateTracker.getBlockingPlacementIntents(EXCHANGE, PAIR).length, 0, 'own in-flight dispatch does not block');
-      stateTracker.retainPlacementIntentInProcess(intent.id);
-      assert.equal(stateTracker.getBlockingPlacementIntents(EXCHANGE, PAIR).length, 1);
-      stateTracker.resolvePlacementIntent(EXCHANGE, PAIR, intent.id);
-      assert.equal(stateTracker.getBlockingPlacementIntents(EXCHANGE, PAIR).length, 0);
+      const intent = placementIntents.recordPlacementIntent({ exchange: EXCHANGE, pair: PAIR, action: 'dca_buy' });
+      assert.equal(placementIntents.getBlockingPlacementIntents(EXCHANGE, PAIR).length, 0, 'own in-flight dispatch does not block');
+      placementIntents.retainPlacementIntentInProcess(intent.id);
+      assert.equal(placementIntents.getBlockingPlacementIntents(EXCHANGE, PAIR).length, 1);
+      placementIntents.resolvePlacementIntent(EXCHANGE, PAIR, intent.id);
+      assert.equal(placementIntents.getBlockingPlacementIntents(EXCHANGE, PAIR).length, 0);
     } finally {
       fundPaths.getExchangeDataDir = prev;
       fs.rmSync(tmp, { recursive: true, force: true });
@@ -594,12 +595,12 @@ describe('explicit pending buy recovery never places a new buy', () => {
 
   it('retains placement and interrupted-import guards', async () => {
     seedPending();
-    const intent = stateTracker.recordPlacementIntent({ exchange: EXCHANGE, pair: PAIR, action: 'dca_buy' });
-    stateTracker.retainPlacementIntentInProcess(intent.id);
+    const intent = placementIntents.recordPlacementIntent({ exchange: EXCHANGE, pair: PAIR, action: 'dca_buy' });
+    placementIntents.retainPlacementIntentInProcess(intent.id);
     const result = await dcaEngine.resumePendingBuy(EXCHANGE, PAIR, 'old-buy');
     assert.equal(result.status, 'placement_unresolved');
     assert.equal(result.intentId, intent.id);
-    stateTracker.resolvePlacementIntent(EXCHANGE, PAIR, intent.id);
+    placementIntents.resolvePlacementIntent(EXCHANGE, PAIR, intent.id);
     fs.writeFileSync(path.join(tmpDir, EXCHANGE, PAIR, '.dca-import-journal.json'), '{}');
     assert.equal((await dcaEngine.resumePendingBuy(EXCHANGE, PAIR, 'old-buy')).status, 'import_recovery_pending');
     assert.equal(exchange.statusReads, 0);

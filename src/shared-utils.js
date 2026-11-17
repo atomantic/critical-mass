@@ -8,7 +8,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const stateTracker = require('./state-tracker');
+const { atomicWriteSync } = require('./durable-write');
 const { createContextLogger } = require('./logger');
 const { resolveFundDataDir } = require('./fund-paths');
 const { jsonReadError } = require('./json-diagnostics');
@@ -70,7 +70,6 @@ const readJSON = (filepath, defaultValue = {}) => {
  * @param {string} filepath
  * @param {*} data
  */
-const { atomicWriteSync } = stateTracker;
 const writeJSON = (filepath, data) => {
   const dir = path.dirname(filepath);
   fs.mkdirSync(dir, { recursive: true });

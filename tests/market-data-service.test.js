@@ -2623,7 +2623,7 @@ describe('stopped-fund status stream with an unreadable regime-state.json', () =
   const os = require('os');
   const path = require('path');
   const fundPaths = require('../src/fund-paths');
-  const stateTracker = require('../src/state-tracker');
+  const regimeStateStore = require('../src/regime-state-store');
   const originalGetExchangeDataDir = fundPaths.getExchangeDataDir;
   /** @type {string|null} */
   let tmpDir = null;
@@ -2644,7 +2644,7 @@ describe('stopped-fund status stream with an unreadable regime-state.json', () =
   });
 
   it('pauses the status stream instead of throwing out of the ticker handler, and resumes once the file loads', (t) => {
-    const stateFile = stateTracker.getRegimeStateFile('coinbase', 'BTC-USD');
+    const stateFile = regimeStateStore.getRegimeStateFile('coinbase', 'BTC-USD');
     fs.mkdirSync(path.dirname(stateFile), { recursive: true });
     fs.writeFileSync(stateFile, '{ not valid json');
     let now = 1_000_000;
@@ -2913,7 +2913,7 @@ describe('startMarketDataService stop-during-start cancellation (issue #415)', (
     adapters: require.resolve('../src/adapters'),
     wsFeed: require.resolve('../src/websocket-feed'),
     fillLedger: require.resolve('../src/fill-ledger'),
-    stateTracker: require.resolve('../src/state-tracker'),
+    regimeStateStore: require.resolve('../src/regime-state-store'),
     health: require.resolve('../src/health-monitor'),
   };
 
@@ -3003,7 +3003,7 @@ describe('startMarketDataService stop-during-start cancellation (issue #415)', (
     });
     // Keep the race off the real data directory entirely.
     stub(STUBBED.fillLedger, { createFillLedger: () => ({ persist: () => {}, ingestFill: () => {} }) });
-    stub(STUBBED.stateTracker, { loadFundRegimeState: () => ({ position: { celestialBodies: [] } }) });
+    stub(STUBBED.regimeStateStore, { loadFundRegimeState: () => ({ position: { celestialBodies: [] } }) });
 
     delete require.cache[MDS_PATH];
     mds = require('../src/market-data-service');
@@ -3133,7 +3133,7 @@ describe('fenceMarketDataService + handover gap recovery (issue #1008)', () => {
   const STUBBED = {
     adapters: require.resolve('../src/adapters'),
     wsFeed: require.resolve('../src/websocket-feed'),
-    stateTracker: require.resolve('../src/state-tracker'),
+    regimeStateStore: require.resolve('../src/regime-state-store'),
     health: require.resolve('../src/health-monitor'),
   };
   const EXCHANGE = 'test-mds-1008';
@@ -3190,7 +3190,7 @@ describe('fenceMarketDataService + handover gap recovery (issue #1008)', () => {
       feedConfig = config;
       return { connect: () => {}, disconnect: () => {} };
     } });
-    stub(STUBBED.stateTracker, { loadFundRegimeState: () => ({
+    stub(STUBBED.regimeStateStore, { loadFundRegimeState: () => ({
       position: { celestialBodies: [{ id: 'body-1', tpOrderId: TP, tpPrice: 110, assetOnOrder: 1 }] },
     }) });
     delete require.cache[MDS_PATH];
@@ -3224,8 +3224,8 @@ describe('fenceMarketDataService + handover gap recovery (issue #1008)', () => {
   it('anchors the ledger on the persisted active cycle instead of the finished one with holdback', async () => {
     // cycle-1 closed with holdback (sells < buys) — load()'s guess picks it.
     openLedger().ingestFill({ tradeId: 'S0', orderId: 'sell-0', side: 'sell', price: 110, size: 0.9, totalCommission: 0.1 });
-    const state = require('../src/state-tracker');
-    require.cache[STUBBED.stateTracker].exports = { ...state, loadFundRegimeState: () => ({
+    const state = require('../src/regime-state-store');
+    require.cache[STUBBED.regimeStateStore].exports = { ...state, loadFundRegimeState: () => ({
       position: {
         activeCycleId: 'cycle-2',
         activeCycleStartedAt: Date.now(),

@@ -1,7 +1,8 @@
 // @ts-check
 const path = require('path');
 const { getAdapter } = require('./adapters');
-const stateTracker = require('./state-tracker');
+const dcaState = require('./dca-state');
+const placementIntents = require('./placement-intent-storage');
 const orderManager = require('./order-manager');
 const logger = require('./logger');
 const { createContextLogger } = logger;
@@ -131,7 +132,7 @@ const sellDetailsForRow = (order) => ({
  */
 const sellOwnerHandoff = (state, buyOrderId, exchange, pair) => ({
   onAccepted: (sellOrder) => {
-    const row = stateTracker.findAwaitingSellOrder(state, buyOrderId);
+    const row = dcaState.findAwaitingSellOrder(state, buyOrderId);
     if (!row) {
       throw new Error(`no awaiting_sell row for buy ${buyOrderId} to own sell ${sellOrder.orderId}`);
     }
@@ -142,9 +143,9 @@ const sellOwnerHandoff = (state, buyOrderId, exchange, pair) => ({
       outstandingOrdersAsset: state.outstandingOrdersAsset,
       outstandingOrdersUSDC: state.outstandingOrdersUSDC,
     };
-    stateTracker.attachSellOrder(state, buyOrderId, sellOrder);
+    dcaState.attachSellOrder(state, buyOrderId, sellOrder);
     try {
-      stateTracker.saveState(state, exchange, pair);
+      dcaState.saveState(state, exchange, pair);
     } catch (err) {
       row.orderId = before.orderId;
       row.sellPrice = before.sellPrice;
@@ -199,7 +200,7 @@ const withFundLock = (key, run) => {
  */
 const syncOrderStatuses = async (state, exchange = 'coinbase', pair) => {
   const cycleLogger = dcaLogger(exchange, pair);
-  const pendingOrders = stateTracker.getPendingOrders(state);
+  const pendingOrders = dcaState.getPendingOrders(state);
 
   if (pendingOrders.length === 0) {
     return [];
@@ -213,7 +214,7 @@ const syncOrderStatuses = async (state, exchange = 'coinbase', pair) => {
 
   for (const filled of filledOrders) {
     if (filled.cancelled) {
-      stateTracker.settleCancelledSell(state, filled);
+      dcaState.settleCancelledSell(state, filled);
       if (filled.filledSize > 0) logger.logSellFilled(filled, state, exchange, pair);
       cycleLogger.warn(`⚠️ [${exchange}] Sell order ${filled.orderId} ended ${filled.status} after executing ${filled.filledSize}: +${(filled.netProceeds || 0).toFixed(2)} credited; any unsold remainder is a failed sell to retry`, {
         orderId: filled.orderId,
@@ -223,7 +224,7 @@ const syncOrderStatuses = async (state, exchange = 'coinbase', pair) => {
       });
       continue;
     }
-    stateTracker.updateAfterSellFill(state, filled);
+    dcaState.updateAfterSellFill(state, filled);
     logger.logSellFilled(filled, state, exchange, pair);
     cycleLogger.info(`ℹ️ [${exchange}] Sell order filled: +${filled.fillValue.toFixed(2)}`);
     tradeEvents.orderFilled(exchange, filled.orderId, filled.fillValue);
@@ -241,9 +242,9 @@ const syncOrderStatuses = async (state, exchange = 'coinbase', pair) => {
  */
 const syncFundOrders = async (exchange, pair) => {
   const config = loadConfig(exchange, pair);
-  const state = stateTracker.loadState(config, exchange, pair);
+  const state = dcaState.loadState(config, exchange, pair);
   const filledOrders = await syncOrderStatuses(state, exchange, pair);
-  if (filledOrders.length > 0) stateTracker.saveState(state, exchange, pair);
+  if (filledOrders.length > 0) dcaState.saveState(state, exchange, pair);
   return { filledOrders };
 };
 
@@ -257,11 +258,11 @@ const syncFundOrders = async (exchange, pair) => {
 const executeConsolidation = async (exchange = 'coinbase', pair, orderIds = null) => {
   const config = loadConfig(exchange, pair);
   const cycleLogger = dcaLogger(exchange, config.productId);
-  const state = stateTracker.loadState(config, exchange, pair);
+  const state = dcaState.loadState(config, exchange, pair);
   const adapter = getAdapter(exchange);
 
   // Get pending orders to consolidate
-  let pendingOrders = stateTracker.getPendingOrders(state);
+  let pendingOrders = dcaState.getPendingOrders(state);
 
   // Filter to specific order IDs if provided
   if (orderIds && orderIds.length > 0) {
@@ -290,7 +291,7 @@ const executeConsolidation = async (exchange = 'coinbase', pair, orderIds = null
       state.lastConsolidationId = getConsolidationRunId(config.consolidateInterval);
       state.lastConsolidationTimestamp = Date.now();
     }
-    stateTracker.saveState(state, exchange, pair);
+    dcaState.saveState(state, exchange, pair);
     cycleLogger.info(`ℹ️ [${exchange}] Consolidation placed no order — all eligible orders filled during cancel (${result.filledDuringCancelOrderIds?.length || 0} filled)`);
     return result;
   }
@@ -302,7 +303,7 @@ const executeConsolidation = async (exchange = 'coinbase', pair, orderIds = null
     );
 
     // Update state
-    stateTracker.updateAfterConsolidation(
+    dcaState.updateAfterConsolidation(
       state,
       consolidatedOrders,
       result.newOrderId,
@@ -317,7 +318,7 @@ const executeConsolidation = async (exchange = 'coinbase', pair, orderIds = null
     }
 
     // Save state
-    stateTracker.saveState(state, exchange, pair);
+    dcaState.saveState(state, exchange, pair);
 
     // Log the transaction
     logger.logConsolidation(result, state, exchange, pair);
@@ -345,14 +346,14 @@ const executeConsolidation = async (exchange = 'coinbase', pair, orderIds = null
       // ambiguous — the order may already be resting live, so a manual
       // re-placement risks a double-sell; #676). Applied
       // as two calls so each set gets its own reason.
-      stateTracker.applyConsolidationRecovery(state, result.restoredOrders, result.failedRestoreOrderIds);
+      dcaState.applyConsolidationRecovery(state, result.restoredOrders, result.failedRestoreOrderIds);
       if (result.unresolvedRestoreOrderIds?.length) {
-        stateTracker.applyConsolidationRecovery(
+        dcaState.applyConsolidationRecovery(
           state, [], result.unresolvedRestoreOrderIds,
           'restore outcome unknown — this order may already be resting live on the exchange; do NOT manually re-place until an operator reconciles the fund\'s placement intent',
         );
       }
-      stateTracker.saveState(state, exchange, pair);
+      dcaState.saveState(state, exchange, pair);
       if (result.failedRestoreOrderIds?.length) {
         cycleLogger.error(`❌ [${exchange}] ${result.failedRestoreOrderIds.length} sell(s) left naked after failed consolidation — operator action needed: ${result.failedRestoreOrderIds.join(', ')}`, {
           failedRestoreOrderIds: result.failedRestoreOrderIds,
@@ -423,7 +424,7 @@ const reconcileAwaitingSells = async (state, config, adapter, exchange, pair) =>
       sellOrder = await orderManager.placeSellOrderWithRetry(config, buyDetails, adapter, 3, { exchange, pair },
         sellOwnerHandoff(state, order.buyOrderId, exchange, pair));
     } catch (err) {
-      stateTracker.markSellPlacementFailed(state, order.buyOrderId, err.message, unresolvedSellPlacement(err));
+      dcaState.markSellPlacementFailed(state, order.buyOrderId, err.message, unresolvedSellPlacement(err));
       cycleLogger.error(`❌ 🔧 [${exchange}] Recovery sell failed for buy ${order.buyOrderId} — marked sell_failed: ${err.message}`, {
         orderId: order.buyOrderId,
         buyPrice: order.buyPrice,
@@ -491,7 +492,7 @@ const pendingBuyResult = (pending, config, exchange, reason) => ({
  */
 const saveStateBestEffort = (state, exchange, pair, cycleLogger) => {
   try {
-    stateTracker.saveState(state, exchange, pair);
+    dcaState.saveState(state, exchange, pair);
   } catch (err) {
     cycleLogger.warn(`⚠️ [${exchange}] Could not persist pending-buy check details: ${err.message}`, { error: err.message });
   }
@@ -557,7 +558,7 @@ const resumePendingDcaBuy = async ({ state, config, adapter, exchange, pair, cyc
   const resumed = await orderManager.awaitBuyOutcome(pending.orderId, adapter, orderManager.PENDING_BUY_RESUME_POLL);
 
   if (resumed.outcome === 'unresolved') {
-    stateTracker.notePendingDcaBuyCheck(state, pending.orderId, resumed.reason);
+    dcaState.notePendingDcaBuyCheck(state, pending.orderId, resumed.reason);
     saveStateBestEffort(state, exchange, pair, cycleLogger);
     cycleLogger.warn(`⏸️ [${exchange}] Buy ${pending.orderId} (interval ${pending.runId}) still awaiting fill recovery: ${resumed.reason} — no new buy placed`, {
       orderId: pending.orderId,
@@ -570,8 +571,8 @@ const resumePendingDcaBuy = async ({ state, config, adapter, exchange, pair, cyc
 
   if (resumed.outcome === 'unfilled') {
     // Confirmed by the exchange: terminal, nothing executed, no money moved.
-    stateTracker.retirePendingDcaBuy(state, pending.orderId);
-    stateTracker.saveState(state, exchange, pair);
+    dcaState.retirePendingDcaBuy(state, pending.orderId);
+    dcaState.saveState(state, exchange, pair);
     cycleLogger.warn(`⚠️ [${exchange}] Pending buy ${pending.orderId} ended ${resumed.status} with no fill — released`, {
       orderId: pending.orderId,
       runId: pending.runId,
@@ -609,7 +610,7 @@ const executeRecoverableDcaBuy = async ({ state, config, adapter, exchange, pair
   try {
     buyResult = await orderManager.executeDailyBuy(config, amount, adapter, { exchange, pair }, {
       onAccepted: (accepted) => {
-        stateTracker.recordPendingDcaBuy(state, {
+        dcaState.recordPendingDcaBuy(state, {
           orderId: accepted.orderId,
           clientOrderId: accepted.clientOrderId ?? null,
           requestedUsdc: amount,
@@ -619,9 +620,9 @@ const executeRecoverableDcaBuy = async ({ state, config, adapter, exchange, pair
           productId: config.productId,
         });
         try {
-          stateTracker.saveState(state, exchange, pair);
+          dcaState.saveState(state, exchange, pair);
         } catch (err) {
-          stateTracker.retirePendingDcaBuy(state, accepted.orderId);
+          dcaState.retirePendingDcaBuy(state, accepted.orderId);
           throw err;
         }
       },
@@ -629,7 +630,7 @@ const executeRecoverableDcaBuy = async ({ state, config, adapter, exchange, pair
   } catch (err) {
     const pending = state.pendingDcaBuy;
     if (err.buyFillPending && pending && pending.orderId === err.orderId) {
-      stateTracker.notePendingDcaBuyCheck(state, pending.orderId, err.reason ?? err.message);
+      dcaState.notePendingDcaBuyCheck(state, pending.orderId, err.reason ?? err.message);
       saveStateBestEffort(state, exchange, pair, cycleLogger);
       cycleLogger.error(`⏸️ [${exchange}] Buy ${pending.orderId} accepted but its fill is unconfirmed (${err.reason ?? err.message}) — retained for recovery; no further buy will be placed until it resolves`, {
         orderId: pending.orderId,
@@ -641,8 +642,8 @@ const executeRecoverableDcaBuy = async ({ state, config, adapter, exchange, pair
     }
     if (err.buyUnfilled && pending && pending.orderId === err.orderId) {
       // Confirmed terminal zero fill: a definitive non-purchase. Release it.
-      stateTracker.retirePendingDcaBuy(state, pending.orderId);
-      stateTracker.saveState(state, exchange, pair);
+      dcaState.retirePendingDcaBuy(state, pending.orderId);
+      dcaState.saveState(state, exchange, pair);
     }
     if (err.handoffFailed) {
       tradeEvents.error(exchange, err.message, { buyOrderId: err.orderId ?? null });
@@ -680,7 +681,7 @@ const executeRecoverableDcaBuy = async ({ state, config, adapter, exchange, pair
 const runIntervalCycle = async (exchange = 'coinbase', pair, { pendingBuyOrderId } = {}) => {
   const config = loadConfig(exchange, pair);
   const cycleLogger = dcaLogger(exchange, config.productId);
-  const state = stateTracker.loadState(config, exchange, pair);
+  const state = dcaState.loadState(config, exchange, pair);
   const recoveryOnly = pendingBuyOrderId !== undefined;
   const rejectedRecovery = rejectRecoveryRequest(state, config, exchange, pendingBuyOrderId);
   if (rejectedRecovery) return rejectedRecovery;
@@ -690,7 +691,7 @@ const runIntervalCycle = async (exchange = 'coinbase', pair, { pendingBuyOrderId
 
   // Initialize Fibonacci state if needed
   if (isFibonacci) {
-    stateTracker.initFibonacciState(state, config);
+    dcaState.initFibonacciState(state, config);
   }
 
   // Check if enabled
@@ -710,7 +711,7 @@ const runIntervalCycle = async (exchange = 'coinbase', pair, { pendingBuyOrderId
 
   // Check if already ran this interval. Log only: every gateway restart
   // re-checks each fund here, and a trade event would reach Telegram each time.
-  if (!recoveryOnly && stateTracker.checkIfRanThisInterval(state, config.intervalType)) {
+  if (!recoveryOnly && dcaState.checkIfRanThisInterval(state, config.intervalType)) {
     cycleLogger.info(`ℹ️ [${exchange}] Already ran this ${intervalLabel} interval (${state.lastRunId})`);
     return { status: 'already_ran', lastRunId: state.lastRunId, intervalType: config.intervalType, exchange };
   }
@@ -724,8 +725,8 @@ const runIntervalCycle = async (exchange = 'coinbase', pair, { pendingBuyOrderId
       // Off the book without completing: credit what it executed, keep the
       // cycle and its holdback, and let the next consolidated sell re-cover
       // the unsold remainder (issue #1887).
-      stateTracker.settleFibCancelledSell(state, fibFill);
-      stateTracker.saveState(state, exchange, pair);
+      dcaState.settleFibCancelledSell(state, fibFill);
+      dcaState.saveState(state, exchange, pair);
       cycleLogger.warn(`⚠️ [${exchange}] Fibonacci sell ${fibFill.orderId} ended without completing after executing ${fibFill.filledSize} ${getBaseCurrency(config.productId)} → net proceeds $${(fibFill.netProceeds || 0).toFixed(2)}; cycle continues at position ${state.fibPosition || 0}`, {
         orderId: fibFill.orderId,
         filledSize: fibFill.filledSize,
@@ -733,9 +734,9 @@ const runIntervalCycle = async (exchange = 'coinbase', pair, { pendingBuyOrderId
       });
     } else if (fibFill) {
       const cyclePosition = state.fibPosition || 0;
-      stateTracker.settleFibSellAndCarryUncoveredBuys(state, fibFill);
+      dcaState.settleFibSellAndCarryUncoveredBuys(state, fibFill);
       logger.logFibSellFilled(fibFill, state, cyclePosition, exchange, pair);
-      stateTracker.saveState(state, exchange, pair);
+      dcaState.saveState(state, exchange, pair);
       cycleLogger.info(`ℹ️ [${exchange}] Fibonacci cycle complete - now at position ${state.fibPosition || 0}`);
       tradeEvents.cycleComplete(exchange, 'fib_cycle_complete', { profit: fibFill.netProceeds, buysInCycle: cyclePosition });
     }
@@ -748,7 +749,7 @@ const runIntervalCycle = async (exchange = 'coinbase', pair, { pendingBuyOrderId
 
     if (filledOrders.length > 0) {
       cycleLogger.info(`ℹ️ [${exchange}] ${filledOrders.length} orders filled since last run`);
-      stateTracker.saveState(state, exchange, pair);
+      dcaState.saveState(state, exchange, pair);
     }
 
     // Recover orphaned awaiting_sell rows (crash between buy-save and sell
@@ -757,7 +758,7 @@ const runIntervalCycle = async (exchange = 'coinbase', pair, { pendingBuyOrderId
     if (config.dryRun !== true) {
       const recon = await reconcileAwaitingSells(state, config, adapter, exchange, pair);
       if (recon.recovered > 0 || recon.failed > 0) {
-        stateTracker.saveState(state, exchange, pair);
+        dcaState.saveState(state, exchange, pair);
       }
     }
   }
@@ -768,7 +769,7 @@ const runIntervalCycle = async (exchange = 'coinbase', pair, { pendingBuyOrderId
   // this fund's capital, so no new buy may be submitted until an operator
   // reconciles it — and because the record is on disk, the block survives a
   // restart. Status, fill sync and awaiting-sell recovery above all still run.
-  const blockingIntents = stateTracker.getBlockingPlacementIntents(exchange, pair);
+  const blockingIntents = placementIntents.getBlockingPlacementIntents(exchange, pair);
   if (blockingIntents.length > 0) {
     const [oldest] = blockingIntents;
     cycleLogger.error(`⏸️ [${exchange}] Interval cycle held — ${blockingIntents.length} unresolved placement intent(s); oldest ${oldest.action ?? 'order'} ${oldest.id} needs operator reconcile`, {
@@ -832,9 +833,9 @@ const runIntervalCycle = async (exchange = 'coinbase', pair, { pendingBuyOrderId
       };
     };
 
-    const booked = stateTracker.bookDcaBuy(state, buyResult, config, { strategy: isFibonacci ? 'fibonacci' : 'fixed', runId });
+    const booked = dcaState.bookDcaBuy(state, buyResult, config, { strategy: isFibonacci ? 'fibonacci' : 'fixed', runId });
     // Booking and retiring the pending record land in this one save.
-    stateTracker.saveState(state, exchange, pair);
+    dcaState.saveState(state, exchange, pair);
     if (!booked) {
       cycleLogger.warn(`⚠️ [${exchange}] Buy ${buyResult.orderId} was already booked — not crediting it again`, { orderId: buyResult.orderId });
       return { alreadyBooked: true };
@@ -844,7 +845,7 @@ const runIntervalCycle = async (exchange = 'coinbase', pair, { pendingBuyOrderId
     let holdbackAsset;
 
     if (isFibonacci) {
-      const cycleInfo = stateTracker.getFibonacciCycleInfo(state);
+      const cycleInfo = dcaState.getFibonacciCycleInfo(state);
       logger.logFibBuy(buyResult, state, cycleInfo, exchange, pair);
 
       try {
@@ -855,7 +856,7 @@ const runIntervalCycle = async (exchange = 'coinbase', pair, { pendingBuyOrderId
           state.fibActiveSellOrderId,
           adapter,
           { exchange, pair },
-          stateTracker.getFibCycleSold(state)
+          dcaState.getFibCycleSold(state)
         );
 
         if (fibSellResult.alreadyFilled) {
@@ -868,8 +869,8 @@ const runIntervalCycle = async (exchange = 'coinbase', pair, { pendingBuyOrderId
             throw new Error(`fill details unavailable for filled fib sell ${state.fibActiveSellOrderId}`);
           }
           // The sell filled after this interval’s buy was already booked; carry that buy forward.
-          stateTracker.settleFibSellAndCarryUncoveredBuys(state, fibFill);
-          stateTracker.saveState(state, exchange, pair);
+          dcaState.settleFibSellAndCarryUncoveredBuys(state, fibFill);
+          dcaState.saveState(state, exchange, pair);
           logger.logFibSellFilled(fibFill, state, cycleInfo.position, exchange, pair);
           // Now place new sell order for this buy
           const newFibSellResult = await orderManager.placeFibonacciSellOrder(
@@ -882,7 +883,7 @@ const runIntervalCycle = async (exchange = 'coinbase', pair, { pendingBuyOrderId
           );
           sellOrder = newFibSellResult.sellOrder;
           holdbackAsset = newFibSellResult.holdbackAsset;
-          stateTracker.updateAfterFibSellOrder(state, sellOrder, newFibSellResult.sellQuantity, holdbackAsset);
+          dcaState.updateAfterFibSellOrder(state, sellOrder, newFibSellResult.sellQuantity, holdbackAsset);
         } else {
           // A partially-executed previous sell (cancelled here, or already
           // cancelled/expired) was rolled into this consolidated order — book
@@ -890,12 +891,12 @@ const runIntervalCycle = async (exchange = 'coinbase', pair, { pendingBuyOrderId
           // #200 Bug B, #1887). The cycle is NOT reset; holdback is realized
           // only when the consolidated sell fully fills.
           if (fibSellResult.prevFill) {
-            stateTracker.creditFibPartialSell(state, fibSellResult.prevFill);
+            dcaState.creditFibPartialSell(state, fibSellResult.prevFill);
             cycleLogger.info(`ℹ️ [${exchange}] Credited partially-filled prev fib sell ${fibSellResult.prevFill.orderId}: ${fibSellResult.prevFill.filledSize.toFixed(8)} ${getBaseCurrency(config.productId)} → net proceeds $${(fibSellResult.prevFill.netProceeds || 0).toFixed(2)}`);
           }
           sellOrder = fibSellResult.sellOrder;
           holdbackAsset = fibSellResult.holdbackAsset;
-          stateTracker.updateAfterFibSellOrder(state, sellOrder, fibSellResult.sellQuantity, holdbackAsset);
+          dcaState.updateAfterFibSellOrder(state, sellOrder, fibSellResult.sellQuantity, holdbackAsset);
         }
       } catch (err) {
         return sellPlacementFailed(err);
@@ -911,8 +912,8 @@ const runIntervalCycle = async (exchange = 'coinbase', pair, { pendingBuyOrderId
         sellOrder = await orderManager.placeSellOrderWithRetry(config, buyResult, adapter, 3, { exchange, pair },
           sellOwnerHandoff(state, buyResult.orderId, exchange, pair));
       } catch (err) {
-        stateTracker.markSellPlacementFailed(state, buyResult.orderId, err.message, unresolvedSellPlacement(err));
-        stateTracker.saveState(state, exchange, pair);
+        dcaState.markSellPlacementFailed(state, buyResult.orderId, err.message, unresolvedSellPlacement(err));
+        dcaState.saveState(state, exchange, pair);
         return sellPlacementFailed(err);
       }
 
@@ -923,7 +924,7 @@ const runIntervalCycle = async (exchange = 'coinbase', pair, { pendingBuyOrderId
     // Persist the live sell now: a recovered earlier-interval buy is followed
     // by this interval's own checks, which may return before the cycle's
     // final save, and a placed sell must never be left tracked only in memory.
-    stateTracker.saveState(state, exchange, pair);
+    dcaState.saveState(state, exchange, pair);
     return { sellOrder, holdbackAsset };
   };
 
@@ -951,7 +952,7 @@ const runIntervalCycle = async (exchange = 'coinbase', pair, { pendingBuyOrderId
     const modeLabel = isDryRun ? '[DRY-RUN] ' : '';
 
     // Save state
-    stateTracker.saveState(state, exchange, pair);
+    dcaState.saveState(state, exchange, pair);
 
     const baseCurrency = getBaseCurrency(config.productId);
 
@@ -975,7 +976,7 @@ const runIntervalCycle = async (exchange = 'coinbase', pair, { pendingBuyOrderId
     // Check if auto-consolidation is needed (only for non-dry-run, fixed strategy only)
     // Fibonacci strategy handles its own consolidated sell orders
     if (!isDryRun && !isFibonacci) {
-      const pendingCount = stateTracker.getPendingOrders(state).length;
+      const pendingCount = dcaState.getPendingOrders(state).length;
 
       // Threshold-based consolidation
       if (config.consolidateAfterOrders > 0 && pendingCount > config.consolidateAfterOrders) {
@@ -1031,7 +1032,7 @@ const runIntervalCycle = async (exchange = 'coinbase', pair, { pendingBuyOrderId
 
     // Add Fibonacci-specific info if using that strategy
     if (isFibonacci) {
-      const cycleInfo = stateTracker.getFibonacciCycleInfo(state);
+      const cycleInfo = dcaState.getFibonacciCycleInfo(state);
       result.fibonacci = {
         position: cycleInfo.position,
         cumulativeCost: cycleInfo.cumulativeCost,
@@ -1115,7 +1116,7 @@ const runIntervalCycle = async (exchange = 'coinbase', pair, { pendingBuyOrderId
     cycleLogger.info(`ℹ️ [${exchange}] Fibonacci position ${fibPosition}: target buy amount $${fibAmount.toFixed(2)}`);
 
     // Check allocation cap (same as fixed strategy)
-    const { remaining } = stateTracker.checkAllocationRemaining(state, config);
+    const { remaining } = dcaState.checkAllocationRemaining(state, config);
     if (remaining <= 0) {
       cycleLogger.info(`ℹ️ [${exchange}] Full allocation has been used`);
       return { status: 'fully_allocated', totalAllocated: state.totalAllocated, exchange };
@@ -1143,7 +1144,7 @@ const runIntervalCycle = async (exchange = 'coinbase', pair, { pendingBuyOrderId
     actualBuyAmount = cappedFibAmount;
   } else {
     // Fixed strategy: use allocation-based amounts
-    const { remaining, intervalAmount } = stateTracker.checkAllocationRemaining(state, config);
+    const { remaining, intervalAmount } = dcaState.checkAllocationRemaining(state, config);
 
     if (remaining <= 0) {
       cycleLogger.info(`ℹ️ [${exchange}] Full allocation has been used`);
@@ -1218,8 +1219,8 @@ const runIntervalCycle = async (exchange = 'coinbase', pair, { pendingBuyOrderId
 
     if (isFibonacci) {
       // Fibonacci dry run: update state first to get cumulative values
-      stateTracker.updateAfterFibBuy(state, buyResult, config);
-      const cycleInfo = stateTracker.getFibonacciCycleInfo(state);
+      dcaState.updateAfterFibBuy(state, buyResult, config);
+      const cycleInfo = dcaState.getFibonacciCycleInfo(state);
 
       const sellQuantity = cycleInfo.cumulativeAsset * (1 - config.holdbackPercent / 100);
       const sellPrice = cycleInfo.avgCostBasis * (1 + config.sellMarkupPercent / 100);
@@ -1233,7 +1234,7 @@ const runIntervalCycle = async (exchange = 'coinbase', pair, { pendingBuyOrderId
         status: 'SIMULATED',
       };
 
-      stateTracker.updateAfterFibSellOrder(state, sellOrder, sellQuantity, holdbackAsset);
+      dcaState.updateAfterFibSellOrder(state, sellOrder, sellQuantity, holdbackAsset);
       logger.logFibBuy(buyResult, state, cycleInfo, exchange, pair);
       logger.logFibSellOrder(sellOrder, state, cycleInfo, exchange, pair);
     } else {
@@ -1250,7 +1251,7 @@ const runIntervalCycle = async (exchange = 'coinbase', pair, { pendingBuyOrderId
         status: 'SIMULATED',
       };
 
-      stateTracker.updateAfterBuy(state, buyResult, sellOrder, config);
+      dcaState.updateAfterBuy(state, buyResult, sellOrder, config);
       logger.logBuy(buyResult, state, exchange, pair);
       logger.logSellOrder(sellOrder, state, exchange, pair);
     }
@@ -1279,24 +1280,24 @@ const checkStatus = async (exchange = 'coinbase', pair) => {
   // across this load/await/save and registers it with the maintenance drain.
   const fund = resolveFundPairOrUndefined(exchange, pair);
   const config = loadConfig(exchange, fund);
-  const state = stateTracker.loadState(config, exchange, fund);
+  const state = dcaState.loadState(config, exchange, fund);
   const adapter = getAdapter(exchange);
 
   // Sync order statuses
   const filledOrders = await syncOrderStatuses(state, exchange, fund);
 
   if (filledOrders.length > 0) {
-    stateTracker.saveState(state, exchange, fund);
+    dcaState.saveState(state, exchange, fund);
   }
 
   const currentPrice = await adapter.getCurrentPrice(config.productId);
-  const { remaining, intervalAmount } = stateTracker.checkAllocationRemaining(state, config);
+  const { remaining, intervalAmount } = dcaState.checkAllocationRemaining(state, config);
 
   return {
     exchange,
     pair: fund ?? null,
     currentPrice,
-    placementIntents: stateTracker.describePlacementIntents(exchange, fund),
+    placementIntents: placementIntents.describePlacementIntents(exchange, fund),
     config: {
       productId: config.productId,
       totalAllocation: config.totalAllocation,
@@ -1317,11 +1318,11 @@ const checkStatus = async (exchange = 'coinbase', pair) => {
       assetReserves: state.assetReserves,
       outstandingOrdersUSDC: state.outstandingOrdersUSDC,
       outstandingOrdersAsset: state.outstandingOrdersAsset,
-      pendingOrders: stateTracker.getPendingOrders(state).length,
+      pendingOrders: dcaState.getPendingOrders(state).length,
       lastRunId: state.lastRunId,
       lastRunTimestamp: state.lastRunTimestamp,
       pendingBuy: state.pendingDcaBuy ? describePendingBuy(state.pendingDcaBuy) : null,
-      failedSells: stateTracker.getFailedSellOrders(state),
+      failedSells: dcaState.getFailedSellOrders(state),
     },
     recentFills: filledOrders.length,
   };
@@ -1349,13 +1350,13 @@ const reconcilePlacementIntent = async (exchange, pair, intentId, action) => {
   if (action !== 'adopt' && action !== 'discard') {
     return { success: false, error: `Unknown reconcile action '${action}' (expected 'adopt' or 'discard')` };
   }
-  const intent = stateTracker.describePlacementIntents(exchange, pair).find(i => i.id === intentId && stateTracker.isBlockingPlacementIntent(i));
+  const intent = placementIntents.describePlacementIntents(exchange, pair).find(i => i.id === intentId && placementIntents.isBlockingPlacementIntent(i));
   if (!intent) return { success: false, error: `No unresolved placement intent ${intentId} on this fund (an in-flight dispatch is not reconcilable)` };
 
   const cycleLogger = dcaLogger(exchange, pair);
 
   if (action === 'discard') {
-    const removed = stateTracker.resolvePlacementIntent(exchange, pair, intentId);
+    const removed = placementIntents.resolvePlacementIntent(exchange, pair, intentId);
     if (!removed) return { success: false, error: `Placement intent ${intentId} was already resolved` };
     cycleLogger.warn(`🧹 [${exchange}] Operator discarded placement intent ${intentId} (${intent.action ?? 'order'}) — interval cycles resume`, {
       intentId,
@@ -1383,7 +1384,7 @@ const reconcilePlacementIntent = async (exchange, pair, intentId, action) => {
     return { success: false, error: `The exchange reports no order for client id ${intent.clientOrderId}. If you have confirmed that, discard the intent instead — an empty lookup is never auto-cleared.` };
   }
 
-  const removed = stateTracker.resolvePlacementIntent(exchange, pair, intentId);
+  const removed = placementIntents.resolvePlacementIntent(exchange, pair, intentId);
   if (!removed) return { success: false, error: `Placement intent ${intentId} was already resolved` };
   cycleLogger.info(`ℹ️ ✅ [${exchange}] Operator matched placement intent ${intentId} to exchange order ${found.orderId} (status ${found.status})`, {
     intentId,
@@ -1424,7 +1425,7 @@ const priorSellRefusal = async (prior, config, adapter, exchange, pair) => {
     ...extra,
   });
 
-  if (stateTracker.loadPlacementIntents(exchange, pair).some(i => i?.id === prior.intentId)) {
+  if (placementIntents.loadPlacementIntents(exchange, pair).some(i => i?.id === prior.intentId)) {
     return refuse(`The earlier sell attempt (intent ${prior.intentId}) is still unresolved — reconcile it before retrying`);
   }
   if (!prior.clientOrderId && prior.orderId) {
@@ -1493,7 +1494,7 @@ const retryFailedSell = async (exchange, pair, buyOrderId) => {
     return { success: false, code: 'import_recovery_pending', error: 'DCA import recovery is pending for this fund — retry after it completes' };
   }
 
-  const state = stateTracker.loadState(config, exchange, pair);
+  const state = dcaState.loadState(config, exchange, pair);
   const order = (state.orders || []).find(o => o.buyOrderId === buyOrderId);
   if (!order) {
     return { success: false, code: 'not_found', error: `No tracked buy ${buyOrderId} on this fund` };
@@ -1502,7 +1503,7 @@ const retryFailedSell = async (exchange, pair, buyOrderId) => {
     return { success: false, code: 'not_failed', status: order.status, error: `Buy ${buyOrderId} has no failed sell to retry (status ${order.status})` };
   }
 
-  const blocking = stateTracker.getBlockingPlacementIntents(exchange, pair);
+  const blocking = placementIntents.getBlockingPlacementIntents(exchange, pair);
   if (blocking.length > 0) {
     const [oldest] = blocking;
     return {
@@ -1520,8 +1521,8 @@ const retryFailedSell = async (exchange, pair, buyOrderId) => {
     if (refusal) return refusal;
   }
 
-  stateTracker.reopenFailedSell(state, buyOrderId);
-  stateTracker.saveState(state, exchange, pair);
+  dcaState.reopenFailedSell(state, buyOrderId);
+  dcaState.saveState(state, exchange, pair);
 
   const buyDetails = sellDetailsForRow(order);
   let sellOrder;
@@ -1530,8 +1531,8 @@ const retryFailedSell = async (exchange, pair, buyOrderId) => {
       sellOwnerHandoff(state, buyOrderId, exchange, pair));
   } catch (err) {
     const unresolved = unresolvedSellPlacement(err);
-    stateTracker.markSellPlacementFailed(state, buyOrderId, err.message, unresolved);
-    stateTracker.saveState(state, exchange, pair);
+    dcaState.markSellPlacementFailed(state, buyOrderId, err.message, unresolved);
+    dcaState.saveState(state, exchange, pair);
     cycleLogger.error(`❌ 🔁 [${exchange}] Retry of failed sell for buy ${buyOrderId} did not place: ${err.message}`, {
       orderId: buyOrderId,
       error: err.message,

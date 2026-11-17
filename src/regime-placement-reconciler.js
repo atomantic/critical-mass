@@ -19,7 +19,7 @@ const {
   describePlacementIntents,
   isBlockingPlacementIntent,
   resolvePlacementIntent,
-} = require('./state-tracker');
+} = require('./placement-intent-storage');
 const { findPlacementOnExchange } = require('./placement-evidence');
 const celestialHierarchy = require('./celestial-hierarchy');
 

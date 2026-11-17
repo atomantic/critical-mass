@@ -366,7 +366,7 @@ describe('reconcileTick orphaned entry/ladder sweep (issue #673)', () => {
   it('persists a raised knownFilledSize to disk immediately, not on the periodic save timer (issue #764)', () => {
     // The stamp covers the window where the fill it records may fail to book;
     // a restart inside that window must still see it.
-    const { loadRegimeState } = require('../src/state-tracker');
+    const { loadRegimeState } = require('../src/regime-state-store');
     const orderId = 'e9';
     const eng = makeEngine({ getOrderFills: async () => [], getOrder: async () => ({ status: 'CANCELLED', filledSize: 0 }) });
     const pos = eng._getPositionState();
