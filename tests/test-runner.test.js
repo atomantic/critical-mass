@@ -254,17 +254,18 @@ describe('scripts/test.js runner lifecycle', () => {
     assert.ok(dir.files.every((f) => f.endsWith('.test.js')));
   });
 
-  it('keeps non-path values as options and rejects a missing .js path', () => {
+  it('keeps non-path values as options and rejects a missing path', () => {
     const sel = parseSelection(['--test-name-pattern', 'no such thing', 'tests/runtime-env.test.js']);
     assert.deepEqual(sel.options, ['--test-name-pattern', 'no such thing']);
     assert.equal(sel.files.length, 1);
-    assert.match(parseSelection(['tests/nope.test.js']).error, /not found/);
+    assert.match(parseSelection(['tests/nope.test.js']).error, /path not found/);
+    assert.match(parseSelection(['tests/typo-dir']).error, /path not found/);
     assert.match(parseSelection(['docs']).error, /no \*\.test\.js files/);
     const valued = parseSelection(['--test-reporter', 'tests', '--require', './nope.js', 'tests/runtime-env.test.js']);
     assert.deepEqual(valued.options, ['--test-reporter', 'tests', '--require', './nope.js']);
     assert.deepEqual(valued.files, [path.join('tests', 'runtime-env.test.js')]);
     assert.equal(valued.error, undefined);
-    assert.throws(() => defaultChildArgs(['tests/nope.test.js']), /not found/);
+    assert.throws(() => defaultChildArgs(['tests/nope.test.js']), /path not found/);
   });
 
   it('maps changed files to relevant tests', () => {

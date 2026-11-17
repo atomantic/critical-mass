@@ -68,14 +68,14 @@ function displayPath(abs) {
 const VALUE_OPTIONS = new Set([
   '--require', '-r', '--import', '--test-reporter', '--test-reporter-destination', '--test-name-pattern',
   '--test-skip-pattern', '--test-concurrency', '--test-timeout', '--test-shard', '--env-file', '--watch-path',
-  '--test-coverage-include', '--test-coverage-exclude',
+  '--test-coverage-include', '--test-coverage-exclude', '--conditions', '-C', '--loader', '--experimental-loader',
 ]);
 
 /**
  * Split CLI args into node options and explicit test selections. A non-option
  * argument that resolves to an existing file selects it; an existing directory
  * selects its *.test.js files. Anything else is forwarded untouched (it may be
- * a stray word), except a missing `.js` path or a directory with no tests, which is an error rather than a silent fallback
+ * a stray word), except a missing path-like argument (separator or .js/.test suffix) or a directory with no tests, which is an error rather than a silent fallback
  * to the full suite.
  * @returns {{ options: string[], files: string[], error?: string }}
  */
@@ -99,7 +99,7 @@ function parseSelection(extraArgs, cwd = process.cwd()) {
       if (!found.length) return { options, files, error: `no *.test.js files under ${arg}` };
       files.push(...found.map(displayPath));
     }
-    else if (arg.endsWith('.js')) return { options, files, error: `test file not found: ${arg}` };
+    else if (/[\\/]/.test(arg) || /\.(test|[cm]?js)$/.test(arg)) return { options, files, error: `test path not found: ${arg}` };
     else options.push(arg);
   }
   return { options, files: [...new Set(files)] };
