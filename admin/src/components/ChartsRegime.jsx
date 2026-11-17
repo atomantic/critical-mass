@@ -63,7 +63,6 @@ function ChartsRegime({ exchange = 'coinbase', pair, fillDebounceMs = 1500 }) {
 
   const {
     status: freshnessStatus,
-    isRunning: freshnessRunning,
     isStale: freshnessStale,
     probeFailed,
     probeError,

@@ -1,5 +1,5 @@
 import React from 'react'
-import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import Dashboard from '../src/components/Dashboard'
 import ManualTrades from '../src/components/ManualTrades'

@@ -1,5 +1,5 @@
 import React from 'react'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, render, renderHook, screen, waitFor } from '@testing-library/react'
 import useRegimeDashboardData from '../src/components/regime/useRegimeDashboardData'
 import ChartsRegime from '../src/components/ChartsRegime'
