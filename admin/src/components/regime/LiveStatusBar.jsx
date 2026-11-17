@@ -77,7 +77,7 @@ function LiveTimer({ label, targetTime, elapsed, total, variant = 'countdown' })
   return null
 }
 function TriggerDistance({ currentPrice, anchorPrice, atr, kFactor }) {
-  if (!currentPrice || !atr || atr === 0) return null
+  if (!currentPrice || !atr || !kFactor) return null
 
   const triggerDistance = kFactor * atr
   const priceMove = anchorPrice ? Math.abs(currentPrice - anchorPrice) : 0
@@ -152,7 +152,7 @@ export default function LiveStatusBar({ asset, market, position, config, prevPri
             currentPrice={market.lastPrice}
             anchorPrice={position.anchorPrice}
             atr={market.atr1m}
-            kFactor={config?.kFactor || 0.6}
+            kFactor={config?.kFactor}
           />
         </div>
 

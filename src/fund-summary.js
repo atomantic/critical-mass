@@ -5,7 +5,7 @@
  * from regime state and fill ledger data.
  */
 
-const { getFundConfig, getGlobalConfig } = require('./config-utils');
+const { getFundConfig, getGlobalConfig, REGIME_DEFAULTS } = require('./config-utils');
 const { loadState, loadFundRegimeState } = require('./state-tracker');
 const { getCachedFillLedger } = require('./fill-ledger');
 const { getLogFile } = require('./logger');
@@ -183,9 +183,14 @@ function buildFundSummary(exchange, pair, opts = {}) {
  */
 function buildActiveFundSummary(exchange, pair) {
   const config = getFundConfig(exchange, pair);
-  return getGlobalConfig().simpleDcaEnabled && config.dcaStrategy !== 'regime'
+  const summary = getGlobalConfig().simpleDcaEnabled && config.dcaStrategy !== 'regime'
     ? buildDcaFundSummary(exchange, pair, config)
     : buildFundSummary(exchange, pair, { config });
+  // `config.regime` is the fund's stored block only (a field never saved is
+  // absent). The Config form shows these server defaults for absent fields
+  // instead of carrying its own copies. Kept beside `config`, not merged into
+  // it, so the form's baseline and save diff are unchanged.
+  return { ...summary, regimeDefaults: { ...REGIME_DEFAULTS } };
 }
 
 module.exports = {

@@ -192,7 +192,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
               currentPrice={market.lastPrice}
               anchorPrice={position.anchorPrice}
               atr={market.atr1m}
-              kFactor={config?.kFactor || 0.6}
+              kFactor={config?.kFactor}
               height={280}
             />
 
