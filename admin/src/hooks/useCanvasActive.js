@@ -1,17 +1,17 @@
 import { useState, useEffect } from 'react'
 
-/**
- * True while the element behind `ref` intersects the viewport AND the
- * document is visible. Used to stop decorative WebGL canvases from rendering
- * frames nobody can see. Where IntersectionObserver is unavailable, only tab
- * visibility is tracked (the element is assumed in view).
- *
- * `onceInView` additionally latches true the first time the element is
- * seen, so callers can lazy-mount heavy content and keep it mounted.
- */
 const isDocumentVisible = () =>
   typeof document === 'undefined' || document.visibilityState !== 'hidden'
 
+/**
+ * Returns `{ active, everInView }`. `active` is true while the element behind
+ * `ref` intersects the viewport AND the document is visible, so decorative
+ * WebGL canvases can stop rendering frames nobody can see. `everInView`
+ * latches true the first time the element is seen, so callers can lazy-mount
+ * heavy content and keep it mounted. Where IntersectionObserver is
+ * unavailable only tab visibility is tracked (the element is assumed in view).
+ * The element must be mounted together with the calling component.
+ */
 export function useCanvasActive(ref) {
   const [inView, setInView] = useState(
     () => typeof IntersectionObserver === 'undefined'
