@@ -24,7 +24,7 @@ const { applyMarketMetrics } = require('./volatility-utils');
 const { getAdapter, isSupported } = require('./adapters');
 const { createHealthMonitor, instrumentAdapterForHealth } = require('./health-monitor');
 const { getRegimeConfig, getFundConfig, getDefaultPair } = require('./config-utils');
-const { loadFundRegimeState } = require('./regime-state-store');
+const { loadFundRegimeState, evictFundRegimeStateReadOnly } = require('./regime-state-store');
 const { createFillLedger } = require('./fill-ledger');
 const { fundKey } = require('./shared-utils');
 const { buildStoppedRegimeStatus } = require('./regime-status');
@@ -463,6 +463,10 @@ const createMarketDataService = (exchange, pair) => {
     // Drop pending order work and settle its callers; an in-flight pass
     // settles its key (and pending-writes entry) once its await returns.
     orderMailbox.stop();
+
+    // A fund that starts running (or is removed) must not keep a parsed-state
+    // cache entry alive; status for it is no longer synthesized here.
+    evictFundRegimeStateReadOnly(exchange, resolvedPair);
 
     isConnected = false;
     logger.info(`📊 [${exchange}] Market data service stopped`);
