@@ -1,4 +1,4 @@
-import * as THREE from 'three'
+import { CanvasTexture, ClampToEdgeWrapping, RepeatWrapping } from 'three'
 
 let cachedTexture = null
 
@@ -58,8 +58,8 @@ export const getPlanetTexture = () => {
   }
   ctx.putImageData(imageData, 0, 0)
 
-  cachedTexture = new THREE.CanvasTexture(canvas)
-  cachedTexture.wrapS = THREE.RepeatWrapping
-  cachedTexture.wrapT = THREE.ClampToEdgeWrapping
+  cachedTexture = new CanvasTexture(canvas)
+  cachedTexture.wrapS = RepeatWrapping
+  cachedTexture.wrapT = ClampToEdgeWrapping
   return cachedTexture
 }
