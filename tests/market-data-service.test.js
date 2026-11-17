@@ -3419,3 +3419,68 @@ describe('passive trade flow cursor (issue #1735)', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Module split (issue #1975)
+// ---------------------------------------------------------------------------
+// market-data-service.js keeps its public exports after its order mailbox,
+// stopped-fund order tracker and registry moved to their own files.
+describe('market-data-service module split (issue #1975)', () => {
+  it('re-exports the moved helpers as the same functions', () => {
+    const mds = require('../src/market-data-service');
+    const mailbox = require('../src/order-mailbox');
+    const tracker = require('../src/stopped-fund-order-tracker');
+    assert.equal(mds.createTimerTracker, mailbox.createTimerTracker);
+    assert.equal(mds.createOrderMailbox, mailbox.createOrderMailbox);
+    assert.equal(mds.ORDER_CONSUMER_CONCURRENCY, mailbox.ORDER_CONSUMER_CONCURRENCY);
+    assert.equal(mds.ingestNewFillsForOrder, tracker.ingestNewFillsForOrder);
+    assert.equal(mds.settleCancelledOrder, tracker.settleCancelledOrder);
+    assert.equal(mds.INGEST_RETRY_REASON, tracker.INGEST_RETRY_REASON);
+    for (const name of [
+      'createMarketDataService', 'getActiveMarketDataFunds', 'drainMarketDataStarts', 'startMarketDataService',
+      'stopMarketDataService', 'fenceMarketDataService', 'getMarketDataService', 'stopAllMarketDataServices',
+    ]) {
+      assert.equal(typeof mds[name], 'function', `${name} is still exported`);
+    }
+  });
+
+  it('exposes no fill callback on the service', () => {
+    const svc = createMarketDataService('coinbase');
+    assert.equal('setOnOrderFill' in svc, false);
+    assert.equal('setOnOrderFill' in svc._test, false);
+  });
+
+  it('each registry owns its own services and uses the collaborators it was given', async () => {
+    const { createMarketDataRegistry } = require('../src/market-data-registry');
+    /** @type {Array<any>} */
+    const built = [];
+    /** @param {(exchange: string) => boolean} isSupported */
+    const makeRegistry = (isSupported) => createMarketDataRegistry({
+      isSupported,
+      serviceKey: (exchange, pair) => `${exchange}::${pair || 'default'}`,
+      createMarketDataService: () => {
+        const service = { stopped: 0, start: async () => ({ success: true }), stop: () => { service.stopped += 1; } };
+        built.push(service);
+        return service;
+      },
+    });
+
+    const unsupported = makeRegistry(() => false);
+    assert.deepEqual(await unsupported.startMarketDataService('x', 'BTC-USDC'), {
+      success: false, error: 'Market data service not supported for x',
+    });
+    assert.equal(built.length, 0, 'an unsupported exchange never builds a service');
+
+    const first = makeRegistry(() => true);
+    const second = makeRegistry(() => true);
+    assert.equal((await first.startMarketDataService('x', 'BTC-USDC')).success, true);
+    assert.equal(first.getMarketDataService('x', 'BTC-USDC'), built[0]);
+    assert.equal(second.getMarketDataService('x', 'BTC-USDC'), undefined, 'registries do not share state');
+    assert.deepEqual(first.getActiveMarketDataFunds(), [{ exchange: 'x', pair: 'BTC-USDC' }]);
+    assert.deepEqual(second.getActiveMarketDataFunds(), []);
+
+    first.stopMarketDataService('x', 'BTC-USDC');
+    assert.equal(built[0].stopped, 1);
+    assert.equal(first.getMarketDataService('x', 'BTC-USDC'), undefined);
+  });
+});

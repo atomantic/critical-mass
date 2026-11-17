@@ -225,7 +225,6 @@ const createOrderMailbox = ({ concurrency = ORDER_CONSUMER_CONCURRENCY, label = 
 
 module.exports = {
   createTimerTracker,
-  createDeferred,
   createOrderMailbox,
   ORDER_CONSUMER_CONCURRENCY,
 };
