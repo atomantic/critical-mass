@@ -1,22 +1,10 @@
 import { Component, useState, useEffect, useLayoutEffect, useRef, lazy, Suspense } from 'react'
-import { Routes, Route, Link, NavLink, useLocation, useNavigate, Navigate } from './lib/router'
-import ExchangeSelector from './components/ExchangeSelector'
-import AddFundModal from './components/AddFundModal'
+import { Routes, Route, Link, useLocation, useNavigate, Navigate } from './lib/router'
+import AppHeader from './components/shell/AppHeader'
+import FundSubNav from './components/shell/FundSubNav'
+import FundLifecycleDialogs from './components/shell/FundLifecycleDialogs'
 import Button from './components/ui/Button'
 import RetryBanner from './components/ui/RetryBanner'
-import ModalDialog from './components/ModalDialog'
-
-// Top-level section links, rendered in both the desktop bar and the mobile menu.
-const SECTION_LINKS = [
-  { to: '/', label: 'Funds', end: true },
-  { to: '/notifications', label: 'Notifications' },
-  { to: '/backups', label: 'Backups' },
-  { to: '/systems', label: 'Systems' },
-  { to: '/updown', label: 'UpDown' },
-  { to: '/sentinel', label: 'Sentinel' },
-  { to: '/ai', label: 'AI Providers' },
-  { to: '/gateway', label: 'Gateway' },
-]
 
 const Dashboard = lazy(() => import('./components/Dashboard'))
 const ConfigEditor = lazy(() => import('./components/ConfigEditor'))
@@ -143,367 +131,71 @@ function AppContent() {
         >
           Skip to main content
         </a>
-        {/* Header */}
-        <header className="bg-gray-800 border-b border-gray-700">
-          <div className="max-w-[95%] xl:max-w-[1400px] 2xl:max-w-[1800px] 3xl:max-w-[2000px] mx-auto px-4 2xl:px-6 py-2 md:py-4">
-            <div className="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-2 xl:gap-3">
-              {/* Top row: Title + Exchange selector */}
-              <div className="flex items-center justify-between">
-                <Link to="/" className="text-lg md:text-2xl font-bold text-white hover:text-gray-200 flex items-center gap-2 whitespace-nowrap min-w-0 shrink">
-                  <svg viewBox="0 0 32 32" className="w-6 h-6 md:w-8 md:h-8 shrink-0" aria-hidden="true">
-                    {/* Outer orbit ring */}
-                    <ellipse cx="16" cy="16" rx="14" ry="5" fill="none" stroke="#6366f1" strokeWidth="0.8" opacity="0.5" transform="rotate(-20 16 16)" />
-                    {/* Middle orbit ring */}
-                    <ellipse cx="16" cy="16" rx="10" ry="4" fill="none" stroke="#818cf8" strokeWidth="0.8" opacity="0.6" transform="rotate(25 16 16)" />
-                    {/* Core glow */}
-                    <circle cx="16" cy="16" r="5" fill="url(#cmCoreGlow)" />
-                    {/* Bright core */}
-                    <circle cx="16" cy="16" r="2.5" fill="#e0e7ff" />
-                    {/* Orbiting body */}
-                    <circle cx="27" cy="12" r="1.5" fill="#a5b4fc" />
-                    <defs>
-                      <radialGradient id="cmCoreGlow">
-                        <stop offset="0%" stopColor="#c7d2fe" />
-                        <stop offset="60%" stopColor="#6366f1" />
-                        <stop offset="100%" stopColor="#6366f1" stopOpacity="0" />
-                      </radialGradient>
-                    </defs>
-                  </svg>
-                  Critical Mass
-                </Link>
-                <div className="flex items-center gap-1.5 xl:hidden shrink-0">
-                  {/* Hamburger menu button for mobile */}
-                  <button
-                    onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-                    className="min-h-11 min-w-11 p-2 text-gray-400 hover:text-white transition-colors inline-flex items-center justify-center"
-                    aria-label="Toggle menu"
-                  >
-                    {mobileMenuOpen ? (
-                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                      </svg>
-                    ) : (
-                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-                      </svg>
-                    )}
-                  </button>
-                </div>
-              </div>
-
-              {/* Bottom row on mobile / Right side on desktop */}
-              <nav aria-label="Sections" className="hidden xl:flex items-center justify-end gap-4">
-                {SECTION_LINKS.map(({ to, label, end }) => (
-                  <NavLink
-                    key={to}
-                    to={to}
-                    end={end}
-                    className={({ isActive }) => `min-h-11 inline-flex items-center px-2 xl:px-3 py-1.5 text-xs xl:text-sm hover:text-white transition-colors whitespace-nowrap ${isActive ? 'text-white underline underline-offset-4 decoration-blue-500' : 'text-gray-400'}`}
-                  >
-                    {label}
-                  </NavLink>
-                ))}
-              </nav>
-            </div>
-
-            {/* Mobile menu dropdown */}
-            {mobileMenuOpen && (
-              <nav aria-label="Sections" className="xl:hidden mt-2 pt-2 border-t border-gray-700 flex flex-col gap-1">
-                {SECTION_LINKS.map(({ to, label, end }) => (
-                  <NavLink
-                    key={to}
-                    to={to}
-                    end={end}
-                    onClick={(event) => handleMobileSection(event, to)}
-                    className={({ isActive }) => `min-h-11 px-3 py-2 text-sm hover:text-white hover:bg-gray-700 rounded-sm transition-colors flex items-center ${isActive ? 'text-white bg-gray-700' : 'text-gray-400'}`}
-                  >
-                    {label}
-                  </NavLink>
-                ))}
-              </nav>
-            )}
-          </div>
-        </header>
+        <AppHeader
+          mobileMenuOpen={mobileMenuOpen}
+          onToggleMobileMenu={() => setMobileMenuOpen(!mobileMenuOpen)}
+          onMobileSection={handleMobileSection}
+        />
 
         {/* Fund sub-nav (fund routes only; global pages have no fund controls) */}
         {isFundRoute && (
-          <nav aria-label="Fund views" className="bg-gray-800 border-b border-gray-700">
-            <div className="max-w-[95%] xl:max-w-[1400px] 2xl:max-w-[1800px] 3xl:max-w-[2000px] mx-auto px-4 2xl:px-6">
-              <div className="flex flex-col xl:flex-row xl:items-center gap-0 xl:gap-2">
-                <div className="flex w-full xl:w-auto gap-1 overflow-x-auto min-w-0">
-                  {!fundsUnavailable && tabs.map(tab => (
-                    <Link
-                      key={tab.path}
-                      to={buildPath(tab.path)}
-                      aria-current={isActiveTab(tab.path) ? 'page' : undefined}
-                      className={`px-3 sm:px-4 py-2.5 sm:py-3 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap ${
-                        isActiveTab(tab.path)
-                          ? 'text-white border-b-2 border-blue-500'
-                          : 'text-gray-400 hover:text-white'
-                      }`}
-                    >
-                      {tab.name}
-                    </Link>
-                  ))}
-                </div>
-                <div className="flex items-center gap-2 md:gap-3 flex-wrap max-w-full px-3 md:px-0 py-1.5 shrink-0 xl:ml-auto">
-                  {fundsUnavailable ? (
-                    <div role="alert" className="flex items-center gap-2 text-xs md:text-sm text-red-300">
-                      <span>Could not load funds ({exchangesError})</span>
-                      <Button variant="secondary" size="sm" onClick={retryExchanges}>
-                        Retry
-                      </Button>
-                    </div>
-                  ) : (
-                    <ExchangeSelector
-                      currentExchange={currentExchange}
-                      currentPair={currentPair}
-                      exchanges={exchanges}
-                      onChange={handleExchangeChange}
-                      onRefresh={retryExchanges}
-                      onAddFund={() => setAddFundDialogOpen(true)}
-                    />
-                  )}
-                {!fundsUnavailable && currentStrategy === 'regime' && regimeRunning !== null && (<>
-
-                    {regimeDryRun && (
-                      <span className="px-1.5 md:px-2 py-0.5 md:py-1 bg-purple-900/50 border border-purple-500 text-purple-400 text-2xs md:text-xs font-medium rounded-sm">
-                        DRY-RUN
-                      </span>
-                    )}
-                    {regimeLifecycle === 'draining' && (
-                      <span className="px-1.5 md:px-2 py-0.5 md:py-1 bg-yellow-900/50 border border-yellow-500 text-yellow-300 text-2xs md:text-xs font-medium rounded-sm animate-pulse" title="Draining: blocking new entries; will close after current cycle's TP fills.">
-                        DRAINING
-                      </span>
-                    )}
-                    {regimeLifecycle === 'closed' && (
-                      <span className="px-1.5 md:px-2 py-0.5 md:py-1 bg-red-900/50 border border-red-500 text-red-300 text-2xs md:text-xs font-medium rounded-sm" title="Fund is closed. Click Reopen to reactivate.">
-                        CLOSED
-                      </span>
-                    )}
-                    <div className="flex items-center gap-1 md:gap-1.5 text-xs md:text-sm">
-                      <span className={`w-1.5 md:w-2 h-1.5 md:h-2 rounded-full ${regimeRunning ? 'bg-green-500 animate-pulse' : 'bg-gray-500'}`} />
-                      <span className={regimeRunning ? 'text-green-400' : 'text-gray-400'}>
-                        {regimeRunning ? 'Running' : 'Stopped'}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-1 md:gap-1.5 text-xs md:text-sm">
-                      <span className={`w-1.5 md:w-2 h-1.5 md:h-2 rounded-full ${wsConnected ? 'bg-blue-500' : 'bg-red-500'}`} />
-                      <span className={wsConnected ? 'text-blue-400' : 'text-red-400'}>
-                        {wsConnected ? 'Live' : 'Offline'}
-                      </span>
-                    </div>
-                    {regimeRunning ? (
-                      <>
-                        {regimeDryRun && (
-                          <Button
-                            variant="purple"
-                            size="responsive-xs"
-                            onClick={handleResetDryRun}
-                            disabled={resetting}
-                            title="Reset dry-run state"
-                          >
-                            {resetting ? '...' : 'Reset'}
-                          </Button>
-                        )}
-                        {regimeLifecycle === 'active' && (
-                          <Button
-                            variant="warning"
-                            size="responsive"
-                            className="font-medium"
-                            onClick={openCloseFundDialog}
-                            disabled={closing}
-                            title="Block new entries; auto-close after current cycle's TP fills"
-                          >
-                            {closing ? '...' : 'Close Fund'}
-                          </Button>
-                        )}
-                        <Button
-                          variant="destructive"
-                          size="responsive"
-                          className="font-medium"
-                          onClick={handleStopRegime}
-                          disabled={stopping}
-                        >
-                          {stopping ? '...' : 'Stop'}
-                        </Button>
-                      </>
-                    ) : regimeLifecycle === 'closed' ? (
-                      <Button
-                        size="responsive"
-                        className="font-medium"
-                        onClick={openReopenFundDialog}
-                        disabled={reopening}
-                        title="Reopen fund (does not restart the engine)"
-                      >
-                        {reopening ? '...' : 'Reopen'}
-                      </Button>
-                    ) : (
-                      <Button
-                        variant="success"
-                        size="responsive"
-                        className="font-medium"
-                        onClick={handleStartRegime}
-                        disabled={starting}
-                      >
-                        {starting ? '...' : 'Start'}
-                      </Button>
-                    )}
-                </>)}
-                </div>
-              </div>
-            </div>
-          </nav>
+          <FundSubNav
+            tabs={tabs}
+            buildPath={buildPath}
+            isActiveTab={isActiveTab}
+            fundsUnavailable={fundsUnavailable}
+            exchangesError={exchangesError}
+            retryExchanges={retryExchanges}
+            currentExchange={currentExchange}
+            currentPair={currentPair}
+            exchanges={exchanges}
+            onExchangeChange={handleExchangeChange}
+            onAddFund={() => setAddFundDialogOpen(true)}
+            currentStrategy={currentStrategy}
+            regimeRunning={regimeRunning}
+            regimeDryRun={regimeDryRun}
+            regimeLifecycle={regimeLifecycle}
+            wsConnected={wsConnected}
+            resetting={resetting}
+            closing={closing}
+            stopping={stopping}
+            reopening={reopening}
+            starting={starting}
+            onResetDryRun={handleResetDryRun}
+            onOpenCloseFund={openCloseFundDialog}
+            onStop={handleStopRegime}
+            onOpenReopenFund={openReopenFundDialog}
+            onStart={handleStartRegime}
+          />
         )}
 
         {/* Global Alert Banner */}
         <AlertBanner />
 
-        {/* Close Fund confirmation dialog */}
-        {closeFundDialogOpen && (
-          <ModalDialog
-            onClose={() => setCloseFundDialogOpen(false)}
-            dismissible={!closing}
-            labelledBy="close-fund-title"
-            describedBy="close-fund-description"
-          >
-            <h3 id="close-fund-title" className="text-white text-lg font-medium mb-3">
-              Close <span className="font-mono text-yellow-400">{currentExchange}/{currentPair}</span>?
-            </h3>
-            <p id="close-fund-description" className="text-gray-300 text-sm mb-2">
-              This blocks all new entries immediately. Existing take-profit orders
-              will remain in place, and the fund will close automatically
-              after the current cycle's TP fills.
-            </p>
-            <p className="text-gray-400 text-xs mb-4">
-              You can reopen the fund later, but it will not auto-resume on engine restart.
-            </p>
-            <div className="mb-4">
-              <label htmlFor="close-fund-reason" className="block text-xs uppercase tracking-wider text-gray-400 mb-1">
-                Reason (optional)
-              </label>
-              <input
-                id="close-fund-reason"
-                type="text"
-                value={closeFundReason}
-                onChange={(e) => setCloseFundReason(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && submitCloseFund()}
-                placeholder="e.g. winding down for tax season"
-                className="w-full bg-gray-900 border border-gray-700 rounded-sm px-3 py-2 text-white text-sm focus:border-yellow-500 focus:outline-hidden"
-                disabled={closing}
-              />
-            </div>
-            <div className="flex justify-end gap-3">
-              <Button variant="cancel"
-                onClick={() => setCloseFundDialogOpen(false)}
-                disabled={closing}
-                autoFocus
-              >
-                Cancel
-              </Button>
-              <Button variant="warning"
-                onClick={submitCloseFund}
-                disabled={closing}
-              >
-                {closing ? 'Closing...' : 'Close Fund'}
-              </Button>
-            </div>
-          </ModalDialog>
-        )}
-
-        {/* Add Fund modal (triggered from ExchangeSelector dropdown) */}
-        <AddFundModal
-          open={addFundDialogOpen}
-          onClose={() => setAddFundDialogOpen(false)}
+        <FundLifecycleDialogs
+          currentExchange={currentExchange}
+          currentPair={currentPair}
           exchanges={exchanges}
-          onCreated={async ({ exchange, pair }) => {
-            const refreshed = await fetchExchanges()
-            navigate(`/${exchange}/${pair}/config`)
-            addToast({
-              type: 'success',
-              title: `Fund created: ${exchange}/${pair}`,
-              message: 'Review the config, then press Start in the fund header to begin trading.',
-            })
-            if (!refreshed) {
-              addToast({
-                type: 'warning',
-                title: 'Fund list not refreshed',
-                message: `${exchange}/${pair} was created, but the fund list could not be reloaded. Do not create it again; use Refresh Exchanges.`,
-              })
-            }
-          }}
+          navigate={navigate}
+          addToast={addToast}
+          fetchExchanges={fetchExchanges}
+          closeFundDialogOpen={closeFundDialogOpen}
+          setCloseFundDialogOpen={setCloseFundDialogOpen}
+          closeFundReason={closeFundReason}
+          setCloseFundReason={setCloseFundReason}
+          closing={closing}
+          submitCloseFund={submitCloseFund}
+          addFundDialogOpen={addFundDialogOpen}
+          setAddFundDialogOpen={setAddFundDialogOpen}
+          reopenFundDialogOpen={reopenFundDialogOpen}
+          setReopenFundDialogOpen={setReopenFundDialogOpen}
+          reopening={reopening}
+          submitReopenFund={submitReopenFund}
+          resetDryRunConfirm={resetDryRunConfirm}
+          setResetDryRunConfirm={setResetDryRunConfirm}
+          resetting={resetting}
+          handleExecuteResetDryRun={handleExecuteResetDryRun}
         />
-
-        {/* Reopen Fund confirmation dialog */}
-        {reopenFundDialogOpen && (
-          <ModalDialog
-            onClose={() => setReopenFundDialogOpen(false)}
-            dismissible={!reopening}
-            labelledBy="reopen-fund-title"
-            describedBy="reopen-fund-description"
-          >
-            <h3 id="reopen-fund-title" className="text-white text-lg font-medium mb-3">
-              Reopen <span className="font-mono text-blue-400">{currentExchange}/{currentPair}</span>?
-            </h3>
-            <p id="reopen-fund-description" className="text-gray-300 text-sm mb-2">
-              This restores the fund's lifecycle to <span className="text-green-400">active</span> so the
-              regime engine can run again.
-            </p>
-            <p className="text-gray-400 text-xs mb-4">
-              Reopening does <strong>not</strong> restart the engine. After confirming, click
-              <span className="font-mono text-green-400"> Start </span>
-              to resume trading.
-            </p>
-            <div className="flex justify-end gap-3">
-              <Button variant="cancel"
-                onClick={() => setReopenFundDialogOpen(false)}
-                disabled={reopening}
-                autoFocus
-              >
-                Cancel
-              </Button>
-              <Button
-                onClick={submitReopenFund}
-                disabled={reopening}
-              >
-                {reopening ? 'Reopening...' : 'Reopen Fund'}
-              </Button>
-            </div>
-          </ModalDialog>
-        )}
-
-        {/* Reset Dry-Run confirmation dialog */}
-        {resetDryRunConfirm && (
-          <ModalDialog
-            onClose={() => setResetDryRunConfirm(false)}
-            dismissible={!resetting}
-            labelledBy="reset-dry-run-title"
-            describedBy="reset-dry-run-description"
-          >
-            <h3 id="reset-dry-run-title" className="text-white text-lg font-medium mb-3">Reset Dry-Run State</h3>
-            <p id="reset-dry-run-description" className="text-gray-300 text-sm mb-4">
-              Clear simulated trading history for <span className="font-mono text-purple-400">{currentExchange}/{currentPair}</span>?
-            </p>
-            <p className="text-gray-400 text-xs mb-4">
-              This wipes the in-memory dry-run history. Live positions and fills are not affected.
-            </p>
-            <div className="flex justify-end gap-3">
-              <Button variant="cancel"
-                onClick={() => setResetDryRunConfirm(false)}
-                disabled={resetting}
-                autoFocus
-              >
-                Cancel
-              </Button>
-              <Button variant="purple"
-                onClick={handleExecuteResetDryRun}
-                disabled={resetting}
-              >
-                {resetting ? 'Resetting…' : 'Reset Dry-Run'}
-              </Button>
-            </div>
-          </ModalDialog>
-        )}
 
         {/* Main Content */}
         <main ref={mainContentRef} id="main-content" tabIndex={-1} className="max-w-[95%] xl:max-w-[1400px] 2xl:max-w-[1800px] 3xl:max-w-[2000px] mx-auto px-4 2xl:px-6 py-6 focus:outline-hidden">
