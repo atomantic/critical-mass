@@ -247,6 +247,26 @@ const loadFundRegimeState = (exchange, pair) => {
 };
 
 /**
+ * Cached, read-only variant of loadFundRegimeState for status builders. Never
+ * records a save version, so it cannot disturb saveRegimeState's optimistic
+ * locking; returns a private deep clone (safe to mutate). Do NOT use this on
+ * any path that will save the result: engines keep using loadFundRegimeState.
+ * @param {string} exchange
+ * @param {string} pair
+ */
+const loadFundRegimeStateReadOnly = (exchange, pair) => {
+  if (!pair) throw new Error('loadFundRegimeStateReadOnly requires an explicit pair');
+  return fundStateStorage.loadRegimeStateReadOnly(exchange, pair, {
+    createInitialRegimePositionState, createInitialRegimeState,
+    migrateLegacyPositionFields, migrateRegimePosition,
+  });
+};
+
+/** Drop a fund's read-only cache entry (fund started running or was removed). */
+const evictFundRegimeStateReadOnly = (exchange, pair) =>
+  fundStateStorage.evictReadOnlyRegimeState(exchange, pair);
+
+/**
  * Non-throwing wrapper around `loadRegimeState` for callers that must survive a
  * corrupt state file rather than die on it (issue #532).
  *
@@ -288,6 +308,8 @@ module.exports = {
   createInitialRegimeState,
   loadRegimeState,
   loadFundRegimeState,
+  loadFundRegimeStateReadOnly,
+  evictFundRegimeStateReadOnly,
   loadRegimeStateSafe,
   saveRegimeState,
   saveFundRegimeState,
