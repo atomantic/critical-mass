@@ -1,0 +1,1 @@
+- **[issue-2004] Older releases no longer move the latest image** — when two version bumps finish CI out of order, the older release still gets its tag, GitHub Release and versioned image, but `latest` stays on the highest version.

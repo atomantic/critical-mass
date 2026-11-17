@@ -439,7 +439,8 @@ const isFilledStatus = (order) =>
  * Statuses that mean an order left the book WITHOUT completing — the exchange
  * either cancelled it, expired it, or failed it. EXPIRED belongs here: it is a
  * terminal cancellation, not a fill (see order-manager.js:68 and
- * market-data-service.js:1421, which already classify it that way). Gemini
+ * classifyTerminal in stopped-fund-order-tracker.js, which already classify
+ * it that way). Gemini
  * normalizes any off-book, not-explicitly-cancelled order to EXPIRED, so every
  * consumer that acts on CANCELLED/FAILED must accept it too or the order is
  * never reconciled (issue #316).

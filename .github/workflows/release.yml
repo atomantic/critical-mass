@@ -27,6 +27,7 @@ jobs:
     outputs:
       release_tag: ${{ steps.package-version.outputs.release_tag }}
       release_created: ${{ steps.tag-check.outputs.exists == 'false' }}
+      promote_latest: ${{ steps.latest-check.outputs.promote }}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -93,6 +94,20 @@ jobs:
         run: |
           gh release create "$TAG" --title "$TAG" --notes "$NOTES" --target "$RELEASE_SHA"
 
+      # CI runs for quick successive version bumps can finish out of order, so
+      # this run may release an older version after a newer one. Always publish
+      # the versioned tag, but promote `latest` only when this version is the
+      # highest stable tag on the remote (read fresh, after our tag exists).
+      - name: Decide whether to promote latest
+        id: latest-check
+        if: steps.tag-check.outputs.exists == 'false'
+        env:
+          TAG: v${{ steps.package-version.outputs.version }}
+        run: |
+          PROMOTE="$(git ls-remote --tags --refs origin | sed 's#.*refs/tags/##' | bash scripts/should-promote-latest.sh "$TAG")"
+          echo "promote=$PROMOTE" >> "$GITHUB_OUTPUT"
+          echo "Promote latest for $TAG: $PROMOTE"
+
   publish-image:
     name: Publish release image
     needs: release
@@ -100,7 +115,7 @@ jobs:
     uses: ./.github/workflows/docker-build.yml
     with:
       release_tag: ${{ needs.release.outputs.release_tag }}
-      publish_latest: true
+      publish_latest: ${{ needs.release.outputs.promote_latest == 'true' }}
     permissions:
       contents: read
       packages: write

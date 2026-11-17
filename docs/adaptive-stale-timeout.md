@@ -38,7 +38,7 @@ Consequences of the fixed timer:
 
 `computeAdaptiveStaleMs(offsetBps, atr1m, price, config)` in
 `src/volatility-utils.js`, applied per order at entry placement
-(`regime-engine.js` → `placeEntryBid(…, entryStaleMs)`):
+(`regime-entry.js` → `placeEntryBid(…, entryStaleMs)`):
 
 ```
 staleMs = clamp( 4min × (offsetBps / ATRbps)²,  orderStaleMs,  maxIntervalMs )
