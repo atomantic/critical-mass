@@ -1,6 +1,6 @@
 import { useRef, useMemo, useEffect } from 'react'
 import { useFrame } from '@react-three/fiber'
-import * as THREE from 'three'
+import { BoxGeometry, Color, ConeGeometry, EdgesGeometry } from 'three'
 
 const OUTLINE_OPACITY = 0.55
 
@@ -26,19 +26,19 @@ const SatelliteGeometry = ({ size, color, emissiveInt, wireframe }) => {
   const antennaH = size * 0.4
 
   const outlineColor = useMemo(
-    () => new THREE.Color('#60A5FA').lerp(new THREE.Color(color), 0.35),
+    () => new Color('#60A5FA').lerp(new Color(color), 0.35),
     [color]
   )
 
   // Edge geometries are expensive to build — memoize per size and dispose on change
   const edges = useMemo(() => {
-    const bus = new THREE.BoxGeometry(busW, busH, busD)
-    const panel = new THREE.BoxGeometry(panelW, panelH, panelD)
-    const antenna = new THREE.ConeGeometry(antennaR, antennaH, 6)
+    const bus = new BoxGeometry(busW, busH, busD)
+    const panel = new BoxGeometry(panelW, panelH, panelD)
+    const antenna = new ConeGeometry(antennaR, antennaH, 6)
     const result = {
-      bus: new THREE.EdgesGeometry(bus),
-      panel: new THREE.EdgesGeometry(panel),
-      antenna: new THREE.EdgesGeometry(antenna),
+      bus: new EdgesGeometry(bus),
+      panel: new EdgesGeometry(panel),
+      antenna: new EdgesGeometry(antenna),
     }
     bus.dispose()
     panel.dispose()
