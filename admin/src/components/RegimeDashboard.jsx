@@ -12,7 +12,11 @@ import { pairQuery as buildPairQuery } from '../utils/api'
 import RegimePriceChart from './charts/RegimePriceChart'
 import VolatilityChart from './charts/VolatilityChart'
 import RegimeTimeline from './charts/RegimeTimeline'
-import RegimeActionModals from './regime/RegimeActionModals'
+import {
+  CancelLadderConfirmation, CollapseAllConfirmation, ResetCycleConfirmation, ResumeDrawdownConfirmation, RollUpConfirmation,
+} from './regime/RegimeActionConfirmations'
+import TpEditDialog from './regime/TpEditDialog'
+import DcaConvertDialog from './regime/DcaConvertDialog'
 import OpenOrdersTable, { REGIME_ORDER_TOUCH_TARGET } from './regime/OpenOrdersTable'
 import FilledOrdersSection from './regime/FilledOrdersSection'
 import PositionCard from './regime/PositionCard'
@@ -307,44 +311,46 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
         asset={asset}
       />
 
-      {/* Operational confirmation modals */}
-      <RegimeActionModals
-        cancelLadderConfirm={cancelLadderConfirm}
-        cancellingLadder={cancellingLadder}
-        onDismissCancelLadder={() => setCancelLadderConfirm(false)}
-        onExecuteCancelLadder={handleExecuteCancelLadder}
-        collapseAllConfirm={collapseAllConfirm}
-        collapsingAll={collapsingAll}
-        onDismissCollapseAll={() => setCollapseAllConfirm(false)}
-        onExecuteCollapseAll={handleCollapseAll}
-        resetCycleConfirm={resetCycleConfirm}
-        resettingCycle={resettingCycle}
-        onDismissResetCycle={() => setResetCycleConfirm(false)}
-        onExecuteResetCycle={handleResetCycle}
-        drawdownResumeConfirm={drawdownResumeConfirm}
-        onDismissResumeDrawdown={() => setDrawdownResumeConfirm(false)}
-        onExecuteResumeDrawdown={handleResumeDrawdown}
-        rollUpConfirm={rollUpConfirm}
-        rollingUp={rollingUp}
-        onDismissRollUp={() => setRollUpConfirm(null)}
-        onExecuteRollUp={handleRollUp}
-        tpEditModal={tpEditModal}
-        settingTp={settingTp}
-        onDismissSetTp={() => setTpEditModal(null)}
-        onExecuteSetTp={handleSetTp}
-        onSetTpMode={(mode) => setTpEditModal(prev => ({ ...prev, mode }))}
-        onSetTpInputValue={(inputValue, priceValue) => setTpEditModal(prev => ({ ...prev, inputValue, priceValue }))}
-        onSetTpPriceValue={(priceValue, inputValue) => setTpEditModal(prev => ({ ...prev, priceValue, inputValue }))}
-        showConvertConfirm={showConvertConfirm}
-        converting={converting}
-        convertPreview={convertPreview}
-        onDismissConvert={() => setShowConvertConfirm(false)}
-        onExecuteConvert={handleExecuteConvert}
-        status={status}
-        position={position}
-        config={config}
-        getBaseCurrency={getBaseCurrency}
-        getQuoteCurrency={getQuoteCurrency}
+      {/* Operational confirmations: each reads only its own state from the action hooks */}
+      <CancelLadderConfirmation
+        open={cancelLadderConfirm}
+        busy={cancellingLadder}
+        orderCount={status?.position?.pendingLadderOrders?.length || 0}
+        onClose={() => setCancelLadderConfirm(false)}
+        onConfirm={handleExecuteCancelLadder}
+      />
+      <CollapseAllConfirmation
+        open={collapseAllConfirm}
+        busy={collapsingAll}
+        bodyCount={status?.celestial?.bodies?.length || 0}
+        onClose={() => setCollapseAllConfirm(false)}
+        onConfirm={handleCollapseAll}
+      />
+      <ResetCycleConfirmation
+        open={resetCycleConfirm}
+        busy={resettingCycle}
+        cycleBuys={position.cycleBuys}
+        maxCycleBuys={config?.maxCycleBuys}
+        onClose={() => setResetCycleConfirm(false)}
+        onConfirm={handleResetCycle}
+      />
+      <ResumeDrawdownConfirmation
+        open={drawdownResumeConfirm}
+        onClose={() => setDrawdownResumeConfirm(false)}
+        onConfirm={handleResumeDrawdown}
+      />
+      <RollUpConfirmation
+        rollUp={rollUpConfirm}
+        busy={rollingUp}
+        onClose={() => setRollUpConfirm(null)}
+        onConfirm={handleRollUp}
+      />
+      <TpEditDialog tp={tpEditModal} setTp={setTpEditModal} busy={settingTp} onSubmit={handleSetTp} />
+      <DcaConvertDialog
+        preview={showConvertConfirm ? convertPreview : null}
+        busy={converting}
+        onClose={() => setShowConvertConfirm(false)}
+        onConfirm={handleExecuteConvert}
       />
     </div>
     </LastPriceContext.Provider>

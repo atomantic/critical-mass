@@ -4,7 +4,7 @@ const fs = require('node:fs')
 const path = require('node:path')
 
 // Issue #434: the eight fund-operation confirmation overlays (Close/Reopen
-// Fund in App.jsx, plus the six RegimeActionModals.jsx dialogs) were plain
+// Fund in App.jsx, plus the six regime dialogs, then in RegimeActionModals.jsx) were plain
 // `<div>` overlays with no dialog role, no focus containment, and no focus
 // restoration to the invoking control. This repo has no jsdom/React
 // rendering harness (see admin-route-code-splitting.test.js), so — matching
@@ -40,8 +40,21 @@ const fundControllerSource = fs.readFileSync(
   'utf8',
 )
 
-const regimeActionModalsSource = fs.readFileSync(
-  path.join(__dirname, '..', 'admin', 'src', 'components', 'regime', 'RegimeActionModals.jsx'),
+const readRegime = (file) => fs.readFileSync(
+  path.join(__dirname, '..', 'admin', 'src', 'components', 'regime', file),
+  'utf8',
+)
+
+// RegimeActionModals.jsx was dissolved (issue #1989): the confirmations now sit
+// beside the hooks/panels that own their actions, on the shared ConfirmDialog.
+const confirmationsSource = readRegime('RegimeActionConfirmations.jsx')
+const tpEditSource = readRegime('TpEditDialog.jsx')
+const dcaConvertSource = readRegime('DcaConvertDialog.jsx')
+const placementIntentsSource = readRegime('PlacementIntentsPanel.jsx')
+const regimeActionModalsSource = [confirmationsSource, tpEditSource, dcaConvertSource, placementIntentsSource].join('\n')
+
+const confirmDialogSource = fs.readFileSync(
+  path.join(__dirname, '..', 'admin', 'src', 'components', 'ui', 'ConfirmDialog.jsx'),
   'utf8',
 )
 
@@ -86,66 +99,60 @@ describe('ModalDialog shared wrapper (issue #434)', () => {
 
 const dialogUsages = (source) => [...source.matchAll(/<ModalDialog\b/g)]
 
-describe('FundLifecycleDialogs.jsx fund lifecycle dialogs use ModalDialog (issue #434)', () => {
-  it('imports the shared ModalDialog wrapper', () => {
-    assert.match(lifecycleDialogsSource, /import ModalDialog from '\.\.\/ModalDialog'/)
+describe('ConfirmDialog shared confirmation (issue #1989)', () => {
+  it('is built on ModalDialog and gates dismissal on the busy flag', () => {
+    assert.match(confirmDialogSource, /import ModalDialog from '\.\.\/ModalDialog'/)
+    assert.match(confirmDialogSource, /<ModalDialog labelledBy={titleId} describedBy={descriptionId} dismissible={!busy} onClose={onClose}>/)
   })
 
-  it('no longer renders the fund dialogs as bare overlay divs', () => {
-    assert.doesNotMatch(lifecycleDialogsSource, /Close Fund confirmation dialog[\s\S]{0,80}<div\s+className="fixed inset-0/)
-    assert.doesNotMatch(lifecycleDialogsSource, /Reopen Fund confirmation dialog[\s\S]{0,80}<div\s+className="fixed inset-0/)
+  it('labels the title and description and focuses Cancel first, disabled while busy', () => {
+    assert.match(confirmDialogSource, /<Title id={titleId}/)
+    assert.match(confirmDialogSource, /<p id={descriptionId}/)
+    assert.match(confirmDialogSource, /onClick={onClose} disabled={busy} autoFocus>/)
   })
 
-  it('renders Close Fund as a labelled, pending-aware ModalDialog with Cancel focused first', () => {
-    assert.match(
-      lifecycleDialogsSource,
-      /closeFundDialogOpen && \(\s*<ModalDialog\s+onClose={\(\) => setCloseFundDialogOpen\(false\)}\s+dismissible={!closing}\s+labelledBy="close-fund-title"\s+describedBy="close-fund-description"/,
-    )
-    assert.match(lifecycleDialogsSource, /<h3 id="close-fund-title"/)
-    assert.match(lifecycleDialogsSource, /<p id="close-fund-description"/)
-    assert.match(lifecycleDialogsSource, /<label htmlFor="close-fund-reason"/)
-    assert.match(lifecycleDialogsSource, /id="close-fund-reason"/)
-    // Cancel (not the reason input) gets initial focus per the acceptance criteria.
-    assert.match(
-      lifecycleDialogsSource,
-      /onClick={\(\) => setCloseFundDialogOpen\(false\)}\s+disabled={closing}\s+autoFocus/,
-    )
-  })
-
-  it('renders Reopen Fund as a labelled, pending-aware ModalDialog with Cancel focused first', () => {
-    assert.match(
-      lifecycleDialogsSource,
-      /reopenFundDialogOpen && \(\s*<ModalDialog\s+onClose={\(\) => setReopenFundDialogOpen\(false\)}\s+dismissible={!reopening}\s+labelledBy="reopen-fund-title"\s+describedBy="reopen-fund-description"/,
-    )
-    assert.match(lifecycleDialogsSource, /<h3 id="reopen-fund-title"/)
-    assert.match(lifecycleDialogsSource, /<p id="reopen-fund-description"/)
-    assert.match(
-      lifecycleDialogsSource,
-      /onClick={\(\) => setReopenFundDialogOpen\(false\)}\s+disabled={reopening}\s+autoFocus/,
-    )
-  })
-
-  it('renders Reset Dry-Run as a labelled, pending-aware ModalDialog with Cancel focused first', () => {
-    assert.match(
-      lifecycleDialogsSource,
-      /resetDryRunConfirm && \(\s*<ModalDialog\s+onClose={\(\) => setResetDryRunConfirm\(false\)}\s+dismissible={!resetting}\s+labelledBy="reset-dry-run-title"\s+describedBy="reset-dry-run-description"/,
-    )
-    assert.match(lifecycleDialogsSource, /<h3 id="reset-dry-run-title"/)
-    assert.match(lifecycleDialogsSource, /<p id="reset-dry-run-description"/)
-    assert.match(
-      lifecycleDialogsSource,
-      /onClick={\(\) => setResetDryRunConfirm\(false\)}\s+disabled={resetting}\s+autoFocus/,
-    )
-  })
-
-  it('renders exactly three ModalDialog usages in FundLifecycleDialogs.jsx', () => {
-    assert.equal(dialogUsages(lifecycleDialogsSource).length, 3)
+  it('disables Confirm while busy or when the caller says so', () => {
+    assert.match(confirmDialogSource, /onClick={onConfirm} disabled={busy \|\| confirmDisabled}/)
   })
 })
 
-describe('RegimeActionModals.jsx body/regime dialogs use ModalDialog (issue #434)', () => {
-  it('imports the shared ModalDialog wrapper', () => {
-    assert.match(regimeActionModalsSource, /import ModalDialog from '\.\.\/ModalDialog'/)
+describe('FundLifecycleDialogs.jsx fund lifecycle dialogs use ConfirmDialog (issue #434, #1989)', () => {
+  it('imports the shared ConfirmDialog', () => {
+    assert.match(lifecycleDialogsSource, /import ConfirmDialog from '\.\.\/ui\/ConfirmDialog'/)
+  })
+
+  it('no longer renders the fund dialogs as bare overlay divs', () => {
+    assert.doesNotMatch(lifecycleDialogsSource, /fixed inset-0/)
+  })
+
+  const lifecycle = [
+    { name: 'Close Fund', open: 'closeFundDialogOpen', id: 'close-fund', busy: 'closing', close: 'setCloseFundDialogOpen(false)', confirm: 'submitCloseFund' },
+    { name: 'Reopen Fund', open: 'reopenFundDialogOpen', id: 'reopen-fund', busy: 'reopening', close: 'setReopenFundDialogOpen(false)', confirm: 'submitReopenFund' },
+    { name: 'Reset Dry-Run', open: 'resetDryRunConfirm', id: 'reset-dry-run', busy: 'resetting', close: 'setResetDryRunConfirm(false)', confirm: 'handleExecuteResetDryRun' },
+  ]
+  for (const { name, open, id, busy, close, confirm } of lifecycle) {
+    it(`renders ${name} as a labelled, pending-aware ConfirmDialog`, () => {
+      const escaped = (v) => v.replace(/[()]/g, '\\$&')
+      assert.match(
+        lifecycleDialogsSource,
+        new RegExp(`${open} && \\(\\s*<ConfirmDialog\\s+id="${id}"[\\s\\S]*?busy={${busy}}\\s+onConfirm={${confirm}}\\s+onClose={\\(\\) => ${escaped(close)}}`),
+      )
+    })
+  }
+
+  it('keeps the Close Fund reason input labelled', () => {
+    assert.match(lifecycleDialogsSource, /<label htmlFor="close-fund-reason"/)
+    assert.match(lifecycleDialogsSource, /id="close-fund-reason"/)
+  })
+
+  it('renders exactly three ConfirmDialog usages in FundLifecycleDialogs.jsx', () => {
+    assert.equal([...lifecycleDialogsSource.matchAll(/<ConfirmDialog\b/g)].length, 3)
+  })
+})
+
+describe('Regime confirmations use ConfirmDialog; the TP editor stays on ModalDialog (issue #434, #1989)', () => {
+  it('RegimeActionModals.jsx is gone', () => {
+    assert.equal(fs.existsSync(path.join(__dirname, '..', 'admin', 'src', 'components', 'regime', 'RegimeActionModals.jsx')), false)
   })
 
   it('no longer renders any of its dialogs as bare overlay divs', () => {
@@ -153,50 +160,47 @@ describe('RegimeActionModals.jsx body/regime dialogs use ModalDialog (issue #434
     assert.doesNotMatch(regimeActionModalsSource, /fixed inset-0/)
   })
 
-  it('renders exactly eight ModalDialog usages', () => {
-    assert.equal(dialogUsages(regimeActionModalsSource).length, 8)
+  it('uses ConfirmDialog for seven regime confirmations and ModalDialog only for the TP editor', () => {
+    const count = (source, re) => [...source.matchAll(re)].length
+    assert.equal(count(confirmationsSource, /<ConfirmDialog\b/g), 5)
+    assert.equal(count(dcaConvertSource, /<ConfirmDialog\b/g), 1)
+    assert.equal(count(placementIntentsSource, /<ConfirmDialog\b/g), 1)
+    assert.equal(count(tpEditSource, /<ModalDialog\b/g), 1)
   })
 
   const confirmations = [
-    { name: 'Cancel Ladder', titleId: 'cancel-ladder-title', descId: 'cancel-ladder-description', dismissible: '!cancellingLadder', cancelDisabled: 'cancellingLadder', dismissLabel: 'Keep ladder' },
-    { name: 'Collapse All', titleId: 'collapse-all-title', descId: 'collapse-all-description', dismissible: '!collapsingAll', cancelDisabled: 'collapsingAll', dismissLabel: 'Keep bodies' },
-    { name: 'Reset Cycle', titleId: 'reset-cycle-title', descId: 'reset-cycle-description', dismissible: '!resettingCycle', cancelDisabled: 'resettingCycle' },
-    { name: 'Roll Up', titleId: 'roll-up-title', descId: 'roll-up-description', dismissible: '!rollingUp', cancelDisabled: 'rollingUp', dismissLabel: 'Keep separate' },
-    { name: 'DCA conversion', titleId: 'convert-dca-title', descId: 'convert-dca-description', dismissible: '!converting', cancelDisabled: 'converting' },
-    { name: 'placement-intent reconcile', titleId: 'reconcile-intent-title', descId: 'reconcile-intent-description', dismissible: '!reconcilingIntent', cancelDisabled: 'reconcilingIntent' },
+    { name: 'Cancel Ladder', source: confirmationsSource, id: 'cancel-ladder', busy: 'busy={busy}', dismissLabel: 'Keep ladder' },
+    { name: 'Collapse All', source: confirmationsSource, id: 'collapse-all', busy: 'busy={busy}', dismissLabel: 'Keep bodies' },
+    { name: 'Reset Cycle', source: confirmationsSource, id: 'reset-cycle', busy: 'busy={busy}' },
+    { name: 'Roll Up', source: confirmationsSource, id: 'roll-up', busy: 'busy={busy}', dismissLabel: 'Keep separate' },
+    { name: 'DCA conversion', source: dcaConvertSource, id: 'convert-dca', busy: 'busy={busy}' },
+    { name: 'placement-intent reconcile', source: placementIntentsSource, id: 'reconcile-intent', busy: 'busy={reconcilingIntent}' },
   ]
 
-  for (const { name, titleId, descId, dismissible, cancelDisabled, dismissLabel = 'Cancel' } of confirmations) {
-    it(`labels the ${name} dialog and focuses the dismiss button first, gated on its pending flag`, () => {
-      assert.match(regimeActionModalsSource, new RegExp(`dismissible={${dismissible.replace('!', '!')}}`))
-      assert.match(regimeActionModalsSource, new RegExp(`<h3 id="${titleId}"`))
-      assert.match(regimeActionModalsSource, new RegExp(`<p id="${descId}"`))
-      assert.match(
-        regimeActionModalsSource,
-        new RegExp(`disabled={${cancelDisabled}}\\s*\\n\\s*autoFocus\\s*\\n\\s*>\\s*\\n\\s*${dismissLabel}\\n`),
-      )
+  for (const { name, source, id, busy, dismissLabel } of confirmations) {
+    it(`labels the ${name} dialog and gates it on its pending flag (Cancel focus and dismissal come from ConfirmDialog)`, () => {
+      assert.match(source, new RegExp(`<ConfirmDialog\\s+id="${id}"`))
+      assert.ok(source.includes(busy))
+      if (dismissLabel) assert.match(source, new RegExp(`cancelLabel="${dismissLabel}"`))
     })
   }
 
   it('lets the drawdown-resume dialog stay always-dismissible (no in-flight guard) but still labelled and Cancel-focused', () => {
-    assert.match(regimeActionModalsSource, /<h3 id="drawdown-resume-title"/)
-    assert.match(regimeActionModalsSource, /<p id="drawdown-resume-description"/)
-    assert.match(
-      regimeActionModalsSource,
-      /onClick={\(\) => onDismissResumeDrawdown\(\)}\s*\n\s*autoFocus/,
-    )
+    assert.match(confirmationsSource, /<ConfirmDialog\s+id="drawdown-resume"/)
+    const dialog = confirmationsSource.slice(confirmationsSource.indexOf('id="drawdown-resume"'), confirmationsSource.indexOf('RollUpConfirmation'))
+    assert.doesNotMatch(dialog, /busy=/)
   })
 
   it('labels both TP edit inputs and focuses the active mode input, not Cancel', () => {
-    assert.match(regimeActionModalsSource, /maxWidthClassName="max-w-sm"/)
-    assert.match(regimeActionModalsSource, /<h3 id="tp-edit-title"/)
-    assert.match(regimeActionModalsSource, /<label htmlFor="tp-edit-pct-input"/)
-    assert.match(regimeActionModalsSource, /id="tp-edit-pct-input"/)
-    assert.match(regimeActionModalsSource, /<label htmlFor="tp-edit-price-input"/)
-    assert.match(regimeActionModalsSource, /id="tp-edit-price-input"/)
+    assert.match(tpEditSource, /maxWidthClassName="max-w-sm"/)
+    assert.match(tpEditSource, /<h3 id="tp-edit-title"/)
+    assert.match(tpEditSource, /<label htmlFor="tp-edit-pct-input"/)
+    assert.match(tpEditSource, /id="tp-edit-pct-input"/)
+    assert.match(tpEditSource, /<label htmlFor="tp-edit-price-input"/)
+    assert.match(tpEditSource, /id="tp-edit-price-input"/)
     // Both mode inputs carry autoFocus (only one is ever mounted at a time,
     // per the pct/price mode branch), while Cancel in this dialog does not.
-    assert.equal((regimeActionModalsSource.match(/onKeyDown={\(e\) => e\.key === 'Enter' && onExecuteSetTp\('(pct|price)'\)}\s*\n\s*autoFocus/g) || []).length, 2)
+    assert.equal((tpEditSource.match(/onKeyDown={\(e\) => e\.key === 'Enter' && onSubmit\('(pct|price)'\)}\s*\n\s*autoFocus/g) || []).length, 2)
   })
 })
 
@@ -253,7 +257,7 @@ describe('Destructive executors are reachable only from a dialog confirm action 
     assert.equal(countOccurrences(lifecycleDialogsSource, 'handleExecuteResetDryRun'), 2)
     assert.match(
       lifecycleDialogsSource,
-      /resetDryRunConfirm && \([\s\S]*?onClick={handleExecuteResetDryRun}[\s\S]*?<\/ModalDialog>/,
+      /resetDryRunConfirm && \([\s\S]*?onConfirm={handleExecuteResetDryRun}[\s\S]*?<\/ConfirmDialog>/,
     )
   })
 
@@ -266,15 +270,17 @@ describe('Destructive executors are reachable only from a dialog confirm action 
 
   it("handleExecuteCancelLadder (RegimeDashboard.jsx) is defined once and passed only to the Cancel Ladder dialog's confirm prop", () => {
     assert.equal(countOccurrences(regimeDashboardSource, 'handleExecuteCancelLadder'), 2)
-    assert.match(regimeDashboardSource, /onExecuteCancelLadder={handleExecuteCancelLadder}/)
+    assert.match(regimeDashboardSource, /onConfirm={handleExecuteCancelLadder}/)
   })
 
-  it('RegimeActionModals.jsx invokes onExecuteCancelLadder only as the Cancel Ladder dialog confirm action', () => {
-    assert.equal(countOccurrences(regimeActionModalsSource, 'onExecuteCancelLadder'), 2)
-    assert.match(
-      regimeActionModalsSource,
-      /cancelLadderConfirm && \([\s\S]*?onClick={onExecuteCancelLadder}[\s\S]*?<\/ModalDialog>/,
+  it('CancelLadderConfirmation wires its confirm handler only to the Cancel Ladder dialog confirm action', () => {
+    const cancelLadder = confirmationsSource.slice(
+      confirmationsSource.indexOf('export function CancelLadderConfirmation'),
+      confirmationsSource.indexOf('export function CollapseAllConfirmation'),
     )
+    // destructured param + prop name + prop value
+    assert.equal(countOccurrences(cancelLadder, 'onConfirm'), 3)
+    assert.match(cancelLadder, /<ConfirmDialog[\s\S]*?onConfirm={onConfirm}[\s\S]*?<\/ConfirmDialog>/)
   })
 
   it('the Cancel Ladder button in RegimeDashboard.jsx only opens the confirm dialog (calls handleCancelLadder, not the executor)', () => {
@@ -285,8 +291,9 @@ describe('Destructive executors are reachable only from a dialog confirm action 
 
 describe('Cancel Ladder dialog copy (issue #1218)', () => {
   it('uses distinct dismiss/confirm labels and operator wording instead of the entryMode key', () => {
-    assert.match(regimeActionModalsSource, />Cancel ladder orders\?</)
-    assert.match(regimeActionModalsSource, /'Cancelling orders…' : 'Cancel ladder orders'/)
+    assert.match(regimeActionModalsSource, /title="Cancel ladder orders\?"/)
+    assert.match(regimeActionModalsSource, /confirmLabel="Cancel ladder orders"/)
+    assert.match(regimeActionModalsSource, /busyLabel="Cancelling orders…"/)
     assert.match(regimeActionModalsSource, /Entry mode from LADDER to REACTIVE/)
     assert.doesNotMatch(regimeActionModalsSource, /<span className="font-mono">entryMode<\/span>/)
   })

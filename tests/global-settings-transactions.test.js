@@ -1,6 +1,7 @@
 const { before, describe, it } = require('node:test')
 const assert = require('node:assert/strict')
 const { asHookModule } = require('./hook-module-harness')
+const { ConfirmDialogFixture, expand } = require('./confirm-dialog-fixture')
 const path = require('node:path')
 const vm = require('node:vm')
 const { createRequire } = require('node:module')
@@ -99,6 +100,7 @@ function createView(name) {
       }
       if (name === '../hooks/useRealtimeRefresh') return asHookModule(() => {})
       if (name === './ModalDialog') return ({ children }) => children
+      if (name === './ui/ConfirmDialog') return ConfirmDialogFixture
       if (name === './ui/Button') return 'button'
       if (name === './Toast') return { useNotify: () => (type, message) => { notices.push({ type, message }); return null }, useToast: () => ({ addToast: () => null, removeToast() {} }) }
       throw new Error(`Unexpected fixture import ${name}`)
@@ -113,8 +115,8 @@ function createView(name) {
     async mount() { render(); effects.forEach(effect => effect()); await flush(); return render() },
   }
 }
-function elements(tree) { return Array.isArray(tree) ? tree.flatMap(elements) : React.isValidElement(tree) ? [tree, ...elements(tree.props.children)] : [] }
-function text(tree) { return Array.isArray(tree) ? tree.map(text).join('') : React.isValidElement(tree) ? text(tree.props.children) : typeof tree === 'string' ? tree : '' }
+function elements(tree) { tree = expand(tree); return Array.isArray(tree) ? tree.flatMap(elements) : React.isValidElement(tree) ? [tree, ...elements(tree.props.children)] : [] }
+function text(tree) { tree = expand(tree); return Array.isArray(tree) ? tree.map(text).join('') : React.isValidElement(tree) ? text(tree.props.children) : typeof tree === 'string' ? tree : '' }
 function find(tree, predicate) { const node = elements(tree).find(predicate); assert.ok(node, 'expected rendered control'); return node }
 const field = (tree, id) => find(tree, node => node.props.id === id)
 const button = (tree, label) => find(tree, node => node.type === 'button' && text(node) === label)
