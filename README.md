@@ -81,6 +81,8 @@ replacement for a full backup archive.
 
 ## Installation
 
+Development uses the Node major pinned in `.nvmrc` (`26`). Run `nvm use` (or `fnm use`) in the repo root to pick it up before `npm ci`.
+
 ### Operator authentication
 
 The gateway starts in a fail-closed bootstrap state until the first operator password is enrolled. With no password or bootstrap credential, it binds loopback-only and generates a one-time owner-only secret at `data/operator-bootstrap-secret`; open the local admin UI and create the password there, entering that secret (a loopback connection alone is not trusted, because a same-host reverse proxy that adds no headers looks identical to a local browser; set `OPERATOR_TRUST_LOOPBACK_BOOTSTRAP=true` only when no reverse proxy is in front). The file is deleted on enrollment. Then restart the gateway to enable its default Tailscale listener. To bootstrap over Tailscale or another non-loopback listener, set a one-time `OPERATOR_BOOTSTRAP_SECRET` of at least 32 bytes (for example, `openssl rand -hex 32`) and enter it in the setup screen. The secret is accepted only before first enrollment and is never returned by the API or written to logs.
@@ -344,7 +346,8 @@ npm run test:changed                       # tests changed vs origin/main, plus 
                                            # mention a changed src/, shared/ or engines/ file
 npm run test:admin                         # admin (vitest) suite
 npm run test:all                           # backend, then admin
-npm run check                              # test:all, then the admin build
+npm run lint:admin                         # ESLint on admin/ (react-hooks rules; warning ceiling in admin/package.json)
+npm run check                              # test:all, lint:admin, then the admin build
 ```
 
 File or directory arguments replace the default file list; `--test-*` and other

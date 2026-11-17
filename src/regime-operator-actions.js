@@ -26,7 +26,7 @@
 
 const { trackPendingWrite } = require('./pending-writes');
 const { updateRegimeConfig, getQuoteCurrency } = require('./config-utils');
-const { LIFECYCLE } = require('./state-tracker');
+const { LIFECYCLE } = require('./regime-state-store');
 const { classifyBodyTpCancellation } = require('./cancellation-result');
 const { tradeEvents } = require('./trade-events');
 const celestialHierarchy = require('./celestial-hierarchy');

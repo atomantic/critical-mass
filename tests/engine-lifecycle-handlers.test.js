@@ -22,7 +22,7 @@ const assert = require('node:assert/strict');
 const { registerEngineLifecycleHandlers } = require('../src/engine-lifecycle-handlers');
 const { createEngineShutdown } = require('../src/engine-shutdown');
 const { fundKey, fundLabel } = require('../src/shared-utils');
-const { LIFECYCLE } = require('../src/state-tracker');
+const { LIFECYCLE } = require('../src/regime-state-store');
 
 const EXCHANGE = 'coinbase';
 const PAIR_A = 'BTC-USD';

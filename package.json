@@ -30,8 +30,9 @@
     "test:watch": "node scripts/test.js --watch",
     "test:changed": "node scripts/test.js --changed",
     "test:admin": "npm test --prefix admin",
+    "lint:admin": "npm run lint --prefix admin",
     "test:all": "npm test && npm run test:admin",
-    "check": "npm run test:all && npm run build"
+    "check": "npm run test:all && npm run lint:admin && npm run build"
   },
   "keywords": [
     "coinbase",

@@ -121,7 +121,7 @@ describe('config save response handling', () => {
         const onSave = vi.fn()
         const view = render(<ConfigEditor config={initial} strategy={strategy} onSave={onSave} />)
         // Product ID is read-only on a regime fund, so use another editable field there.
-        const [editLabel, editValue, editKey] = strategy === 'regime' ? ['Base Size (USD)', '9', { regime: { baseSizeUsdc: 9 } }] : ['Product ID', 'ETH-USD', { productId: 'ETH-USD' }]
+        const [editLabel, editValue] = strategy === 'regime' ? ['Base Size (USD)', '9'] : ['Product ID', 'ETH-USD']
         fireEvent.change(screen.getByLabelText(editLabel), { target: { value: editValue } })
         const orderLabel = strategy === 'regime' ? 'Min Order Size ($)' : 'Min Order (USD)'
         fireEvent.change(screen.getByLabelText(orderLabel), { target: { value: '17' } })

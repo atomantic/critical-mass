@@ -664,9 +664,6 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
                         <tbody>
                           {matchSuggestions.map((s) => {
                             const isSelected = selectedMatch?.orderId === s.orderId
-                            const buyPrice = importModal.side === 'buy' ? importModal.avgPrice : s.avgPrice
-                            const sellPrice = importModal.side === 'sell' ? importModal.avgPrice : s.avgPrice
-                            const pnlEst = (sellPrice - buyPrice) * Math.min(importModal.totalBtc, s.totalBtc)
                             return (
                               <tr
                                 key={s.orderId}

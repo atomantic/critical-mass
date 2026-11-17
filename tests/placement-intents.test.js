@@ -21,7 +21,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const fundPaths = require('../src/fund-paths');
-const stateTracker = require('../src/state-tracker');
+const placementIntents = require('../src/placement-intent-storage');
 const { placeWithUnknownReconcile, placeSellOrderWithRetry } = require('../src/order-manager');
 const { createOrderExecutor } = require('../src/order-executor');
 
@@ -42,8 +42,8 @@ afterEach(() => {
   fs.rmSync(tmpRoot, { recursive: true, force: true });
 });
 
-const intentsFile = () => stateTracker.getPlacementIntentsFile(EXCHANGE, PAIR);
-const readIntents = () => stateTracker.loadPlacementIntents(EXCHANGE, PAIR);
+const intentsFile = () => placementIntents.getPlacementIntentsFile(EXCHANGE, PAIR);
+const readIntents = () => placementIntents.loadPlacementIntents(EXCHANGE, PAIR);
 
 /** The ambiguous-placement error shape every adapter throws (see #427). */
 const unknownError = (clientOrderId) => Object.assign(new Error('socket hang up'), {
@@ -59,60 +59,60 @@ const scope = (action = 'entry_bid', side = 'buy') => ({
 /** Rewrite every persisted intent so it looks like another process wrote it. */
 const simulateRestart = () => {
   const intents = readIntents().map(i => ({ ...i, instanceId: 'a-process-that-died' }));
-  stateTracker.savePlacementIntents(intents, EXCHANGE, PAIR);
+  placementIntents.savePlacementIntents(intents, EXCHANGE, PAIR);
 };
 
-describe('placement intent store (state-tracker)', () => {
+describe('placement intent store', () => {
   it('persists an intent as dispatching, owned by this process', () => {
-    const intent = stateTracker.recordPlacementIntent({ exchange: EXCHANGE, pair: PAIR, action: 'entry_bid', side: 'buy', price: 100, size: 0.5 });
+    const intent = placementIntents.recordPlacementIntent({ exchange: EXCHANGE, pair: PAIR, action: 'entry_bid', side: 'buy', price: 100, size: 0.5 });
 
     assert.ok(fs.existsSync(intentsFile()), 'the intent file exists immediately');
     const [persisted] = readIntents();
     assert.equal(persisted.id, intent.id);
-    assert.equal(persisted.status, stateTracker.PLACEMENT_INTENT_STATUS.DISPATCHING);
-    assert.equal(persisted.instanceId, stateTracker.PROCESS_INSTANCE_ID);
+    assert.equal(persisted.status, placementIntents.PLACEMENT_INTENT_STATUS.DISPATCHING);
+    assert.equal(persisted.instanceId, placementIntents.PROCESS_INSTANCE_ID);
     assert.equal(persisted.action, 'entry_bid');
   });
 
   it('does not block on this process\'s own in-flight dispatch', () => {
-    stateTracker.recordPlacementIntent({ exchange: EXCHANGE, pair: PAIR, action: 'take_profit', side: 'sell' });
-    assert.deepEqual(stateTracker.getBlockingPlacementIntents(EXCHANGE, PAIR), [],
+    placementIntents.recordPlacementIntent({ exchange: EXCHANGE, pair: PAIR, action: 'take_profit', side: 'sell' });
+    assert.deepEqual(placementIntents.getBlockingPlacementIntents(EXCHANGE, PAIR), [],
       'a concurrent placement in the same process must not be blocked by an in-flight sibling');
   });
 
   it('blocks on a dispatching intent left behind by a dead process (restart)', () => {
-    stateTracker.recordPlacementIntent({ exchange: EXCHANGE, pair: PAIR, action: 'entry_bid', side: 'buy' });
+    placementIntents.recordPlacementIntent({ exchange: EXCHANGE, pair: PAIR, action: 'entry_bid', side: 'buy' });
     simulateRestart();
 
-    const blocking = stateTracker.getBlockingPlacementIntents(EXCHANGE, PAIR);
+    const blocking = placementIntents.getBlockingPlacementIntents(EXCHANGE, PAIR);
     assert.equal(blocking.length, 1);
-    assert.equal(blocking[0].status, stateTracker.PLACEMENT_INTENT_STATUS.DISPATCHING);
+    assert.equal(blocking[0].status, placementIntents.PLACEMENT_INTENT_STATUS.DISPATCHING);
   });
 
   it('blocks on an unresolved intent regardless of which process wrote it', () => {
-    const intent = stateTracker.recordPlacementIntent({ exchange: EXCHANGE, pair: PAIR, action: 'entry_bid', side: 'buy' });
-    stateTracker.markPlacementIntentUnresolved(EXCHANGE, PAIR, intent.id, { clientOrderId: 'coid-1', reason: 'lookup failed' });
+    const intent = placementIntents.recordPlacementIntent({ exchange: EXCHANGE, pair: PAIR, action: 'entry_bid', side: 'buy' });
+    placementIntents.markPlacementIntentUnresolved(EXCHANGE, PAIR, intent.id, { clientOrderId: 'coid-1', reason: 'lookup failed' });
 
-    const blocking = stateTracker.getBlockingPlacementIntents(EXCHANGE, PAIR);
+    const blocking = placementIntents.getBlockingPlacementIntents(EXCHANGE, PAIR);
     assert.equal(blocking.length, 1);
     assert.equal(blocking[0].clientOrderId, 'coid-1');
   });
 
   it('resolves exactly once — a second resolve is a no-op', () => {
-    const intent = stateTracker.recordPlacementIntent({ exchange: EXCHANGE, pair: PAIR, action: 'entry_bid', side: 'buy' });
+    const intent = placementIntents.recordPlacementIntent({ exchange: EXCHANGE, pair: PAIR, action: 'entry_bid', side: 'buy' });
 
-    assert.equal(stateTracker.resolvePlacementIntent(EXCHANGE, PAIR, intent.id)?.id, intent.id);
-    assert.equal(stateTracker.resolvePlacementIntent(EXCHANGE, PAIR, intent.id), null,
+    assert.equal(placementIntents.resolvePlacementIntent(EXCHANGE, PAIR, intent.id)?.id, intent.id);
+    assert.equal(placementIntents.resolvePlacementIntent(EXCHANGE, PAIR, intent.id), null,
       'whoever removes the row owns the recovery; a duplicate call must find nothing');
     assert.deepEqual(readIntents(), []);
   });
 
   it('scopes intents per fund — one fund never blocks another', () => {
-    stateTracker.recordPlacementIntent({ exchange: EXCHANGE, pair: PAIR, action: 'entry_bid', side: 'buy' });
+    placementIntents.recordPlacementIntent({ exchange: EXCHANGE, pair: PAIR, action: 'entry_bid', side: 'buy' });
     simulateRestart();
 
-    assert.equal(stateTracker.getBlockingPlacementIntents(EXCHANGE, PAIR).length, 1);
-    assert.deepEqual(stateTracker.getBlockingPlacementIntents(EXCHANGE, 'ETH-USDC'), []);
+    assert.equal(placementIntents.getBlockingPlacementIntents(EXCHANGE, PAIR).length, 1);
+    assert.deepEqual(placementIntents.getBlockingPlacementIntents(EXCHANGE, 'ETH-USDC'), []);
   });
 
   it('fails closed on a corrupt intent file instead of reading it as empty', () => {
@@ -120,17 +120,17 @@ describe('placement intent store (state-tracker)', () => {
     fs.writeFileSync(intentsFile(), '{ not json');
 
     assert.throws(() => readIntents(), /corrupted or unreadable/);
-    const blocking = stateTracker.getBlockingPlacementIntents(EXCHANGE, PAIR);
+    const blocking = placementIntents.getBlockingPlacementIntents(EXCHANGE, PAIR);
     assert.equal(blocking.length, 1, 'an unreadable file must block placements, never wave them through');
     assert.equal(blocking[0].id, 'unreadable-intent-file');
   });
 
   it('annotates unresolved intents for the operator with a recovery instruction', () => {
-    const withId = stateTracker.recordPlacementIntent({ exchange: EXCHANGE, pair: PAIR, action: 'entry_bid', side: 'buy', size: 0.5, price: 100 });
-    stateTracker.markPlacementIntentUnresolved(EXCHANGE, PAIR, withId.id, { clientOrderId: 'coid-7', reason: 'lookup failed' });
-    const noId = stateTracker.recordPlacementIntent({ exchange: EXCHANGE, pair: PAIR, action: 'take_profit', side: 'sell', size: 0.4, price: 120 });
+    const withId = placementIntents.recordPlacementIntent({ exchange: EXCHANGE, pair: PAIR, action: 'entry_bid', side: 'buy', size: 0.5, price: 100 });
+    placementIntents.markPlacementIntentUnresolved(EXCHANGE, PAIR, withId.id, { clientOrderId: 'coid-7', reason: 'lookup failed' });
+    const noId = placementIntents.recordPlacementIntent({ exchange: EXCHANGE, pair: PAIR, action: 'take_profit', side: 'sell', size: 0.4, price: 120 });
 
-    const described = stateTracker.describePlacementIntents(EXCHANGE, PAIR);
+    const described = placementIntents.describePlacementIntents(EXCHANGE, PAIR);
     const unresolved = described.find(i => i.id === withId.id);
     const dispatching = described.find(i => i.id === noId.id);
 
@@ -141,12 +141,12 @@ describe('placement intent store (state-tracker)', () => {
   });
 
   it('flags a crash-leftover dispatch for the operator immediately, not after a grace period', () => {
-    stateTracker.recordPlacementIntent({ exchange: EXCHANGE, pair: PAIR, action: 'entry_bid', side: 'buy' });
+    placementIntents.recordPlacementIntent({ exchange: EXCHANGE, pair: PAIR, action: 'entry_bid', side: 'buy' });
     simulateRestart();
 
     // A crash-and-restart can complete in under a second, so an age-based rule
     // would wave through exactly the case that matters.
-    const [described] = stateTracker.describePlacementIntents(EXCHANGE, PAIR);
+    const [described] = placementIntents.describePlacementIntents(EXCHANGE, PAIR);
     assert.equal(described.needsAttention, true);
     assert.ok(described.ageMs < 60_000, 'flagged well inside any plausible grace period');
   });
@@ -176,7 +176,7 @@ describe('ladder placement halts on an unresolved rung', () => {
     assert.equal(result.pending, true, 'a thrown reconcile must not be folded into a clean failure');
     assert.equal(result.orders.length, 1);
     assert.equal(placed.length, 2, 'the ladder stops at the unresolved rung — later rungs are never submitted');
-    assert.equal(stateTracker.getBlockingPlacementIntents(EXCHANGE, PAIR).length, 1);
+    assert.equal(placementIntents.getBlockingPlacementIntents(EXCHANGE, PAIR).length, 1);
   });
 });
 
@@ -369,15 +369,15 @@ describe('placeWithUnknownReconcile — a failed post-outcome cleanup is retried
     );
     assert.equal(readIntents().length, 1, 'the clear failed, so the row is still on disk');
 
-    assert.equal(stateTracker.getBlockingPlacementIntents(EXCHANGE, PAIR).length, 0, 'still our own dispatch, so not blocking');
+    assert.equal(placementIntents.getBlockingPlacementIntents(EXCHANGE, PAIR).length, 0, 'still our own dispatch, so not blocking');
     assert.equal(readIntents().length, 1, 'removal stays queued while writes keep failing');
 
     disk.heal();
-    assert.equal(stateTracker.getBlockingPlacementIntents(EXCHANGE, PAIR).length, 0);
+    assert.equal(placementIntents.getBlockingPlacementIntents(EXCHANGE, PAIR).length, 0);
     assert.equal(readIntents().length, 0, 'the deferred removal lands once the disk accepts writes');
 
     simulateRestart();
-    assert.equal(stateTracker.getBlockingPlacementIntents(EXCHANGE, PAIR).length, 0, 'nothing is left for a restarted process to block on');
+    assert.equal(placementIntents.getBlockingPlacementIntents(EXCHANGE, PAIR).length, 0, 'nothing is left for a restarted process to block on');
   });
 
   it('removes an accepted placement\'s intent once the disk recovers', async () => {
@@ -390,7 +390,7 @@ describe('placeWithUnknownReconcile — a failed post-outcome cleanup is retried
     assert.equal(readIntents().length, 1);
 
     disk.heal();
-    stateTracker.getBlockingPlacementIntents(EXCHANGE, PAIR);
+    placementIntents.getBlockingPlacementIntents(EXCHANGE, PAIR);
     assert.equal(readIntents().length, 0);
   });
 });
@@ -404,7 +404,7 @@ describe('placeWithUnknownReconcile — unreconcilable outcomes stay pending', (
     assert.equal(result.pending, true, 'must NOT be an ordinary failure — that shape means "safe to re-place"');
 
     const [persisted] = readIntents();
-    assert.equal(persisted.status, stateTracker.PLACEMENT_INTENT_STATUS.UNRESOLVED);
+    assert.equal(persisted.status, placementIntents.PLACEMENT_INTENT_STATUS.UNRESOLVED);
     assert.equal(persisted.clientOrderId, 'coid-2');
   });
 
@@ -419,7 +419,7 @@ describe('placeWithUnknownReconcile — unreconcilable outcomes stay pending', (
     });
 
     assert.equal(result.pending, true, '"we could not check" is never "it isn\'t there"');
-    assert.equal(readIntents()[0].status, stateTracker.PLACEMENT_INTENT_STATUS.UNRESOLVED);
+    assert.equal(readIntents()[0].status, placementIntents.PLACEMENT_INTENT_STATUS.UNRESOLVED);
   });
 
   it('refuses every later placement on the fund while an intent is unresolved', async () => {
@@ -462,7 +462,7 @@ describe('placeWithUnknownReconcile — unreconcilable outcomes stay pending', (
   it('a crash inside the dispatch window blocks the restarted process', async () => {
     // Simulate the crash: the intent is written, the POST goes out, and the
     // process dies before any response is processed.
-    stateTracker.recordPlacementIntent({ exchange: EXCHANGE, pair: PAIR, action: 'entry_bid', side: 'buy', price: 100, size: 0.5 });
+    placementIntents.recordPlacementIntent({ exchange: EXCHANGE, pair: PAIR, action: 'entry_bid', side: 'buy', price: 100, size: 0.5 });
     simulateRestart();
 
     let submitted = 0;
@@ -478,7 +478,7 @@ describe('placeWithUnknownReconcile — unreconcilable outcomes stay pending', (
   it('resumes placing once the intent is resolved', async () => {
     await placeWithUnknownReconcile({ name: EXCHANGE }, PRODUCT, async () => { throw unknownError('coid-6'); }, scope());
     const [blocked] = readIntents();
-    stateTracker.resolvePlacementIntent(EXCHANGE, PAIR, blocked.id);
+    placementIntents.resolvePlacementIntent(EXCHANGE, PAIR, blocked.id);
 
     const result = await placeWithUnknownReconcile({ name: EXCHANGE }, PRODUCT, async () => ({ success: true, orderId: 'resumed-1' }), scope());
     assert.equal(result.success, true);
@@ -557,13 +557,13 @@ describe('DCA operator reconcile', () => {
 
   // dca-engine resolves its fund by the exchange's default pair, which in a
   // fresh tmp dir is 'default'.
-  const dcaIntents = () => stateTracker.loadPlacementIntents(EXCHANGE);
+  const dcaIntents = () => placementIntents.loadPlacementIntents(EXCHANGE);
 
   it('discards an intent the operator has verified, unblocking the cycle', async () => {
     const dcaEngine = require('../src/dca-engine');
     await placeWithUnknownReconcile({ name: EXCHANGE }, PRODUCT, async () => { throw unknownError('coid-dca'); }, dcaScope());
     const [intent] = dcaIntents();
-    assert.equal(intent.status, stateTracker.PLACEMENT_INTENT_STATUS.UNRESOLVED);
+    assert.equal(intent.status, placementIntents.PLACEMENT_INTENT_STATUS.UNRESOLVED);
 
     const result = await dcaEngine.reconcilePlacementIntent(EXCHANGE, undefined, intent.id, 'discard');
     assert.equal(result.success, true);
@@ -618,7 +618,7 @@ describe('placeWithUnknownReconcile accepted-order handoff (issue #963)', () => 
     assert.equal(row.status, 'unresolved');
     assert.equal(row.orderId, 'ord-1');
     assert.equal(row.clientOrderId, 'coid-1');
-    assert.equal(stateTracker.getBlockingPlacementIntents(EXCHANGE, PAIR).length, 1);
+    assert.equal(placementIntents.getBlockingPlacementIntents(EXCHANGE, PAIR).length, 1);
   });
 
   it('hands off a reconciled adoption the same way', async () => {
@@ -726,7 +726,7 @@ describe('placeSellOrderWithRetry accepted-sell handoff (issue #1886)', () => {
     const [row] = readIntents();
     assert.equal(row.status, 'unresolved');
     assert.equal(row.orderId, 'sell-1');
-    assert.equal(stateTracker.getBlockingPlacementIntents(EXCHANGE, PAIR).length, 1);
+    assert.equal(placementIntents.getBlockingPlacementIntents(EXCHANGE, PAIR).length, 1);
   });
 });
 

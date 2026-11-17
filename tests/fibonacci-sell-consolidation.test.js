@@ -3,17 +3,7 @@ const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 
 const { placeFibonacciSellOrder, checkFibonacciSellFill } = require('../src/order-manager');
-const {
-  creditFibPartialSell,
-  settleFibCancelledSell,
-  getFibCycleSold,
-  updateAfterFibSellOrder,
-  updateAfterFibSellFill,
-  settleFibSellAndCarryUncoveredBuys,
-  updateAfterFibBuy,
-  getFibonacciCycleInfo,
-  migrateState,
-} = require('../src/state-tracker');
+const { creditFibPartialSell, settleFibCancelledSell, getFibCycleSold, updateAfterFibSellOrder, updateAfterFibSellFill, settleFibSellAndCarryUncoveredBuys, updateAfterFibBuy, getFibonacciCycleInfo, migrateState } = require('../src/dca-state');
 const { getFibonacciSellQuantity, createInitialFibState } = require('../src/fibonacci-utils');
 
 // ---------------------------------------------------------------------------
@@ -481,7 +471,7 @@ describe('placeFibonacciSellOrder — execution during cancellation (issue #1889
 });
 
 // ===========================================================================
-// state-tracker helpers (Bug A re-seed + Bug B partial credit)
+// dca-state helpers (Bug A re-seed + Bug B partial credit)
 //
 // The Bug A re-seed itself is covered by the "updateAfterFibSellFill (Bug A,
 // top-of-cycle path)" describe block below — it re-seeds excess generically

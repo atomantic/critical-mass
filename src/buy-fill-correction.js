@@ -121,7 +121,7 @@ const applyBuyCorrectionCapital = (exchange, pair, correction) => {
 
 /** Used by manual/sync ingestion when there is no live engine ledger. */
 const applyPersistedBuyCorrection = (exchange, pair, correction, derived) => {
-  const { loadFundRegimeState, saveFundRegimeState } = require('./state-tracker');
+  const { loadFundRegimeState, saveFundRegimeState } = require('./regime-state-store');
   const { createClosedTrades } = require('./closed-trades');
   const saved = loadFundRegimeState(exchange, pair);
   const next = projectBuyCorrection(saved.position, correction);

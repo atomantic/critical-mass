@@ -46,7 +46,7 @@ function Overview() {
   const snapshotMapRef = useRef(snapshotMap)
   snapshotMapRef.current = snapshotMap
 
-  const { snapshots: wsSnapshots, statuses: wsStatuses, connected } = useMultiRegimeStatuses()
+  const { snapshots: wsSnapshots, statuses: wsStatuses } = useMultiRegimeStatuses()
   const ownersRef = useRef(new Map())
   const fallbackStatusesRef = useRef(new Map())
 
@@ -591,6 +591,7 @@ function Overview() {
                       currentPrice={card.lastPrice}
                       maxUsdcDeployed={card.maxUsdcDeployed}
                       baseCurrency={card.baseCurrency}
+                      lazyMount
                     />
                   </Suspense>
                 </div>

@@ -13,7 +13,7 @@ const { supportConfigDescriptors } = require('./helpers/config-fs-descriptors');
 const path = require('path');
 
 const configUtils = require('../src/config-utils');
-const stateTracker = require('../src/state-tracker');
+const dcaState = require('../src/dca-state');
 const adapters = require('../src/adapters');
 const registerLegacyRoutes = require('../src/routes/legacy-routes');
 const registerSettingsRoutes = require('../src/routes/settings-routes');
@@ -128,7 +128,7 @@ describe('legacy routes do not leak global secrets (issue #104)', () => {
 
   const setup = () => {
     const fsMocks = setupFsMocks({ base: BASE_CONFIG_WITH_SECRETS, user: null });
-    mock.method(stateTracker, 'loadState', () => ({ orders: [] }));
+    mock.method(dcaState, 'loadState', () => ({ orders: [] }));
     mock.method(adapters, 'getAdapter', () => ({ hasValidKeys: () => false }));
     const app = createFakeApp();
     registerLegacyRoutes(app, {
@@ -606,7 +606,7 @@ describe('POST /api/sync and POST /api/trade gates (simpleDcaEnabled, issue #568
   /**
    * `legacy-routes.js` destructures `runIntervalCycle`/`syncOrderStatuses` from
    * `dca-engine` at require time, so reassigning them on the module object would
-   * never reach the handlers. `stateTracker.loadState` is called through the
+   * never reach the handlers. `dcaState.loadState` is called through the
    * namespace by the route (/api/sync) and by `runIntervalCycle` itself
    * (/api/trade), so it is the seam that actually proves the engine was reached.
    */
@@ -618,9 +618,9 @@ describe('POST /api/sync and POST /api/trade gates (simpleDcaEnabled, issue #568
     setupFsMocks({ base: config, user: null });
 
     const loadStateCalls = [];
-    mock.method(stateTracker, 'loadState', (...args) => { loadStateCalls.push(args); return { orders: [] }; });
-    mock.method(stateTracker, 'getPendingOrders', () => []);
-    mock.method(stateTracker, 'saveState', () => {});
+    mock.method(dcaState, 'loadState', (...args) => { loadStateCalls.push(args); return { orders: [] }; });
+    mock.method(dcaState, 'getPendingOrders', () => []);
+    mock.method(dcaState, 'saveState', () => {});
     mock.method(adapters, 'getAdapter', () => ({ hasValidKeys: () => false }));
 
     const app = createFakeApp();

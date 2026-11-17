@@ -1,6 +1,6 @@
 // @ts-check
-// Filesystem persistence only. Domain defaults/migrations are supplied by the
-// facade; this module never requires state-tracker (including during startup).
+// Filesystem persistence only. Domain defaults/migrations are supplied by
+// regime-state-store and dca-state; this module never requires either (including during startup).
 const fs = require('fs');
 const path = require('path');
 const { resolveFundDataDir } = require('./fund-paths');

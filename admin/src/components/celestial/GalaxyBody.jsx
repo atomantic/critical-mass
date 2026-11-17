@@ -1,6 +1,6 @@
 import { useRef, useMemo, memo } from 'react'
 import { useFrame } from '@react-three/fiber'
-import * as THREE from 'three'
+import { AdditiveBlending, Color, DoubleSide } from 'three'
 import { getBodySize, bodyPropsEqual } from './celestialConstants'
 import CelestialTooltip from './CelestialTooltip'
 import FresnelGlow from './FresnelGlow'
@@ -54,11 +54,11 @@ const buildMainGeometry = (size) => {
   const colors = new Float32Array(TOTAL_MAIN * 3)
   const sizes = new Float32Array(TOTAL_MAIN)
 
-  const coreColor = new THREE.Color('#FFF1F2')
-  const armInner = new THREE.Color('#F472B6')
-  const armMid = new THREE.Color('#EC4899')
-  const tipColor = new THREE.Color('#8B5CF6')
-  const scratch = new THREE.Color()
+  const coreColor = new Color('#FFF1F2')
+  const armInner = new Color('#F472B6')
+  const armMid = new Color('#EC4899')
+  const tipColor = new Color('#8B5CF6')
+  const scratch = new Color()
 
   let idx = 0
 
@@ -130,9 +130,9 @@ const buildDustGeometry = (size) => {
   const positions = new Float32Array(DUST_POINTS * 3)
   const colors = new Float32Array(DUST_POINTS * 3)
 
-  const dustColor1 = new THREE.Color('#D946EF')
-  const dustColor2 = new THREE.Color('#7C3AED')
-  const scratch = new THREE.Color()
+  const dustColor1 = new Color('#D946EF')
+  const dustColor2 = new Color('#7C3AED')
+  const scratch = new Color()
 
   for (let i = 0; i < DUST_POINTS; i++) {
     const r = Math.abs(gaussRandom()) * size * 1.4 + size * 0.3
@@ -212,17 +212,17 @@ const GalaxyBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed, baseCurr
       {/* Layered disc glows — inner hot, mid warm, outer faint */}
       <mesh ref={discGlow1Ref} rotation={[Math.PI / 2, 0, 0]}>
         <circleGeometry args={[size * 1.0, 64]} />
-        <meshBasicMaterial color="#F472B6" transparent opacity={0.14} side={THREE.DoubleSide} blending={THREE.AdditiveBlending} depthWrite={false} />
+        <meshBasicMaterial color="#F472B6" transparent opacity={0.14} side={DoubleSide} blending={AdditiveBlending} depthWrite={false} />
       </mesh>
 
       <mesh ref={discGlow2Ref} rotation={[Math.PI / 2, 0, 0]}>
         <circleGeometry args={[size * 1.8, 64]} />
-        <meshBasicMaterial color="#C084FC" transparent opacity={0.08} side={THREE.DoubleSide} blending={THREE.AdditiveBlending} depthWrite={false} />
+        <meshBasicMaterial color="#C084FC" transparent opacity={0.08} side={DoubleSide} blending={AdditiveBlending} depthWrite={false} />
       </mesh>
 
       <mesh ref={discGlow3Ref} rotation={[Math.PI / 2, 0, 0]}>
         <circleGeometry args={[size * 2.6, 64]} />
-        <meshBasicMaterial color="#7C3AED" transparent opacity={0.04} side={THREE.DoubleSide} blending={THREE.AdditiveBlending} depthWrite={false} />
+        <meshBasicMaterial color="#7C3AED" transparent opacity={0.04} side={DoubleSide} blending={AdditiveBlending} depthWrite={false} />
       </mesh>
 
       {/* Main spiral arm + core particles — custom shader for per-vertex sizes */}
@@ -237,7 +237,7 @@ const GalaxyBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed, baseCurr
           fragmentShader={GALAXY_FRAG}
           transparent
           depthWrite={false}
-          blending={THREE.AdditiveBlending}
+          blending={AdditiveBlending}
         />
       </points>
 
@@ -253,7 +253,7 @@ const GalaxyBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed, baseCurr
           sizeAttenuation
           transparent
           opacity={0.15}
-          blending={THREE.AdditiveBlending}
+          blending={AdditiveBlending}
           depthWrite={false}
         />
       </points>
