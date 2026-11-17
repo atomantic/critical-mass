@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import http from 'node:http'
 import { createServer } from 'vite'

@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import * as THREE from 'three'
+import { Color } from 'three'
 import { getMoonTexture } from './moonTexture'
 import FresnelGlow from './FresnelGlow'
 
@@ -11,7 +11,7 @@ import FresnelGlow from './FresnelGlow'
 const MoonGeometry = ({ size, color, emissiveInt }) => {
   const textures = useMemo(() => getMoonTexture(), [])
   const outlineColor = useMemo(
-    () => new THREE.Color('#94A3B8').lerp(new THREE.Color('#C7D2FE'), 0.45),
+    () => new Color('#94A3B8').lerp(new Color('#C7D2FE'), 0.45),
     []
   )
 

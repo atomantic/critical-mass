@@ -7,7 +7,8 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 
 const { useVirtualClock } = require('./virtual-clock');
-const { executeDailyBuy, placeWithUnknownReconcile, placeSellOrder, placeSellOrderWithRetry, placeFibonacciSellOrder } = require('../src/order-manager');
+const { placeWithUnknownReconcile } = require('../src/placement-reconcile');
+const { executeDailyBuy, placeSellOrder, placeSellOrderWithRetry, placeFibonacciSellOrder } = require('../src/order-manager');
 const { createCoinbaseAdapter } = require('../src/adapters/coinbase/api');
 
 // ---------------------------------------------------------------------------

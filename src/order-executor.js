@@ -13,7 +13,7 @@ const { roundAsset, roundPrice } = require('./volatility-utils');
 const { createMutex } = require('./async-mutex');
 const { getBaseCurrency } = require('./config-utils');
 const { fmtCurrency: fmtPrice, BASIS_POINTS_DIVISOR, ENTRY_NOT_ADMITTED, isFilledStatus, isCancelledStatus, isPostOnlyRejection, sleep } = require('./shared-utils');
-const { placeWithUnknownReconcile } = require('./order-manager');
+const { placeWithUnknownReconcile } = require('./placement-reconcile');
 const { createContextLogger } = require('./logger');
 const { createExecutorOrderState } = require('./executor-order-state');
 

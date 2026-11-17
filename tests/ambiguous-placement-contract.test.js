@@ -26,7 +26,7 @@ const path = require('node:path');
 const { useVirtualClock } = require('./virtual-clock');
 const { createGeminiAdapter } = require('../src/adapters/gemini/api');
 const { createCryptocomAdapter } = require('../src/adapters/cryptocom/api');
-const { placeWithUnknownReconcile } = require('../src/order-manager');
+const { placeWithUnknownReconcile } = require('../src/placement-reconcile');
 const fundPaths = require('../src/fund-paths');
 const placementIntents = require('../src/placement-intent-storage');
 

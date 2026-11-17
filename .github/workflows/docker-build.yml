@@ -102,3 +102,17 @@ jobs:
             org.opencontainers.image.revision=${{ steps.source.outputs.revision }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Verify multi-arch manifest
+        env:
+          IMAGE_REF: ghcr.io/${{ github.repository }}:${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          MANIFEST="$(docker buildx imagetools inspect "$IMAGE_REF")"
+          echo "$MANIFEST"
+          for PLATFORM in linux/amd64 linux/arm64; do
+            if ! echo "$MANIFEST" | grep -Eq "^[[:space:]]*Platform:[[:space:]]+${PLATFORM}[[:space:]]*$"; then
+              echo "::error::${IMAGE_REF} is missing platform ${PLATFORM}"
+              exit 1
+            fi
+          done
