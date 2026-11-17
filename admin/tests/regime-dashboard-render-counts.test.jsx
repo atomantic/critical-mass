@@ -17,7 +17,7 @@ async function counted(path, key, { passthrough = false, onProps } = {}) {
   return { ...actual, default: Real.type ? React.memo(Counted, Real.compare) : Counted }
 }
 
-vi.mock('../src/App', () => ({ getBaseCurrency: () => 'BTC', getQuoteCurrency: () => 'USDC' }))
+vi.mock('../src/utils/productId.mjs', () => ({ getBaseCurrency: () => 'BTC', getQuoteCurrency: () => 'USDC' }))
 const toast = vi.hoisted(() => ({ value: { addToast: () => null } }))
 vi.mock('../src/components/Toast', () => ({ useToast: () => toast.value }))
 vi.mock('../src/hooks/useTradeEvents', async () => {

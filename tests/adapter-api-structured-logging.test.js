@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
+const { useVirtualClock } = require('./virtual-clock');
 const { createCoinbaseAdapter } = require('../src/adapters/coinbase/api');
 const { createGeminiAdapter } = require('../src/adapters/gemini/api');
 const { createCryptocomAdapter } = require('../src/adapters/cryptocom/api');
@@ -28,7 +29,8 @@ describe('adapter API structured logging', () => {
     }
   });
 
-  it('preserves representative messages and appends useful exchange context', async () => {
+  it('preserves representative messages and appends useful exchange context', async (t) => {
+    const clock = useVirtualClock(t); // the coinbase GET retry backoff runs on virtual time
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'adapter-api-logging-'));
     const originalFetch = global.fetch;
     const original = { log: console.log, warn: console.warn, error: console.error };
@@ -63,7 +65,7 @@ describe('adapter API structured logging', () => {
           json: async () => ({ price: '50000' }),
         };
       };
-      assert.equal(await coinbase.getCurrentPrice('BTC-USDC'), 50000);
+      assert.equal(await clock.run(coinbase.getCurrentPrice('BTC-USDC')), 50000);
 
       const cryptocomKeys = path.join(tempDir, 'cryptocom.json');
       fs.writeFileSync(cryptocomKeys, JSON.stringify({

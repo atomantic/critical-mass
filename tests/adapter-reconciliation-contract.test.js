@@ -6,6 +6,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+const { useVirtualClock } = require('./virtual-clock');
 const { createCoinbaseAdapter } = require('../src/adapters/coinbase/api');
 const { createGeminiAdapter } = require('../src/adapters/gemini/api');
 const { createCryptocomAdapter } = require('../src/adapters/cryptocom/api');
@@ -189,9 +190,10 @@ describe('adapter fill reconciliation contract (issue #252)', () => {
     assert.equal(page, 2);
   });
 
-  it('cryptocom splits saturated windows until every response is below the API cap', async () => {
+  it('cryptocom splits saturated windows until every response is below the API cap', async (t) => {
     const now = Date.parse('2026-08-23T02:00:00.000Z');
-    Date.now = () => now;
+    // The adapter paces its scan requests with real timers; run them on virtual time.
+    const clock = useVirtualClock(t, { now });
     let call = 0;
     global.fetch = async (_url, options = {}) => {
       call++;
@@ -209,7 +211,7 @@ describe('adapter fill reconciliation contract (issue #252)', () => {
     };
 
     const adapter = createCryptocomAdapter(writeKeys('cryptocom'));
-    const fills = await adapter.getReconciliationFills('CRO-USDT', now - 2 * 60 * 60 * 1000);
+    const fills = await clock.run(adapter.getReconciliationFills('CRO-USDT', now - 2 * 60 * 60 * 1000));
     assert.ok(call > 2, 'the saturated range should be subdivided');
     assert.ok(fills.length > 1);
     assert.ok(fills.every(fill => fill.fee === 0.25));
