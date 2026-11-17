@@ -8,7 +8,7 @@ const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const fundPaths = require('../src/fund-paths');
-const stateTracker = require('../src/state-tracker');
+const placementIntents = require('../src/placement-intent-storage');
 const { placeWithUnknownReconcile } = require('../src/order-manager');
 const { createPlacementReconciler } = require('../src/regime-placement-reconciler');
 const { createCoinbaseAdapter } = require('../src/adapters/coinbase/api');
@@ -102,14 +102,14 @@ for (const c of cases) {
       const handedOff = [];
       const result = await placeWithUnknownReconcile(adapter, product,
         () => adapter.placeMarketBuy(product, 10), scopeFor(c, (accepted) => {
-          assert.equal(stateTracker.loadPlacementIntents(c.name, product).length, 1);
+          assert.equal(placementIntents.loadPlacementIntents(c.name, product).length, 1);
           handedOff.push(accepted.orderId);
         }));
       assert.equal(result.success, true);
       assert.equal(result.reconciled, true);
       assert.deepEqual(handedOff, ['accepted-order']);
       assert.equal(submitted.length, 1);
-      assert.deepEqual(stateTracker.loadPlacementIntents(c.name, product), []);
+      assert.deepEqual(placementIntents.loadPlacementIntents(c.name, product), []);
     });
 
     it('retains an unresolved intent when lookup fails and blocks another submission', async () => {
@@ -120,8 +120,8 @@ for (const c of cases) {
         () => adapter.placeLimitSell(product, 0.01, 100), scopeFor(c));
       const first = await place();
       assert.equal(first.pending, true);
-      const [intent] = stateTracker.loadPlacementIntents(c.name, product);
-      assert.equal(intent.status, stateTracker.PLACEMENT_INTENT_STATUS.UNRESOLVED);
+      const [intent] = placementIntents.loadPlacementIntents(c.name, product);
+      assert.equal(intent.status, placementIntents.PLACEMENT_INTENT_STATUS.UNRESOLVED);
       assert.equal(intent.clientOrderId, submitted[0]);
       const second = await place();
       assert.equal(second.pending, true);
@@ -199,8 +199,8 @@ for (const c of cases) {
           const place = () => placeWithUnknownReconcile(adapter, product, () => submit(adapter), scopeFor(c));
           assert.equal((await place()).pending, true);
           assert.equal(lookupCount, 1);
-          const [intent] = stateTracker.loadPlacementIntents(c.name, product);
-          assert.equal(intent.status, stateTracker.PLACEMENT_INTENT_STATUS.UNRESOLVED);
+          const [intent] = placementIntents.loadPlacementIntents(c.name, product);
+          assert.equal(intent.status, placementIntents.PLACEMENT_INTENT_STATUS.UNRESOLVED);
           assert.equal(intent.clientOrderId, submitted[0]);
           assert.equal((await place()).blockedByIntentId, intent.id);
           assert.equal(submitted.length, 1, 'unresolved acknowledgement blocks a second POST');
@@ -215,20 +215,20 @@ for (const c of cases) {
             getAdapter: () => adapter, getPositionState: () => position,
             getOrderExecutor: () => ({ capabilities: { liveReconciliation: true },
               adoptPlacement: (found) => {
-                assert.equal(stateTracker.loadPlacementIntents(c.name, product).length, 1);
+                assert.equal(placementIntents.loadPlacementIntents(c.name, product).length, 1);
                 handedOff.push(found.orderId);
                 return { success: true };
               } }),
             saveLiveState: () => {
-              assert.equal(stateTracker.loadPlacementIntents(c.name, product).length, 1);
+              assert.equal(placementIntents.loadPlacementIntents(c.name, product).length, 1);
               fs.writeFileSync(path.join(root, 'owner.json'), JSON.stringify(position));
             },
-            fillLedger: { persist: () => assert.equal(stateTracker.loadPlacementIntents(c.name, product).length, 1) },
+            fillLedger: { persist: () => assert.equal(placementIntents.loadPlacementIntents(c.name, product).length, 1) },
             logger: { info() {}, warn() {}, error() {} },
           });
           assert.equal((await reconciler.recoverPlacementIntent(intent.id)).adoptedOrderId, 'accepted-order');
           assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'owner.json'))).pendingEntryOrders[0].orderId, 'accepted-order');
-          assert.deepEqual(stateTracker.loadPlacementIntents(c.name, product), []);
+          assert.deepEqual(placementIntents.loadPlacementIntents(c.name, product), []);
           await reconciler.recoverPlacementIntent(intent.id);
           assert.deepEqual(handedOff, ['accepted-order']);
           assert.equal(submitted.length, 1, 'recovery never resends the placement');
@@ -240,12 +240,12 @@ for (const c of cases) {
         global.fetch = async () => decodedResponse(acceptedAcknowledgement(c));
         const owned = [];
         const result = await placeWithUnknownReconcile(adapter, product, () => submit(adapter), scopeFor(c, accepted => {
-          assert.equal(stateTracker.loadPlacementIntents(c.name, product).length, 1);
+          assert.equal(placementIntents.loadPlacementIntents(c.name, product).length, 1);
           owned.push(accepted.orderId);
         }));
         assert.ok(result.success);
         assert.deepEqual(owned, ['accepted-order']);
-        assert.deepEqual(stateTracker.loadPlacementIntents(c.name, product), []);
+        assert.deepEqual(placementIntents.loadPlacementIntents(c.name, product), []);
       });
 
       it(`${method} keeps explicit exchange rejections definitive`, async () => {
@@ -261,7 +261,7 @@ for (const c of cases) {
           assert.equal(err.code, 213);
           assert.ok(!err.unknownOutcome);
         }
-        assert.deepEqual(stateTracker.loadPlacementIntents(c.name, product), []);
+        assert.deepEqual(placementIntents.loadPlacementIntents(c.name, product), []);
       });
     }
   });
@@ -275,7 +275,7 @@ for (const [method, submit] of placementMethods) {
     adapter.findOrderByClientOrderId = async () => assert.fail('confirmed cancellation needs no lookup');
     const result = await placeWithUnknownReconcile(adapter, product, () => submit(adapter), scopeFor(c));
     assert.ok(!result.success && !result.pending);
-    assert.deepEqual(stateTracker.loadPlacementIntents(c.name, product), []);
+    assert.deepEqual(placementIntents.loadPlacementIntents(c.name, product), []);
   });
 }
 it('Gemini cancelled partial market execution is owned before its intent clears', async () => {
@@ -285,11 +285,11 @@ it('Gemini cancelled partial market execution is owned before its intent clears'
     executed_amount: '0.02', avg_execution_price: '100' });
   const owned = [];
   const result = await placeWithUnknownReconcile(adapter, product, () => adapter.placeMarketBuy(product, 10), scopeFor(c, accepted => {
-    assert.equal(stateTracker.loadPlacementIntents(c.name, product).length, 1);
+    assert.equal(placementIntents.loadPlacementIntents(c.name, product).length, 1);
     owned.push(accepted.orderId);
   }));
   assert.equal(result.success, true);
   assert.equal(result.filledSize, 0.02);
   assert.deepEqual(owned, ['partial-order']);
-  assert.deepEqual(stateTracker.loadPlacementIntents(c.name, product), []);
+  assert.deepEqual(placementIntents.loadPlacementIntents(c.name, product), []);
 });

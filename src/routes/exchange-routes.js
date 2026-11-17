@@ -3,7 +3,9 @@
  * Exchange Management & Per-Exchange API Routes
  */
 
-const stateTracker = require('../state-tracker');
+const dcaState = require('../dca-state');
+const regimeStateStore = require('../regime-state-store');
+const placementIntents = require('../placement-intent-storage');
 const { IPC_CHANNELS } = require('../ipc/ipc-protocol');
 const { buildActiveFundSummary } = require('../fund-summary');
 const { buildFundStatus } = require('../fund-status');
@@ -92,7 +94,7 @@ module.exports = (app, deps) => {
       const hasRegimeConfig = !!(config.regime && Object.keys(config.regime).length > 0);
       // Surface fund lifecycle from saved regime state so the UI can render
       // Draining/Closed badges without an extra round-trip.
-      const regimeState = stateTracker.loadFundRegimeState(exchange, pair);
+      const regimeState = regimeStateStore.loadFundRegimeState(exchange, pair);
       const lifecycle = regimeState?.position?.lifecycle || 'active';
       return {
         name: exchange,
@@ -126,7 +128,7 @@ module.exports = (app, deps) => {
       defaultPair: getDefaultPair(exchange),
       funds: funds.map((pair) => {
         const config = getFundConfig(exchange, pair);
-        const regimeState = stateTracker.loadFundRegimeState(exchange, pair);
+        const regimeState = regimeStateStore.loadFundRegimeState(exchange, pair);
         return {
           pair,
           productId: config.productId,
@@ -271,7 +273,7 @@ module.exports = (app, deps) => {
       return res.status(malformed ? 400 : 404).json({ success: false, error: resolved.error });
     }
     const pair = resolved.pair;
-    const regimeState = stateTracker.loadFundRegimeState(exchange, pair);
+    const regimeState = regimeStateStore.loadFundRegimeState(exchange, pair);
     const lifecycle = regimeState?.position?.lifecycle || 'active';
     if (lifecycle !== 'closed') {
       return res.status(400).json({
@@ -409,7 +411,7 @@ module.exports = (app, deps) => {
     const { pair, error } = resolvePairParam(req);
     if (error) return res.status(400).json({ success: false, error });
     const config = getFundConfig(exchange, pair);
-    const state = stateTracker.loadState(config, exchange, pair);
+    const state = dcaState.loadState(config, exchange, pair);
     res.json(state);
   });
 
@@ -574,7 +576,7 @@ module.exports = (app, deps) => {
     });
 
     const config = getFundConfig(exchange, pair);
-    const state = stateTracker.loadState(config, exchange, pair);
+    const state = dcaState.loadState(config, exchange, pair);
     const pendingOrders = (state.orders || []).filter(o => o.status === 'pending');
 
     const ordersToConsolidate = orderIds && orderIds.length > 0
@@ -622,7 +624,7 @@ module.exports = (app, deps) => {
       `ℹ️ 🧾 [${exchange}/${pair}] Placement intent ${intentId} reconciled (${action})`,
       { action: `${action}-placement-intent`, intentId },
     );
-    res.json({ exchange, pair, ...result, placementIntents: stateTracker.describePlacementIntents(exchange, pair) });
+    res.json({ exchange, pair, ...result, placementIntents: placementIntents.describePlacementIntents(exchange, pair) });
   }));
 
   // Operator retry of a fixed-DCA sell whose placement failed after its buy was

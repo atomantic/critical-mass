@@ -11,7 +11,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const fundPaths = require('../src/fund-paths');
-const stateTracker = require('../src/state-tracker');
+const placementIntents = require('../src/placement-intent-storage');
 
 const EXCHANGE = 'coinbase';
 const PAIR = 'BTC-USDC';
@@ -35,7 +35,7 @@ const CHILD = `
 const path = require('path');
 const fundPaths = require(path.join(process.env.REPO_ROOT, 'src/fund-paths'));
 fundPaths.getExchangeDataDir = () => path.join(process.env.TMP_ROOT, process.env.EXCHANGE);
-const st = require(path.join(process.env.REPO_ROOT, 'src/state-tracker'));
+const st = require(path.join(process.env.REPO_ROOT, 'src/placement-intent-storage'));
 for (let i = 0; i < Number(process.env.COUNT); i++) {
   const intent = st.recordPlacementIntent({ exchange: process.env.EXCHANGE, pair: process.env.PAIR, action: process.env.LABEL + '-' + i });
   if (i % 2 === 0) st.resolvePlacementIntent(process.env.EXCHANGE, process.env.PAIR, intent.id);
@@ -56,25 +56,25 @@ describe('placement intents cross-process lock', () => {
   it('two processes recording and resolving concurrently end with exactly the surviving rows', async () => {
     await Promise.all([runChild('a', 50), runChild('b', 50)]);
 
-    const actions = stateTracker.loadPlacementIntents(EXCHANGE, PAIR).map(i => i.action).sort();
+    const actions = placementIntents.loadPlacementIntents(EXCHANGE, PAIR).map(i => i.action).sort();
     const expected = ['a', 'b'].flatMap(l => Array.from({ length: 25 }, (_, n) => `${l}-${n * 2 + 1}`)).sort();
     assert.deepEqual(actions, expected);
-    assert.equal(fs.existsSync(`${stateTracker.getPlacementIntentsFile(EXCHANGE, PAIR)}.lock`), false);
+    assert.equal(fs.existsSync(`${placementIntents.getPlacementIntentsFile(EXCHANGE, PAIR)}.lock`), false);
   });
 
   it('reclaims a lock left by a dead process', () => {
-    const lock = `${stateTracker.getPlacementIntentsFile(EXCHANGE, PAIR)}.lock`;
+    const lock = `${placementIntents.getPlacementIntentsFile(EXCHANGE, PAIR)}.lock`;
     fs.mkdirSync(lock, { recursive: true });
     fs.writeFileSync(path.join(lock, 'owner.json'), JSON.stringify({ pid: 2 ** 22 - 1, host: os.hostname() }));
     const old = new Date(Date.now() - 5000);
     fs.utimesSync(lock, old, old);
 
-    const intent = stateTracker.recordPlacementIntent({ exchange: EXCHANGE, pair: PAIR, action: 'x' });
-    assert.equal(stateTracker.loadPlacementIntents(EXCHANGE, PAIR)[0].id, intent.id);
+    const intent = placementIntents.recordPlacementIntent({ exchange: EXCHANGE, pair: PAIR, action: 'x' });
+    assert.equal(placementIntents.loadPlacementIntents(EXCHANGE, PAIR)[0].id, intent.id);
   });
 
   it('still honours the deadline when a stale lock cannot be reclaimed', () => {
-    const lock = `${stateTracker.getPlacementIntentsFile(EXCHANGE, PAIR)}.lock`;
+    const lock = `${placementIntents.getPlacementIntentsFile(EXCHANGE, PAIR)}.lock`;
     fs.mkdirSync(lock, { recursive: true });
     fs.writeFileSync(path.join(lock, 'owner.json'), JSON.stringify({ pid: 2 ** 22 - 1, host: os.hostname() }));
     fs.mkdirSync(`${lock}.reclaim`); // another reclaimer holds the mutex, so reclamation keeps failing
@@ -82,6 +82,6 @@ describe('placement intents cross-process lock', () => {
     let skew = 0;
     mock.method(Date, 'now', () => (skew += 4000, realNow() + skew));
 
-    assert.throws(() => stateTracker.recordPlacementIntent({ exchange: EXCHANGE, pair: PAIR, action: 'x' }), /still held/);
+    assert.throws(() => placementIntents.recordPlacementIntent({ exchange: EXCHANGE, pair: PAIR, action: 'x' }), /still held/);
   });
 });

@@ -6,7 +6,7 @@ const path = require('path');
 const os = require('os');
 const fundPaths = require('../src/fund-paths');
 const configUtils = require('../src/config-utils');
-const state = require('../src/state-tracker');
+const regimeStateStore = require('../src/regime-state-store');
 const { createNewBody } = require('../src/celestial-hierarchy');
 const { createClosedTrades } = require('../src/closed-trades');
 const { projectBuyCorrection } = require('../src/buy-fill-correction');
@@ -24,7 +24,7 @@ const createLedger = () => {
 };
 const real = (tradeId, size, price, fee = 0) => ({ tradeId, orderId: 'buy', productId: PAIR, side: 'buy', size, price, netFee: fee });
 const near = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-7, `${actual} != ${expected}`);
-const position = () => state.loadRegimeState(EXCHANGE, PAIR).position;
+const position = () => regimeStateStore.loadRegimeState(EXCHANGE, PAIR).position;
 
 describe('terminal buy economic reconciliation (#836)', () => {
   beforeEach(() => {
@@ -68,7 +68,7 @@ describe('terminal buy economic reconciliation (#836)', () => {
     }
     ledger.annotateFillsByOrderId('buy', { bodyId: 'body', isBodyOwned: true });
     ledger.persist();
-    state.saveRegimeState({ celestialBodies: closed ? [] : [body], totalAsset: body.assetQty,
+    regimeStateStore.saveRegimeState({ celestialBodies: closed ? [] : [body], totalAsset: body.assetQty,
       totalCostBasis: body.costBasis, activeCycleId: cycleId, cyclesCompleted: closed ? 1 : 0 }, {}, EXCHANGE, null, null, PAIR);
     return { ledger, cycleId };
   };
@@ -329,7 +329,7 @@ describe('terminal buy economic reconciliation (#836)', () => {
     let { ledger } = seed();
     const saved = position();
     saved.celestialBodies = [];
-    state.saveRegimeState(saved, {}, EXCHANGE, null, null, PAIR);
+    regimeStateStore.saveRegimeState(saved, {}, EXCHANGE, null, null, PAIR);
     assert.throws(() => ledger.ingestFill(real('actual', 1, 110)), { buyCorrectionPending: true });
     ledger = createLedger();
     assert.throws(() => ledger.ingestFill(real('actual', 1, 110)), { buyCorrectionPending: true });

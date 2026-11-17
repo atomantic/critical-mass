@@ -4,7 +4,8 @@
  * accounting first and supplies current runtime references on every read.
  * Stopped-process synthesis remains in regime-status.js.
  */
-const { LIFECYCLE, describePlacementIntents } = require('./state-tracker');
+const { LIFECYCLE } = require('./regime-state-store');
+const { describePlacementIntents } = require('./placement-intent-storage');
 const celestialHierarchy = require('./celestial-hierarchy');
 const { DEFAULT_FEE_RATE_PER_SIDE } = require('../shared/fee-defaults.mjs');
 

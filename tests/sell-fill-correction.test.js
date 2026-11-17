@@ -7,7 +7,7 @@ const path = require('path');
 
 const fundPaths = require('../src/fund-paths');
 const configUtils = require('../src/config-utils');
-const state = require('../src/state-tracker');
+const regimeStateStore = require('../src/regime-state-store');
 const { createClosedTrades } = require('../src/closed-trades');
 
 const EXCHANGE = 'sell-correction-test';
@@ -37,7 +37,7 @@ const correctedFill = (tradeId, price, netFee) => ({
   netFee,
 });
 
-const position = () => state.loadRegimeState(EXCHANGE, PAIR).position;
+const position = () => regimeStateStore.loadRegimeState(EXCHANGE, PAIR).position;
 
 const audit = () => {
   const closed = createClosedTrades(EXCHANGE, PAIR);
@@ -62,7 +62,7 @@ const seedBookedSell = () => {
   ledger.claimCapitalCredit('sell', 0.02);
   ledger.persist();
 
-  state.saveRegimeState({ activeCycleId: cycleId, realizedPnL: 5, realizedAssetPnL: 0,
+  regimeStateStore.saveRegimeState({ activeCycleId: cycleId, realizedPnL: 5, realizedAssetPnL: 0,
     heldAssetCostBasis: 0, celestialBodies: [], appliedSellCorrections: [] }, {}, EXCHANGE, null, null, PAIR);
   const closed = createClosedTrades(EXCHANGE, PAIR);
   closed.record({ sellOrderId: 'sell', timestamp: 1, qtySold: 0.02, sellProceeds: 39.96,

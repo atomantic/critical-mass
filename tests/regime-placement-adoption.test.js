@@ -10,7 +10,7 @@ const originalUpdate = configUtils.updateRegimeConfig;
 configUtils.updateRegimeConfig = () => {};
 const { createRegimeEngine } = require('../src/regime-engine');
 configUtils.updateRegimeConfig = originalUpdate;
-const state = require('../src/state-tracker');
+const placementIntents = require('../src/placement-intent-storage');
 const { createOrderExecutor } = require('../src/order-executor');
 const PAIR = 'BTC-USDC';
 let root;
@@ -34,8 +34,8 @@ afterEach(() => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 const makeIntent = (action, extra = {}) => {
-  const intent = state.recordPlacementIntent({ exchange: 'coinbase', pair: PAIR, action, price: 120, size: 0.9, sizeUsdc: 108, ...extra });
-  state.markPlacementIntentUnresolved('coinbase', PAIR, intent.id, { clientOrderId: 'client-1' });
+  const intent = placementIntents.recordPlacementIntent({ exchange: 'coinbase', pair: PAIR, action, price: 120, size: 0.9, sizeUsdc: 108, ...extra });
+  placementIntents.markPlacementIntentUnresolved('coinbase', PAIR, intent.id, { clientOrderId: 'client-1' });
   return intent.id;
 };
 const diskPosition = () => JSON.parse(fs.readFileSync(path.join(root, 'coinbase', PAIR, 'regime-state.json'), 'utf8')).position;
@@ -68,7 +68,7 @@ describe('regime operator placement adoption', () => {
     assert.equal(diskPosition().assetOnOrder, 0.9);
     assert.equal(engine.getFillLedger().getFillsForOrder('buy-1')[0].sellOrderId, 'adopted');
     assert.equal(executor._test.getBodyByTpOrderId('adopted').bodyId, 'body-1');
-    assert.equal(state.loadPlacementIntents('coinbase', PAIR).length, 0);
+    assert.equal(placementIntents.loadPlacementIntents('coinbase', PAIR).length, 0);
     assert.equal((await engine.reconcilePlacementIntent(id, 'adopt')).success, false);
   });
   it('persists an adopted ladder rung for restart and post-poll fill classification', async () => {
@@ -93,7 +93,7 @@ describe('regime operator placement adoption', () => {
     const body = seedBody();
     body.tpOrderId = 'different-live-order';
     assert.equal((await engine.reconcilePlacementIntent(id, 'adopt')).success, false);
-    assert.equal(state.getBlockingPlacementIntents('coinbase', PAIR).length, 1);
+    assert.equal(placementIntents.getBlockingPlacementIntents('coinbase', PAIR).length, 1);
     assert.equal(executor.getPendingCounts().total, 0);
   });
   it('retains the intent after persistence failure and permits an idempotent retry', async () => {
@@ -105,12 +105,12 @@ describe('regime operator placement adoption', () => {
       return originalRename(from, to);
     });
     await assert.rejects(engine.reconcilePlacementIntent(id, 'adopt'), /disk failure/);
-    assert.equal(state.getBlockingPlacementIntents('coinbase', PAIR).length, 1);
+    assert.equal(placementIntents.getBlockingPlacementIntents('coinbase', PAIR).length, 1);
     fs.renameSync.mock.restore();
     assert.equal((await engine.reconcilePlacementIntent(id, 'adopt')).success, true);
     assert.equal(diskPosition().celestialBodies[0].tpOrderId, 'adopted');
     assert.equal(executor.getPendingCounts().total, 1);
-    assert.equal(state.loadPlacementIntents('coinbase', PAIR).length, 0);
+    assert.equal(placementIntents.loadPlacementIntents('coinbase', PAIR).length, 0);
   });
 });
 
@@ -120,13 +120,13 @@ describe('automatic placement recovery', () => {
     makeIntent('body_tp', { bodyId: body.id });
     await engine._test.reconcilePendingPlacements();
     assert.equal(diskPosition().celestialBodies[0].tpOrderId, 'adopted');
-    assert.equal(state.loadPlacementIntents('coinbase', PAIR).length, 0);
+    assert.equal(placementIntents.loadPlacementIntents('coinbase', PAIR).length, 0);
   });
   it('clears a confirmed unfilled cancellation automatically', async () => {
     makeIntent('body_tp', { bodyId: 'body-1' });
     adapter.findOrderByClientOrderId = async () => ({ orderId: 'cancelled', status: 'CANCELLED', filledSize: 0 });
     await engine._test.reconcilePendingPlacements();
-    assert.equal(state.loadPlacementIntents('coinbase', PAIR).length, 0);
+    assert.equal(placementIntents.loadPlacementIntents('coinbase', PAIR).length, 0);
     assert.equal(executor.getPendingCounts().total, 0);
   });
   it('retries a failed lookup and retains partial fills for normal accounting', async () => {
@@ -134,7 +134,7 @@ describe('automatic placement recovery', () => {
     makeIntent('body_tp', { bodyId: 'body-1' });
     adapter.findOrderByClientOrderId = async () => { throw new Error('timeout'); };
     await engine._test.reconcilePendingPlacements();
-    assert.equal(state.loadPlacementIntents('coinbase', PAIR).length, 1);
+    assert.equal(placementIntents.loadPlacementIntents('coinbase', PAIR).length, 1);
     adapter.findOrderByClientOrderId = async () => ({ orderId: 'partial', status: 'CANCELLED', filledSize: 0.1 });
     await engine._test.reconcilePendingPlacements();
     assert.equal(diskPosition().celestialBodies[0].tpOrderId, 'partial');
@@ -144,13 +144,13 @@ describe('automatic placement recovery', () => {
     makeIntent('entry_bid');
     adapter.findOrderByClientOrderId = async () => null;
     await engine._test.reconcilePendingPlacements();
-    assert.equal(state.loadPlacementIntents('coinbase', PAIR).length, 1);
+    assert.equal(placementIntents.loadPlacementIntents('coinbase', PAIR).length, 1);
   });
   it('keeps unknown statuses blocked', async () => {
     makeIntent('entry_bid');
     adapter.findOrderByClientOrderId = async () => ({ orderId: 'unknown', status: 'UNKNOWN' });
     await engine._test.reconcilePendingPlacements();
-    assert.equal(state.loadPlacementIntents('coinbase', PAIR).length, 1);
+    assert.equal(placementIntents.loadPlacementIntents('coinbase', PAIR).length, 1);
   });
 });
 
@@ -158,13 +158,13 @@ describe('automatic placement recovery from exchange evidence', () => {
   const HOUR = 60 * 60_000;
   /** Rewrite one intent so it looks hours old, optionally left by a dead process with no client id. */
   const ageIntent = (intentId, patch = {}) => {
-    const intents = state.loadPlacementIntents('coinbase', PAIR)
+    const intents = placementIntents.loadPlacementIntents('coinbase', PAIR)
       .map(i => (i.id === intentId ? { ...i, createdAt: Date.now() - HOUR, ...patch } : i));
-    state.savePlacementIntents(intents, 'coinbase', PAIR);
+    placementIntents.savePlacementIntents(intents, 'coinbase', PAIR);
     return intents.find(i => i.id === intentId);
   };
   const strandedEntry = () => {
-    const intent = state.recordPlacementIntent({ exchange: 'coinbase', pair: PAIR, action: 'entry_bid', side: 'buy', price: 120, size: 0.9, sizeUsdc: 108 });
+    const intent = placementIntents.recordPlacementIntent({ exchange: 'coinbase', pair: PAIR, action: 'entry_bid', side: 'buy', price: 120, size: 0.9, sizeUsdc: 108 });
     return ageIntent(intent.id, { instanceId: 'a-process-that-died' });
   };
   const withExchange = ({ openOrders = [], fills = [], order = null } = {}) => {
@@ -177,7 +177,7 @@ describe('automatic placement recovery from exchange evidence', () => {
     strandedEntry();
     withExchange();
     await engine._test.reconcilePendingPlacements();
-    assert.equal(state.loadPlacementIntents('coinbase', PAIR).length, 0);
+    assert.equal(placementIntents.loadPlacementIntents('coinbase', PAIR).length, 0);
     assert.equal(executor.getPendingCounts().total, 0);
   });
 
@@ -185,7 +185,7 @@ describe('automatic placement recovery from exchange evidence', () => {
     const intent = strandedEntry();
     withExchange({ openOrders: [{ orderId: 'resting', side: 'BUY', price: 120, size: 0.9, originalSize: 0.9, createdTime: new Date(intent.createdAt + 500).toISOString() }] });
     await engine._test.reconcilePendingPlacements();
-    assert.equal(state.loadPlacementIntents('coinbase', PAIR).length, 0);
+    assert.equal(placementIntents.loadPlacementIntents('coinbase', PAIR).length, 0);
     assert.equal(executor.getPendingCounts().total, 1);
     assert.ok(diskPosition().pendingEntryOrders.some(o => o.orderId === 'resting'));
   });
@@ -195,7 +195,7 @@ describe('automatic placement recovery from exchange evidence', () => {
     adapter.findOrderByClientOrderId = async () => null;
     withExchange();
     await engine._test.reconcilePendingPlacements();
-    assert.equal(state.loadPlacementIntents('coinbase', PAIR).length, 0);
+    assert.equal(placementIntents.loadPlacementIntents('coinbase', PAIR).length, 0);
   });
 
   // Coinbase's client-id lookup scans product history newest-first and throws
@@ -210,7 +210,7 @@ describe('automatic placement recovery from exchange evidence', () => {
     adapter.findOrderByClientOrderId = (...args) => { lookupOptions = args[2]; return historyBudgetExceeded(); };
     withExchange();
     await engine._test.reconcilePendingPlacements();
-    assert.equal(state.loadPlacementIntents('coinbase', PAIR).length, 0);
+    assert.equal(placementIntents.loadPlacementIntents('coinbase', PAIR).length, 0);
     assert.equal(engine._getPositionState().celestialBodies[0].tpOrderId, null, 'nothing adopted — the body re-places its TP');
     assert.equal(lookupOptions?.placedAt, intent.createdAt, 'the lookup is scoped to the dispatch time');
   });
@@ -222,7 +222,7 @@ describe('automatic placement recovery from exchange evidence', () => {
     const resting = { orderId: 'resting-tp', side: 'SELL', price: 120, size: 0.9, originalSize: 0.9, createdTime: new Date(intent.createdAt + 500).toISOString() };
     withExchange({ openOrders: [resting], order: { ...resting, status: 'OPEN', filledSize: 0 } });
     await engine._test.reconcilePendingPlacements();
-    assert.equal(state.loadPlacementIntents('coinbase', PAIR).length, 0);
+    assert.equal(placementIntents.loadPlacementIntents('coinbase', PAIR).length, 0);
     assert.equal(diskPosition().celestialBodies[0].tpOrderId, 'resting-tp');
   });
 
@@ -233,7 +233,7 @@ describe('automatic placement recovery from exchange evidence', () => {
     const resting = { orderId: 'resting-tp', side: 'SELL', price: 120, size: 0.9, originalSize: 0.9, createdTime: new Date(intent.createdAt + 500).toISOString() };
     withExchange({ openOrders: [resting], order: { ...resting, status: 'CANCELLED', filledSize: 0 } });
     await engine._test.reconcilePendingPlacements();
-    assert.equal(state.loadPlacementIntents('coinbase', PAIR).length, 1, 'a live-listed order is never released on a stale status');
+    assert.equal(placementIntents.loadPlacementIntents('coinbase', PAIR).length, 1, 'a live-listed order is never released on a stale status');
   });
 
   it('keeps the intent when tracking cannot be saved before an absent verdict releases it', async () => {
@@ -246,7 +246,7 @@ describe('automatic placement recovery from exchange evidence', () => {
     });
     await engine._test.reconcilePendingPlacements();
     fs.renameSync.mock.restore();
-    assert.equal(state.loadPlacementIntents('coinbase', PAIR).length, 1);
+    assert.equal(placementIntents.loadPlacementIntents('coinbase', PAIR).length, 1);
   });
 
   it('keeps the intent when both the client-id lookup and the exchange search fail', async () => {
@@ -255,7 +255,7 @@ describe('automatic placement recovery from exchange evidence', () => {
     withExchange();
     adapter.getReconciliationFills = async () => { throw new Error('rate limited'); };
     await engine._test.reconcilePendingPlacements();
-    assert.equal(state.loadPlacementIntents('coinbase', PAIR).length, 1);
+    assert.equal(placementIntents.loadPlacementIntents('coinbase', PAIR).length, 1);
   });
 
   it('never clears an intent from an operator adopt, which does not search exchange evidence', async () => {
@@ -263,12 +263,12 @@ describe('automatic placement recovery from exchange evidence', () => {
     ageIntent(makeIntent('entry_bid', { side: 'buy' }));
     adapter.findOrderByClientOrderId = async () => null;
     withExchange();
-    for (const intent of state.loadPlacementIntents('coinbase', PAIR)) {
+    for (const intent of placementIntents.loadPlacementIntents('coinbase', PAIR)) {
       const result = await engine.reconcilePlacementIntent(intent.id, 'adopt');
       assert.equal(result.success, false);
       assert.match(result.error, intent.id === stranded.id ? /no client order id/ : /reports no order/);
     }
-    assert.equal(state.loadPlacementIntents('coinbase', PAIR).length, 2);
+    assert.equal(placementIntents.loadPlacementIntents('coinbase', PAIR).length, 2);
   });
 
   it('keeps the intent when the exchange evidence is ambiguous, and does not rescan immediately', async () => {
@@ -280,7 +280,7 @@ describe('automatic placement recovery from exchange evidence', () => {
     adapter.getOpenOrders = async (...args) => { scans += 1; return listOpen(...args); };
     await engine._test.reconcilePendingPlacements();
     await engine._test.reconcilePendingPlacements();
-    assert.equal(state.loadPlacementIntents('coinbase', PAIR).length, 1);
+    assert.equal(placementIntents.loadPlacementIntents('coinbase', PAIR).length, 1);
     assert.equal(scans, 1);
   });
 
@@ -289,7 +289,7 @@ describe('automatic placement recovery from exchange evidence', () => {
     withExchange();
     adapter.getReconciliationFills = async () => { throw new Error('rate limited'); };
     await engine._test.reconcilePendingPlacements();
-    assert.equal(state.loadPlacementIntents('coinbase', PAIR).length, 1);
+    assert.equal(placementIntents.loadPlacementIntents('coinbase', PAIR).length, 1);
   });
 });
 
@@ -317,5 +317,5 @@ it('periodic reconciliation holds its lock through recovery and adopts before fi
   await pass;
   assert.equal(trackedAtPoll, true);
   assert.equal(engine._test.getFlags().reconcileInProgress, false);
-  assert.equal(state.loadPlacementIntents('coinbase', PAIR).length, 0);
+  assert.equal(placementIntents.loadPlacementIntents('coinbase', PAIR).length, 0);
 });
