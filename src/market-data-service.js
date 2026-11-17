@@ -805,8 +805,6 @@ const createMarketDataService = (exchange, pair) => {
   const timerTracker = createTimerTracker();
   const trackedSetTimeout = timerTracker.trackedSetTimeout;
 
-  let onOrderFillCallback = null; // External callback for when orders fill
-
   // Pre-populate trackedOrders from a position (called at startup and on
   // every cache reload) so the WS feed can detect fills/cancels for every
   // persisted live order — TPs (sell), pending entries (buy), and ladder
@@ -1237,17 +1235,6 @@ const createMarketDataService = (exchange, pair) => {
     trackedOrder.filledAt = Date.now();
     clearPendingRetry(orderId);
 
-    if (onOrderFillCallback) {
-      onOrderFillCallback({
-        orderId,
-        type: trackedOrder.type,
-        size: filledSize,
-        price: averageFilledPrice,
-        fees: totalFees,
-        exchange,
-      });
-    }
-
     // Mark settled and prune from trackedOrders (settledOrderIds outlives
     // the 60s TTL so cache reloads can't resurrect this order).
     markSettled(orderId);
@@ -1632,8 +1619,8 @@ const createMarketDataService = (exchange, pair) => {
   // Fill detection MUST win over cancel detection: a CANCELLED status that
   // arrives with completionPercentage>=100 AND populated aggregates is a
   // cancel-after-fill race — the order had already filled when the cancel
-  // was issued. Routing it to the cancel branch would suppress
-  // onOrderFillCallback and miss a real fill. Mirrors the same ordering
+  // was issued. Routing it to the cancel branch would skip
+  // finalizeFilledOrder and miss a real fill. Mirrors the same ordering
   // in order-manager.js:29 (checks FILLED/completionPercentage>=100
   // BEFORE CANCELLED/EXPIRED) and order-executor.js:101,119.
   const classifyTerminal = (data) => {
@@ -1724,8 +1711,7 @@ const createMarketDataService = (exchange, pair) => {
         // guard, a duplicate FILLED replay arriving in that window would
         // recreate pendingTerminalRetries; processOrderUpdate would then
         // see inRetryChain=true (line 1295) and bypass the settled-status
-        // guard, re-running finalizeFilledOrder and re-firing
-        // onOrderFillCallback for the same execution.
+        // guard, re-running finalizeFilledOrder for the same execution.
         const tracked = trackedOrders.get(orderId);
         const alreadySettled = tracked && isSettledStatus(tracked.status);
         if (!alreadySettled) {
@@ -1777,10 +1763,9 @@ const createMarketDataService = (exchange, pair) => {
     const trackedOrder = trackedOrders.get(orderId);
 
     // Skip replayed terminal events for orders we've already settled.
-    // Without this an already-finalized FILLED would re-fire
-    // onOrderFillCallback (the engine would see the same fill twice),
-    // and an already-settled CANCELLED would schedule another untrack
-    // timer.
+    // Without this an already-finalized FILLED would be finalized a
+    // second time (the same fill settled twice), and an already-settled
+    // CANCELLED would schedule another untrack timer.
     //
     // BUT: settleCancelledOrder flips trackedOrder.status to 'cancelled'/
     // 'failed' on attempt 0 to suppress the phantom open row during the
@@ -1812,7 +1797,7 @@ const createMarketDataService = (exchange, pair) => {
     // reach the ledger until the terminal FILLED event arrives — and if
     // the order is later cancelled without fully filling, the partial fill
     // would be lost entirely. Position-state updates remain the engine's
-    // responsibility (we don't fire onOrderFillCallback here); we only
+    // responsibility (nothing is finalized here); we only
     // patch the ledger gap. ingestFill is idempotent on tradeId, so the
     // FILLED branch re-running this work is safe.
     if (!terminalKind) {
@@ -1847,8 +1832,8 @@ const createMarketDataService = (exchange, pair) => {
       // phantom open row. If the order then re-arrives reclassified as
       // 'filled' (CANCELLED+completion=100+price>0 race), retryFilledIngest
       // would otherwise short-circuit on its 'cancelled' guard every tick,
-      // leaving the FILLED retry chain stuck and onOrderFillCallback
-      // never firing. The status field is the engine-facing display state
+      // leaving the FILLED retry chain stuck and the order never
+      // finalizing. The status field is the engine-facing display state
       // and finalizeFilledOrder will set it to 'filled' on success.
       if (CANCEL_FAMILY_STATUSES.has(trackedOrder.status)) {
         trackedOrder.status = 'open';
@@ -1893,7 +1878,7 @@ const createMarketDataService = (exchange, pair) => {
       }
       // Finalize with the target's latest aggregates — replays during the
       // await may have advanced filledSize / averageFilledPrice / totalFees,
-      // and the engine callback must see those, not the stale captures
+      // and the settled order must record those, not the stale captures
       // from when this handler entered.
       const finalSize = target.filledSize;
       const finalPrice = target.averageFilledPrice;
@@ -2129,13 +2114,6 @@ const createMarketDataService = (exchange, pair) => {
   };
 
   /**
-   * Set callback for order fills
-   */
-  const setOnOrderFill = (callback) => {
-    onOrderFillCallback = callback;
-  };
-
-  /**
    * Set callback for status updates (used by the realtime bus + chart buffer)
    */
   const setOnStatusUpdate = (callback) => {
@@ -2153,7 +2131,6 @@ const createMarketDataService = (exchange, pair) => {
     getOrderStatus,
     trackOrder,
     untrackOrder,
-    setOnOrderFill,
     setOnStatusUpdate,
     // Health state (issue #228) — null until start() creates the monitor (or
     // a test injects one via _test.injectHealthMonitor).
@@ -2188,6 +2165,7 @@ const createMarketDataService = (exchange, pair) => {
       injectHealthMonitor: (hm) => { healthMonitor = hm; },
       injectWsFeed: (feed) => { wsFeed = feed; },
       getActiveAdapter,
+      trackedOrders,
       pendingTerminalRetries,
       pendingPartialRetries,
       timerTracker,

@@ -65,6 +65,40 @@ const makeLedger = () => {
   };
 };
 
+/**
+ * Record every FILLED finalization a service performs, as the aggregates it
+ * settled with. The service exposes no fill callback (position state is the
+ * engine's job), so this watches the tracked-order record itself:
+ * finalizing an order writes status / filledSize / filledPrice / fees and
+ * then stamps filledAt — once per finalization, and nowhere else. Each
+ * filledAt write is therefore one finalization, so a re-finalized order
+ * shows up as a second entry rather than being hidden by the final state.
+ * Covers orders tracked before and after the call.
+ * @param {any} svc - createMarketDataService instance
+ * @returns {Array<{orderId: string, type: string, size: number, price: number, fees: number}>}
+ */
+const captureFinalizedFills = (svc) => {
+  const fills = [];
+  const trackedOrders = svc._test.trackedOrders;
+  const watch = (orderId, order) => {
+    let filledAt = order.filledAt;
+    Object.defineProperty(order, 'filledAt', {
+      configurable: true,
+      enumerable: true,
+      get: () => filledAt,
+      set: (value) => {
+        filledAt = value;
+        fills.push({ orderId, type: order.type, size: order.filledSize, price: order.filledPrice, fees: order.fees });
+      },
+    });
+    return order;
+  };
+  for (const [orderId, order] of trackedOrders) watch(orderId, order);
+  const set = trackedOrders.set.bind(trackedOrders);
+  trackedOrders.set = (orderId, order) => set(orderId, watch(orderId, order));
+  return fills;
+};
+
 const makeFill = (tradeId, size = 0.5) => ({
   tradeId,
   orderId: 'order-1',
@@ -1077,8 +1111,7 @@ describe('handleOrderUpdate under a feed burst (issue #1026)', () => {
     const ledger = makeLedger();
     svc._test.injectFillLedger(ledger);
     svc._test.injectProductId('BTC-USDC');
-    const fills = [];
-    svc.setOnOrderFill(f => fills.push(f));
+    const fills = captureFinalizedFills(svc);
     return { svc, ledger, fills };
   };
   const fill = (tradeId, orderId, size) => ({ tradeId, orderId, side: 'sell', price: 70000, size, totalCommission: 0.01 });
@@ -1148,7 +1181,7 @@ describe('handleOrderUpdate under a feed burst (issue #1026)', () => {
     release.resolve();
     await first;
     await Promise.all(burst);
-    assert.equal(fills.length, 1, 'exactly one terminal callback');
+    assert.equal(fills.length, 1, 'exactly one terminal finalization');
     assert.equal(fills[0].size, 0.6);
     assert.equal(fills[0].price, 70100);
     assert.equal(fills[0].fees, 0.06);
@@ -1411,8 +1444,7 @@ describe('handleOrderUpdate integration: replayed CANCELLED reaches target updat
     svc._test.injectProductId('BTC-USDC');
     svc.trackOrder('order-Y', { type: 'take_profit', price: 70000, size: 0.7, placedAt: Date.now() });
 
-    const fills = [];
-    svc.setOnOrderFill(f => fills.push(f));
+    const fills = captureFinalizedFills(svc);
 
     // First FILLED at 0.3 with avg=70000 — fetch fails, retry scheduled.
     await svc._test.handleOrderUpdate({
@@ -1589,7 +1621,7 @@ describe('handleOrderUpdate integration: replayed CANCELLED reaches target updat
     // same cumulative filledSize but more complete averageFilledPrice/
     // totalFees (the original may have arrived before WS-side aggregation
     // finalized). The synchronous prelude must update aggregates even
-    // when filledSize is unchanged, otherwise finalize/callback fires
+    // when filledSize is unchanged, otherwise finalize runs
     // with stale values.
     const fakeAdapter = {
       getOrderFills: async () => { throw new Error('keep retry pending'); },
@@ -1636,7 +1668,7 @@ describe('handleOrderUpdate integration: replayed CANCELLED reaches target updat
   it('replayed FILLED with placeholder totalFees=0 does NOT clobber a previously-correct nonzero fee total', async () => {
     // websocket-feed normalizes a missing total_fees field to 0. Without
     // a truthy guard, the prelude would overwrite a valid existing fee
-    // with the placeholder zero on the replay, causing finalize/callback
+    // with the placeholder zero on the replay, causing finalize
     // to report fees=0 even though the original event had the correct
     // value.
     const fakeAdapter = {
@@ -1793,8 +1825,7 @@ describe('handleOrderUpdate integration: replayed CANCELLED reaches target updat
     svc._test.injectProductId('BTC-USDC');
     svc.trackOrder('order-Pct', { type: 'take_profit', price: 70000, size: 0.5, placedAt: Date.now() });
 
-    const fills = [];
-    svc.setOnOrderFill(f => fills.push(f));
+    const fills = captureFinalizedFills(svc);
 
     await svc._test.handleOrderUpdate({
       orderId: 'order-Pct', status: 'OPEN',
@@ -1803,7 +1834,7 @@ describe('handleOrderUpdate integration: replayed CANCELLED reaches target updat
     });
 
     assert.equal(ingested.size, 1, 'completion=100 must trigger the FILLED catch-up (terminal path)');
-    assert.equal(fills.length, 1, 'onOrderFillCallback must fire for completion>=100');
+    assert.equal(fills.length, 1, 'the order must finalize for completion>=100');
     assert.equal(fills[0].size, 0.5);
 
     svc.stop();
@@ -1837,8 +1868,7 @@ describe('handleOrderUpdate integration: replayed CANCELLED reaches target updat
       });
       svc._test.injectProductId('BTC-USDC');
       svc.trackOrder('order-Par', { type: 'take_profit', price: 70000, size: 0.5, placedAt: Date.now() });
-      const fills = [];
-      svc.setOnOrderFill(f => fills.push(f));
+      const fills = captureFinalizedFills(svc);
 
       await svc._test.handleOrderUpdate({ orderId: 'order-Par', status: 'FILLED', filledSize: 0.5, averageFilledPrice: 70000, totalFees: 0.05 });
       assert.equal(fills.length, 0, 'FILLED catch-up failed; retry pending');
@@ -1850,7 +1880,7 @@ describe('handleOrderUpdate integration: replayed CANCELLED reaches target updat
 
       t.mock.timers.tick(10_000);
       await tick();
-      assert.equal(fills.length, 0, `${terminal} must stop the FILLED chain; no fill callback`);
+      assert.equal(fills.length, 0, `${terminal} must stop the FILLED chain; no FILLED finalization`);
       assert.equal(svc.getOrderStatus('order-Par'), terminal.toLowerCase(), 'order stays settled');
       svc.stop();
     });
@@ -1891,8 +1921,7 @@ describe('handleOrderUpdate integration: replayed CANCELLED reaches target updat
     svc._test.injectProductId('BTC-USDC');
     svc.trackOrder('order-Early', { type: 'take_profit', price: 70000, size: 0.5, placedAt: Date.now() });
 
-    const fills = [];
-    svc.setOnOrderFill(f => fills.push(f));
+    const fills = captureFinalizedFills(svc);
 
     // Early WS event: OPEN with completion=100 but aggregates not yet populated.
     await svc._test.handleOrderUpdate({
@@ -1902,7 +1931,7 @@ describe('handleOrderUpdate integration: replayed CANCELLED reaches target updat
     });
 
     assert.equal(fills.length, 0,
-      'must NOT fire onOrderFillCallback while aggregates are unpopulated — would lock in stale zero price/fees');
+      'must NOT finalize while aggregates are unpopulated — would lock in stale zero price/fees');
     assert.equal(svc._test.pendingTerminalRetries.has('order-Early'), false,
       'must NOT eagerly create a terminal target — order stays in partial branch');
 
@@ -1924,7 +1953,7 @@ describe('handleOrderUpdate integration: replayed CANCELLED reaches target updat
     // Mirror of order-manager.js:29 / order-executor.js:101,119 ordering.
     // When a cancel races with a fill that has just completed, the
     // exchange may report status=CANCELLED with completionPercentage=100.
-    // Routing this to the cancel branch would suppress onOrderFillCallback
+    // Routing this to the cancel branch would skip finalization
     // and miss a real fill — the fill detection must win over cancel
     // detection in classifyTerminal.
     const fakeAdapter = {
@@ -1948,8 +1977,7 @@ describe('handleOrderUpdate integration: replayed CANCELLED reaches target updat
     svc._test.injectProductId('BTC-USDC');
     svc.trackOrder('order-CF', { type: 'take_profit', price: 70000, size: 0.4, placedAt: Date.now() });
 
-    const fills = [];
-    svc.setOnOrderFill(f => fills.push(f));
+    const fills = captureFinalizedFills(svc);
 
     await svc._test.handleOrderUpdate({
       orderId: 'order-CF', status: 'CANCELLED',
@@ -1957,7 +1985,7 @@ describe('handleOrderUpdate integration: replayed CANCELLED reaches target updat
       completionPercentage: 100,
     });
 
-    assert.equal(fills.length, 1, 'CANCELLED+completion=100 must fire onOrderFillCallback (cancel-after-fill race)');
+    assert.equal(fills.length, 1, 'CANCELLED+completion=100 must finalize as FILLED (cancel-after-fill race)');
     assert.equal(fills[0].size, 0.4);
     assert.equal(ingested.size, 1, 'fill from cancel-after-fill race must be ingested via FILLED branch');
 
@@ -1970,7 +1998,7 @@ describe('handleOrderUpdate integration: replayed CANCELLED reaches target updat
     // fill replay with status='CANCELLED', completionPercentage=100,
     // averageFilledPrice>0, totalFees=0 is genuinely terminal (the
     // exchange has finalized) — gating it on totalFees>0 would mis-route
-    // it into the cancel branch and suppress onOrderFillCallback for a
+    // it into the cancel branch and skip finalization for a
     // real fill.
     const fakeAdapter = {
       getOrderFills: async () => [
@@ -1993,8 +2021,7 @@ describe('handleOrderUpdate integration: replayed CANCELLED reaches target updat
     svc._test.injectProductId('BTC-USDC');
     svc.trackOrder('order-CAF', { type: 'take_profit', price: 70000, size: 0.4, placedAt: Date.now() });
 
-    const fills = [];
-    svc.setOnOrderFill(f => fills.push(f));
+    const fills = captureFinalizedFills(svc);
 
     // Cancel-after-fill: terminal status with completion=100 and price
     // populated, but fees came through as the websocket-feed placeholder 0.
@@ -2042,8 +2069,7 @@ describe('handleOrderUpdate integration: replayed CANCELLED reaches target updat
     svc._test.injectProductId('BTC-USDC');
     svc.trackOrder('order-Race', { type: 'take_profit', price: 70000, size: 0.6, placedAt: Date.now() });
 
-    const fills = [];
-    svc.setOnOrderFill(f => fills.push(f));
+    const fills = captureFinalizedFills(svc);
 
     // Fire BOTH events synchronously (no await between them) — mirrors the
     // websocket-feed iteration. Event 2 carries the larger cumulative and
@@ -2058,7 +2084,7 @@ describe('handleOrderUpdate integration: replayed CANCELLED reaches target updat
     });
     await Promise.all([p1, p2]);
 
-    assert.equal(fills.length, 1, 'exactly one onOrderFillCallback fires for the merged terminal');
+    assert.equal(fills.length, 1, 'exactly one finalization runs for the merged terminal');
     assert.equal(fills[0].size, 0.6, 'finalize must use the LARGER filledSize from event 2, not 0.3 from event 1');
     assert.equal(fills[0].price, 70500, 'finalize must use event 2\'s corrected averageFilledPrice');
     assert.equal(fills[0].fees, 0.06, 'finalize must use event 2\'s corrected totalFees');
@@ -2066,14 +2092,14 @@ describe('handleOrderUpdate integration: replayed CANCELLED reaches target updat
     svc.stop();
   });
 
-  it('duplicate FILLED replay arriving after finalize does NOT re-fire onOrderFillCallback', async () => {
+  it('duplicate FILLED replay arriving after finalize does NOT finalize the order again', async () => {
     // After finalizeFilledOrder runs, the trackedOrders entry stays for 60s
     // (untrack TTL) and pendingTerminalRetries gets cleared. Without the
     // settled-status guard in handleOrderUpdate's prelude, a duplicate
     // FILLED replay in that window would recreate pendingTerminalRetries;
     // processOrderUpdate would then see inRetryChain=true and bypass the
-    // settled-status guard, calling finalizeFilledOrder a second time and
-    // re-firing onOrderFillCallback for the same execution.
+    // settled-status guard, calling finalizeFilledOrder a second time for
+    // the same execution.
     const fakeAdapter = {
       getOrderFills: async () => [
         { tradeId: 't-dup-1', orderId: 'order-Dup', side: 'sell', price: 70000, size: 0.5, totalCommission: 0.05 },
@@ -2095,15 +2121,14 @@ describe('handleOrderUpdate integration: replayed CANCELLED reaches target updat
     svc._test.injectProductId('BTC-USDC');
     svc.trackOrder('order-Dup', { type: 'take_profit', price: 70000, size: 0.5, placedAt: Date.now() });
 
-    const fills = [];
-    svc.setOnOrderFill(f => fills.push(f));
+    const fills = captureFinalizedFills(svc);
 
-    // First FILLED — finalize fires callback, marks settled, schedules untrack.
+    // First FILLED — finalize records the fill, marks settled, schedules untrack.
     await svc._test.handleOrderUpdate({
       orderId: 'order-Dup', status: 'FILLED',
       filledSize: 0.5, averageFilledPrice: 70000, totalFees: 0.05,
     });
-    assert.equal(fills.length, 1, 'first FILLED fires callback');
+    assert.equal(fills.length, 1, 'first FILLED finalizes');
     assert.equal(svc._test.pendingTerminalRetries.has('order-Dup'), false,
       'pendingTerminalRetries cleared by clearPendingRetry after finalize');
 
@@ -2115,7 +2140,7 @@ describe('handleOrderUpdate integration: replayed CANCELLED reaches target updat
       filledSize: 0.5, averageFilledPrice: 70000, totalFees: 0.05,
     });
     assert.equal(fills.length, 1,
-      'duplicate FILLED replay must NOT re-fire onOrderFillCallback');
+      'duplicate FILLED replay must NOT finalize again');
     assert.equal(svc._test.pendingTerminalRetries.has('order-Dup'), false,
       'prelude must not eagerly recreate pendingTerminalRetries for an already-settled order');
 
