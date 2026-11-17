@@ -2,9 +2,9 @@ import Button from './ui/Button'
 import { getIntervalMs } from '../utils/intervals.mjs'
 import { plural } from '../utils/plural.mjs'
 import { fetchConvertPreview } from './regime/useDcaConversion'
-import { useState, useEffect, useCallback, useId, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import ActivityFeed from './ActivityFeed'
-import ModalDialog from './ModalDialog'
+import ConfirmDialog from './ui/ConfirmDialog'
 import FailedSellPlacements from './FailedSellPlacements'
 import DcaPlacementRecovery from './DcaPlacementRecovery'
 import DcaPendingBuyRecovery from './DcaPendingBuyRecovery'
@@ -21,8 +21,6 @@ import DcaHoldingsSummary from './dca/DcaHoldingsSummary'
 import useRealtimeRefresh from '../hooks/useRealtimeRefresh'
 
 function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
-  const convertTitleId = useId()
-  const convertDescId = useId()
   const [liveData, setLiveData] = useState(null)
   const [liveError, setLiveError] = useState(null)
   const [updating, setUpdating] = useState(false)
@@ -479,18 +477,21 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
 
       {/* Export to Regime confirmation modal */}
       {showConvertConfirm && convertPreview && (
-        <ModalDialog
-          onClose={() => setShowConvertConfirm(false)}
-          dismissible={!converting}
-          labelledBy={convertTitleId}
-          describedBy={convertDescId}
-        >
-          <h3 id={convertTitleId} className="text-white text-lg font-medium mb-3">Export to Regime Engine</h3>
-          <p id={convertDescId} className="text-gray-300 text-sm mb-4">
-            {convertPreview.merge
+        <ConfirmDialog
+          id="export-regime"
+          title="Export to Regime Engine"
+          description={
+            convertPreview.merge
               ? `Merge ${convertPreview.pending} DCA position${convertPreview.pending !== 1 ? 's' : ''} into the existing regime engine (${plural(convertPreview.existingBodies, 'body', 'bodies')}, ${convertPreview.existingAsset?.toFixed(8)} ${baseCurrency}). Existing DCA sell orders may remain open on the exchange, but the regime engine will not track them. Before starting the regime engine, cancel those DCA sell orders on the exchange and confirm that they are no longer open.`
-              : `Export ${convertPreview.pending} DCA position${convertPreview.pending !== 1 ? 's' : ''} to a new regime engine state. Existing DCA sell orders may remain open on the exchange, but the regime engine will not track them. Before starting the regime engine, cancel those DCA sell orders on the exchange and confirm that they are no longer open.`}
-          </p>
+              : `Export ${convertPreview.pending} DCA position${convertPreview.pending !== 1 ? 's' : ''} to a new regime engine state. Existing DCA sell orders may remain open on the exchange, but the regime engine will not track them. Before starting the regime engine, cancel those DCA sell orders on the exchange and confirm that they are no longer open.`
+          }
+          variant="default"
+          confirmLabel="Confirm Export"
+          busyLabel="Exporting..."
+          busy={converting}
+          onClose={() => setShowConvertConfirm(false)}
+          onConfirm={handleExecuteExport}
+        >
           <div className="bg-gray-900 rounded-lg p-3 mb-4 text-sm space-y-1.5">
             <div className="flex justify-between">
               <span className="text-gray-400">Positions to import</span>
@@ -514,24 +515,7 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
           <p className="text-gray-400 text-xs mb-4">
             Before starting the regime engine, cancel any remaining DCA sell orders on the exchange and confirm that they are no longer open.
           </p>
-          <div className="flex justify-end gap-3">
-            <Button
-              variant="cancel" size="md"
-              onClick={() => setShowConvertConfirm(false)}
-              disabled={converting}
-              autoFocus
-            >
-              Cancel
-            </Button>
-            <Button
-              variant="primary" size="md"
-              onClick={handleExecuteExport}
-              disabled={converting}
-            >
-              {converting ? 'Exporting...' : 'Confirm Export'}
-            </Button>
-          </div>
-        </ModalDialog>
+        </ConfirmDialog>
       )}
     </div>
   )

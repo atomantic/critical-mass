@@ -49,6 +49,7 @@ before(async () => {
       './DcaPlacementRecovery': () => null,
       './DcaPendingBuyRecovery': () => null,
       './ModalDialog': () => null,
+      './ui/ConfirmDialog': () => null,
       './ui/touchTarget': { TOUCH_TARGET: 'min-h-11' },
       '../utils/requestOwner.mjs': { createRequestOwner: () => ({}) },
       './Toast': { useToast: () => ({ addToast() {} }) },
