@@ -129,11 +129,7 @@ const makeEngine = ({ bodies = [], adapter, executor, recovery } = {}) => {
   return eng;
 };
 
-const deferred = () => {
-  let resolve;
-  const promise = new Promise((r) => { resolve = r; });
-  return { promise, resolve };
-};
+const { deferred } = require('./helpers/deferred');
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
 

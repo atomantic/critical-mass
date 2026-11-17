@@ -71,18 +71,7 @@ describe('readBodyWithLimit (issue #215-B)', () => {
 // Route-level integration: POST /api/updown/screenshot
 // ============================================================================
 
-const createFakeApp = () => {
-  const handlers = {};
-  const register = (method) => (route, handler) => { handlers[`${method} ${route}`] = handler; };
-  return { handlers, get: register('GET'), put: register('PUT'), post: register('POST'), delete: register('DELETE') };
-};
-
-const createRes = () => ({
-  statusCode: 200,
-  body: null,
-  status(code) { this.statusCode = code; return this; },
-  json(payload) { this.body = payload; return this; },
-});
+const { createRes, createFakeApp } = require('./helpers/route-harness');
 
 describe('POST /api/updown/screenshot body-size guard (issue #215-B)', () => {
   it('returns 413 for a declared Content-Length above MAX_SCREENSHOT_BYTES', async () => {

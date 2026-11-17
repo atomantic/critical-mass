@@ -11,7 +11,8 @@ const { getEngineMaintenance, setEngineMaintenance, setEngineBackupPaused, refus
 const { createBackup, restoreBackup, createFundStateBackup, restoreFundStateBackup } = require('../src/backup-service');
 const { fixturePayload } = require('./helpers/ledger-fixture');
 const logger = { info() {}, warn() {}, error() {} };
-const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
+const { deferred } = require('./helpers/deferred');
+
 const ipc = (override = {}) => ({ isConnected: () => true, request: async (channel, payload) => {
   if (channel === 'engine:maintenance') return { success: true, maintenance: payload.active ? { reason: payload.reason } : null };
   return { success: true, quiesced: true };
@@ -103,7 +104,6 @@ describe('scheduled backup maintenance windows', () => {
     assert.deepEqual(events, ['engine:maintenance:true', 'engine:backup-pause:', 'copy', 'engine:backup-resume:', 'engine:maintenance:false']);
   });
 });
-
 
 describe('pending-write parking for the backup drain (#1945)', () => {
   const notParked = (entry) => !isParkedWrite(entry);
