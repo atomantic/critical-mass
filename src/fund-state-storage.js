@@ -252,6 +252,8 @@ const saveRegimeState = (position, regime, exchange = 'coinbase', tpOptimizer = 
  * max-age is the backstop for filesystems with coarse timestamp granularity.
  */
 const READ_ONLY_REGIME_MAX_AGE_MS = 10_000;
+/** An entry untouched this long belongs to a fund nobody polls (e.g. removed); swept on the next insert. */
+const READ_ONLY_REGIME_ABANDONED_MS = 6 * READ_ONLY_REGIME_MAX_AGE_MS;
 
 /**
  * One entry per fund file (keyed by absolute path), so the map is bounded by
@@ -331,6 +333,13 @@ const loadRegimeStateReadOnly = (exchange, pair, {
     tpOptimizer: data.tpOptimizer || null,
     sizeOptimizer: data.sizeOptimizer || null,
   };
+  // A removed/unpolled fund never looks itself up again, so nothing could drop
+  // its entry lazily (and a fund removed through config keeps its state dir).
+  // Every live stopped fund re-reads at least once per max age, so anything
+  // untouched for several max-ages is abandoned: sweep it on each insert.
+  for (const [file, entry] of readOnlyRegimeCache) {
+    if (now - entry.loadedAt >= READ_ONLY_REGIME_ABANDONED_MS) readOnlyRegimeCache.delete(file);
+  }
   readOnlyRegimeCache.set(stateFile, { signature, loadedAt: now, state });
   return structuredClone(state);
 };

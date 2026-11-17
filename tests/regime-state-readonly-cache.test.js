@@ -182,6 +182,27 @@ describe('read-only regime-state cache (issue #1976)', () => {
     assert.equal(storage.readOnlyRegimeCacheSize(), base);
   });
 
+  it('sweeps entries of funds nobody polls any more when another fund loads', () => {
+    const domain = {
+      createInitialRegimePositionState: store.createInitialRegimePositionState,
+      createInitialRegimeState: store.createInitialRegimeState,
+      migrateLegacyPositionFields: () => {},
+      migrateRegimePosition: () => {},
+    };
+    writeState();
+    const otherFile = store.getRegimeStateFile(EX, 'ETH-USD');
+    fs.mkdirSync(path.dirname(otherFile), { recursive: true });
+    fs.writeFileSync(otherFile, JSON.stringify({ position: {}, regime: {} }));
+    const t0 = 5_000_000;
+    storage.loadRegimeStateReadOnly(EX, 'ETH-USD', domain, { now: t0 });
+    const base = storage.readOnlyRegimeCacheSize();
+    storage.loadRegimeStateReadOnly(EX, PAIR, domain, { now: t0 + 30_000 });
+    assert.equal(storage.readOnlyRegimeCacheSize(), base + 1); // ETH still fresh enough
+    storage.loadRegimeStateReadOnly(EX, PAIR, domain, { now: t0 + 61_000 }); // PAIR reload: max-age expired -> insert
+    assert.equal(storage.readOnlyRegimeCacheSize(), 1); // abandoned ETH entry swept
+    store.evictFundRegimeStateReadOnly(EX, 'ETH-USD');
+  });
+
   it('does not cache a corrupt file and recovers once it is repaired', () => {
     fs.writeFileSync(stateFile, '{ not json');
     assert.throws(() => build(), /corrupted/);
