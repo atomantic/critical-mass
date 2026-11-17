@@ -314,7 +314,7 @@ describe('Race 2: Atomic writes and version locking', () => {
   });
 
   it('atomicWriteSync leaves no .tmp artifacts on success', () => {
-    const { atomicWriteSync } = require('../src/state-tracker');
+    const { atomicWriteSync } = require('../src/durable-write');
     const filePath = path.join(tmpDir, 'test-state.json');
 
     atomicWriteSync(filePath, JSON.stringify({ test: true }));
@@ -326,7 +326,7 @@ describe('Race 2: Atomic writes and version locking', () => {
   });
 
   it('atomicWriteSync restricts both temporary and target files to owner access', () => {
-    const { atomicWriteSync } = require('../src/state-tracker');
+    const { atomicWriteSync } = require('../src/durable-write');
     const filePath = path.join(tmpDir, 'test-private-state.json');
     const originalRenameSync = fs.renameSync;
     let temporaryMode;
@@ -348,7 +348,7 @@ describe('Race 2: Atomic writes and version locking', () => {
   });
 
   it('atomicWriteSync preserves file integrity on overwrite', () => {
-    const { atomicWriteSync } = require('../src/state-tracker');
+    const { atomicWriteSync } = require('../src/durable-write');
     const filePath = path.join(tmpDir, 'test-overwrite.json');
 
     // Write initial
@@ -362,7 +362,7 @@ describe('Race 2: Atomic writes and version locking', () => {
   });
 
   it('saveRegimeState increments _saveVersion on each save', () => {
-    const { saveRegimeState, loadRegimeState, getRegimeStateFile } = require('../src/state-tracker');
+    const { saveRegimeState, loadRegimeState, getRegimeStateFile } = require('../src/regime-state-store');
 
     // Use a test exchange to avoid touching real state
     const testExchange = 'test-race2-version';

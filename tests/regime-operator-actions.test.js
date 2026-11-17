@@ -9,7 +9,7 @@ const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const { createOperatorActions } = require('../src/regime-operator-actions');
 const { createEngineLocks } = require('../src/engine-locks');
-const { createInitialRegimePositionState } = require('../src/state-tracker');
+const { createInitialRegimePositionState } = require('../src/regime-state-store');
 const celestialHierarchy = require('../src/celestial-hierarchy');
 
 const noopLogger = { info() {}, warn() {}, error() {}, debug() {} };

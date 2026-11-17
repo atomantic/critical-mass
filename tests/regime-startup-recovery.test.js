@@ -15,7 +15,7 @@ const os = require('os');
 const { createFundStateBackup, restoreFundStateBackup } = require('../src/backup-service');
 const { createStartupRecovery } = require('../src/regime-startup-recovery');
 const { createFillLedger } = require('../src/fill-ledger');
-const { createInitialRegimePositionState } = require('../src/state-tracker');
+const { createInitialRegimePositionState } = require('../src/regime-state-store');
 
 const TEST_PAIR = '__test1601__';
 const JUNK_DIR = path.join(require('../src/paths').DATA_DIR, 'coinbase', TEST_PAIR);

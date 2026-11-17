@@ -19,7 +19,7 @@
 const dryRunState = require('./dry-run-state');
 const { tradeEvents } = require('./trade-events');
 const { MAX_CONSECUTIVE_PERSISTENCE_FAILURES } = require('./health-monitor');
-const { loadFundRegimeState, saveFundRegimeState } = require('./state-tracker');
+const { loadFundRegimeState, saveFundRegimeState } = require('./regime-state-store');
 const { restorePersistedCycleId } = require('./regime-fill-annotations');
 const { pruneStaleTpCancelMarkers } = require('./regime-pure-helpers');
 const celestialHierarchy = require('./celestial-hierarchy');

@@ -32,7 +32,7 @@ const originalDataDir = pathsModule.DATA_DIR;
 const configDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'exchange-routes-config-'));
 pathsModule.DATA_DIR = configDataDir;
 const configUtils = require('../src/config-utils');
-const stateTracker = require('../src/state-tracker');
+const regimeStateStore = require('../src/regime-state-store');
 const fundPaths = require('../src/fund-paths');
 const adapters = require('../src/adapters');
 const registerExchangeRoutes = require('../src/routes/exchange-routes');
@@ -433,7 +433,7 @@ describe('fund lifecycle routes', () => {
   describe('DELETE /api/:exchange/funds/:pair', () => {
     it('returns 404 for an unconfigured fund without reading fund state', async () => {
       const { app } = setup();
-      const loadState = mock.method(stateTracker, 'loadFundRegimeState', () => {
+      const loadState = mock.method(regimeStateStore, 'loadFundRegimeState', () => {
         throw new Error('must not read state for an unknown pair');
       });
       const res = await invoke(app, 'DELETE /api/:exchange/funds/:pair', {
@@ -445,7 +445,7 @@ describe('fund lifecycle routes', () => {
 
     it('returns 400 for a malformed pair before reading fund state', async () => {
       const { app } = setup();
-      const loadState = mock.method(stateTracker, 'loadFundRegimeState', () => {
+      const loadState = mock.method(regimeStateStore, 'loadFundRegimeState', () => {
         throw new Error('must not read state for a malformed pair');
       });
       const res = await invoke(app, 'DELETE /api/:exchange/funds/:pair', {
@@ -457,7 +457,7 @@ describe('fund lifecycle routes', () => {
 
     it('resolves case-insensitive requests to the canonical configured pair', async () => {
       const { app } = setup();
-      const loadState = mock.method(stateTracker, 'loadFundRegimeState', () => ({ position: { lifecycle: 'draining' } }));
+      const loadState = mock.method(regimeStateStore, 'loadFundRegimeState', () => ({ position: { lifecycle: 'draining' } }));
       const res = await invoke(app, 'DELETE /api/:exchange/funds/:pair', {
         params: { exchange: 'coinbase', pair: 'btc-usdc' },
       });
@@ -556,7 +556,7 @@ describe('fund lifecycle routes', () => {
       assert.equal(readded.statusCode, 200, JSON.stringify(readded.body));
       assert.equal(readded.body.config.enabled, false);
       assert.equal(readded.body.config.dryRun, true);
-      const freshState = stateTracker.loadFundRegimeState('coinbase', 'SOL-USDC');
+      const freshState = regimeStateStore.loadFundRegimeState('coinbase', 'SOL-USDC');
       assert.equal(freshState.position.lifecycle, 'active', 'fresh fund must start active');
       assert.equal(freshState.position.cyclesCompleted, 0, 'fresh fund must not inherit old cycle history');
       assert.equal(freshState.position.realizedPnL, 0, 'fresh fund must not inherit old realized P&L');

@@ -10,7 +10,6 @@ const crypto = require('crypto');
 // Module-level setup: patch getExchangeDataDir so fill-ledger writes to tmpdir
 // ---------------------------------------------------------------------------
 const fillLedgerPath = require.resolve('../src/fill-ledger');
-const stateTrackerPath = require.resolve('../src/state-tracker');
 
 // Ensure the fund-paths module is loaded so we can patch it
 const fundPaths = require('../src/fund-paths');

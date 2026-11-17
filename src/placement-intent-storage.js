@@ -1,6 +1,6 @@
 // @ts-check
 // One process-local owner for intent identity, retention and deferred removals.
-// The state-tracker facade re-exports these functions without creating a store.
+// Callers require this module directly; no facade re-exports it.
 const fs = require('fs');
 const path = require('path');
 const os = require('os');

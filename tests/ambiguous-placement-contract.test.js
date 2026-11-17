@@ -27,7 +27,7 @@ const { createGeminiAdapter } = require('../src/adapters/gemini/api');
 const { createCryptocomAdapter } = require('../src/adapters/cryptocom/api');
 const { placeWithUnknownReconcile } = require('../src/order-manager');
 const fundPaths = require('../src/fund-paths');
-const stateTracker = require('../src/state-tracker');
+const placementIntents = require('../src/placement-intent-storage');
 
 let keysPath;
 let originalFetch;
@@ -386,17 +386,17 @@ describe('Crypto.com ambiguous terminal execution quantity keeps durable intent 
           () => adapter.placeLimitBuy(pair, 0.019, 100), opts);
         assert.equal(first.pending, true);
         assert.equal(first.success, false);
-        assert.equal(stateTracker.loadPlacementIntents(exchange, pair).length, 1);
+        assert.equal(placementIntents.loadPlacementIntents(exchange, pair).length, 1);
 
         // A different process sees the on-disk unresolved intent and refuses
         // before dispatch, even though the exchange reply had an order id.
-        const pendingRows = stateTracker.loadPlacementIntents(exchange, pair);
-        stateTracker.savePlacementIntents(pendingRows.map(row => ({ ...row, instanceId: 'restarted-process' })), exchange, pair);
+        const pendingRows = placementIntents.loadPlacementIntents(exchange, pair);
+        placementIntents.savePlacementIntents(pendingRows.map(row => ({ ...row, instanceId: 'restarted-process' })), exchange, pair);
         const second = await placeWithUnknownReconcile(adapter, pair,
           () => adapter.placeLimitBuy(pair, 0.019, 100), opts);
         assert.equal(second.pending, true);
         assert.equal(placements, 1);
-        assert.equal(stateTracker.loadPlacementIntents(exchange, pair).length, 1);
+        assert.equal(placementIntents.loadPlacementIntents(exchange, pair).length, 1);
       });
     });
   }
@@ -457,7 +457,7 @@ describe('Crypto.com ambiguous terminal execution quantity keeps durable intent 
         assert.equal(result.pending, undefined);
         assert.equal(adopted, expectedSuccess ? 1 : 0);
         assert.equal(placements, 1);
-        assert.equal(stateTracker.loadPlacementIntents(exchange, pair).length, 0);
+        assert.equal(placementIntents.loadPlacementIntents(exchange, pair).length, 0);
       });
     });
   }

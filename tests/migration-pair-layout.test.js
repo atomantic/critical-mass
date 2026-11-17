@@ -60,7 +60,7 @@ let fundPaths = null;
 
 // Force migration.js to re-run its top-level `const { DATA_DIR } = require('./paths')`
 // against a freshly-mutated paths module, the same delete-cache/re-require idiom
-// tests/state-tracker-hardening.test.js already uses for getExchangeDataDir.
+// tests/state-store-hardening.test.js already uses for getExchangeDataDir.
 const freshMigration = (dataDir) => {
   pathsModule.DATA_DIR = dataDir;
   delete require.cache[migrationPath];

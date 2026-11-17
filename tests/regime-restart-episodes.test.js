@@ -13,7 +13,7 @@ const oldFeed = feed.createWebSocketFeed;
 let onConnect = () => {};
 feed.createWebSocketFeed = () => ({ connect: () => onConnect(), disconnect: () => {} });
 const { createRegimeEngine } = require('../src/regime-engine');
-const { saveFundRegimeState, loadFundRegimeState } = require('../src/state-tracker');
+const { saveFundRegimeState, loadFundRegimeState } = require('../src/regime-state-store');
 const dryRunState = require('../src/dry-run-state');
 const { tradeEvents } = require('../src/trade-events');
 const engines = [];

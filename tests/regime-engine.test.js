@@ -18,7 +18,7 @@ after(() => {
 const { shouldSkipOwnedBuyRecommit } = require('../src/regime-pure-helpers');
 const { createRegimeEngine, cancelPartialFillOrder, resolveEntryBudget, makeFillDedupKey, isBuyAlreadyCommitted, shouldSkipBuyRecommit, isStrandedDustBody } = require('../src/regime-engine');
 const { instrumentAdapterForHealth, isRateLimitError, isAuthDeniedError } = require('../src/health-monitor');
-const { getRegimeStateFile } = require('../src/state-tracker');
+const { getRegimeStateFile } = require('../src/regime-state-store');
 
 describe('makeFillDedupKey', () => {
   it('uses order ID alone for terminal fills', () => {
