@@ -169,6 +169,31 @@ it('full archive Restore needs Confirm Restore; Cancel sends nothing; a 409 offe
   expect(JSON.parse(writes[1].body).force).toBe(true)
 })
 
+it('full archive Restore confirmation lives in a dialog, returns focus to Restore, and cannot be dismissed while restoring', async () => {
+  let release
+  writeResponse = () => new Promise(resolve => { release = () => resolve(json(200, { success: true, message: 'Restored 1 files' })) })
+  render(<BackupRestore />)
+  const trigger = await screen.findByRole('button', { name: 'Restore' })
+  trigger.focus()
+  fireEvent.click(trigger)
+  const dialog = await screen.findByRole('dialog')
+  expect(within(dialog).getByRole('heading', { name: 'Confirm Restore' })).toBeTruthy()
+  expect(dialog.contains(document.activeElement)).toBe(true)
+
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+  expect(screen.queryByRole('dialog')).toBeNull()
+  expect(document.activeElement).toBe(trigger)
+
+  fireEvent.click(trigger)
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Confirm Restore' }).disabled).toBe(false))
+  fireEvent.click(screen.getByRole('button', { name: 'Confirm Restore' }))
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Restoring...' })).toBeTruthy())
+  const cancelEvent = new Event('cancel', { cancelable: true })
+  expect(screen.getByRole('dialog').dispatchEvent(cancelEvent)).toBe(false)
+  expect(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }).disabled).toBe(true)
+  await act(async () => { release() })
+})
+
 it('a successful restore names its recovery archive and shows the server warnings', async () => {
   writeResponse = () => json(200, {
     success: true,

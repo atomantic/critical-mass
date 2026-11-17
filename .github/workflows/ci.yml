@@ -50,5 +50,8 @@ jobs:
       - name: Run admin render tests
         run: npm test --prefix admin
 
+      - name: Lint admin
+        run: npm run lint --prefix admin
+
       - name: Build admin UI
         run: npm run build
