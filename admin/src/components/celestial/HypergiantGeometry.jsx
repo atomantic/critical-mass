@@ -1,6 +1,6 @@
 import { useMemo, useRef } from 'react'
 import { useFrame } from '@react-three/fiber'
-import * as THREE from 'three'
+import { DoubleSide } from 'three'
 import { NOISE_GLSL, SURFACE_VERT } from './noiseGLSL'
 import FresnelGlow from './FresnelGlow'
 
@@ -63,17 +63,17 @@ const HypergiantGeometry = ({ size }) => {
 
       <mesh ref={bandRef} rotation={[Math.PI * 0.48, 0, Math.PI * 0.12]}>
         <ringGeometry args={[size * 1.02, size * 1.12, 96]} />
-        <meshBasicMaterial color="#E879F9" transparent opacity={0.26} side={THREE.DoubleSide} />
+        <meshBasicMaterial color="#E879F9" transparent opacity={0.26} side={DoubleSide} />
       </mesh>
 
       <mesh ref={outerBandRef} rotation={[Math.PI * 0.24, 0, -Math.PI * 0.16]}>
         <ringGeometry args={[size * 1.16, size * 1.28, 96]} />
-        <meshBasicMaterial color="#A78BFA" transparent opacity={0.16} side={THREE.DoubleSide} />
+        <meshBasicMaterial color="#A78BFA" transparent opacity={0.16} side={DoubleSide} />
       </mesh>
 
       <mesh rotation={[Math.PI / 2, 0, 0]}>
         <ringGeometry args={[size * 1.3, size * 1.62, 14, 1]} />
-        <meshBasicMaterial color="#C084FC" transparent opacity={0.12} side={THREE.DoubleSide} wireframe />
+        <meshBasicMaterial color="#C084FC" transparent opacity={0.12} side={DoubleSide} wireframe />
       </mesh>
     </group>
   )

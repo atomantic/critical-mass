@@ -1,6 +1,6 @@
 import { useRef, useMemo } from 'react'
 import { useFrame } from '@react-three/fiber'
-import * as THREE from 'three'
+import { DoubleSide } from 'three'
 import { getPlanetTexture } from './planetTexture'
 import FresnelGlow from './FresnelGlow'
 
@@ -37,27 +37,27 @@ const PlanetGeometry = ({ size, color, emissiveInt, mergeCount = 0 }) => {
 
       <mesh ref={atmosphereRingRef} rotation={[Math.PI * 0.48, 0, Math.PI * 0.08]}>
         <ringGeometry args={[size * 1.08, size * 1.16, 96]} />
-        <meshBasicMaterial color="#93C5FD" transparent opacity={0.3} side={THREE.DoubleSide} />
+        <meshBasicMaterial color="#93C5FD" transparent opacity={0.3} side={DoubleSide} />
       </mesh>
 
       {hasRings && (
         <group rotation={[Math.PI / 3, 0, 0]}>
           <mesh>
             <ringGeometry args={[size * 1.3, size * 1.6, 64]} />
-            <meshBasicMaterial color="#60A5FA" transparent opacity={0.34} side={THREE.DoubleSide} />
+            <meshBasicMaterial color="#60A5FA" transparent opacity={0.34} side={DoubleSide} />
           </mesh>
           {/* Cassini division gap */}
           <mesh>
             <ringGeometry args={[size * 1.6, size * 1.65, 64]} />
-            <meshBasicMaterial color="#000000" transparent opacity={0.15} side={THREE.DoubleSide} />
+            <meshBasicMaterial color="#000000" transparent opacity={0.15} side={DoubleSide} />
           </mesh>
           <mesh>
             <ringGeometry args={[size * 1.65, size * 2.0, 64]} />
-            <meshBasicMaterial color="#3B82F6" transparent opacity={0.2} side={THREE.DoubleSide} />
+            <meshBasicMaterial color="#3B82F6" transparent opacity={0.2} side={DoubleSide} />
           </mesh>
           <mesh>
             <ringGeometry args={[size * 1.28, size * 2.02, 96]} />
-            <meshBasicMaterial color="#93C5FD" transparent opacity={0.16} side={THREE.DoubleSide} wireframe />
+            <meshBasicMaterial color="#93C5FD" transparent opacity={0.16} side={DoubleSide} wireframe />
           </mesh>
         </group>
       )}

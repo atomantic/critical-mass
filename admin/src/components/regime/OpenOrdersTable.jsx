@@ -3,7 +3,7 @@ import React, { useId, useMemo, useState } from 'react'
 import { buildOpenOrderRelationIndex, deriveOpenOrderRows } from '../../utils/openOrderRelations.mjs'
 import { DEFAULT_FEE_RATE_PER_SIDE } from '../../utils/openOrderEstimates.mjs'
 import { TIERS as CELESTIAL_TIERS, formatTierTooltip } from '../../../../shared/celestial-tiers.mjs'
-import { getPriceDecimals, formatCurrency } from '../charts/chartUtils'
+import { formatCurrency } from '../charts/chartUtils'
 import { formatDuration, formatTimestamp } from './regimeFormat'
 import { pnlColorClass, signedPrefix } from '../../utils/pnlFormat.mjs'
 
@@ -25,9 +25,9 @@ function OpenOrdersTable({
   dryRunFilled,
   isDryRun,
   celestialBodies,
-  position,
+  avgCostBasis,
   config,
-  market,
+  priceDecimals,
   asset,
   isRunning,
   openSearchId,
@@ -53,7 +53,7 @@ function OpenOrdersTable({
     return <div className="text-gray-400 text-sm text-center py-4">No open orders</div>
   }
 
-  const avgCost = position.avgCostBasis || 0
+  const avgCost = avgCostBasis || 0
   const holdbackRatio = config?.holdbackRatio ?? 0.5
   const feeRatePerSide = config?.feeRatePerSide ?? config?.feeRate ?? DEFAULT_FEE_RATE_PER_SIDE
 
@@ -202,7 +202,7 @@ function OpenOrdersTable({
                   </td>
                   <td className="text-right py-2 pr-2 font-mono text-white">
                     <span className="inline-flex items-center gap-1 justify-end">
-                      ${order.price?.toLocaleString(undefined, { minimumFractionDigits: getPriceDecimals(market.lastPrice), maximumFractionDigits: getPriceDecimals(market.lastPrice) })}
+                      ${order.price?.toLocaleString(undefined, { minimumFractionDigits: priceDecimals, maximumFractionDigits: priceDecimals })}
                       {renderTpEditBtn(order, 'price')}
                     </span>
                   </td>
@@ -268,7 +268,7 @@ function OpenOrdersTable({
                       {buy.assetQty?.toFixed(8)}
                     </td>
                     <td className="text-right py-1 pr-2 font-mono text-xs text-gray-300">
-                      ${buy.price?.toLocaleString(undefined, { minimumFractionDigits: getPriceDecimals(market.lastPrice), maximumFractionDigits: getPriceDecimals(market.lastPrice) })}
+                      ${buy.price?.toLocaleString(undefined, { minimumFractionDigits: priceDecimals, maximumFractionDigits: priceDecimals })}
                     </td>
                     <td className="text-right py-1 pr-2 font-mono text-xs text-gray-400">
                       ${buy.sizeUsdc?.toFixed(2)}
@@ -327,7 +327,7 @@ function OpenOrdersTable({
               <td className="py-2 pr-2 font-mono text-gray-400 text-xs">{order.orderId}</td>
               <td className="text-right py-2 pr-2 font-mono text-white">{order.size?.toFixed(8)}</td>
               <td className="text-right py-2 pr-2 font-mono text-white">
-                ${order.price?.toLocaleString(undefined, { minimumFractionDigits: getPriceDecimals(market.lastPrice), maximumFractionDigits: getPriceDecimals(market.lastPrice) })}
+                ${order.price?.toLocaleString(undefined, { minimumFractionDigits: priceDecimals, maximumFractionDigits: priceDecimals })}
               </td>
               <td className="text-right py-2 pr-2 font-mono text-gray-300 text-xs">
                 ${(order.size * order.price).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
@@ -344,4 +344,4 @@ function OpenOrdersTable({
   )
 }
 
-export default OpenOrdersTable
+export default React.memo(OpenOrdersTable)

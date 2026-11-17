@@ -35,6 +35,5 @@ function resolveDataDir(env = process.env) {
 const DATA_DIR = resolveDataDir();
 const UPDOWN_DATA_DIR = path.join(DATA_DIR, 'updown');
 const BACKUP_DIR = path.join(DATA_DIR, 'backups');
-const KEYS_DIR = path.join(APP_ROOT, 'keys');
 
-module.exports = { resolveDataDir, APP_ROOT, DATA_DIR, UPDOWN_DATA_DIR, BACKUP_DIR, KEYS_DIR };
+module.exports = { resolveDataDir, APP_ROOT, DATA_DIR, UPDOWN_DATA_DIR, BACKUP_DIR };

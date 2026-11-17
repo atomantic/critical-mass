@@ -1,3 +1,6 @@
+import { useMemo, useRef } from 'react'
+import { shareStructure } from '../../utils/structuralShare.mjs'
+
 // Select the status snapshot and panel inputs without changing fund/accounting data.
 export function deriveDashboardStatus(status, config) {
   const isDryRun = status?.isDryRun || config?.dryRun
@@ -49,4 +52,17 @@ export function deriveDashboardStatus(status, config) {
     tpOptimizer, sizeOptimizer, riskPosition, riskConfig,
     macroConfig,
   }
+}
+
+// Memoised wrapper for the dashboard: recomputes only when `status` or `config`
+// change identity, and returns the previous derived sub-objects (market,
+// position, pendingOrdersList, riskConfig, ...) whenever their contents are
+// unchanged, so memoised children skip the render on a price-only push.
+export function useDerivedDashboardStatus(status, config) {
+  const previous = useRef(null)
+  return useMemo(() => {
+    const next = shareStructure(previous.current, deriveDashboardStatus(status, config))
+    previous.current = next
+    return next
+  }, [status, config])
 }

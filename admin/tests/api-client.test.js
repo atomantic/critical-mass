@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { apiGet, apiPost, apiDelete, apiFetch, onUnauthorized, describeMutationFailure } from '../src/utils/apiClient'
 

@@ -141,7 +141,7 @@ test('60 price updates reuse history; fills, cycle selection and remount invalid
   const memoSource = source.slice(source.indexOf('  const filteredFills = useMemo'), source.indexOf('  // Derive the most recent cycle ID'));
   assert.ok(memoSource.includes('historicalFillGroups'));
   const reserveSource = source.match(/const reservesUsd = .*\n/)[0];
-  const run = new Function('useMemo', 'deriveRegimeFillGroups', 'searchRegimeFillGroups', 'compareCycleGroupsByRecency', 'fillAggregates', 'liveFills', 'showAllCycles', 'fillSearchId', 'status', `${memoSource}\nconst { totalHoldback } = searchedFillGroups; const market = status.market; ${reserveSource} return { history: historicalFillGroups, searched: searchedFillGroups, reservesUsd };`);
+  const run = new Function('useMemo', 'deriveRegimeFillGroups', 'searchRegimeFillGroups', 'compareCycleGroupsByRecency', 'fillAggregates', 'liveFills', 'showAllCycles', 'fillSearchId', 'status', `${memoSource}\nconst { totalHoldback } = searchedFillGroups; const lastPrice = status.market.lastPrice; ${reserveSource} return { history: historicalFillGroups, searched: searchedFillGroups, reservesUsd };`);
   let calls = 0, cache = [], cursor = 0;
   const useMemo = (fn, deps) => {
     const slot = cursor++;
