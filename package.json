@@ -26,7 +26,12 @@
     "cli:debug": "node index.js debug",
     "admin:install": "cd admin && npm install",
     "install:all": "npm install && cd admin && npm install",
-    "test": "node scripts/test.js"
+    "test": "node scripts/test.js",
+    "test:watch": "node scripts/test.js --watch",
+    "test:changed": "node scripts/test.js --changed",
+    "test:admin": "npm test --prefix admin",
+    "test:all": "npm test && npm run test:admin",
+    "check": "npm run test:all && npm run build"
   },
   "keywords": [
     "coinbase",
