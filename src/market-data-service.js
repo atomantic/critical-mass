@@ -464,8 +464,11 @@ const createMarketDataService = (exchange, pair) => {
     // settles its key (and pending-writes entry) once its await returns.
     orderMailbox.stop();
 
-    // A fund that starts running (or is removed) must not keep a parsed-state
-    // cache entry alive; status for it is no longer synthesized here.
+    // This service is stopped when the fund's engine takes over (regime:start
+    // handover) or the fund is torn down, so this is the "starts running"
+    // eviction point. A removed fund's entry also self-evicts: the next
+    // lookup stats a missing file and deletes it. Either way the map stays at
+    // one entry per fund file.
     evictFundRegimeStateReadOnly(exchange, resolvedPair);
 
     isConnected = false;
