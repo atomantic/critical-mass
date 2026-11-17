@@ -54,7 +54,7 @@ describe('state storage owners', () => {
     const regimeExpected = [
       'LIFECYCLE', 'closeDrainedEmptyPosition',
       'getRegimeStateFile', 'createInitialRegimePositionState', 'createInitialRegimeState', 'loadRegimeState',
-      'loadFundRegimeState', 'loadRegimeStateSafe', 'saveRegimeState', 'saveFundRegimeState',
+      'loadFundRegimeState', 'loadFundRegimeStateReadOnly', 'evictFundRegimeStateReadOnly', 'loadRegimeStateSafe', 'saveRegimeState', 'saveFundRegimeState',
     ];
     assert.deepEqual(Object.keys(dcaState).sort(), dcaExpected.sort());
     assert.deepEqual(Object.keys(regimeStateStore).sort(), regimeExpected.sort());
