@@ -71,23 +71,7 @@ const setupFsMocks = (base) => {
   return { written: () => writtenData };
 };
 
-const createFakeApp = () => {
-  const handlers = {};
-  const register = (method) => (route, handler) => { handlers[`${method} ${route}`] = handler; };
-  return { handlers, get: register('GET'), put: register('PUT'), post: register('POST'), delete: register('DELETE') };
-};
-
-const createRes = () => ({
-  statusCode: 200, body: null,
-  status(code) { this.statusCode = code; return this; },
-  json(payload) { this.body = payload; return this; },
-});
-
-const invoke = async (app, key, req = {}) => {
-  const res = createRes();
-  await app.handlers[key]({ body: {}, params: {}, query: {}, ...req }, res);
-  return res;
-};
+const { createRes, invoke, createFakeApp } = require('./helpers/route-harness');
 
 describe('PUT /api/notifications/config', () => {
   afterEach(() => {
