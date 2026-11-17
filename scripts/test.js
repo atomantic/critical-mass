@@ -64,25 +64,41 @@ function displayPath(abs) {
   return rel && !rel.startsWith('..') && !path.isAbsolute(rel) ? rel : abs;
 }
 
+/** node --test options whose value may follow as a separate argument (never a test path). */
+const VALUE_OPTIONS = new Set([
+  '--require', '-r', '--import', '--test-reporter', '--test-reporter-destination', '--test-name-pattern',
+  '--test-skip-pattern', '--test-concurrency', '--test-timeout', '--test-shard', '--env-file', '--watch-path',
+  '--test-coverage-include', '--test-coverage-exclude',
+]);
+
 /**
  * Split CLI args into node options and explicit test selections. A non-option
  * argument that resolves to an existing file selects it; an existing directory
  * selects its *.test.js files. Anything else is forwarded untouched (it may be
- * the value of a space-separated option such as `--test-name-pattern foo`),
- * except a missing `.js` path, which is an error rather than a silent fallback
+ * a stray word), except a missing `.js` path or a directory with no tests, which is an error rather than a silent fallback
  * to the full suite.
  * @returns {{ options: string[], files: string[], error?: string }}
  */
 function parseSelection(extraArgs, cwd = process.cwd()) {
   const options = [];
   const files = [];
-  for (const arg of extraArgs) {
-    if (arg.startsWith('-')) { options.push(arg); continue; }
+  for (let i = 0; i < extraArgs.length; i += 1) {
+    const arg = extraArgs[i];
+    if (arg.startsWith('-')) {
+      options.push(arg);
+      // A space-separated value belongs to its option, even when it looks like a path.
+      if (VALUE_OPTIONS.has(arg) && i + 1 < extraArgs.length) options.push(extraArgs[++i]);
+      continue;
+    }
     const abs = path.resolve(cwd, arg);
     let st = null;
     try { st = fs.statSync(abs); } catch { /* not a path */ }
     if (st && st.isFile()) files.push(displayPath(abs));
-    else if (st && st.isDirectory()) files.push(...testFilesIn(abs).map(displayPath));
+    else if (st && st.isDirectory()) {
+      const found = testFilesIn(abs);
+      if (!found.length) return { options, files, error: `no *.test.js files under ${arg}` };
+      files.push(...found.map(displayPath));
+    }
     else if (arg.endsWith('.js')) return { options, files, error: `test file not found: ${arg}` };
     else options.push(arg);
   }
