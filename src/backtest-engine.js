@@ -2,16 +2,12 @@ const fs = require('fs');
 const { upsertCandles } = require('./candle-utils');
 const path = require('path');
 const { getIntervalConfig } = require('./interval-utils');
-const { getAuthHeaders } = require('./auth');
 const { getExchangeDataDir } = require('./migration');
 const { getAdapter } = require('./adapters');
-const { REST_TIMEOUT_MS } = require('./timing-constants');
 const { atomicWriteSync } = require('./state-tracker');
 const { getFibonacciBuyAmount, getAverageCostBasis, getFibonacciSellPrice, getFibonacciSellQuantity } = require('./fibonacci-utils');
 const { createContextLogger } = require('./logger');
 const { sleep } = require('./shared-utils');
-
-const BASE_URL = 'https://api.coinbase.com';
 
 // Granularity config used by both exchanges (Coinbase format is the canonical)
 // Valid: ONE_MINUTE, FIVE_MINUTE, FIFTEEN_MINUTE, THIRTY_MINUTE, ONE_HOUR, TWO_HOUR, ONE_DAY
@@ -32,80 +28,23 @@ const DEFAULT_PRODUCT_IDS = {
   cryptocom: 'BTC_USDT'
 };
 
-/**
- * Load API credentials for the Coinbase backtest client.
- *
- * Delegates to the Coinbase adapter's own `loadCredentials()` instead of a
- * hardcoded `require('../keys.json')` — issue #688: `src/migration.js` now
- * renames the root `keys.json` to `keys.json.migrated` after a one-time
- * migration, so a direct require here would throw `MODULE_NOT_FOUND` on every
- * migrated install and silently break Coinbase backtests. The adapter reads
- * from `data/coinbase-keys.json` (the migration's target), the single source
- * of truth for this credential everywhere else in the app.
- */
-const loadCredentials = () => getAdapter('coinbase').loadCredentials();
-
 /** Stop a full candle fetch after this many failed batches in a row. */
 const MAX_CONSECUTIVE_FETCH_FAILURES = 3;
 /** Overall wall-clock budget for one full candle fetch. */
 const FETCH_DEADLINE_MS = 120000;
 /** Base wait after a 429, multiplied by the consecutive-failure count. */
 const RATE_LIMIT_BACKOFF_MS = 2000;
+/**
+ * The Coinbase adapter already retries GETs on 429/5xx with its own backoff, so
+ * a second backtest-level backoff would compound the waits. Other adapters do
+ * not retry a public candle GET (Crypto.com) or only briefly (Gemini), so the
+ * backtest keeps its 429 backoff for them.
+ */
+const ADAPTER_RETRIES_RATE_LIMIT = new Set(['coinbase']);
 
 const isRateLimitError = (err) => {
   const msg = err && err.message ? err.message : '';
   return err?.status === 429 || /\(429\)|\b429\b|rate limit/i.test(msg);
-};
-
-/**
- * Make authenticated request to Coinbase API
- */
-const makeRequest = async (method, apiPath) => {
-  const { apiKey, apiSecret } = loadCredentials();
-  const headers = getAuthHeaders(apiKey, apiSecret, method, apiPath);
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), REST_TIMEOUT_MS);
-  let resp;
-  let respData;
-  try {
-    resp = await fetch(`${BASE_URL}${apiPath}`, { method, headers, signal: controller.signal });
-    respData = await resp.json().catch(() => ({}));
-  } catch (err) {
-    clearTimeout(timeout);
-    if (err && err.name === 'AbortError') {
-      throw new Error(`Coinbase request timed out after ${REST_TIMEOUT_MS}ms: ${method} ${apiPath}`);
-    }
-    throw new Error(`Coinbase request failed: ${method} ${apiPath} - ${err && err.message ? err.message : String(err)}`);
-  }
-  clearTimeout(timeout);
-  if (!resp.ok) {
-    const message = respData.message || respData.error || resp.statusText;
-    const errorDetails = respData.error_details || '';
-    throw new Error(`Coinbase API error (${resp.status}): ${message}${errorDetails ? ` - ${errorDetails}` : ''}`);
-  }
-  return respData;
-};
-
-/**
- * Fetch candles from Coinbase Advanced Trade API
- * @param {string} productId - Product ID (e.g., 'BTC-USDC')
- * @param {number} start - Start timestamp (seconds)
- * @param {number} end - End timestamp (seconds)
- * @param {string} granularity - Candle granularity (e.g., 'FIVE_MINUTE')
- * @returns {Promise<Array>} Array of candle data
- */
-const fetchCoinbaseCandles = async (productId, start, end, granularity) => {
-  const apiPath = `/api/v3/brokerage/products/${productId}/candles?start=${start}&end=${end}&granularity=${granularity}`;
-  const data = await makeRequest('GET', apiPath);
-  return (data.candles || []).map(c => ({
-    timestamp: parseInt(c.start) * 1000,
-    open: parseFloat(c.open),
-    high: parseFloat(c.high),
-    low: parseFloat(c.low),
-    close: parseFloat(c.close),
-    volume: parseFloat(c.volume)
-  }));
 };
 
 /**
@@ -120,11 +59,6 @@ const fetchCoinbaseCandles = async (productId, start, end, granularity) => {
 const fetchCandles = async (exchange, start, end, granularity, productId = null) => {
   const effectiveProductId = productId || DEFAULT_PRODUCT_IDS[exchange] || DEFAULT_PRODUCT_IDS.coinbase;
 
-  if (exchange === 'coinbase') {
-    return fetchCoinbaseCandles(effectiveProductId, start, end, granularity);
-  }
-
-  // Use adapter for other exchanges (e.g., Gemini, Crypto.com)
   const adapter = getAdapter(exchange);
   return adapter.getCandles(effectiveProductId, start, end, granularity);
 };
@@ -260,7 +194,7 @@ const fetchPriceData = async (intervals, intervalType = 'daily', exchange = 'coi
         logger.warn(`Stopping candle fetch for ${effectiveProductId} on ${exchange} after ${consecutiveFailures} consecutive failed batches`);
         break;
       }
-      if (isRateLimitError(failure)) {
+      if (isRateLimitError(failure) && !ADAPTER_RETRIES_RATE_LIMIT.has(exchange)) {
         // Back off (growing with each consecutive 429) and retry the same window.
         await sleep(rateLimitBackoffMs * consecutiveFailures);
         continue;
@@ -959,7 +893,5 @@ module.exports = {
   // Exported for unit testing of the caching/aggregation invariants (#206, #213A)
   aggregateCandles,
   isCompleteBucket,
-  upsertCandles,
-  // Exported for unit testing of the credential source-of-truth (#688)
-  loadCredentials
+  upsertCandles
 };
