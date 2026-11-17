@@ -1,3 +1,5 @@
+Historical snapshot from 2026-04-22; not a current task list.
+
 # Historical audit notes recovered from April 22, 2026
 
 These notes were drafted against the April 22 checkout and never published.
