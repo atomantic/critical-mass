@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { useFrame } from '@react-three/fiber'
-import * as THREE from 'three'
+import { AdditiveBlending, BackSide, Color } from 'three'
 
 const VERT = /* glsl */`
   varying vec3 vNormal;
@@ -45,9 +45,9 @@ const FresnelGlow = ({
   pulseSpeed = 2,
   segments = 24,
 }) => {
-  const colorObj = useMemo(() => new THREE.Color(color), [color])
+  const colorObj = useMemo(() => new Color(color), [color])
   const uniforms = useMemo(() => ({
-    uColor: { value: new THREE.Color(color) },
+    uColor: { value: new Color(color) },
     uPower: { value: power },
     uIntensity: { value: intensity },
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -70,8 +70,8 @@ const FresnelGlow = ({
         uniforms={uniforms}
         transparent
         depthWrite={false}
-        side={THREE.BackSide}
-        blending={THREE.AdditiveBlending}
+        side={BackSide}
+        blending={AdditiveBlending}
       />
     </mesh>
   )

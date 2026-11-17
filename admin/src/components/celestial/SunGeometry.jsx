@@ -1,6 +1,6 @@
 import { useRef, useMemo } from 'react'
 import { useFrame } from '@react-three/fiber'
-import * as THREE from 'three'
+import { AdditiveBlending, DoubleSide } from 'three'
 import { NOISE_GLSL, SURFACE_VERT } from './noiseGLSL'
 import FresnelGlow from './FresnelGlow'
 
@@ -75,12 +75,12 @@ const SunGeometry = ({ size }) => {
 
       <mesh ref={innerBandRef} rotation={[Math.PI * 0.48, 0, Math.PI * 0.08]}>
         <ringGeometry args={[size * 1.03, size * 1.11, 96]} />
-        <meshBasicMaterial color="#FEF3C7" transparent opacity={0.24} side={THREE.DoubleSide} />
+        <meshBasicMaterial color="#FEF3C7" transparent opacity={0.24} side={DoubleSide} />
       </mesh>
 
       <mesh ref={outerBandRef} rotation={[Math.PI * 0.22, 0, -Math.PI * 0.16]}>
         <ringGeometry args={[size * 1.18, size * 1.24, 96]} />
-        <meshBasicMaterial color="#FDBA74" transparent opacity={0.14} side={THREE.DoubleSide} />
+        <meshBasicMaterial color="#FDBA74" transparent opacity={0.14} side={DoubleSide} />
       </mesh>
 
       {/* Solar flare rays — 4 major + 4 minor alternating, spin slowly */}
@@ -102,8 +102,8 @@ const SunGeometry = ({ size }) => {
                 color={isMajor ? '#FB923C' : '#FDE68A'}
                 transparent
                 opacity={isMajor ? 0.22 : 0.13}
-                side={THREE.DoubleSide}
-                blending={THREE.AdditiveBlending}
+                side={DoubleSide}
+                blending={AdditiveBlending}
                 depthWrite={false}
               />
             </mesh>

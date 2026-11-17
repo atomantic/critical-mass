@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from 'vitest'
 import snapshot from './fixtures/d3-parity.json'
 import { GAPPED_SERIES, PARITY_TZ, PATH_SERIES } from './fixtures/chart-series'
