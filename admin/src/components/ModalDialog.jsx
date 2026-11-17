@@ -13,9 +13,8 @@ import { useEffect, useRef } from 'react'
  * This component is designed to be mounted only while the dialog should be
  * open (`{someFlag && <ModalDialog>...}`), matching the existing call-site
  * pattern. It calls `showModal()` on mount and lets the browser own focus
- * containment; put `autoFocus` on whichever child element should receive
- * initial focus (usually the Cancel button, or a labelled input for the TP
- * editor) — `<dialog>.showModal()` honors the `autofocus` attribute.
+ * containment. Mark the control that should receive initial focus with
+ * `data-dialog-initial-focus` (usually Cancel or the active editor input).
  *
  * `dismissible` gates both Escape and backdrop-click dismissal so pending
  * in-flight actions (e.g. `disabled={closing}` on the existing buttons) can
@@ -44,10 +43,10 @@ function ModalDialog({ onClose, labelledBy, describedBy, dismissible = true, max
 
     previouslyFocusedRef.current = document.activeElement
     dialog.showModal()
-    // WHATWG dialog focusing steps (enforced by jsdom 28+) focus the dialog
-    // itself when no `autofocus` attribute exists, and React does not emit one
-    // for `autoFocus`. Fall back to the first enabled focusable descendant so
-    // initial focus lands on a control, matching what browsers do.
+    // React's autoFocus runs on mount, when the dialog is still closed.
+    dialog.querySelector('[data-dialog-initial-focus]:not(:disabled)')?.focus()
+    // If opening left focus on the dialog or outside it, use the first
+    // enabled focusable descendant.
     if (document.activeElement === dialog || !dialog.contains(document.activeElement)) {
       dialog.querySelector('input:not([disabled]):not([type="hidden"]), textarea:not([disabled]), select:not([disabled]), button:not([disabled]), [href], [tabindex]:not([tabindex="-1"])')?.focus()
     }

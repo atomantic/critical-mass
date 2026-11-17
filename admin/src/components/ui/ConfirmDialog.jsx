@@ -9,7 +9,7 @@ import ModalDialog from '../ModalDialog'
 //
 // - `busy` disables Cancel and Confirm, swaps the Confirm label for `busyLabel`,
 //   and makes Escape / backdrop dismissal a no-op (`dismissible={!busy}`).
-// - Cancel always carries autoFocus; put inputs in `children` only when the
+// - Cancel is the initial focus target; put inputs in `children` only when the
 //   default focus on Cancel is still right (a dialog that must focus an input
 //   is bespoke, like the TP editor).
 // - `extraActions` renders after Confirm (e.g. a guarded "force" action).
@@ -54,7 +54,7 @@ export default function ConfirmDialog({
       {children}
       {error && <p role="alert" className={errorClassName}>{error}</p>}
       <div className={actionsClassName}>
-        <Button variant={cancelVariant} touchTarget={touchTarget} className={buttonClassName} onClick={onClose} disabled={busy} autoFocus>
+        <Button variant={cancelVariant} touchTarget={touchTarget} className={buttonClassName} onClick={onClose} disabled={busy} data-dialog-initial-focus>
           {cancelLabel}
         </Button>
         <Button variant={confirmVariant ?? VARIANT_BUTTON[variant] ?? 'destructive'} touchTarget={touchTarget} className={buttonClassName} onClick={onConfirm} disabled={busy || confirmDisabled}>
