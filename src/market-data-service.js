@@ -466,9 +466,9 @@ const createMarketDataService = (exchange, pair) => {
 
     // This service is stopped when the fund's engine takes over (regime:start
     // handover) or the fund is torn down, so this is the "starts running"
-    // eviction point. A removed fund's entry also self-evicts: the next
-    // lookup stats a missing file and deletes it. Either way the map stays at
-    // one entry per fund file.
+    // eviction point. An entry for a fund that is removed instead is swept by
+    // the cache's own abandoned-entry pruning, so the map stays at one entry
+    // per live fund file.
     evictFundRegimeStateReadOnly(exchange, resolvedPair);
 
     isConnected = false;
