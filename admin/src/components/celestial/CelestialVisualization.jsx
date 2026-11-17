@@ -23,9 +23,8 @@ function readStoredMotionPreference() {
 /**
  * Card wrapper: header, 3D canvas container, and legend
  */
-const CelestialVisualization = ({ celestial, pendingOrders = [], currentPrice, maxUsdcDeployed, baseCurrency = 'BTC', lazyMount = false }) => {
+const CelestialCard = ({ celestial, pendingOrders = [], currentPrice, maxUsdcDeployed, baseCurrency = 'BTC', lazyMount = false }) => {
   const bodies = celestial?.bodies || []
-  const enabled = celestial?.enabled
 
   const prefersReducedMotion = useReducedMotion()
   const [explicitMotionPaused, setExplicitMotionPaused] = useState(readStoredMotionPreference)
@@ -81,8 +80,6 @@ const CelestialVisualization = ({ celestial, pendingOrders = [], currentPrice, m
     canvasElRef.current.setAttribute('role', 'img')
     canvasElRef.current.setAttribute('aria-label', canvasLabel)
   }, [canvasLabel])
-
-  if (!enabled) return null
 
   return (
     <div className="bg-gray-800 rounded-lg p-4">
@@ -164,5 +161,10 @@ const CelestialVisualization = ({ celestial, pendingOrders = [], currentPrice, m
     </div>
   )
 }
+
+// The enabled guard lives in a wrapper so CelestialCard's canvas container
+// (observed by useCanvasActive on mount) is always mounted together with the
+// hook; a hook that ran while disabled would never attach its observer.
+const CelestialVisualization = (props) => (props.celestial?.enabled ? <CelestialCard {...props} /> : null)
 
 export default CelestialVisualization
