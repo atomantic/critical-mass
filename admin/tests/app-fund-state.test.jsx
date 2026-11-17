@@ -139,6 +139,8 @@ it('keeps fund-view navigation reachable beside the populated running dry-run co
   })
   mount()
   const tabs = await screen.findByRole('navigation', { name: 'Fund views' })
+  // Status is read once the fund list has named the fund, after the tabs render.
+  await screen.findByText('DRY-RUN')
   for (const label of ['Dashboard', 'Cost Basis', 'Transactions', 'Charts', 'Config', 'API Keys', 'Logs']) {
     expect(screen.getByRole('link', { name: label })).toBeTruthy()
   }
