@@ -39,7 +39,7 @@ const { parseFundCli } = require('./lib/fund-cli');
 const { createFillLedger } = require('../src/fill-ledger');
 const { createNewBody, syncPositionState } = require('../src/celestial-hierarchy');
 const { loadRegimeState, saveRegimeState } = require('../src/state-tracker');
-const { resolveFundDataDir } = require('../src/migration');
+const { resolveFundDataDir } = require('../src/fund-paths');
 const { getBaseCurrency, getConfiguredFunds } = require('../src/config-utils');
 const { roundAsset, roundUSDC } = require('../src/volatility-utils');
 

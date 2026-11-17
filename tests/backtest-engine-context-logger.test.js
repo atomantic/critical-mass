@@ -14,7 +14,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const migration = require('../src/migration');
+const fundPaths = require('../src/fund-paths');
 const adapters = require('../src/adapters');
 
 const EXCHANGE = 'gemini';
@@ -30,9 +30,9 @@ describe('backtest-engine diagnostics use the context logger', () => {
 
   beforeEach(() => {
     tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-backtest-logger-'));
-    originalGetExchangeDataDir = migration.getExchangeDataDir;
+    originalGetExchangeDataDir = fundPaths.getExchangeDataDir;
     originalGetAdapter = adapters.getAdapter;
-    migration.getExchangeDataDir = (exchange) => {
+    fundPaths.getExchangeDataDir = (exchange) => {
       const dir = path.join(tmpRoot, exchange);
       fs.mkdirSync(dir, { recursive: true });
       return dir;
@@ -45,7 +45,7 @@ describe('backtest-engine diagnostics use the context logger', () => {
   });
 
   afterEach(() => {
-    migration.getExchangeDataDir = originalGetExchangeDataDir;
+    fundPaths.getExchangeDataDir = originalGetExchangeDataDir;
     adapters.getAdapter = originalGetAdapter;
     delete require.cache[ENGINE_PATH];
     fs.rmSync(tmpRoot, { recursive: true, force: true });

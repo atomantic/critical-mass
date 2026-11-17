@@ -11,7 +11,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const migration = require('../src/migration');
+const fundPaths = require('../src/fund-paths');
 
 /**
  * @param {string} prefix
@@ -19,10 +19,10 @@ const migration = require('../src/migration');
  */
 const createIsolatedDataDir = (prefix) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}-`));
-  const originalGetExchangeDataDir = migration.getExchangeDataDir;
+  const originalGetExchangeDataDir = fundPaths.getExchangeDataDir;
   let restored = false;
 
-  migration.getExchangeDataDir = (exchange) => {
+  fundPaths.getExchangeDataDir = (exchange) => {
     const exchangeDir = path.join(root, exchange);
     fs.mkdirSync(exchangeDir, { recursive: true });
     return exchangeDir;
@@ -30,7 +30,7 @@ const createIsolatedDataDir = (prefix) => {
 
   const restore = () => {
     if (restored) return;
-    migration.getExchangeDataDir = originalGetExchangeDataDir;
+    fundPaths.getExchangeDataDir = originalGetExchangeDataDir;
     restored = true;
   };
 

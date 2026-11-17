@@ -22,7 +22,7 @@
 
 const celestialHierarchy = require('./celestial-hierarchy');
 const { tradeEvents } = require('./trade-events');
-const { resolveFundDataDir } = require('./migration');
+const { resolveFundDataDir } = require('./fund-paths');
 const { findInvalidManualTradesReason, findInvalidCorrectiveBuysReason } = require('./persisted-payload-validation');
 const { backfillEngineStart: _backfillEngineStart } = require('./apy-calculator');
 const { roundAsset, roundPrice } = require('./volatility-utils');

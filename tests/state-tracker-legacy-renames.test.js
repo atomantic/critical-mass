@@ -10,8 +10,8 @@ const os = require('os');
 const old = (prefix, suffix) => prefix + suffix;
 
 const stateTrackerPath = require.resolve('../src/state-tracker');
-const migration = require('../src/migration');
-const originalGetExchangeDataDir = migration.getExchangeDataDir;
+const fundPaths = require('../src/fund-paths');
+const originalGetExchangeDataDir = fundPaths.getExchangeDataDir;
 
 /** @type {string|null} */
 let tmpDir = null;
@@ -30,7 +30,7 @@ const writeState = (st, data) => {
 describe('loadRegimeState legacy field renames (issue #1232)', () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'state-tracker-renames-'));
-    migration.getExchangeDataDir = (exchange) => {
+    fundPaths.getExchangeDataDir = (exchange) => {
       const dir = path.join(tmpDir, exchange);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
       return dir;
@@ -38,7 +38,7 @@ describe('loadRegimeState legacy field renames (issue #1232)', () => {
   });
 
   afterEach(() => {
-    migration.getExchangeDataDir = originalGetExchangeDataDir;
+    fundPaths.getExchangeDataDir = originalGetExchangeDataDir;
     if (tmpDir && fs.existsSync(tmpDir)) fs.rmSync(tmpDir, { recursive: true, force: true });
     tmpDir = null;
     delete require.cache[stateTrackerPath];

@@ -16,6 +16,7 @@ const os = require('os');
 // repository's real data/ directory.
 
 const migrationPath = require.resolve('../src/migration');
+const fundPathsPath = require.resolve('../src/fund-paths');
 const pathsModule = require('../src/paths');
 const configUtils = require('../src/config-utils');
 
@@ -25,7 +26,7 @@ const originalGetDefaultPair = configUtils.getDefaultPair;
 const EXCHANGE = 'coinbase';
 const PAIR = 'BTC-USDC';
 
-// Snapshot of the production allow-list, kept independent of `migration.PER_FUND_FILES`
+// Snapshot of the production allow-list, kept independent of `fundPaths.PER_FUND_FILES`
 // / `migration.PER_FUND_FILE_PREFIXES` on purpose: the fixture below is seeded from
 // this snapshot, then cross-checked for parity against the live arrays. If someone
 // shrinks (or extends) the production allow-list without updating this file, the
@@ -54,6 +55,8 @@ const KNOWN_PER_FUND_FILE_PREFIXES = [];
 let tmpDir = null;
 /** @type {any} */
 let migration = null;
+/** @type {any} */
+let fundPaths = null;
 
 // Force migration.js to re-run its top-level `const { DATA_DIR } = require('./paths')`
 // against a freshly-mutated paths module, the same delete-cache/re-require idiom
@@ -61,7 +64,10 @@ let migration = null;
 const freshMigration = (dataDir) => {
   pathsModule.DATA_DIR = dataDir;
   delete require.cache[migrationPath];
-  return require('../src/migration');
+  delete require.cache[fundPathsPath];
+  const fresh = require('../src/migration');
+  fundPaths = require('../src/fund-paths');
+  return fresh;
 };
 
 const writeLegacyFile = (exchangeDir, name, content) => {
@@ -79,9 +85,11 @@ afterEach(() => {
   configUtils.getDefaultPair = originalGetDefaultPair;
   pathsModule.DATA_DIR = originalDataDir;
   delete require.cache[migrationPath];
+  delete require.cache[fundPathsPath];
   if (tmpDir && fs.existsSync(tmpDir)) fs.rmSync(tmpDir, { recursive: true, force: true });
   tmpDir = null;
   migration = null;
+  fundPaths = null;
 });
 
 describe('migrateExchangeToPairs — completeness and idempotency (issue #425)', () => {
@@ -93,7 +101,7 @@ describe('migrateExchangeToPairs — completeness and idempotency (issue #425)',
     // from this snapshot (an entry added or removed), fail here rather than
     // silently reseeding the fixture from whatever the array now contains.
     assert.deepEqual(
-      migration.PER_FUND_FILES,
+      fundPaths.PER_FUND_FILES,
       KNOWN_PER_FUND_FILES,
       'PER_FUND_FILES changed — update KNOWN_PER_FUND_FILES in this test to match',
     );
@@ -559,29 +567,29 @@ describe('resolveFundPath (issue #425)', () => {
   const baseDir = path.join(os.tmpdir(), 'resolve-fund-path-base');
 
   it('returns the joined path for a normal pair', () => {
-    const result = migration.resolveFundPath(baseDir, 'BTC-USDC');
+    const result = fundPaths.resolveFundPath(baseDir, 'BTC-USDC');
     assert.equal(result, path.resolve(baseDir, 'BTC-USDC'));
   });
 
   it('throws for a pair that escapes with ../', () => {
-    assert.throws(() => migration.resolveFundPath(baseDir, '../escape'), /escapes exchange data directory/);
+    assert.throws(() => fundPaths.resolveFundPath(baseDir, '../escape'), /escapes exchange data directory/);
   });
 
   it('throws for a pair that escapes via a nested traversal', () => {
-    assert.throws(() => migration.resolveFundPath(baseDir, 'a/../../escape'), /escapes exchange data directory/);
+    assert.throws(() => fundPaths.resolveFundPath(baseDir, 'a/../../escape'), /escapes exchange data directory/);
   });
 
   it('throws for an absolute path pair', () => {
-    assert.throws(() => migration.resolveFundPath(baseDir, '/etc/passwd'), /escapes exchange data directory/);
+    assert.throws(() => fundPaths.resolveFundPath(baseDir, '/etc/passwd'), /escapes exchange data directory/);
   });
 
   it('throws for an empty string pair', () => {
-    assert.throws(() => migration.resolveFundPath(baseDir, ''), /non-empty string/);
+    assert.throws(() => fundPaths.resolveFundPath(baseDir, ''), /non-empty string/);
   });
 
   it('throws for a non-string pair', () => {
     // @ts-expect-error deliberately passing the wrong type
-    assert.throws(() => migration.resolveFundPath(baseDir, 123), /non-empty string/);
+    assert.throws(() => fundPaths.resolveFundPath(baseDir, 123), /non-empty string/);
   });
 });
 

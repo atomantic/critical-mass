@@ -19,7 +19,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const migration = require('../src/migration');
+const fundPaths = require('../src/fund-paths');
 const configUtils = require('../src/config-utils');
 const orderManager = require('../src/order-manager');
 const stateTracker = require('../src/state-tracker');
@@ -117,7 +117,7 @@ beforeEach(() => {
   };
 
   originals = {
-    getExchangeDataDir: migration.getExchangeDataDir,
+    getExchangeDataDir: fundPaths.getExchangeDataDir,
     getFundConfig: configUtils.getFundConfig,
     getDefaultPair: configUtils.getDefaultPair,
     getAdapter: adapters.getAdapter,
@@ -135,7 +135,7 @@ beforeEach(() => {
     resumePoll: { ...orderManager.PENDING_BUY_RESUME_POLL },
   };
 
-  migration.getExchangeDataDir = (ex) => {
+  fundPaths.getExchangeDataDir = (ex) => {
     const dir = path.join(tmpDir, ex);
     fs.mkdirSync(dir, { recursive: true });
     return dir;
@@ -174,7 +174,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  migration.getExchangeDataDir = originals.getExchangeDataDir;
+  fundPaths.getExchangeDataDir = originals.getExchangeDataDir;
   configUtils.getFundConfig = originals.getFundConfig;
   configUtils.getDefaultPair = originals.getDefaultPair;
   adapters.getAdapter = originals.getAdapter;
@@ -488,8 +488,8 @@ describe('state-tracker pending-buy helpers (issue #963)', () => {
 
   it('a retained intent blocks this process even while its row reads as our own dispatch', () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'retain-intent-'));
-    const prev = migration.getExchangeDataDir;
-    migration.getExchangeDataDir = () => tmp;
+    const prev = fundPaths.getExchangeDataDir;
+    fundPaths.getExchangeDataDir = () => tmp;
     try {
       const intent = stateTracker.recordPlacementIntent({ exchange: EXCHANGE, pair: PAIR, action: 'dca_buy' });
       assert.equal(stateTracker.getBlockingPlacementIntents(EXCHANGE, PAIR).length, 0, 'own in-flight dispatch does not block');
@@ -498,7 +498,7 @@ describe('state-tracker pending-buy helpers (issue #963)', () => {
       stateTracker.resolvePlacementIntent(EXCHANGE, PAIR, intent.id);
       assert.equal(stateTracker.getBlockingPlacementIntents(EXCHANGE, PAIR).length, 0);
     } finally {
-      migration.getExchangeDataDir = prev;
+      fundPaths.getExchangeDataDir = prev;
       fs.rmSync(tmp, { recursive: true, force: true });
     }
   });

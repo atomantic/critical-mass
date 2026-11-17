@@ -3,7 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const { checkEngineStopped } = require('../../src/engine-liveness');
-const { resolveFundDataDir } = require('../../src/migration');
+const { resolveFundDataDir } = require('../../src/fund-paths');
 
 const flagValue = (argv, name) => {
   const eq = argv.find(a => a.startsWith(`--${name}=`));

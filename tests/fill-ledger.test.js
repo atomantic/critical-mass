@@ -9,13 +9,12 @@ const crypto = require('crypto');
 // ---------------------------------------------------------------------------
 // Module-level setup: patch getExchangeDataDir so fill-ledger writes to tmpdir
 // ---------------------------------------------------------------------------
-const migrationPath = require.resolve('../src/migration');
 const fillLedgerPath = require.resolve('../src/fill-ledger');
 const stateTrackerPath = require.resolve('../src/state-tracker');
 
-// Ensure migration module is loaded so we can patch it
-const migration = require('../src/migration');
-const originalGetExchangeDataDir = migration.getExchangeDataDir;
+// Ensure the fund-paths module is loaded so we can patch it
+const fundPaths = require('../src/fund-paths');
+const originalGetExchangeDataDir = fundPaths.getExchangeDataDir;
 
 /** @type {string|null} tmp directory for the current test */
 let tmpDir = null;
@@ -35,8 +34,8 @@ const freshFillLedgerModule = () => {
 describe('Fill Ledger', () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fill-ledger-test-'));
-    // Patch migration so getExchangeDataDir returns a path under tmpDir
-    migration.getExchangeDataDir = (exchange) => {
+    // Patch fund-paths so getExchangeDataDir returns a path under tmpDir
+    fundPaths.getExchangeDataDir = (exchange) => {
       const dir = path.join(tmpDir, exchange);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
       return dir;
@@ -45,7 +44,7 @@ describe('Fill Ledger', () => {
 
   afterEach(() => {
     // Restore original
-    migration.getExchangeDataDir = originalGetExchangeDataDir;
+    fundPaths.getExchangeDataDir = originalGetExchangeDataDir;
     // Clean up tmpDir
     if (tmpDir && fs.existsSync(tmpDir)) {
       fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -3797,7 +3796,7 @@ describe('Fill Ledger', () => {
 
       // Simulate an operator edit / another process appending a fill to the
       // on-disk ledger, then a live SIGUSR1-style reload.
-      const filePath = path.join(migration.resolveFundDataDir(exchange, pair), 'fill-ledger.json');
+      const filePath = path.join(fundPaths.resolveFundDataDir(exchange, pair), 'fill-ledger.json');
       const onDisk = JSON.parse(fs.readFileSync(filePath, 'utf8'));
       onDisk.push({
         tradeId: 'load-b2',

@@ -13,7 +13,7 @@
  * REAL fs implementation for any path outside those two files. That lets
  * regime-state.json / regime-engine-running.json reads (loadRegimeState,
  * shouldAutoResumeRegime) exercise their real logic against a throwaway
- * temp directory — the same "patch migration.getExchangeDataDir" pattern
+ * temp directory — the same "patch fundPaths.getExchangeDataDir" pattern
  * used by tests/fill-ledger.test.js and tests/corrective-buy-paths.test.js —
  * instead of stubbing those modules out.
  */
@@ -33,7 +33,7 @@ const configDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'exchange-routes-con
 pathsModule.DATA_DIR = configDataDir;
 const configUtils = require('../src/config-utils');
 const stateTracker = require('../src/state-tracker');
-const migration = require('../src/migration');
+const fundPaths = require('../src/fund-paths');
 const adapters = require('../src/adapters');
 const registerExchangeRoutes = require('../src/routes/exchange-routes');
 
@@ -129,10 +129,10 @@ const invoke = async (app, key, req = {}) => {
 
 // A real temp dir standing in for data/<exchange>/<pair>/ — populated per
 // test with regime-state.json / regime-engine-running.json as needed, and
-// wired in via migration.getExchangeDataDir (the same seam
+// wired in via fundPaths.getExchangeDataDir (the same seam
 // tests/fill-ledger.test.js and tests/corrective-buy-paths.test.js patch).
 let tempRoot;
-const originalGetExchangeDataDir = migration.getExchangeDataDir;
+const originalGetExchangeDataDir = fundPaths.getExchangeDataDir;
 
 const fundDir = (exchange, pair) => path.join(tempRoot, exchange, pair);
 
@@ -163,7 +163,7 @@ const setup = (ipcRequest = () => Promise.resolve({ success: true })) => {
 describe('fund lifecycle routes', () => {
   beforeEach(() => {
     tempRoot = realFs.mkdirSync ? fs.mkdtempSync(path.join(os.tmpdir(), 'exch-routes-lifecycle-')) : null;
-    migration.getExchangeDataDir = (exchange) => {
+    fundPaths.getExchangeDataDir = (exchange) => {
       const dir = path.join(tempRoot, exchange);
       realFs.mkdirSync(dir, { recursive: true });
       return dir;
@@ -172,7 +172,7 @@ describe('fund lifecycle routes', () => {
 
   afterEach(() => {
     mock.restoreAll();
-    migration.getExchangeDataDir = originalGetExchangeDataDir;
+    fundPaths.getExchangeDataDir = originalGetExchangeDataDir;
     if (tempRoot) realFs.rmSync(tempRoot, { recursive: true, force: true });
   });
 
@@ -669,7 +669,7 @@ describe('fund lifecycle routes', () => {
   describe('GET /api/:exchange/transactions (issue #543)', () => {
     it('resolves the requested pair, so two funds on one exchange see distinct histories', async () => {
       // Real logger + real parseTSV, writing under the same tempRoot the
-      // migration.getExchangeDataDir patch in beforeEach points at — this
+      // fundPaths.getExchangeDataDir patch in beforeEach points at — this
       // exercises getLogFile's actual per-fund path resolution end to end,
       // not a mock of it.
       const { logBuy } = require('../src/logger');

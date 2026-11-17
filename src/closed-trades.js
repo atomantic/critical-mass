@@ -10,7 +10,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { resolveFundDataDir } = require('./migration');
+const { resolveFundDataDir } = require('./fund-paths');
 const { atomicWriteSync, quarantineFile } = require('./state-tracker');
 const { createContextLogger } = require('./logger');
 const { roundAsset, roundUSDC } = require('./volatility-utils');

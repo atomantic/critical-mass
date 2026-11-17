@@ -17,7 +17,7 @@
  *      engine trades the fund while it exists.
  *   3. Copy the live files into a private staging directory and run the
  *      converter's ordinary load/save code against it (via
- *      migration.withFundDataDirOverride). No live file is touched.
+ *      fundPaths.withFundDataDirOverride). No live file is touched.
  *   4. Validate the staged generation, then durably record the originals,
  *      the target bytes and their hashes in the journal (status `publishing`).
  *   5. Publish each target by atomic replacement, then remove the journal.
@@ -34,7 +34,7 @@ const fs = require('fs');
 const path = require('path');
 const { randomUUID } = require('crypto');
 const { sha256Hex: hash, UUID_RE } = require('./shared-utils');
-const migration = require('./migration');
+const fundPaths = require('./fund-paths');
 const { atomicWriteSync } = require('./durable-write');
 const { fsyncDir } = require('./fsync-dir');
 const { log } = require('./logger');
@@ -60,7 +60,7 @@ const resolvePair = (exchange, pair) => require('./config-utils').requireFundPai
  * @param {string} [pair]
  * @returns {string} Live per-fund data directory
  */
-const liveFundDir = (exchange, pair) => migration.resolveFundDataDir(exchange, resolvePair(exchange, pair));
+const liveFundDir = (exchange, pair) => fundPaths.resolveFundDataDir(exchange, resolvePair(exchange, pair));
 
 /** @param {string} file */
 const readOptional = (file) => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null);
@@ -268,7 +268,7 @@ const runDcaImportTransaction = ({ exchange, pair, kind, sourceOrders, stage, va
       if (before[file] !== null) fs.writeFileSync(path.join(stagingDir, file), /** @type {string} */ (before[file]), { mode: 0o600 });
     }
 
-    result = migration.withFundDataDirOverride(exchange, resolvedPair, stagingDir, () => stage({ importId }));
+    result = fundPaths.withFundDataDirOverride(exchange, resolvedPair, stagingDir, () => stage({ importId }));
 
     const unexpected = fs.readdirSync(stagingDir).filter((name) => !TARGET_FILES.includes(name));
     if (unexpected.length > 0) throw new Error(`DCA import staged unexpected files: ${unexpected.join(', ')}`);

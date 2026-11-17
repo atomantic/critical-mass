@@ -2,7 +2,7 @@
 const fs = require('fs');
 const { atomicWriteSync } = require('./durable-write');
 const path = require('path');
-const { resolveFundDataDir } = require('./migration');
+const { resolveFundDataDir } = require('./fund-paths');
 
 /**
  * @typedef {import('./types').BotState} BotState

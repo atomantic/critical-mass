@@ -27,7 +27,7 @@ const fs = require('fs');
 const net = require('net');
 const path = require('path');
 
-const { resolveFundDataDir } = require('./migration');
+const { resolveFundDataDir } = require('./fund-paths');
 const { resolveListenHosts } = require('./gateway-listen');
 const { PORTS } = require('../ecosystem.config.cjs');
 

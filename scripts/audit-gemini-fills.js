@@ -17,7 +17,7 @@
 const fs = require('fs');
 const path = require('path');
 const { createGeminiAdapter } = require('../src/adapters/gemini/api');
-const { resolveFundDataDir } = require('../src/migration');
+const { resolveFundDataDir } = require('../src/fund-paths');
 const { getBaseCurrency, getQuoteCurrency } = require('../src/config-utils');
 
 const { roundAsset, roundUSDC } = require('../src/volatility-utils');

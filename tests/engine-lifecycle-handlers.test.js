@@ -787,9 +787,9 @@ describe('exclusive fill-ledger handover over real ledgers (issue #1008)', () =>
   const fs = require('fs');
   const os = require('os');
   const path = require('path');
-  const migration = require('../src/migration');
+  const fundPaths = require('../src/fund-paths');
   const { createFillLedger } = require('../src/fill-ledger');
-  const originalDir = migration.getExchangeDataDir;
+  const originalDir = fundPaths.getExchangeDataDir;
   const LEDGER_EXCHANGE = 'test-1008';
   let root;
 
@@ -838,7 +838,7 @@ describe('exclusive fill-ledger handover over real ledgers (issue #1008)', () =>
 
   beforeEach(() => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-1008-'));
-    migration.getExchangeDataDir = (exchange) => {
+    fundPaths.getExchangeDataDir = (exchange) => {
       const dir = path.join(root, exchange);
       fs.mkdirSync(dir, { recursive: true });
       return dir;
@@ -847,7 +847,7 @@ describe('exclusive fill-ledger handover over real ledgers (issue #1008)', () =>
   });
 
   afterEach(() => {
-    migration.getExchangeDataDir = originalDir;
+    fundPaths.getExchangeDataDir = originalDir;
     fs.rmSync(root, { recursive: true, force: true });
   });
 

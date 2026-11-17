@@ -18,7 +18,7 @@ const fs = require('fs');
 const path = require('path');
 const { createCoinbaseAdapter } = require('../src/adapters/coinbase/api');
 const { createFillLedger } = require('../src/fill-ledger');
-const { getFundDataDir, resolveFundDataDir } = require('../src/migration');
+const { getFundDataDir, resolveFundDataDir } = require('../src/fund-paths');
 const { atomicWriteSync } = require('../src/durable-write');
 const { prepareApply } = require('./lib/fund-cli');
 

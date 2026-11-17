@@ -14,11 +14,12 @@ const { spawn, spawnSync } = require('child_process');
 //
 // Every fixture lives under fs.mkdtempSync — nothing here touches the
 // repository's real data/ directory. `pathsModule.APP_ROOT` / `DATA_DIR` are
-// mutated and src/migration.js (and src/logger.js, which captures
-// migration's resolveFundDataDir) are re-required fresh, the idiom used by
+// mutated and src/migration.js (plus src/fund-paths.js and src/logger.js, which
+// captures fund-paths' resolveFundDataDir) are re-required fresh, the idiom used by
 // tests/migration-pair-layout.test.js and tests/migration-keys.test.js.
 
 const migrationPath = require.resolve('../src/migration');
+const fundPathsPath = require.resolve('../src/fund-paths');
 const loggerPath = require.resolve('../src/logger');
 const nsPath = require.resolve('../src/legacy-namespace-migration');
 const pathsModule = require('../src/paths');
@@ -42,6 +43,7 @@ const fresh = () => {
   pathsModule.APP_ROOT = tmpDir;
   pathsModule.DATA_DIR = dataDir;
   delete require.cache[migrationPath];
+  delete require.cache[fundPathsPath];
   delete require.cache[loggerPath];
   return require('../src/migration');
 };
@@ -59,6 +61,7 @@ afterEach(() => {
   pathsModule.APP_ROOT = originalAppRoot;
   pathsModule.DATA_DIR = originalDataDir;
   delete require.cache[migrationPath];
+  delete require.cache[fundPathsPath];
   delete require.cache[loggerPath];
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });

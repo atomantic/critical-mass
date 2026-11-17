@@ -26,7 +26,7 @@ const path = require('node:path');
 const { createGeminiAdapter } = require('../src/adapters/gemini/api');
 const { createCryptocomAdapter } = require('../src/adapters/cryptocom/api');
 const { placeWithUnknownReconcile } = require('../src/order-manager');
-const migration = require('../src/migration');
+const fundPaths = require('../src/fund-paths');
 const stateTracker = require('../src/state-tracker');
 
 let keysPath;
@@ -349,7 +349,7 @@ describe('Crypto.com ambiguous terminal execution quantity keeps durable intent 
 
   const withDurableFixture = async (run) => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cryptocom-quantity-intent-'));
-    mock.method(migration, 'getExchangeDataDir', () => path.join(root, exchange));
+    mock.method(fundPaths, 'getExchangeDataDir', () => path.join(root, exchange));
     try {
       await run();
     } finally {

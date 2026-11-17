@@ -10,6 +10,7 @@ const fs = require('fs');
 const path = require('path');
 const stateTracker = require('./state-tracker');
 const { createContextLogger } = require('./logger');
+const { resolveFundDataDir } = require('./fund-paths');
 const { jsonReadError } = require('./json-diagnostics');
 const { getFibonacciBuyAmount } = require('./fibonacci-utils');
 const {
@@ -284,8 +285,6 @@ const fundLabel = (exchange, pair) => `${exchange}/${pair}`;
  * @returns {string}
  */
 const getRegimeRunningFlagPath = (exchange, pair) => {
-  // Lazy require to avoid circular deps (migration -> config-utils -> ...).
-  const { resolveFundDataDir } = require('./migration');
   return path.join(resolveFundDataDir(exchange, pair), 'regime-engine-running.json');
 };
 

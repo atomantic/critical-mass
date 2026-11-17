@@ -4,7 +4,7 @@
  */
 
 const fs = require('fs');
-const { getExchangeKeysPath } = require('../migration');
+const { getExchangeKeysPath } = require('../fund-paths');
 const { createContextLogger } = require('../logger');
 const { loadConfig } = require('../dca-engine');
 const { getQuoteCurrency } = require('../config-utils');

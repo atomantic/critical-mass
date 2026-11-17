@@ -11,8 +11,8 @@ const os = require('os');
 //  - saveRegimeState stamping a lower _saveVersion than disk (version regression)
 
 const stateTrackerPath = require.resolve('../src/state-tracker');
-const migration = require('../src/migration');
-const originalGetExchangeDataDir = migration.getExchangeDataDir;
+const fundPaths = require('../src/fund-paths');
+const originalGetExchangeDataDir = fundPaths.getExchangeDataDir;
 
 /** @type {string|null} */
 let tmpDir = null;
@@ -25,7 +25,7 @@ const freshModule = () => {
 describe('state-tracker hardening (issue #108)', () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'state-tracker-test-'));
-    migration.getExchangeDataDir = (exchange) => {
+    fundPaths.getExchangeDataDir = (exchange) => {
       const dir = path.join(tmpDir, exchange);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
       return dir;
@@ -33,7 +33,7 @@ describe('state-tracker hardening (issue #108)', () => {
   });
 
   afterEach(() => {
-    migration.getExchangeDataDir = originalGetExchangeDataDir;
+    fundPaths.getExchangeDataDir = originalGetExchangeDataDir;
     if (tmpDir && fs.existsSync(tmpDir)) fs.rmSync(tmpDir, { recursive: true, force: true });
     tmpDir = null;
     delete require.cache[stateTrackerPath];

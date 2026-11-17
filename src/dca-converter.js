@@ -14,7 +14,7 @@ const { createFillLedger } = require('./fill-ledger');
 const { isCompletedCycle } = require('./fill-ledger-recalc');
 const { createNewBody, classifyTier, syncPositionState } = require('./celestial-hierarchy');
 const { setFundEnabled: setConfigFundEnabled, setExchangeEnabled, requireFundPair, getRegimeConfig, getFundConfig } = require('./config-utils');
-const { resolveFundDataDir } = require('./migration');
+const { resolveFundDataDir } = require('./fund-paths');
 const { runDcaImportTransaction, recoverDcaImport, hasPendingDcaImport } = require('./dca-conversion-transaction');
 const { log } = require('./logger');
 

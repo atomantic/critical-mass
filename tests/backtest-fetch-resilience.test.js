@@ -11,7 +11,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const migration = require('../src/migration');
+const fundPaths = require('../src/fund-paths');
 const adapters = require('../src/adapters');
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -36,9 +36,9 @@ describe('#1500 candle fetch resilience', () => {
 
   beforeEach(() => {
     tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-fetch-resilience-'));
-    originalGetExchangeDataDir = migration.getExchangeDataDir;
+    originalGetExchangeDataDir = fundPaths.getExchangeDataDir;
     originalGetAdapter = adapters.getAdapter;
-    migration.getExchangeDataDir = (exchange) => {
+    fundPaths.getExchangeDataDir = (exchange) => {
       const dir = path.join(tmpRoot, exchange);
       fs.mkdirSync(dir, { recursive: true });
       return dir;
@@ -50,7 +50,7 @@ describe('#1500 candle fetch resilience', () => {
   });
 
   afterEach(() => {
-    migration.getExchangeDataDir = originalGetExchangeDataDir;
+    fundPaths.getExchangeDataDir = originalGetExchangeDataDir;
     adapters.getAdapter = originalGetAdapter;
     delete require.cache[ENGINE_PATH];
     delete require.cache[OPTIMIZER_PATH];

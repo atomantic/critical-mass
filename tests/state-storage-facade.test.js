@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const migration = require('../src/migration');
+const fundPaths = require('../src/fund-paths');
 const storage = require('../src/fund-state-storage');
 const intents = require('../src/placement-intent-storage');
 const quarantine = require('../src/state-file-quarantine');
@@ -24,7 +24,7 @@ const reloadFacade = () => {
 beforeEach(() => {
   tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'state-storage-facade-'));
   activeRoot = tmpRoot;
-  mock.method(migration, 'getExchangeDataDir', () => path.join(activeRoot, EXCHANGE));
+  mock.method(fundPaths, 'getExchangeDataDir', () => path.join(activeRoot, EXCHANGE));
 });
 afterEach(() => {
   mock.restoreAll();

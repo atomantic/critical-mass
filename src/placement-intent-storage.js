@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { randomUUID } = require('crypto');
-const { resolveFundDataDir } = require('./migration');
+const { resolveFundDataDir } = require('./fund-paths');
 const { atomicWriteSync } = require('./durable-write');
 const { PLACEMENT_INTENTS_FILENAME, parsePlacementIntentsDocument } = require('./placement-intent-document');
 

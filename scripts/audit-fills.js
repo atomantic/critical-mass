@@ -17,7 +17,7 @@
 const fs = require('fs');
 const path = require('path');
 const { getAuthHeaders } = require('../src/adapters/coinbase/auth');
-const { resolveFundDataDir } = require('../src/migration');
+const { resolveFundDataDir } = require('../src/fund-paths');
 const { getBaseCurrency, getQuoteCurrency } = require('../src/config-utils');
 const { DATA_DIR } = require('../src/paths');
 const { roundAsset, roundUSDC } = require('../src/volatility-utils');

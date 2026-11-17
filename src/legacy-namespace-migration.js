@@ -43,9 +43,9 @@ const path = require('path');
 const { randomUUID } = require('crypto');
 const { fsyncDir } = require('./fsync-dir');
 const { fsyncFile } = require('./durable-write');
+const { createContextLogger } = require('./logger');
 
-// Lazy: logger.js -> migration.js -> this module, so the logger is resolved at call time.
-const namespaceLog = () => require('./logger').createContextLogger({ component: 'namespace-migration' });
+const namespaceLog = () => createContextLogger({ component: 'namespace-migration' });
 
 /** The single exchange that existed before namespacing. */
 const LEGACY_EXCHANGE = 'coinbase';

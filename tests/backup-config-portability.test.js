@@ -156,7 +156,7 @@ describe('placement-intent ownership portability (#1793)', () => {
     ]) writeJson(path.join(source.dataDir, rel, 'keep.json'), { keep: true });
     return source;
   };
-  const readIntentsAt = (dest, callback) => require('../src/migration').withFundDataDirOverride(
+  const readIntentsAt = (dest, callback) => require('../src/fund-paths').withFundDataDirOverride(
     'coinbase', 'ETH-USDC', path.join(dest.dataDir, fundPath), callback,
   );
 

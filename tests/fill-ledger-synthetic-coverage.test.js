@@ -23,24 +23,24 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const migration = require('../src/migration');
+const fundPaths = require('../src/fund-paths');
 const coverage = require('../src/fill-ledger-synthetic-coverage');
 
 const EXPECTED_TRANSCRIPT_DIGEST = '483bc45f022b9dfd9be0ef1ccf34edb1e8bbac8e835d80f331aaa8f5b6bc208a';
 
-const originalGetExchangeDataDir = migration.getExchangeDataDir;
+const originalGetExchangeDataDir = fundPaths.getExchangeDataDir;
 /** @type {string} */
 let tmpDir;
 before(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fill-ledger-synthetic-coverage-test-'));
-  migration.getExchangeDataDir = (exchange) => {
+  fundPaths.getExchangeDataDir = (exchange) => {
     const dir = path.join(tmpDir, exchange);
     fs.mkdirSync(dir, { recursive: true });
     return dir;
   };
 });
 after(() => {
-  migration.getExchangeDataDir = originalGetExchangeDataDir;
+  fundPaths.getExchangeDataDir = originalGetExchangeDataDir;
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 

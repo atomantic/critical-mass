@@ -4,13 +4,13 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const migration = require('../src/migration');
+const fundPaths = require('../src/fund-paths');
 const configUtils = require('../src/config-utils');
 const state = require('../src/state-tracker');
 const { createNewBody } = require('../src/celestial-hierarchy');
 const { createClosedTrades } = require('../src/closed-trades');
 const { projectBuyCorrection } = require('../src/buy-fill-correction');
-const originalDir = migration.getExchangeDataDir;
+const originalDir = fundPaths.getExchangeDataDir;
 const originalConfig = configUtils.getRegimeConfig;
 const originalUpdate = configUtils.updateRegimeConfig;
 const originalRename = fs.renameSync;
@@ -29,14 +29,14 @@ const position = () => state.loadRegimeState(EXCHANGE, PAIR).position;
 describe('terminal buy economic reconciliation (#836)', () => {
   beforeEach(() => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'buy-correction-'));
-    migration.getExchangeDataDir = exchange => path.join(root, exchange);
+    fundPaths.getExchangeDataDir = exchange => path.join(root, exchange);
     config = { ...originalConfig(EXCHANGE, PAIR), maxUsdcDeployed: 1000 };
     configUtils.getRegimeConfig = () => ({ ...config });
     configUtils.updateRegimeConfig = (_exchange, _pair, updates) => { config = { ...config, ...updates }; };
   });
   afterEach(() => {
     fs.renameSync = originalRename;
-    migration.getExchangeDataDir = originalDir;
+    fundPaths.getExchangeDataDir = originalDir;
     configUtils.getRegimeConfig = originalConfig;
     configUtils.updateRegimeConfig = originalUpdate;
     fs.rmSync(root, { recursive: true, force: true });

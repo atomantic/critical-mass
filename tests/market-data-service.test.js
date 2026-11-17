@@ -2311,13 +2311,13 @@ describe('service.start() cold-start fill-ledger corruption', () => {
   const fs = require('fs');
   const path = require('path');
   const os = require('os');
-  const migration = require('../src/migration');
-  const originalGetExchangeDataDir = migration.getExchangeDataDir;
+  const fundPaths = require('../src/fund-paths');
+  const originalGetExchangeDataDir = fundPaths.getExchangeDataDir;
   let tmpDir;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mds-corrupt-test-'));
-    migration.getExchangeDataDir = (exchange) => {
+    fundPaths.getExchangeDataDir = (exchange) => {
       const dir = path.join(tmpDir, exchange);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
       return dir;
@@ -2327,7 +2327,7 @@ describe('service.start() cold-start fill-ledger corruption', () => {
   afterEach(() => {
     // Restore in afterEach so a failed assertion mid-test can't leak the
     // module-level patch into later tests in this file/run.
-    migration.getExchangeDataDir = originalGetExchangeDataDir;
+    fundPaths.getExchangeDataDir = originalGetExchangeDataDir;
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -2622,15 +2622,15 @@ describe('stopped-fund status stream with an unreadable regime-state.json', () =
   const fs = require('fs');
   const os = require('os');
   const path = require('path');
-  const migration = require('../src/migration');
+  const fundPaths = require('../src/fund-paths');
   const stateTracker = require('../src/state-tracker');
-  const originalGetExchangeDataDir = migration.getExchangeDataDir;
+  const originalGetExchangeDataDir = fundPaths.getExchangeDataDir;
   /** @type {string|null} */
   let tmpDir = null;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mds-corrupt-state-'));
-    migration.getExchangeDataDir = (exchange) => {
+    fundPaths.getExchangeDataDir = (exchange) => {
       const dir = path.join(/** @type {string} */ (tmpDir), exchange);
       fs.mkdirSync(dir, { recursive: true });
       return dir;
@@ -2638,7 +2638,7 @@ describe('stopped-fund status stream with an unreadable regime-state.json', () =
   });
 
   afterEach(() => {
-    migration.getExchangeDataDir = originalGetExchangeDataDir;
+    fundPaths.getExchangeDataDir = originalGetExchangeDataDir;
     if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
     tmpDir = null;
   });
@@ -3128,7 +3128,7 @@ describe('fenceMarketDataService + handover gap recovery (issue #1008)', () => {
   const fs = require('fs');
   const os = require('os');
   const path = require('path');
-  const migration = require('../src/migration');
+  const fundPaths = require('../src/fund-paths');
   const MDS_PATH = require.resolve('../src/market-data-service');
   const STUBBED = {
     adapters: require.resolve('../src/adapters'),
@@ -3138,7 +3138,7 @@ describe('fenceMarketDataService + handover gap recovery (issue #1008)', () => {
   };
   const EXCHANGE = 'test-mds-1008';
   const TP = 'tp-gap';
-  const originalDir = migration.getExchangeDataDir;
+  const originalDir = fundPaths.getExchangeDataDir;
 
   /** @type {Record<string, any>} */
   let savedCache;
@@ -3164,7 +3164,7 @@ describe('fenceMarketDataService + handover gap recovery (issue #1008)', () => {
 
   beforeEach(() => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'mds-1008-'));
-    migration.getExchangeDataDir = (exchange) => {
+    fundPaths.getExchangeDataDir = (exchange) => {
       const dir = path.join(root, exchange);
       fs.mkdirSync(dir, { recursive: true });
       return dir;
@@ -3203,7 +3203,7 @@ describe('fenceMarketDataService + handover gap recovery (issue #1008)', () => {
       if (entry) require.cache[p] = entry;
       else delete require.cache[p];
     }
-    migration.getExchangeDataDir = originalDir;
+    fundPaths.getExchangeDataDir = originalDir;
     fs.rmSync(root, { recursive: true, force: true });
   });
 
