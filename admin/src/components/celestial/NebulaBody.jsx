@@ -1,6 +1,6 @@
 import { useRef, useMemo, memo } from 'react'
 import { useFrame } from '@react-three/fiber'
-import * as THREE from 'three'
+import { AdditiveBlending, Color } from 'three'
 import { getBodySize, bodyPropsEqual } from './celestialConstants'
 import CelestialTooltip from './CelestialTooltip'
 import FresnelGlow from './FresnelGlow'
@@ -37,11 +37,11 @@ const buildNebulaGeometry = (size) => {
   const positions = new Float32Array(TOTAL * 3)
   const colors = new Float32Array(TOTAL * 3)
 
-  const cyanCore = new THREE.Color('#CFFAFE')
-  const teal = new THREE.Color('#06B6D4')
-  const purple = new THREE.Color('#7C3AED')
-  const rose = new THREE.Color('#F43F5E')
-  const scratch = new THREE.Color()
+  const cyanCore = new Color('#CFFAFE')
+  const teal = new Color('#06B6D4')
+  const purple = new Color('#7C3AED')
+  const rose = new Color('#F43F5E')
+  const scratch = new Color()
 
   let idx = 0
 
@@ -140,7 +140,7 @@ const NebulaBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed, baseCurr
           fragmentShader={NEBULA_FRAG}
           transparent
           depthWrite={false}
-          blending={THREE.AdditiveBlending}
+          blending={AdditiveBlending}
         />
       </points>
 
