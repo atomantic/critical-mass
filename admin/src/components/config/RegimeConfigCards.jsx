@@ -1,19 +1,20 @@
-import { FormInput, FormSelect, SectionCard } from './ConfigFormControls'
+import { DurationInput, FormInput, FormSelect, SectionCard } from './ConfigFormControls'
+import DisclosureCard from './DisclosureCard'
 import { fieldValue } from '../../utils/regimeFieldValue.mjs'
 import ToggleSwitch from '../ToggleSwitch'
 import { TIERS as CELESTIAL_TIERS, formatTierCapitalRange } from '../../../../shared/celestial-tiers.mjs'
 
-export function VolatilityClockCard({ config, regimeConfig, quoteCurrency, handleChange, defaults, handleRegimeChange }) {
+export function VolatilityClockCard({ config, regimeConfig, quoteCurrency, handleChange, defaults, handleRegimeChange, productIdLocked = false }) {
   const fv = (key) => fieldValue(regimeConfig, defaults, key)
   return (
     <SectionCard title="Volatility Clock">
       <div className="grid grid-cols-2 gap-3">
-        <FormInput label="Product ID" hint="Trading pair (e.g. BTC-USDC)" value={config.productId} onChange={(v) => handleChange('productId', v)} />
+        <FormInput label="Product ID" hint={productIdLocked ? 'Fixed for an existing fund; create a new fund to trade another pair' : 'Trading pair (e.g. BTC-USDC)'} value={config.productId} onChange={(v) => handleChange('productId', v)} readOnly={productIdLocked} />
         <FormInput label={`Base Size (${quoteCurrency})`} hint="Quote-currency amount per entry order" value={fv('baseSizeUsdc')} onChange={(v) => handleRegimeChange('baseSizeUsdc', v)} type="number" />
         <FormInput label="k Factor (ATR mult)" hint="Higher = longer waits between entries" value={fv('kFactor')} onChange={(v) => handleRegimeChange('kFactor', v)} type="number" />
         <FormInput label="ATR Period" hint="# of candles for ATR calculation" value={fv('atrPeriod')} onChange={(v) => handleRegimeChange('atrPeriod', v)} type="number" />
-        <FormInput label="Min Interval (ms)" hint="Fastest allowed entry interval" value={fv('minIntervalMs')} onChange={(v) => handleRegimeChange('minIntervalMs', v)} type="number" />
-        <FormInput label="Max Interval (ms)" hint="Slowest entry interval (low-vol cap)" value={fv('maxIntervalMs')} onChange={(v) => handleRegimeChange('maxIntervalMs', v)} type="number" />
+        <DurationInput label="Min Interval" hint="Fastest allowed entry interval" value={fv('minIntervalMs')} onChange={(v) => handleRegimeChange('minIntervalMs', v)} />
+        <DurationInput label="Max Interval" hint="Slowest entry interval (low-vol cap)" value={fv('maxIntervalMs')} onChange={(v) => handleRegimeChange('maxIntervalMs', v)} />
       </div>
     </SectionCard>
   )
@@ -134,10 +135,10 @@ export function TakeProfitCard({ regimeConfig, baseCurrency, defaults, handleReg
   )
 }
 
-export function RegimeDetectionCard({ regimeConfig, defaults, handleRegimeChange }) {
+export function RegimeDetectionCard({ regimeConfig, defaults, handleRegimeChange, disclosure }) {
   const fv = (key) => fieldValue(regimeConfig, defaults, key)
   return (
-    <SectionCard title="Regime Detection">
+    <DisclosureCard cardId="regimeDetection" title="Regime Detection" disclosure={disclosure}>
       <div className="grid grid-cols-2 gap-3">
         <FormInput label="Momentum Mult" hint="VWAP divergence threshold (×10 bps)" value={fv('momentumMult')} onChange={(v) => handleRegimeChange('momentumMult', v)} type="number" />
         <FormInput label="Vol Expansion" hint="realizedVol/baseline ratio to enter CAUTION" value={fv('volExpansionMult')} onChange={(v) => handleRegimeChange('volExpansionMult', v)} type="number" />
@@ -145,7 +146,7 @@ export function RegimeDetectionCard({ regimeConfig, defaults, handleRegimeChange
         <FormInput label="VWAP Hours" hint="Rolling window for VWAP calculation" value={fv('vwapPeriodHours')} onChange={(v) => handleRegimeChange('vwapPeriodHours', v)} type="number" />
         <FormInput label="Trend Confirm Periods" hint="Consecutive momentum periods to confirm TREND" value={fv('trendConfirmationPeriods')} onChange={(v) => handleRegimeChange('trendConfirmationPeriods', v)} type="number" />
       </div>
-    </SectionCard>
+    </DisclosureCard>
   )
 }
 
@@ -191,10 +192,10 @@ export function CelestialHierarchyCard({ regimeConfig, baseCurrency, defaults, h
   )
 }
 
-export function MacroRegimeCard({ regimeConfig, defaults, handleRegimeChange }) {
+export function MacroRegimeCard({ regimeConfig, defaults, handleRegimeChange, disclosure }) {
   const fv = (key) => fieldValue(regimeConfig, defaults, key)
   return (
-    <SectionCard title="Macro Regime (Multi-Timeframe)" className="lg:col-span-2">
+    <DisclosureCard cardId="macro" title="Macro Regime (Multi-Timeframe)" disclosure={disclosure} className="lg:col-span-2">
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mb-3">
         <ToggleSwitch
           label="Enable Macro Regime"
@@ -210,7 +211,7 @@ export function MacroRegimeCard({ regimeConfig, defaults, handleRegimeChange }) 
       {regimeConfig.macroEnabled && (
         <>
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 mb-4">
-            <FormInput label="Update Interval (ms)" hint="How often to re-score macro (60000-600000)" value={fv('macroUpdateIntervalMs')} onChange={(v) => handleRegimeChange('macroUpdateIntervalMs', v)} type="number" />
+            <DurationInput label="Update Interval" hint="How often to re-score macro (1-10 min)" value={fv('macroUpdateIntervalMs')} onChange={(v) => handleRegimeChange('macroUpdateIntervalMs', v)} />
             <FormInput label="Suggestion Delay (hours)" hint="Stable long-term bias divergence before an advisory (0.01–720). Never changes sizing automatically." value={fv('aggressivenessSuggestionHours')} onChange={(v) => handleRegimeChange('aggressivenessSuggestionHours', v)} type="number" />
             <FormInput label="Hysteresis" hint="Score buffer to prevent mode chatter (1-20)" value={fv('macroHysteresis')} onChange={(v) => handleRegimeChange('macroHysteresis', v)} type="number" />
             <FormInput label="Accumulation Threshold" hint="Score below this = ACCUMULATION" value={fv('macroAccumulationThreshold')} onChange={(v) => handleRegimeChange('macroAccumulationThreshold', v)} type="number" />
@@ -248,7 +249,7 @@ export function MacroRegimeCard({ regimeConfig, defaults, handleRegimeChange }) 
           </div>
         </>
       )}
-    </SectionCard>
+    </DisclosureCard>
   )
 }
 
@@ -309,29 +310,29 @@ export function RiskCapsCard({ regimeConfig, baseCurrency, quoteCurrency, defaul
   )
 }
 
-export function OrderExecutionCard({ regimeConfig, defaults, handleRegimeChange }) {
+export function OrderExecutionCard({ regimeConfig, defaults, handleRegimeChange, disclosure }) {
   const fv = (key) => fieldValue(regimeConfig, defaults, key)
   return (
-    <SectionCard title="Order Execution">
+    <DisclosureCard cardId="orderExecution" title="Order Execution" disclosure={disclosure}>
       <div className="grid grid-cols-2 gap-3">
         <FormInput label="Entry Offset (bps)" hint="Place limit buy this many bps below market" value={fv('entryOffsetBps')} onChange={(v) => handleRegimeChange('entryOffsetBps', v)} type="number" />
         <FormInput label="Entry Offset Up (bps)" hint="Offset when momentum is UP (tighter to fill before rise)" value={fv('entryOffsetUpBps')} onChange={(v) => handleRegimeChange('entryOffsetUpBps', v)} type="number" />
         <FormInput label="Entry Offset Down (bps)" hint="Offset when momentum is DOWN (deeper to catch the dip)" value={fv('entryOffsetDownBps')} onChange={(v) => handleRegimeChange('entryOffsetDownBps', v)} type="number" />
         <FormInput label="Entry Max Retries" hint="Retry cancelled entries up to this many times" value={fv('entryMaxRetries')} onChange={(v) => handleRegimeChange('entryMaxRetries', v)} type="number" />
-        <FormInput label="Order Stale Floor (ms)" hint="Min entry timeout; actual scales with offset²/ATR², capped at Max Interval" value={fv('orderStaleMs')} onChange={(v) => handleRegimeChange('orderStaleMs', v)} type="number" />
-        <FormInput label="Cancel Rate Limit (ms)" hint="Min wait between cancel API calls" value={fv('cancelRateLimitMs')} onChange={(v) => handleRegimeChange('cancelRateLimitMs', v)} type="number" />
+        <DurationInput label="Order Stale Floor" hint="Min entry timeout; actual scales with offset²/ATR², capped at Max Interval" value={fv('orderStaleMs')} onChange={(v) => handleRegimeChange('orderStaleMs', v)} />
+        <DurationInput label="Cancel Rate Limit" hint="Min wait between cancel API calls" value={fv('cancelRateLimitMs')} onChange={(v) => handleRegimeChange('cancelRateLimitMs', v)} />
         <FormInput label="Max Open Orders" hint="Max simultaneous entry orders allowed" value={fv('maxOpenOrders')} onChange={(v) => handleRegimeChange('maxOpenOrders', v)} type="number" />
         <FormInput label="TP Update Threshold %" hint="Min price change before updating TP order" value={fv('tpUpdateThresholdPct')} onChange={(v) => handleRegimeChange('tpUpdateThresholdPct', v)} type="number" />
-        <FormInput label="Reconcile Interval (ms)" hint="How often to sync local state with exchange" value={fv('reconcileIntervalMs')} onChange={(v) => handleRegimeChange('reconcileIntervalMs', v)} type="number" />
+        <DurationInput label="Reconcile Interval" hint="How often to sync local state with exchange" value={fv('reconcileIntervalMs')} onChange={(v) => handleRegimeChange('reconcileIntervalMs', v)} />
       </div>
-    </SectionCard>
+    </DisclosureCard>
   )
 }
 
-export function SafetyTailEventsCard({ regimeConfig, defaults, handleRegimeChange }) {
+export function SafetyTailEventsCard({ regimeConfig, defaults, handleRegimeChange, disclosure }) {
   const fv = (key) => fieldValue(regimeConfig, defaults, key)
   return (
-    <SectionCard title="Safety & Tail Events">
+    <DisclosureCard cardId="safetyTail" title="Safety & Tail Events" disclosure={disclosure}>
       <p className="text-xs text-gray-400 mb-3">
         Depth-based entry protection is unavailable in this build.
       </p>
@@ -343,9 +344,9 @@ export function SafetyTailEventsCard({ regimeConfig, defaults, handleRegimeChang
         <>
           <div className="grid grid-cols-2 gap-3">
             <FormInput label="Max Spread (bps)" hint="Pause entries when bid-ask spread exceeds this" value={fv('maxSpreadBps')} onChange={(v) => handleRegimeChange('maxSpreadBps', v)} type="number" />
-            <FormInput label="Spread Pause (ms)" hint="How long to pause after spread breach" value={fv('spreadPauseMs')} onChange={(v) => handleRegimeChange('spreadPauseMs', v)} type="number" />
+            <DurationInput label="Spread Pause" hint="How long to pause after spread breach" value={fv('spreadPauseMs')} onChange={(v) => handleRegimeChange('spreadPauseMs', v)} />
             <FormInput label="Flash Move Mult" hint="ATR multiplier to detect flash crashes" value={fv('flashMoveMult')} onChange={(v) => handleRegimeChange('flashMoveMult', v)} type="number" />
-            <FormInput label="Flash Cooldown (ms)" hint="Pause duration after flash event detected" value={fv('flashCooldownMs')} onChange={(v) => handleRegimeChange('flashCooldownMs', v)} type="number" />
+            <DurationInput label="Flash Cooldown" hint="Pause duration after flash event detected" value={fv('flashCooldownMs')} onChange={(v) => handleRegimeChange('flashCooldownMs', v)} />
           </div>
           <div className="mt-3">
             <div className="flex items-center gap-2">
@@ -362,25 +363,25 @@ export function SafetyTailEventsCard({ regimeConfig, defaults, handleRegimeChang
           </div>
         </>
       )}
-    </SectionCard>
+    </DisclosureCard>
   )
 }
 
-export function SystemHealthCard({ regimeConfig, defaults, handleRegimeChange }) {
+export function SystemHealthCard({ regimeConfig, defaults, handleRegimeChange, disclosure }) {
   const fv = (key) => fieldValue(regimeConfig, defaults, key)
   return (
-    <SectionCard title="System Health">
+    <DisclosureCard cardId="systemHealth" title="System Health" disclosure={disclosure}>
       <div className="grid grid-cols-2 gap-3">
-        <FormInput label="Stale Data (ms)" hint="Enter SAFE mode if no ticker data for this long" value={fv('staleDataMs')} onChange={(v) => handleRegimeChange('staleDataMs', v)} type="number" />
-        <FormInput label="Stale Orders (ms)" hint="Flag orders as stale after this duration" value={fv('staleOrdersMs')} onChange={(v) => handleRegimeChange('staleOrdersMs', v)} type="number" />
-        <FormInput label="Max Latency (ms)" hint="Enter SAFE mode if API latency exceeds this" value={fv('maxLatencyMs')} onChange={(v) => handleRegimeChange('maxLatencyMs', v)} type="number" />
-        <FormInput label="Safe Recovery (ms)" hint="Time healthy before exiting SAFE mode" value={fv('safeRecoveryMs')} onChange={(v) => handleRegimeChange('safeRecoveryMs', v)} type="number" />
+        <DurationInput label="Stale Data" hint="Enter SAFE mode if no ticker data for this long" value={fv('staleDataMs')} onChange={(v) => handleRegimeChange('staleDataMs', v)} />
+        <DurationInput label="Stale Orders" hint="Flag orders as stale after this duration" value={fv('staleOrdersMs')} onChange={(v) => handleRegimeChange('staleOrdersMs', v)} />
+        <DurationInput label="Max Latency" hint="Enter SAFE mode if API latency exceeds this" value={fv('maxLatencyMs')} onChange={(v) => handleRegimeChange('maxLatencyMs', v)} />
+        <DurationInput label="Safe Recovery" hint="Time healthy before exiting SAFE mode" value={fv('safeRecoveryMs')} onChange={(v) => handleRegimeChange('safeRecoveryMs', v)} />
         <FormInput label="Max REST Errors" hint="Consecutive API errors before SAFE mode" value={fv('maxRestErrors')} onChange={(v) => handleRegimeChange('maxRestErrors', v)} type="number" />
         <FormInput label="Max Rate Limits" hint="Consecutive rate limits before SAFE mode" value={fv('maxRateLimits')} onChange={(v) => handleRegimeChange('maxRateLimits', v)} type="number" />
       </div>
       <div className="mt-2 text-xs text-gray-400">
         System enters SAFE mode when health thresholds are exceeded. Safe Recovery is time healthy before exiting SAFE.
       </div>
-    </SectionCard>
+    </DisclosureCard>
   )
 }
