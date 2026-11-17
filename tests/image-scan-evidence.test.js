@@ -54,6 +54,40 @@ const out = args[args.indexOf('--file') + 1];
 fs.writeFileSync(out, JSON.stringify({ matches: JSON.parse(process.env.STUB_MATCHES || '[]') }));
 `;
 
+/**
+ * In-process twin of STUB_SYFT / STUB_GRYPE above, injected as scanTarget's `runner` so most
+ * cases need no child process. The tool's behavior still comes from the env it is handed
+ * (the STUB_* variables); a binary that does not exist reports `missing` like a failed spawn.
+ */
+function inProcessRunner(bin, args, toolEnv) {
+  const ok = (stdout = '') => ({ status: 0, stdout, stderr: '', missing: false });
+  const fail = (stderr) => ({ status: 1, stdout: '', stderr, missing: false });
+  if (!fs.existsSync(bin)) return { status: null, stdout: '', stderr: '', missing: true };
+  if (path.basename(bin) === 'syft') {
+    if (args[0] === '--version') return ok('syft 1.55.0\n');
+    if (toolEnv.STUB_SYFT_STDERR) return fail(toolEnv.STUB_SYFT_STDERR);
+    const out = args.find((a) => a.startsWith('syft-json=')).slice('syft-json='.length);
+    const platformIdx = args.indexOf('--platform');
+    const arch = toolEnv.STUB_ARCH || (platformIdx === -1 ? 'amd64' : args[platformIdx + 1].split('/')[1]);
+    fs.writeFileSync(out, JSON.stringify({
+      artifacts: JSON.parse(toolEnv.STUB_ARTIFACTS),
+      source: { type: 'image', metadata: { manifestDigest: 'sha256:' + 'a'.repeat(64), imageID: 'sha256:' + 'b'.repeat(64), repoDigests: [], tags: [], os: 'linux', architecture: arch } },
+      distro: { name: 'alpine', version: '3.23' },
+      descriptor: { name: 'syft', version: '1.55.0' },
+    }));
+    return ok();
+  }
+  if (args[0] === 'version') return ok(`${JSON.stringify({ application: 'grype', version: '0.121.0' })}\n`);
+  if (args[0] === 'db' && args[1] === 'update') return ok();
+  if (args[0] === 'db' && args[1] === 'status') {
+    const none = toolEnv.STUB_DB_BUILT === 'none';
+    return ok(`${JSON.stringify({ schemaVersion: 'v6.1.10', built: none ? '' : '2026-11-16T06:30:54Z', valid: !none })}\n`);
+  }
+  if (toolEnv.STUB_GRYPE_FAIL) return fail('grype exploded');
+  fs.writeFileSync(args[args.indexOf('--file') + 1], JSON.stringify({ matches: JSON.parse(toolEnv.STUB_MATCHES || '[]') }));
+  return ok();
+}
+
 const ARTIFACTS = [
   { type: 'apk', name: 'musl', version: '1.2.5-r1', purl: 'pkg:apk/alpine/musl@1.2.5-r1', locations: [{ path: '/lib/apk/db/installed' }] },
   { type: 'npm', name: 'pm2', version: '7.1.2', purl: 'pkg:npm/pm2@7.1.2', locations: [{ path: '/opt/pm2/node_modules/pm2/package.json' }] },
@@ -90,7 +124,7 @@ describe('image scan evidence', () => {
   const scan = (id, over = {}, envOver = {}) => {
     const outDir = path.join(work, `out-${id}-${Math.random().toString(36).slice(2)}`);
     const t = { ...target(id), ...over.target };
-    const result = scanTarget({ target: t, outDir, source: over.source, upstreamFailure: over.upstreamFailure, now: NOW, env: { ...env, ...envOver } });
+    const result = scanTarget({ target: t, outDir, source: over.source, upstreamFailure: over.upstreamFailure, now: NOW, env: { ...env, ...envOver }, runner: inProcessRunner });
     return { result, outDir };
   };
 
@@ -137,6 +171,18 @@ describe('image scan evidence', () => {
       const appInv = JSON.parse(fs.readFileSync(path.join(outDir, 'app-inventory.json'), 'utf8'));
       assert.deepEqual(osInv.map((p) => p.name), ['musl']);
       assert.deepEqual(appInv.map((p) => p.name), ['pm2', 'pm2-logrotate']);
+    });
+
+    it('produces the same evidence through real scanner processes as through the in-process runner', () => {
+      const real = (id, envOver = {}) => scanTarget({
+        target: target(id), outDir: path.join(work, `real-${id}-${Math.random().toString(36).slice(2)}`),
+        source: 'oci-archive:/dev/null', now: NOW, env: { ...env, ...envOver },
+      });
+      const viaProcess = real('runtime-amd64');
+      assert.equal(viaProcess.status, 'scanned');
+      assert.deepEqual(viaProcess, scan('runtime-amd64', { source: 'oci-archive:/dev/null' }).result);
+      const missing = real('runtime-amd64', { IMAGE_SCAN_SYFT_BIN: path.join(work, 'missing-syft') });
+      assert.equal(missing.unavailableReason, 'scanner_unavailable');
     });
 
     it('records the pinned digest the Umbrel image was requested by', () => {
@@ -189,19 +235,30 @@ describe('image scan evidence', () => {
   });
 
   describe('currency verification', () => {
-    /** Scan every planned target into one evidence directory, as the aggregate job sees it. */
+    /**
+     * Scan every planned target into one evidence directory, as the aggregate job sees it.
+     * The scan runs once per timestamp; each test gets its own copy so it can mutate freely.
+     */
+    const templates = new Map();
     const buildEvidence = (when = NOW) => {
-      const dir = fs.mkdtempSync(path.join(work, 'evidence-'));
-      for (const t of plan()) {
-        scanTarget({
-          target: t,
-          outDir: path.join(dir, t.id),
-          source: t.build ? 'oci-archive:/dev/null' : undefined,
-          now: when,
-          env: { ...env, STUB_ARCH: evidence.archOf(t.platform) },
-        });
+      const key = when.getTime();
+      if (!templates.has(key)) {
+        const template = fs.mkdtempSync(path.join(work, 'evidence-template-'));
+        for (const t of plan()) {
+          scanTarget({
+            target: t,
+            outDir: path.join(template, t.id),
+            source: t.build ? 'oci-archive:/dev/null' : undefined,
+            now: when,
+            env: { ...env, STUB_ARCH: evidence.archOf(t.platform) },
+            runner: inProcessRunner,
+          });
+        }
+        writeSelfTest(template, { passed: true, generatedAt: when.toISOString() });
+        templates.set(key, template);
       }
-      writeSelfTest(dir, { passed: true, generatedAt: when.toISOString() });
+      const dir = fs.mkdtempSync(path.join(work, 'evidence-'));
+      fs.cpSync(templates.get(key), dir, { recursive: true });
       return dir;
     };
     const writeSelfTest = (dir, summary) => {

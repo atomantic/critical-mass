@@ -56,9 +56,10 @@ function readJson(file) {
  *   target: any, outDir: string, source?: string, upstreamFailure?: string,
  *   syftBin?: string, grypeBin?: string, skipDbUpdate?: boolean, root?: string, now?: Date,
  *   env?: NodeJS.ProcessEnv,
- * }} p
+ *   runner?: (bin: string, args: string[], env: NodeJS.ProcessEnv) => {status: number|null, stdout: string, stderr: string, missing: boolean},
+ * }} p `runner` replaces the real child-process spawn (tests inject an in-process stub).
  */
-function scanTarget({ target, outDir, source, upstreamFailure, syftBin, grypeBin, skipDbUpdate, root = REPO_ROOT, now = new Date(), env = process.env }) {
+function scanTarget({ target, outDir, source, upstreamFailure, syftBin, grypeBin, skipDbUpdate, root = REPO_ROOT, now = new Date(), env = process.env, runner = run }) {
   fs.rmSync(outDir, { recursive: true, force: true });
   fs.mkdirSync(outDir, { recursive: true });
 
@@ -86,16 +87,16 @@ function scanTarget({ target, outDir, source, upstreamFailure, syftBin, grypeBin
   const scanSource = source ?? target.source;
   if (!scanSource) return unavailable('build_failed', 'no image source was produced for this target');
 
-  const syftVersion = run(syft, ['--version'], toolEnv);
+  const syftVersion = runner(syft, ['--version'], toolEnv);
   if (syftVersion.missing || syftVersion.status !== 0) return unavailable('scanner_unavailable', `syft: ${syftVersion.stderr || 'not runnable'}`);
-  const grypeVersion = run(grype, ['version', '-o', 'json'], toolEnv);
+  const grypeVersion = runner(grype, ['version', '-o', 'json'], toolEnv);
   if (grypeVersion.missing || grypeVersion.status !== 0) return unavailable('scanner_unavailable', `grype: ${grypeVersion.stderr || 'not runnable'}`);
 
   if (!skipDbUpdate && env.IMAGE_SCAN_SKIP_DB_UPDATE !== '1') {
-    const update = run(grype, ['db', 'update'], toolEnv);
+    const update = runner(grype, ['db', 'update'], toolEnv);
     if (update.status !== 0) return unavailable('scanner_database_unavailable', update.stderr || update.stdout);
   }
-  const dbStatus = run(grype, ['db', 'status', '-o', 'json'], toolEnv);
+  const dbStatus = runner(grype, ['db', 'status', '-o', 'json'], toolEnv);
   const db = dbStatus.status === 0 ? safeParse(dbStatus.stdout) : null;
   if (!db || db.valid !== true || !db.built) {
     return unavailable('scanner_database_unavailable', dbStatus.stderr || 'grype database is missing or invalid');
@@ -105,7 +106,7 @@ function scanTarget({ target, outDir, source, upstreamFailure, syftBin, grypeBin
   const syftArgs = [scanSource];
   if (target.platform && scanSource.startsWith('registry:')) syftArgs.push('--platform', target.platform);
   syftArgs.push('-o', `syft-json=${sbomPath}`, '-q');
-  const cataloged = run(syft, syftArgs, toolEnv);
+  const cataloged = runner(syft, syftArgs, toolEnv);
   if (cataloged.status !== 0) {
     const reason = scanSource.startsWith('oci-archive:') ? 'build_failed' : evidence.classifyFetchFailure(cataloged.stderr);
     return unavailable(reason, cataloged.stderr);
@@ -133,7 +134,7 @@ function scanTarget({ target, outDir, source, upstreamFailure, syftBin, grypeBin
   if (missing.length > 0) return unavailable('inventory_failed', `inventory is missing: ${missing.join(', ')}`);
 
   const grypePath = path.join(outDir, FINDINGS_RAW_FILE);
-  const matched = run(grype, [`sbom:${sbomPath}`, '-o', 'json', '--file', grypePath, '-q'], toolEnv);
+  const matched = runner(grype, [`sbom:${sbomPath}`, '-o', 'json', '--file', grypePath, '-q'], toolEnv);
   const grypeJson = matched.status === 0 ? readJson(grypePath) : null;
   if (!grypeJson || !Array.isArray(grypeJson.matches)) {
     return unavailable('scanner_failed', matched.stderr || 'grype did not produce readable findings');

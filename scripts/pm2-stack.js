@@ -9,85 +9,92 @@ const ENGINES = ['critical-mass-coinbase', 'critical-mass-gemini', 'critical-mas
 const UI = 'critical-mass-ui';
 const NAMES = [GATEWAY, ...ENGINES, UI];
 
-function pm2(args, capture = false) {
-  const result = spawnSync('pm2', ['--silent', ...args], {
-    cwd: ROOT,
-    encoding: 'utf8',
-    stdio: capture ? 'pipe' : 'inherit',
-    timeout: 120000,
-    maxBuffer: 16 * 1024 * 1024,
-  });
-  // jlist contains environment secrets. Never include its output or the spawn
-  // error (which may embed output) in an exception or diagnostic.
-  if (result.error || result.status !== 0) throw new Error(`PM2 ${args[0]} failed; stack operation stopped.`);
-  return result.stdout;
-}
-
-function inventory() {
-  let list;
-  try { list = JSON.parse(pm2(['jlist'], true)); }
-  catch { throw new Error('Unable to read PM2 process inventory; stack operation stopped.'); }
-  if (!Array.isArray(list)) throw new Error('Invalid PM2 process inventory; stack operation stopped.');
-  return list;
-}
-
-function processes() {
-  const owned = inventory().filter(app => NAMES.includes(app?.name));
-  if (owned.some(app => !Number.isInteger(app.pm_id) || app.pm_id < 0)) {
-    throw new Error('Invalid Critical Mass process ID; stack operation stopped.');
+// The command runner has spawnSync's call shape and result (status, stdout, error).
+// The default is the real spawnSync, so the CLI behaves exactly as before; tests inject
+// a stub so they never invoke the real pm2 or lsof.
+function createStack(run) {
+  function pm2(args, capture = false) {
+    const result = run('pm2', ['--silent', ...args], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      stdio: capture ? 'pipe' : 'inherit',
+      timeout: 120000,
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    // jlist contains environment secrets. Never include its output or the spawn
+    // error (which may embed output) in an exception or diagnostic.
+    if (result.error || result.status !== 0) throw new Error(`PM2 ${args[0]} failed; stack operation stopped.`);
+    return result.stdout;
   }
-  return owned;
-}
 
-function stopGroup(names) {
-  const targets = processes().filter(app => names.includes(app.name));
-  if (!targets.length) return [];
-  const ids = targets.map(app => String(app.pm_id));
-  pm2(['stop', ...ids]);
-  if (processes().some(app => ids.includes(String(app.pm_id)) &&
-      (app.pm2_env?.status !== 'stopped' || app.pid !== 0))) {
-    throw new Error('PM2 did not confirm Critical Mass stopped; dependent processes were left untouched.');
+  function inventory() {
+    let list;
+    try { list = JSON.parse(pm2(['jlist'], true)); }
+    catch { throw new Error('Unable to read PM2 process inventory; stack operation stopped.'); }
+    if (!Array.isArray(list)) throw new Error('Invalid PM2 process inventory; stack operation stopped.');
+    return list;
   }
-  return ids;
-}
 
-function confirmOnline(names) {
-  const running = processes();
-  if (names.some(name => !running.some(app => app.name === name && app.pm2_env?.status === 'online' && app.pid > 0))) {
-    throw new Error('PM2 did not report every requested Critical Mass process online; stack operation stopped without saving.');
-  }
-}
-
-function ensureLogRotation() {
-  // Installation may need the network. Logging must never prevent an otherwise
-  // healthy stack from starting, and inventory output must remain private.
-  try {
-    const existing = inventory().find(app => app?.name === 'pm2-logrotate');
-    // 3.0.1 fixes 3.0.0 compression with PMX boolean configuration casting.
-    if (!existing || existing.pm2_env?.version === '3.0.0') {
-      pm2(['install', 'pm2-logrotate@3.0.1'], true);
+  function processes() {
+    const owned = inventory().filter(app => NAMES.includes(app?.name));
+    if (owned.some(app => !Number.isInteger(app.pm_id) || app.pm_id < 0)) {
+      throw new Error('Invalid Critical Mass process ID; stack operation stopped.');
     }
-    for (const [setting, value] of Object.entries({
-      max_size: '20M', retain: '5', compress: 'true', rotateInterval: '0 0 * * *',
-    })) {
-      pm2(['set', `pm2-logrotate:${setting}`, value], true);
-    }
-    const online = () => inventory().some(app => app?.name === 'pm2-logrotate' &&
-      app.pm2_env?.status === 'online' && app.pid > 0);
-    if (!online()) pm2(['restart', 'pm2-logrotate'], true);
-    if (!online()) throw new Error('Log rotation module is not online.');
-  } catch {
-    console.warn('Warning: PM2 log rotation could not be configured; retry npm run pm2:start when the module is available.');
+    return owned;
   }
+
+  function stopGroup(names) {
+    const targets = processes().filter(app => names.includes(app.name));
+    if (!targets.length) return [];
+    const ids = targets.map(app => String(app.pm_id));
+    pm2(['stop', ...ids]);
+    if (processes().some(app => ids.includes(String(app.pm_id)) &&
+        (app.pm2_env?.status !== 'stopped' || app.pid !== 0))) {
+      throw new Error('PM2 did not confirm Critical Mass stopped; dependent processes were left untouched.');
+    }
+    return ids;
+  }
+
+  function confirmOnline(names) {
+    const running = processes();
+    if (names.some(name => !running.some(app => app.name === name && app.pm2_env?.status === 'online' && app.pid > 0))) {
+      throw new Error('PM2 did not report every requested Critical Mass process online; stack operation stopped without saving.');
+    }
+  }
+
+  function ensureLogRotation() {
+    // Installation may need the network. Logging must never prevent an otherwise
+    // healthy stack from starting, and inventory output must remain private.
+    try {
+      const existing = inventory().find(app => app?.name === 'pm2-logrotate');
+      // 3.0.1 fixes 3.0.0 compression with PMX boolean configuration casting.
+      if (!existing || existing.pm2_env?.version === '3.0.0') {
+        pm2(['install', 'pm2-logrotate@3.0.1'], true);
+      }
+      for (const [setting, value] of Object.entries({
+        max_size: '20M', retain: '5', compress: 'true', rotateInterval: '0 0 * * *',
+      })) {
+        pm2(['set', `pm2-logrotate:${setting}`, value], true);
+      }
+      const online = () => inventory().some(app => app?.name === 'pm2-logrotate' &&
+        app.pm2_env?.status === 'online' && app.pid > 0);
+      if (!online()) pm2(['restart', 'pm2-logrotate'], true);
+      if (!online()) throw new Error('Log rotation module is not online.');
+    } catch {
+      console.warn('Warning: PM2 log rotation could not be configured; retry npm run pm2:start when the module is available.');
+    }
+  }
+  return { pm2, inventory, processes, stopGroup, confirmOnline, ensureLogRotation };
 }
 
-function main(action = 'start') {
+function main(action = 'start', { run = spawnSync, ports } = {}) {
+  const { pm2, processes, stopGroup, confirmOnline, ensureLogRotation } = createStack(run);
   if (!['start', 'stop'].includes(action)) throw new Error('Usage: node scripts/pm2-stack.js [start|stop]');
   // Validate configuration before interrupting any running process.
-  const { PORTS } = require('../ecosystem.config.cjs');
+  const PORTS = ports ?? require('../ecosystem.config.cjs').PORTS;
   // The existing port preflight uses lsof. Fail before stopping if unavailable.
   if (action === 'start') {
-    const probe = spawnSync('lsof', ['-v'], { stdio: 'ignore' });
+    const probe = run('lsof', ['-v'], { stdio: 'ignore' });
     if (probe.error || probe.status !== 0) throw new Error('lsof is required for native startup port checks; no processes were stopped.');
   }
 
@@ -96,7 +103,7 @@ function main(action = 'start') {
   if (stopped.length) pm2(['delete', ...stopped]);
 
   for (const port of Object.values(PORTS)) {
-    const result = spawnSync('lsof', ['-i', `:${port}`, '-sTCP:LISTEN', '-t'], { stdio: 'ignore' });
+    const result = run('lsof', ['-i', `:${port}`, '-sTCP:LISTEN', '-t'], { stdio: 'ignore' });
     if (result.error || result.status !== 1) {
       throw new Error(`Required port ${port} is occupied or could not be checked; startup stopped.`);
     }
