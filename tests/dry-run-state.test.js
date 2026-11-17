@@ -432,10 +432,10 @@ describe('dry-run-state clearState — fences debounced snapshots', () => {
 
 describe('dry-run-state debounced flush survives a write failure (#532)', () => {
   it('logs instead of throwing from the timer, and keeps the fund queued for the next save', (t) => {
-    const stateTracker = require('../src/state-tracker');
-    const realWrite = stateTracker.atomicWriteSync;
+    const durableWrite = require('../src/durable-write');
+    const realWrite = durableWrite.atomicWriteSync;
     let diskFull = false;
-    t.mock.method(stateTracker, 'atomicWriteSync', (...args) => {
+    t.mock.method(durableWrite, 'atomicWriteSync', (...args) => {
       if (diskFull) throw Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' });
       return realWrite(...args);
     });

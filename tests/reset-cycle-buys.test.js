@@ -14,7 +14,7 @@ const fs = require('fs');
 const path = require('path');
 
 const { createRegimeEngine, restorePersistedCycleId } = require('../src/regime-engine');
-const { loadRegimeState } = require('../src/state-tracker');
+const { loadRegimeState } = require('../src/regime-state-store');
 
 const TEST_PAIR = '__test232__';
 const JUNK_DIR = path.join(require('../src/paths').DATA_DIR, 'coinbase', TEST_PAIR);

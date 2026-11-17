@@ -28,7 +28,7 @@ const originalCreateFeed = websocketFeed.createWebSocketFeed;
 websocketFeed.createWebSocketFeed = () => ({ connect() {}, disconnect() {} });
 const { createRegimeEngine } = require('../src/regime-engine');
 const { createNewBody } = require('../src/celestial-hierarchy');
-const stateTracker = require('../src/state-tracker');
+const regimeStateStore = require('../src/regime-state-store');
 
 after(() => {
   websocketFeed.createWebSocketFeed = originalCreateFeed;
@@ -98,7 +98,7 @@ for (const side of ['buy', 'sell']) {
       assert.equal(corrections.length, 1);
       assert.equal(corrections[0].status, 'applied');
       assert.equal(ledger.hasProcessedTrade('unrelated-fill'), true);
-      const saved = stateTracker.loadFundRegimeState('coinbase', pair).position;
+      const saved = regimeStateStore.loadFundRegimeState('coinbase', pair).position;
       assert.ok(saved[`applied${side === 'buy' ? 'Buy' : 'Sell'}Corrections`].includes('real-order'));
       if (side === 'buy') {
         assert.equal(position.celestialBodies[0].costBasis, 101);

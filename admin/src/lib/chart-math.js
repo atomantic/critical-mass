@@ -147,7 +147,8 @@ function linearTickFormat(start, stop, count) {
 // ---------------------------------------------------------------- continuous scales
 
 function normalize(a, b) {
-  return (b -= a) ? (x) => (x - a) / b : () => (Number.isNaN(b) ? NaN : 0.5)
+  const span = b - a
+  return span ? (x) => (x - a) / span : () => (Number.isNaN(span) ? NaN : 0.5)
 }
 
 const interpolate = (a, b) => (t) => a * (1 - t) + b * t

@@ -4,7 +4,8 @@
  * unprefixed GET /api/status, so the two can never drift apart.
  */
 
-const stateTracker = require('./state-tracker');
+const dcaState = require('./dca-state');
+const placementIntents = require('./placement-intent-storage');
 const { getFundConfig, getBaseCurrency, getQuoteCurrency } = require('./config-utils');
 const { createContextLogger } = require('./logger');
 
@@ -21,7 +22,7 @@ async function buildFundStatus(exchange, pair, route, module = 'fund-status') {
   const { getAdapter } = require('./adapters');
 
   const config = getFundConfig(exchange, pair);
-  const state = stateTracker.loadState(config, exchange, pair);
+  const state = dcaState.loadState(config, exchange, pair);
 
   let currentPrice = 0;
   let quoteBalance = { available: 0, hold: 0 };
@@ -66,8 +67,8 @@ async function buildFundStatus(exchange, pair, route, module = 'fund-status') {
     apiError,
     config,
     state,
-    failedSells: stateTracker.getFailedSellOrders(state),
-    placementIntents: stateTracker.describePlacementIntents(exchange, pair),
+    failedSells: dcaState.getFailedSellOrders(state),
+    placementIntents: placementIntents.describePlacementIntents(exchange, pair),
     lastUpdated: new Date().toISOString(),
   };
 }

@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { attachSellOrder, markSellPlacementFailed } = require('../src/state-tracker');
+const { attachSellOrder, markSellPlacementFailed } = require('../src/dca-state');
 
 const contextFor = (lines, prefix) => {
   const line = lines.find(candidate => candidate.startsWith(prefix));
@@ -16,7 +16,7 @@ const contextFor = (lines, prefix) => {
 describe('supporting state structured logging', () => {
   it('keeps persistent trading-state modules off direct console calls', () => {
     for (const relativePath of [
-      '../src/state-tracker.js',
+      '../src/dca-state.js',
       '../src/dry-run-state.js',
       '../src/closed-trades.js',
       '../src/manual-trades.js',

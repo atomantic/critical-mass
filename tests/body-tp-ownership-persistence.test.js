@@ -22,7 +22,7 @@ const originalCreateWebSocketFeed = websocketFeedModule.createWebSocketFeed;
 websocketFeedModule.createWebSocketFeed = () => ({ connect: () => {}, disconnect: () => {} });
 
 const { createRegimeEngine } = require('../src/regime-engine');
-const { loadFundRegimeState } = require('../src/state-tracker');
+const { loadFundRegimeState } = require('../src/regime-state-store');
 
 const TEST_PAIR = '__testtpown__';
 

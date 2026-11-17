@@ -35,8 +35,7 @@ test('config save flushes bytes before publication and directory afterward, pres
   assert.deepEqual(JSON.parse(fs.readFileSync(file)), { saved: true });
 });
 
-test('state-tracker re-exports the leaf writer and new files default to owner-only permissions', (t) => {
-  assert.equal(require('../src/state-tracker').atomicWriteSync, atomicWriteSync);
+test('new files default to owner-only permissions', (t) => {
   const file = path.join(fixture(t), 'new');
   atomicWriteSync(file, Buffer.from('bytes'));
   assert.equal(fs.statSync(file).mode & 0o777, 0o600);

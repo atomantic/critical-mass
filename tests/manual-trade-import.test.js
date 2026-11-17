@@ -1057,7 +1057,7 @@ describe('Manual Trade Import', () => {
       });
 
       it('rejects a buy owned only by a persisted engine body', async () => {
-        const { loadFundRegimeState, saveFundRegimeState } = require('../src/state-tracker');
+        const { loadFundRegimeState, saveFundRegimeState } = require('../src/regime-state-store');
         const saved = loadFundRegimeState(EXCHANGE, PAIR);
         saved.position.celestialBodies = [{ id: 'engine-body', sourceOrderIds: ['buy-1'], buyOrders: [], tpOrderId: null }];
         saveFundRegimeState(EXCHANGE, PAIR, saved);

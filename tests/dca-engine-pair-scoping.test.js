@@ -336,33 +336,33 @@ describe('executeConsolidation fund scoping (issue #546)', () => {
 });
 
 describe('reconcilePlacementIntent fund scoping (issue #546)', () => {
-  const stateTracker = require('../src/state-tracker');
+  const placementIntents = require('../src/placement-intent-storage');
 
   it('resolves an intent recorded against the named fund', async () => {
-    const intent = stateTracker.recordPlacementIntent({ exchange: EXCHANGE, pair: OTHER_PAIR, action: 'dca_buy', side: 'buy' });
-    stateTracker.markPlacementIntentUnresolved(EXCHANGE, OTHER_PAIR, intent.id, { reason: 'socket hang up' });
+    const intent = placementIntents.recordPlacementIntent({ exchange: EXCHANGE, pair: OTHER_PAIR, action: 'dca_buy', side: 'buy' });
+    placementIntents.markPlacementIntentUnresolved(EXCHANGE, OTHER_PAIR, intent.id, { reason: 'socket hang up' });
 
     const result = await dcaEngine.reconcilePlacementIntent(EXCHANGE, OTHER_PAIR, intent.id, 'discard');
 
     assert.equal(result.success, true);
-    assert.deepEqual(stateTracker.loadPlacementIntents(EXCHANGE, OTHER_PAIR), []);
+    assert.deepEqual(placementIntents.loadPlacementIntents(EXCHANGE, OTHER_PAIR), []);
   });
 
   it('does not reach into another fund\'s intents', async () => {
-    const intent = stateTracker.recordPlacementIntent({ exchange: EXCHANGE, pair: OTHER_PAIR, action: 'dca_buy', side: 'buy' });
-    stateTracker.markPlacementIntentUnresolved(EXCHANGE, OTHER_PAIR, intent.id, { reason: 'socket hang up' });
+    const intent = placementIntents.recordPlacementIntent({ exchange: EXCHANGE, pair: OTHER_PAIR, action: 'dca_buy', side: 'buy' });
+    placementIntents.markPlacementIntentUnresolved(EXCHANGE, OTHER_PAIR, intent.id, { reason: 'socket hang up' });
 
     const result = await dcaEngine.reconcilePlacementIntent(EXCHANGE, DEFAULT_PAIR, intent.id, 'discard');
 
     assert.equal(result.success, false);
-    assert.equal(stateTracker.loadPlacementIntents(EXCHANGE, OTHER_PAIR).length, 1, 'the other fund\'s intent is untouched');
+    assert.equal(placementIntents.loadPlacementIntents(EXCHANGE, OTHER_PAIR).length, 1, 'the other fund\'s intent is untouched');
   });
 
   it('blocks a cycle on the named fund\'s unresolved intent only', async () => {
     seedState(DEFAULT_PAIR);
     seedState(OTHER_PAIR);
-    const intent = stateTracker.recordPlacementIntent({ exchange: EXCHANGE, pair: OTHER_PAIR, action: 'dca_buy', side: 'buy' });
-    stateTracker.markPlacementIntentUnresolved(EXCHANGE, OTHER_PAIR, intent.id, { reason: 'socket hang up' });
+    const intent = placementIntents.recordPlacementIntent({ exchange: EXCHANGE, pair: OTHER_PAIR, action: 'dca_buy', side: 'buy' });
+    placementIntents.markPlacementIntentUnresolved(EXCHANGE, OTHER_PAIR, intent.id, { reason: 'socket hang up' });
 
     assert.equal((await dcaEngine.runIntervalCycle(EXCHANGE, OTHER_PAIR)).status, 'placement_unresolved');
     assert.equal((await dcaEngine.runIntervalCycle(EXCHANGE, DEFAULT_PAIR)).status, 'success');

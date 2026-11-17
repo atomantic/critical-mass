@@ -4,24 +4,59 @@ updates:
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 10
+    open-pull-requests-limit: 3
+    groups:
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+        patterns:
+          - "*"
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 3
+    groups:
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+        patterns:
+          - "*"
   - package-ecosystem: npm
     directory: /admin
     schedule:
       interval: weekly
     open-pull-requests-limit: 3
+    groups:
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+        patterns:
+          - "*"
   - package-ecosystem: npm
     directory: /docker/pm2
     schedule:
       interval: weekly
     open-pull-requests-limit: 3
+    groups:
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+        patterns:
+          - "*"
   - package-ecosystem: docker
     directory: /
     schedule:
       interval: weekly
     open-pull-requests-limit: 3
+    groups:
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+        patterns:
+          - "*"

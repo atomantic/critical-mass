@@ -21,7 +21,7 @@ const vm = require('node:vm');
 
 const configUtils = require('../src/config-utils');
 const regimeStatusModule = require('../src/regime-status');
-const stateTracker = require('../src/state-tracker');
+const placementIntents = require('../src/placement-intent-storage');
 const ROUTES_PATH = require.resolve('../src/routes/regime-routes');
 
 const BASE_CONFIG_FILE = path.join(__dirname, '..', 'config.json');
@@ -617,7 +617,7 @@ describe('placement intent discard respects engine ownership', () => {
   afterEach(() => mock.restoreAll());
 
   const setup = (ipc) => {
-    const discard = mock.method(stateTracker, 'resolvePlacementIntent', () => true);
+    const discard = mock.method(placementIntents, 'resolvePlacementIntent', () => true);
     const register = requireFreshRoutes();
     setupFsMocks(BASE_CONFIG);
     const app = createFakeApp();

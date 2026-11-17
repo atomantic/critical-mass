@@ -11,7 +11,7 @@ after(() => isolatedData.cleanup());
 const { isPostOnlyRejection } = require('../src/shared-utils');
 const { createOrderExecutor } = require('../src/order-executor');
 const { placeSellOrderWithRetry } = require('../src/order-manager');
-const { getPlacementIntentsFile } = require('../src/state-tracker');
+const { getPlacementIntentsFile } = require('../src/placement-intent-storage');
 const fs = require('fs');
 
 const REJECTIONS = [

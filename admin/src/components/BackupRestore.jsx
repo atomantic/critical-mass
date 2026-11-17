@@ -635,14 +635,20 @@ function BackupRestore() {
         )}
       </div>
 
-      {/* Restore Confirmation */}
+      {/* Restore Confirmation (dialog so it is always in view, whatever the scroll position) */}
       {restoreTarget && (
-        <div className="bg-yellow-900/30 border border-yellow-600 rounded-lg p-6">
-          <h3 className="text-lg font-semibold text-yellow-300 mb-2">Confirm Restore</h3>
+        <ModalDialog
+          onClose={cancelRestore}
+          dismissible={!restoring}
+          labelledBy="restore-confirm-title"
+          describedBy="restore-confirm-description"
+          maxWidthClassName="max-w-2xl"
+        >
+          <h3 id="restore-confirm-title" className="text-lg font-semibold text-yellow-300 mb-2">Confirm Restore</h3>
           <p className="text-sm text-yellow-200 mb-1">
             Restoring <span className="font-mono font-medium">{restoreTarget}</span>
           </p>
-          <p className="text-sm text-yellow-200/80 mb-4">
+          <p id="restore-confirm-description" className="text-sm text-yellow-200/80 mb-4">
             This will stop all running engines and overwrite current data files.
             API keys will NOT be affected. You will need to restart engines manually from the dashboard.
           </p>
@@ -833,7 +839,7 @@ function BackupRestore() {
               </Button>
             )}
           </div>
-        </div>
+        </ModalDialog>
       )}
 
       {/* Backups List */}
