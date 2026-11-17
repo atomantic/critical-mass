@@ -1,1 +1,0 @@
-- **[issue-1731] Preserve recovery ownership across paginated Coinbase history** — Client-order lookups now follow encoded history cursors with a 64-page bound and report incomplete or malformed scans as inconclusive. Cold recovery retains its durable intent until a complete absence check or adoption of the existing buy.

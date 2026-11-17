@@ -1,6 +1,9 @@
 ## Bug Fixing
 When fixing bugs, always verify you're editing the correct code path (e.g., derivatives vs trading funds, server vs client) before making changes. Ask for clarification if the affected module is ambiguous.
 
+## Changelog
+Each PR adds one fragment, `.changelogs/next-<slug>.md` (`next-issue-<N>.md` for issue work), with its user-facing bullet(s). Never edit `CHANGELOG.md` (it is a pointer only) or add to another contributor's fragment. The release step runs `scripts/fold-changelog.js`, which folds fragments into `.changelogs/vX.Y.Z.md` and deletes them; see `.changelogs/README.md`.
+
 ## Runtime State
 **ALWAYS stop the associated engine (PM2) BEFORE modifying any state or data files** (e.g., `regime-state.json`, `fill-ledger.json`). Running engines periodically save state and will silently overwrite your changes. Drain the gateway before stopping the engine, following [UPGRADE.md](UPGRADE.md), then edit and validate state before restarting. For a Gemini key with **Requires Heartbeat** enabled, its open orders can be auto-cancelled about five minutes after the last heartbeat. The adapter shares heartbeat ownership across live funds; a running PM2 process alone does not prove a fund holds it. Account for that window when planning a repair or placing manual orders. Keys without that option do not require heartbeat to keep orders open.
 

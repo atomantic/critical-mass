@@ -1,1 +1,0 @@
-- **[issue-1015] Assert mutex state after release and while a queued holder owns the lock** — Strengthened the mutex state test to verify final unlock, queued ownership, and idempotent release behavior.
