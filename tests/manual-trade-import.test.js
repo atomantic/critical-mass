@@ -4,7 +4,7 @@
  * write the live fill ledger and place real exchange orders (issue #423).
  *
  * Every test runs against a real fill ledger and a real manual-trade store
- * rooted in a fresh tmpdir (migration.getExchangeDataDir is patched, exactly as
+ * rooted in a fresh tmpdir (fundPaths.getExchangeDataDir is patched, exactly as
  * tests/fill-ledger.test.js does) and a fake adapter. Nothing here touches an
  * exchange or a real data file.
  *
@@ -22,8 +22,8 @@ const os = require('os');
 const crypto = require('crypto');
 const { createCoinbaseAdapter } = require('../src/adapters/coinbase/api');
 
-const migration = require('../src/migration');
-const originalGetExchangeDataDir = migration.getExchangeDataDir;
+const fundPaths = require('../src/fund-paths');
+const originalGetExchangeDataDir = fundPaths.getExchangeDataDir;
 
 const fillLedgerPath = require.resolve('../src/fill-ledger');
 const { STATUS, recoveryClientOrderId } = require('../src/manual-trades');
@@ -86,12 +86,12 @@ const makeFill = (overrides = {}) => ({
 const sleepTick = () => new Promise((resolve) => setImmediate(resolve));
 
 const readManualTradesFile = () => {
-  const file = path.join(migration.resolveFundDataDir(EXCHANGE, PAIR), 'manual-trades.json');
+  const file = path.join(fundPaths.resolveFundDataDir(EXCHANGE, PAIR), 'manual-trades.json');
   return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null;
 };
 
 const readRegimeStateFile = () => {
-  const file = path.join(migration.resolveFundDataDir(EXCHANGE, PAIR), 'regime-state.json');
+  const file = path.join(fundPaths.resolveFundDataDir(EXCHANGE, PAIR), 'regime-state.json');
   return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null;
 };
 
@@ -115,7 +115,7 @@ describe('Manual Trade Import', () => {
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'manual-trade-import-test-'));
-    migration.getExchangeDataDir = (exchange) => {
+    fundPaths.getExchangeDataDir = (exchange) => {
       const dir = path.join(String(tmpDir), exchange);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
       return dir;
@@ -136,7 +136,7 @@ describe('Manual Trade Import', () => {
   });
 
   afterEach(() => {
-    migration.getExchangeDataDir = originalGetExchangeDataDir;
+    fundPaths.getExchangeDataDir = originalGetExchangeDataDir;
     if (tmpDir && fs.existsSync(tmpDir)) fs.rmSync(tmpDir, { recursive: true, force: true });
     tmpDir = null;
     delete require.cache[fillLedgerPath];
@@ -1139,7 +1139,7 @@ describe('Manual Trade Import', () => {
 
         // Simulate a crash after the ledger persisted but before the store
         // did: the ledger keeps buy-1 -> sell-1, manual-trades.json is gone.
-        fs.rmSync(path.join(migration.resolveFundDataDir(EXCHANGE, PAIR), 'manual-trades.json'));
+        fs.rmSync(path.join(fundPaths.resolveFundDataDir(EXCHANGE, PAIR), 'manual-trades.json'));
         const { createManualTradeStore } = require('../src/manual-trades');
         store = createManualTradeStore(EXCHANGE, PAIR);
         store.load();
@@ -1765,7 +1765,7 @@ describe('Manual Trade Import', () => {
     });
 
     it('upgrades a pre-#1034 pending record on load so it can be settled and retried', async () => {
-      const dir = migration.resolveFundDataDir(EXCHANGE, PAIR);
+      const dir = fundPaths.resolveFundDataDir(EXCHANGE, PAIR);
       fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(path.join(dir, 'manual-trades.json'), JSON.stringify({
         trades: [{
@@ -2189,7 +2189,7 @@ describe('Manual Trade Import', () => {
       body.tpOrderId = 'tp-live-on-exchange';
       body.tpPrice = 95000;
       body.assetOnOrder = buyFills[0].size;
-      fs.writeFileSync(path.join(migration.resolveFundDataDir(EXCHANGE, PAIR), 'regime-state.json'), JSON.stringify(preStop, null, 2));
+      fs.writeFileSync(path.join(fundPaths.resolveFundDataDir(EXCHANGE, PAIR), 'regime-state.json'), JSON.stringify(preStop, null, 2));
 
       fillsByOrder['buy-1'] = buyFills;
       const second = await importer.importBuy({ buyOrderId: 'buy-1', createBody: true });
@@ -2266,7 +2266,7 @@ describe('Manual Trade Import', () => {
       body.assetQty += buyFills[1].size;
       body.costBasis += buyFills[1].price * buyFills[1].size + buyFills[1].commission;
       body.buyOrders.push({ orderId: 'buy-1', price: buyFills[1].price, assetQty: buyFills[1].size, sizeUsdc: buyFills[1].price * buyFills[1].size + buyFills[1].commission });
-      fs.writeFileSync(path.join(migration.resolveFundDataDir(EXCHANGE, PAIR), 'regime-state.json'), JSON.stringify(preCrash, null, 2));
+      fs.writeFileSync(path.join(fundPaths.resolveFundDataDir(EXCHANGE, PAIR), 'regime-state.json'), JSON.stringify(preCrash, null, 2));
 
       fillsByOrder['buy-1'] = buyFills;
 
@@ -2642,7 +2642,7 @@ describe('Manual Trade Import', () => {
       /** Remove every body from regime-state.json, keeping aggregates consistent. */
       const dropSavedBodies = () => {
         const { syncPositionState } = require('../src/celestial-hierarchy');
-        const stateFile = path.join(migration.resolveFundDataDir(EXCHANGE, PAIR), 'regime-state.json');
+        const stateFile = path.join(fundPaths.resolveFundDataDir(EXCHANGE, PAIR), 'regime-state.json');
         const state = readRegimeStateFile();
         state.position.celestialBodies = [];
         syncPositionState(state.position, []);
@@ -2731,7 +2731,7 @@ describe('Manual Trade Import', () => {
 
       it('keeps the durable resume handle when position state cannot be read', async () => {
         const pending = await leaveInterruptedImport();
-        const stateFile = path.join(migration.resolveFundDataDir(EXCHANGE, PAIR), 'regime-state.json');
+        const stateFile = path.join(fundPaths.resolveFundDataDir(EXCHANGE, PAIR), 'regime-state.json');
         fs.writeFileSync(stateFile, '{invalid json');
         const refused = await createImporter({ adapter: {} }).resumeBodyImport({ tradeId: pending.id });
 
@@ -3067,7 +3067,7 @@ describe('Manual Trade Import', () => {
         const first = await createImporter({ adapter }).importBuy({ buyOrderId: 'buy-1', createBody: true });
         const staleId = first.trade.bodyId;
         // The body was absorbed into a survivor, and the trade predates intents.
-        const stateFile = path.join(migration.resolveFundDataDir(EXCHANGE, PAIR), 'regime-state.json');
+        const stateFile = path.join(fundPaths.resolveFundDataDir(EXCHANGE, PAIR), 'regime-state.json');
         const state = readRegimeStateFile();
         state.position.celestialBodies[0].id = 'body-survivor';
         fs.writeFileSync(stateFile, JSON.stringify(state));

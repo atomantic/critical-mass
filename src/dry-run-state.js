@@ -21,7 +21,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { resolveFundDataDir, getFundDataDir } = require('./migration');
+const { resolveFundDataDir, getFundDataDir } = require('./fund-paths');
 const { atomicWriteSync, quarantineFile } = require('./state-tracker');
 const { fundKey: composeFundKey } = require('./shared-utils');
 const { createContextLogger } = require('./logger');
@@ -203,7 +203,7 @@ const writeFundStateFile = (exchange, pair, state = null) => {
  */
 const readLegacyFundMap = (logger) => {
   // Read through module.exports so tests that repoint LEGACY_STATE_FILE at a
-  // tmp root take effect, the same seam migration.getExchangeDataDir uses.
+  // tmp root take effect, the same seam fundPaths.getExchangeDataDir uses.
   const legacyFile = module.exports.LEGACY_STATE_FILE;
   if (!fs.existsSync(legacyFile)) return null;
 

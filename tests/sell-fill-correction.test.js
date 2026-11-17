@@ -5,14 +5,14 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const migration = require('../src/migration');
+const fundPaths = require('../src/fund-paths');
 const configUtils = require('../src/config-utils');
 const state = require('../src/state-tracker');
 const { createClosedTrades } = require('../src/closed-trades');
 
 const EXCHANGE = 'sell-correction-test';
 const PAIR = 'BTC-USDC';
-const originalGetExchangeDataDir = migration.getExchangeDataDir;
+const originalGetExchangeDataDir = fundPaths.getExchangeDataDir;
 const originalGetRegimeConfig = configUtils.getRegimeConfig;
 const originalUpdateRegimeConfig = configUtils.updateRegimeConfig;
 const originalRename = fs.renameSync;
@@ -74,7 +74,7 @@ const seedBookedSell = () => {
 describe('terminal sell economic reconciliation (#837)', () => {
   beforeEach(() => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'sell-correction-'));
-    migration.getExchangeDataDir = exchange => path.join(root, exchange);
+    fundPaths.getExchangeDataDir = exchange => path.join(root, exchange);
     config = { ...originalGetRegimeConfig(EXCHANGE, PAIR), maxUsdcDeployed: 1000 };
     configUtils.getRegimeConfig = () => ({ ...config });
     configUtils.updateRegimeConfig = (_exchange, _pair, updates) => { config = { ...config, ...updates }; };
@@ -82,7 +82,7 @@ describe('terminal sell economic reconciliation (#837)', () => {
 
   afterEach(() => {
     fs.renameSync = originalRename;
-    migration.getExchangeDataDir = originalGetExchangeDataDir;
+    fundPaths.getExchangeDataDir = originalGetExchangeDataDir;
     configUtils.getRegimeConfig = originalGetRegimeConfig;
     configUtils.updateRegimeConfig = originalUpdateRegimeConfig;
     if (root && fs.existsSync(root)) fs.rmSync(root, { recursive: true, force: true });

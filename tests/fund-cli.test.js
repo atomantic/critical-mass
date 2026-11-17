@@ -20,12 +20,12 @@ afterEach(() => {
 // Redirect only the child process's fund resolver. No live fund, key or network
 // is touched; an unknown exchange exercises real persisted liveness flags.
 const run = (root, args = ['--apply'], script) => {
-  const migration = require.resolve('../src/migration');
+  const fundPaths = require.resolve('../src/fund-paths');
   const helper = require.resolve('../scripts/lib/fund-cli');
   const code = `
     const fs = require('fs');
     const path = require('path');
-    require.cache[${JSON.stringify(migration)}] = { exports: { resolveFundDataDir: () => ${JSON.stringify(root)} } };
+    require.cache[${JSON.stringify(fundPaths)}] = { exports: { resolveFundDataDir: () => ${JSON.stringify(root)} } };
     process.argv = ['node', 'fixture-repair.js', ...${JSON.stringify(args)}];
     ${script ? `require(${JSON.stringify(script)});` : `
     const cli = require(${JSON.stringify(helper)}).parseFundCli(process.argv, {

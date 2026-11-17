@@ -14,7 +14,7 @@
  *    cache", and the next full refetch could not rebuild the lost depth.
  *
  * Fund-data resolution is bound to a tmp root through the
- * `migration.getExchangeDataDir` seam and the Gemini adapter is stubbed, both
+ * `fundPaths.getExchangeDataDir` seam and the Gemini adapter is stubbed, both
  * BEFORE backtest-engine is loaded, because it destructures both at require
  * time.
  */
@@ -24,7 +24,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const migration = require('../src/migration');
+const fundPaths = require('../src/fund-paths');
 const adapters = require('../src/adapters');
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -49,9 +49,9 @@ describe('backtest price cache never loses accumulated history', () => {
 
   beforeEach(() => {
     tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-price-cache-durability-'));
-    originalGetExchangeDataDir = migration.getExchangeDataDir;
+    originalGetExchangeDataDir = fundPaths.getExchangeDataDir;
     originalGetAdapter = adapters.getAdapter;
-    migration.getExchangeDataDir = (exchange) => {
+    fundPaths.getExchangeDataDir = (exchange) => {
       const dir = path.join(tmpRoot, exchange);
       fs.mkdirSync(dir, { recursive: true });
       return dir;
@@ -63,7 +63,7 @@ describe('backtest price cache never loses accumulated history', () => {
   });
 
   afterEach(() => {
-    migration.getExchangeDataDir = originalGetExchangeDataDir;
+    fundPaths.getExchangeDataDir = originalGetExchangeDataDir;
     adapters.getAdapter = originalGetAdapter;
     delete require.cache[ENGINE_PATH];
     fs.rmSync(tmpRoot, { recursive: true, force: true });

@@ -18,7 +18,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-const migration = require('../src/migration');
+const fundPaths = require('../src/fund-paths');
 const paths = require('../src/paths');
 const PEM_PRIVATE_KEY = '-----BEGIN EC PRIVATE KEY-----\nsynthetic-test-key\n-----END EC PRIVATE KEY-----';
 // Note: keys-routes is loaded dynamically in each test after mocking
@@ -65,7 +65,7 @@ const invoke = async (app, key, req = {}) => {
 describe('API key routes', () => {
   let tempKeysDir;
   let registerKeysRoutes;
-  const originalGetExchangeKeysPath = migration.getExchangeKeysPath;
+  const originalGetExchangeKeysPath = fundPaths.getExchangeKeysPath;
   const keysRoutesPath = require.resolve('../src/routes/keys-routes');
 
   const getRegisterKeysRoutes = () => {
@@ -79,8 +79,8 @@ describe('API key routes', () => {
     // Create a real temp directory for this test
     tempKeysDir = realFs.mkdtempSync(path.join(os.tmpdir(), 'keys-routes-test-'));
 
-    // Replace migration.getExchangeKeysPath to use temp directory BEFORE reloading keys-routes
-    migration.getExchangeKeysPath = (exchange) => {
+    // Replace fundPaths.getExchangeKeysPath to use temp directory BEFORE reloading keys-routes
+    fundPaths.getExchangeKeysPath = (exchange) => {
       return path.join(tempKeysDir, `${exchange}-keys.json`);
     };
 
@@ -91,7 +91,7 @@ describe('API key routes', () => {
   afterEach(() => {
     mock.restoreAll();
     // Restore original function
-    migration.getExchangeKeysPath = originalGetExchangeKeysPath;
+    fundPaths.getExchangeKeysPath = originalGetExchangeKeysPath;
     // Clean up the temp directory
     if (tempKeysDir && realFs.rmSync) {
       realFs.rmSync(tempKeysDir, { recursive: true, force: true });

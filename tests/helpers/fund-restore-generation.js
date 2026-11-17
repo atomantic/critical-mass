@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const backup = require('../../src/backup-service');
-const migration = require('../../src/migration');
+const fundPaths = require('../../src/fund-paths');
 const dryRun = require('../../src/dry-run-state');
 const { createClosedTrades } = require('../../src/closed-trades');
 const { createFillLedger } = require('../../src/fill-ledger');
@@ -28,7 +28,7 @@ const exerciseFundRestoreGeneration = async (t, format, explicitEmpty) => {
   const saved = format === 'hourly' ? backup.createFundStateBackup({ paths }) : await backup.createBackup({ paths });
   assert.equal(saved.success, true, JSON.stringify(saved));
 
-  t.mock.method(migration, 'getExchangeDataDir', (exchange) => path.join(dataDir, exchange));
+  t.mock.method(fundPaths, 'getExchangeDataDir', (exchange) => path.join(dataDir, exchange));
   t.mock.method(require('../../src/config-utils'), 'getDefaultPair', () => 'BTC-USDC');
   const legacy = path.join(root, 'legacy-dry-run.json');
   const previousLegacy = dryRun.LEGACY_STATE_FILE;

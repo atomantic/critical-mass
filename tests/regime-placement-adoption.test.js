@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const migration = require('../src/migration');
+const fundPaths = require('../src/fund-paths');
 const configUtils = require('../src/config-utils');
 const originalUpdate = configUtils.updateRegimeConfig;
 configUtils.updateRegimeConfig = () => {};
@@ -20,7 +20,7 @@ let adapter;
 
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'regime-adoption-'));
-  mock.method(migration, 'getExchangeDataDir', () => path.join(root, 'coinbase'));
+  mock.method(fundPaths, 'getExchangeDataDir', () => path.join(root, 'coinbase'));
   engine = createRegimeEngine('coinbase', PAIR, { dryRun: false, productId: PAIR }, {});
   adapter = { findOrderByClientOrderId: async () => ({ orderId: 'adopted', status: 'OPEN' }) };
   executor = createOrderExecutor('coinbase', {}, adapter, PAIR, {}, PAIR);

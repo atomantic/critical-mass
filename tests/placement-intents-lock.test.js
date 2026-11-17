@@ -10,7 +10,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const migration = require('../src/migration');
+const fundPaths = require('../src/fund-paths');
 const stateTracker = require('../src/state-tracker');
 
 const EXCHANGE = 'coinbase';
@@ -21,7 +21,7 @@ let tmpRoot;
 
 beforeEach(() => {
   tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'placement-intents-lock-'));
-  mock.method(migration, 'getExchangeDataDir', () => path.join(tmpRoot, EXCHANGE));
+  mock.method(fundPaths, 'getExchangeDataDir', () => path.join(tmpRoot, EXCHANGE));
 });
 
 afterEach(() => {
@@ -33,8 +33,8 @@ afterEach(() => {
 // second one, so records and resolves interleave with the other child's.
 const CHILD = `
 const path = require('path');
-const migration = require(path.join(process.env.REPO_ROOT, 'src/migration'));
-migration.getExchangeDataDir = () => path.join(process.env.TMP_ROOT, process.env.EXCHANGE);
+const fundPaths = require(path.join(process.env.REPO_ROOT, 'src/fund-paths'));
+fundPaths.getExchangeDataDir = () => path.join(process.env.TMP_ROOT, process.env.EXCHANGE);
 const st = require(path.join(process.env.REPO_ROOT, 'src/state-tracker'));
 for (let i = 0; i < Number(process.env.COUNT); i++) {
   const intent = st.recordPlacementIntent({ exchange: process.env.EXCHANGE, pair: process.env.PAIR, action: process.env.LABEL + '-' + i });

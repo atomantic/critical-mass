@@ -129,7 +129,7 @@ describe('structured logger', () => {
 
 describe('getLogFile / loadTransactionHistory route per fund (issue #543)', () => {
   const pathsModulePath = require.resolve('../src/paths');
-  const migrationModulePath = require.resolve('../src/migration');
+  const fundPathsModulePath = require.resolve('../src/fund-paths');
   const loggerModulePath = require.resolve('../src/logger');
   const configUtilsModulePath = require.resolve('../src/config-utils');
 
@@ -142,13 +142,13 @@ describe('getLogFile / loadTransactionHistory route per fund (issue #543)', () =
   /** @type {(() => (string|null))|null} */
   let originalGetDefaultPair = null;
 
-  // Force paths.js/migration.js/logger.js to re-evaluate their top-level
+  // Force paths.js/fund-paths.js/logger.js to re-evaluate their top-level
   // `require`s against a freshly-mutated DATA_DIR, the same delete-cache/
   // re-require idiom tests/migration-pair-layout.test.js uses.
   const freshLogger = (dataDir) => {
     const pathsModule = require('../src/paths');
     pathsModule.DATA_DIR = dataDir;
-    delete require.cache[migrationModulePath];
+    delete require.cache[fundPathsModulePath];
     delete require.cache[loggerModulePath];
     return require('../src/logger');
   };
@@ -163,7 +163,7 @@ describe('getLogFile / loadTransactionHistory route per fund (issue #543)', () =
 
   afterEach(() => {
     configUtils.getDefaultPair = originalGetDefaultPair;
-    delete require.cache[migrationModulePath];
+    delete require.cache[fundPathsModulePath];
     delete require.cache[loggerModulePath];
     delete require.cache[configUtilsModulePath];
     delete require.cache[pathsModulePath];

@@ -19,7 +19,7 @@ const { getCachedFillLedger, createFillLedger } = require('./fill-ledger');
 const { calculateApyMetrics } = require('./apy-calculator');
 const celestialHierarchy = require('./celestial-hierarchy');
 const { getRegimeConfig } = require('./config-utils');
-const { resolveFundDataDir } = require('./migration');
+const { resolveFundDataDir } = require('./fund-paths');
 const { createContextLogger } = require('./logger');
 
 const statusLogger = (exchange, pair) => createContextLogger({ module: 'regime-status', exchange, pair });

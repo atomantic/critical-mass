@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const migration = require('../src/migration');
+const fundPaths = require('../src/fund-paths');
 
 /** @returns {string|null} size+mtime of a file, or null when it is absent */
 const fileSignature = (file) => {
@@ -17,7 +17,7 @@ const fileSignature = (file) => {
 /**
  * Reload the module fresh per test so its module-level `pendingStates` /
  * `lastSaveTime` start clean and don't bleed across cases, and point the data
- * directory at a throwaway tmp root through the `migration.getExchangeDataDir`
+ * directory at a throwaway tmp root through the `fundPaths.getExchangeDataDir`
  * seam every other per-fund module is tested through. `LEGACY_STATE_FILE` is
  * repointed into the same tmp root: the legacy path is a real file in the app
  * root on any machine that has run the engine, so reading it would make these
@@ -26,8 +26,8 @@ const fileSignature = (file) => {
 const setup = (t, now = 10_000) => {
   t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now });
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dry-run-state-'));
-  const originalGetExchangeDataDir = migration.getExchangeDataDir;
-  migration.getExchangeDataDir = (exchange) => {
+  const originalGetExchangeDataDir = fundPaths.getExchangeDataDir;
+  fundPaths.getExchangeDataDir = (exchange) => {
     const dir = path.join(tmpRoot, exchange);
     fs.mkdirSync(dir, { recursive: true });
     return dir;
@@ -46,7 +46,7 @@ const setup = (t, now = 10_000) => {
   mod.LEGACY_STATE_FILE = path.join(tmpRoot, mod.STATE_FILENAME);
 
   t.after(() => {
-    migration.getExchangeDataDir = originalGetExchangeDataDir;
+    fundPaths.getExchangeDataDir = originalGetExchangeDataDir;
     fs.rmSync(tmpRoot, { recursive: true, force: true });
     delete require.cache[modPath];
     // Cleanup first, assertion last: a failure here must not strand the tmp

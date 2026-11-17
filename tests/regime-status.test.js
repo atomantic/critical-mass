@@ -202,10 +202,10 @@ describe('buildStoppedRegimeStatus (issue #357)', () => {
 // end-to-end P&L re-derivation through a real fill ledger.
 // ---------------------------------------------------------------------------
 describe('buildStoppedRegimeStatus — disk-backed (requireExistingState + real ledger)', () => {
-  const migration = require('../src/migration');
+  const fundPaths = require('../src/fund-paths');
   const stateTracker = require('../src/state-tracker');
   const fillLedgerModule = require('../src/fill-ledger');
-  const originalGetExchangeDataDir = migration.getExchangeDataDir;
+  const originalGetExchangeDataDir = fundPaths.getExchangeDataDir;
   const fillLedgerPath = require.resolve('../src/fill-ledger');
 
   /** @type {string|null} */
@@ -213,7 +213,7 @@ describe('buildStoppedRegimeStatus — disk-backed (requireExistingState + real 
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'regime-status-test-'));
-    migration.getExchangeDataDir = (exchange) => {
+    fundPaths.getExchangeDataDir = (exchange) => {
       const dir = path.join(tmpDir, exchange);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
       return dir;
@@ -221,7 +221,7 @@ describe('buildStoppedRegimeStatus — disk-backed (requireExistingState + real 
   });
 
   afterEach(() => {
-    migration.getExchangeDataDir = originalGetExchangeDataDir;
+    fundPaths.getExchangeDataDir = originalGetExchangeDataDir;
     if (tmpDir && fs.existsSync(tmpDir)) fs.rmSync(tmpDir, { recursive: true, force: true });
     tmpDir = null;
     // Reset fill-ledger's module-level read-only cache so the next test's

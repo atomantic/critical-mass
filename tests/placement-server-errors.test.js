@@ -7,7 +7,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const migration = require('../src/migration');
+const fundPaths = require('../src/fund-paths');
 const stateTracker = require('../src/state-tracker');
 const { placeWithUnknownReconcile } = require('../src/order-manager');
 const { createPlacementReconciler } = require('../src/regime-placement-reconciler');
@@ -40,7 +40,7 @@ beforeEach(() => {
     name: 'organizations/test/apiKeys/test-key', privateKey,
     apiKey: 'test-api-key', apiSecret: 'test-api-secret',
   }));
-  mock.method(migration, 'getExchangeDataDir', (exchange) => path.join(root, exchange));
+  mock.method(fundPaths, 'getExchangeDataDir', (exchange) => path.join(root, exchange));
   originalFetch = global.fetch;
 });
 afterEach(() => {

@@ -40,7 +40,7 @@ const path = require('path');
 const { getAdapter } = require('../src/adapters');
 const { parseFundCli } = require('./lib/fund-cli');
 const { atomicWriteSync } = require('../src/state-tracker');
-const { resolveFundDataDir } = require('../src/migration');
+const { resolveFundDataDir } = require('../src/fund-paths');
 const { getBaseCurrency, getQuoteCurrency } = require('../src/config-utils');
 
 const [, , EXCHANGE_ARG, PAIR_ARG] = process.argv;

@@ -8,7 +8,7 @@ const path = require('node:path');
 const { reconcileAwaitingSells } = require('../src/dca-engine');
 const { createInitialState, recordBuyFill, getPendingOrders } = require('../src/state-tracker');
 const stateTracker = require('../src/state-tracker');
-const migration = require('../src/migration');
+const fundPaths = require('../src/fund-paths');
 const configUtils = require('../src/config-utils');
 const orderManager = require('../src/order-manager');
 const adapters = require('../src/adapters');
@@ -276,7 +276,7 @@ describe('retryFailedSell (issue #1035)', () => {
       consolidateInterval: 'never',
     };
     originals = {
-      getExchangeDataDir: migration.getExchangeDataDir,
+      getExchangeDataDir: fundPaths.getExchangeDataDir,
       getFundConfig: configUtils.getFundConfig,
       getDefaultPair: configUtils.getDefaultPair,
       getAdapter: adapters.getAdapter,
@@ -286,7 +286,7 @@ describe('retryFailedSell (issue #1035)', () => {
       logSellOrder: logger.logSellOrder,
       setTimeout: global.setTimeout,
     };
-    migration.getExchangeDataDir = (exchange) => {
+    fundPaths.getExchangeDataDir = (exchange) => {
       const dir = path.join(tmpDir, exchange);
       fs.mkdirSync(dir, { recursive: true });
       return dir;
@@ -311,7 +311,7 @@ describe('retryFailedSell (issue #1035)', () => {
 
   afterEach(() => {
     global.setTimeout = originals.setTimeout;
-    migration.getExchangeDataDir = originals.getExchangeDataDir;
+    fundPaths.getExchangeDataDir = originals.getExchangeDataDir;
     configUtils.getFundConfig = originals.getFundConfig;
     configUtils.getDefaultPair = originals.getDefaultPair;
     adapters.getAdapter = originals.getAdapter;

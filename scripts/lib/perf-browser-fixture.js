@@ -66,7 +66,7 @@ async function startBrowserFixture() {
     const { createIPCServer } = require(path.join(dir, 'src/ipc/ipc-server'));
     const { createTransactionsReadView } = require(path.join(dir, 'src/transactions-regime-query'));
     const { createFillLedger } = require(path.join(dir, 'src/fill-ledger'));
-    const { resolveFundPath, withFundDataDirOverride } = require(path.join(dir, 'src/migration'));
+    const { resolveFundPath, withFundDataDirOverride } = require(path.join(dir, 'src/fund-paths'));
     const views = new Map();
     const storedRows = new Map();
     for (const [exchange, pair] of FUNDS) {

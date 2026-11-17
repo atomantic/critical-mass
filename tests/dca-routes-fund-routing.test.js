@@ -30,7 +30,7 @@ const originalDataDir = pathsModule.DATA_DIR;
 const configDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dca-routes-config-'));
 pathsModule.DATA_DIR = configDataDir;
 const configUtils = require('../src/config-utils');
-const migration = require('../src/migration');
+const fundPaths = require('../src/fund-paths');
 const dcaEngine = require('../src/dca-engine');
 const orderManager = require('../src/order-manager');
 
@@ -114,14 +114,14 @@ beforeEach(() => {
   engineCalls = [];
 
   originals = {
-    getExchangeDataDir: migration.getExchangeDataDir,
+    getExchangeDataDir: fundPaths.getExchangeDataDir,
     runIntervalCycle: dcaEngine.runIntervalCycle,
     executeConsolidation: dcaEngine.executeConsolidation,
     reconcilePlacementIntent: dcaEngine.reconcilePlacementIntent,
     retryFailedSell: dcaEngine.retryFailedSell,
   };
 
-  migration.getExchangeDataDir = (exchange) => {
+  fundPaths.getExchangeDataDir = (exchange) => {
     const dir = path.join(tempRoot, exchange);
     realFs.mkdirSync(dir, { recursive: true });
     return dir;
@@ -257,7 +257,7 @@ describe('GET /api/:exchange/summary strategy routing', () => {
 
 afterEach(() => {
   mock.restoreAll();
-  migration.getExchangeDataDir = originals.getExchangeDataDir;
+  fundPaths.getExchangeDataDir = originals.getExchangeDataDir;
   dcaEngine.runIntervalCycle = originals.runIntervalCycle;
   dcaEngine.executeConsolidation = originals.executeConsolidation;
   dcaEngine.reconcilePlacementIntent = originals.reconcilePlacementIntent;

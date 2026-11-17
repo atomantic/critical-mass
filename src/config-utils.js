@@ -19,8 +19,10 @@ const { jsonReadError } = require('./json-diagnostics');
 const { normalizeConfig: normalizeIntervalConfig } = require('./interval-utils');
 const pathsModule = require('./paths');
 const { reconcileBaseConfig, withConfigWriteLock, readConfigObject } = require('./config-base-drift');
-// logger imports migration; migration's back-edge to config-utils must stay lazy.
+// logger imports fund-paths; fund-paths' back-edge to config-utils (the default
+// pair lookup) stays lazy, so requiring fund-paths here is cycle-free.
 const { createContextLogger } = require('./logger');
+const fundPaths = require('./fund-paths');
 
 const configLogger = createContextLogger({ module: 'config-utils' });
 
@@ -29,9 +31,8 @@ const configLogger = createContextLogger({ module: 'config-utils' });
 // resolveFundConfig, computeDiff, BACKUP_INTERVAL_BOUNDS, …) at their own
 // module top level, so a top-level `require` of either one here would form a
 // genuine circular require and see config-utils.js's exports before this
-// module finishes initializing — the same trap the "logger imports
-// migration" comment above avoids for that pair. Deferring the require
-// until the wrapper is actually called sidesteps it.
+// module finishes initializing. Deferring the require until the wrapper is
+// actually called sidesteps it.
 const getConfigSnapshot = () => require('./config-snapshot');
 const getConfigValidator = () => require('./config-validator');
 
@@ -635,7 +636,7 @@ const getFundStateConflict = (exchange, pair) => {
   // A configured pair is an ordinary duplicate, and malformed identities are
   // left to addFund's existing validation rather than used in path lookup.
   if (getFundsForExchange(exchange).includes(pair) || !/^[A-Z0-9]{2,8}([-_][A-Z0-9]{2,8})?$/.test(pair)) return null;
-  const fundDir = require('./migration').resolveFundDataDir(exchange, pair);
+  const fundDir = fundPaths.resolveFundDataDir(exchange, pair);
   const retainedStateFiles = ['state.json', 'regime-state.json', 'fill-ledger.json'];
   if (!retainedStateFiles.some((name) => fs.existsSync(path.join(fundDir, name)))) return null;
   const error = new Error(`Fund data for ${exchange}/${pair} already exists at data/${exchange}/${pair}/. Move or archive that directory (or choose another pair) before re-adding.`);

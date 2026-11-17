@@ -65,9 +65,9 @@ const {
   normalizeLegacyRootToNamespace,
   legacyRootArtifactTarget,
   legacyRootArtifactCandidates,
-  PER_FUND_FILES,
   PAIR_MIGRATION_CONFLICT_FILES,
 } = require('./migration');
+const { PER_FUND_FILES } = require('./fund-paths');
 const { serializeFundState } = require('./dry-run-state');
 const { JOURNAL_FILENAME: DCA_IMPORT_JOURNAL_FILENAME } = require('./dca-conversion-transaction');
 const { PLACEMENT_INTENTS_FILENAME, parsePlacementIntentsDocument, assertPlacementIntentRows } = require('./placement-intent-document');
@@ -248,7 +248,7 @@ const FUND_STATE_FILENAMES = ['state.json', 'regime-state.json', 'fill-ledger.js
  * Whether (exchange, pair) still has fund-scoped state on disk under `dataDir`.
  *
  * Checked directly against `dataDir` rather than through
- * migration.resolveFundDataDir, which resolves against the module-level
+ * fund-paths.resolveFundDataDir, which resolves against the module-level
  * DATA_DIR constant and would ignore the `paths` override every restore path
  * here takes for tests — this must see the same directory a restore itself
  * would touch (issue #533).

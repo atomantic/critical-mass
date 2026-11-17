@@ -59,12 +59,12 @@ const makeFill = (tradeId, size, overrides = {}) => ({
 // Exercise adapter pagination through the real importer and its disk-backed
 // stores: ledger dedup alone must not hide inflated body/recovery quantities.
 const withManualImporter = async (adapter, options, check) => {
-  const migration = require('../src/migration');
-  const originalDataDir = migration.getExchangeDataDir;
+  const fundPaths = require('../src/fund-paths');
+  const originalDataDir = fundPaths.getExchangeDataDir;
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'coinbase-fill-import-'));
   const ledgerModule = require.resolve('../src/fill-ledger');
   try {
-    migration.getExchangeDataDir = () => directory;
+    fundPaths.getExchangeDataDir = () => directory;
     delete require.cache[ledgerModule];
     const ledger = require('../src/fill-ledger').createFillLedger('coinbase', 'BTC-USDC', 'BTC-USDC', { quiet: true });
     const store = require('../src/manual-trades').createManualTradeStore('coinbase', 'BTC-USDC');
@@ -74,7 +74,7 @@ const withManualImporter = async (adapter, options, check) => {
     });
     await check({ importer, ledger, store });
   } finally {
-    migration.getExchangeDataDir = originalDataDir;
+    fundPaths.getExchangeDataDir = originalDataDir;
     delete require.cache[ledgerModule];
     fs.rmSync(directory, { recursive: true, force: true });
   }
@@ -332,7 +332,7 @@ describe('coinbase getOrderFills pagination', () => {
       assert.equal(bodies.length, 1);
       assert.equal(bodies[0].assetQty, 0.01);
       assert.ok(Math.abs(bodies[0].costBasis - 500.2) < 1e-8);
-      const fundDir = require('../src/migration').resolveFundDataDir('coinbase', 'BTC-USDC');
+      const fundDir = require('../src/fund-paths').resolveFundDataDir('coinbase', 'BTC-USDC');
       const saved = JSON.parse(fs.readFileSync(path.join(fundDir, 'manual-trades.json'), 'utf8'));
       assert.equal(saved.trades[0].buySize, 0.01);
       const retry = await importer.importBuy({ buyOrderId: 'ORDER-1' });

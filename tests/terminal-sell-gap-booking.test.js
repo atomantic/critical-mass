@@ -4,12 +4,12 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const migration = require('../src/migration');
+const fundPaths = require('../src/fund-paths');
 const configUtils = require('../src/config-utils');
 const adapters = require('../src/adapters');
 const celestial = require('../src/celestial-hierarchy');
 
-const originalDir = migration.getExchangeDataDir;
+const originalDir = fundPaths.getExchangeDataDir;
 const originalConfig = configUtils.getRegimeConfig;
 const originalUpdate = configUtils.updateRegimeConfig;
 const originalAdapter = adapters.getAdapter;
@@ -77,7 +77,7 @@ const setupSell = (previousSize = 0) => {
 describe('terminal sell booking after malformed trade evidence', () => {
   beforeEach(() => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'terminal-sell-gap-'));
-    migration.getExchangeDataDir = exchange => path.join(root, exchange);
+    fundPaths.getExchangeDataDir = exchange => path.join(root, exchange);
     config = { ...originalConfig('coinbase', PAIR), maxUsdcDeployed: 1000,
       tpAutoManaged: false, sizeAutoManaged: false };
     configUtils.getRegimeConfig = () => config;
@@ -87,7 +87,7 @@ describe('terminal sell booking after malformed trade evidence', () => {
   afterEach(() => {
     engine?._test.clearTimers();
     engine = null;
-    migration.getExchangeDataDir = originalDir;
+    fundPaths.getExchangeDataDir = originalDir;
     configUtils.getRegimeConfig = originalConfig;
     configUtils.updateRegimeConfig = originalUpdate;
     adapters.getAdapter = originalAdapter;

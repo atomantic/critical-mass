@@ -18,22 +18,22 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const migration = require('../src/migration');
+const fundPaths = require('../src/fund-paths');
 const realized = require('../src/fill-ledger-realized');
 
-const originalGetExchangeDataDir = migration.getExchangeDataDir;
+const originalGetExchangeDataDir = fundPaths.getExchangeDataDir;
 /** @type {string} */
 let tmpDir;
 before(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fill-ledger-realized-test-'));
-  migration.getExchangeDataDir = (exchange) => {
+  fundPaths.getExchangeDataDir = (exchange) => {
     const dir = path.join(tmpDir, exchange);
     fs.mkdirSync(dir, { recursive: true });
     return dir;
   };
 });
 after(() => {
-  migration.getExchangeDataDir = originalGetExchangeDataDir;
+  fundPaths.getExchangeDataDir = originalGetExchangeDataDir;
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 

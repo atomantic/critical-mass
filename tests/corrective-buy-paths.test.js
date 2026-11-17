@@ -5,21 +5,21 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const migration = require('../src/migration');
+const fundPaths = require('../src/fund-paths');
 const configUtils = require('../src/config-utils');
 const correctiveBuys = require('../scripts/place-corrective-buys');
 
 describe('corrective-buy pending state paths', () => {
   it('isolates reads and writes by exchange and product pair', (t) => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'corrective-buy-paths-'));
-    const originalGetExchangeDataDir = migration.getExchangeDataDir;
-    migration.getExchangeDataDir = (exchange) => {
+    const originalGetExchangeDataDir = fundPaths.getExchangeDataDir;
+    fundPaths.getExchangeDataDir = (exchange) => {
       const dir = path.join(tempRoot, exchange);
       fs.mkdirSync(dir, { recursive: true });
       return dir;
     };
     t.after(() => {
-      migration.getExchangeDataDir = originalGetExchangeDataDir;
+      fundPaths.getExchangeDataDir = originalGetExchangeDataDir;
       fs.rmSync(tempRoot, { recursive: true, force: true });
     });
 
@@ -36,16 +36,16 @@ describe('corrective-buy pending state paths', () => {
 
   it('annotates the explicit BTC-USDC ledger when the configured default is a different fund', async (t) => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'corrective-buy-ledger-path-'));
-    const originalGetExchangeDataDir = migration.getExchangeDataDir;
+    const originalGetExchangeDataDir = fundPaths.getExchangeDataDir;
     const originalGetDefaultPair = configUtils.getDefaultPair;
-    migration.getExchangeDataDir = (exchange) => {
+    fundPaths.getExchangeDataDir = (exchange) => {
       const dir = path.join(tempRoot, exchange);
       fs.mkdirSync(dir, { recursive: true });
       return dir;
     };
     configUtils.getDefaultPair = () => 'ETH-USDC';
     t.after(() => {
-      migration.getExchangeDataDir = originalGetExchangeDataDir;
+      fundPaths.getExchangeDataDir = originalGetExchangeDataDir;
       configUtils.getDefaultPair = originalGetDefaultPair;
       fs.rmSync(tempRoot, { recursive: true, force: true });
     });

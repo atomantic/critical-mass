@@ -19,7 +19,7 @@ const net = require('net');
 const path = require('path');
 
 const { checkEngineStopped, checkGatewayStopped, claimGatewayListeners, readRunningFlag, isPortListening } = require('../src/engine-liveness');
-const { resolveFundDataDir } = require('../src/migration');
+const { resolveFundDataDir } = require('../src/fund-paths');
 
 const TEST_PAIR = '__testliveness__';
 // An exchange with no known IPC port, so checkEngineStopped has only the flag

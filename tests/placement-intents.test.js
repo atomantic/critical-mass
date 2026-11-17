@@ -20,7 +20,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const migration = require('../src/migration');
+const fundPaths = require('../src/fund-paths');
 const stateTracker = require('../src/state-tracker');
 const { placeWithUnknownReconcile, placeSellOrderWithRetry } = require('../src/order-manager');
 const { createOrderExecutor } = require('../src/order-executor');
@@ -34,7 +34,7 @@ let tmpRoot;
 /** Point every fund data path at a throwaway directory. */
 beforeEach(() => {
   tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'placement-intents-'));
-  mock.method(migration, 'getExchangeDataDir', () => path.join(tmpRoot, EXCHANGE));
+  mock.method(fundPaths, 'getExchangeDataDir', () => path.join(tmpRoot, EXCHANGE));
 });
 
 afterEach(() => {

@@ -3,7 +3,7 @@
 // facade; this module never requires state-tracker (including during startup).
 const fs = require('fs');
 const path = require('path');
-const { resolveFundDataDir } = require('./migration');
+const { resolveFundDataDir } = require('./fund-paths');
 const { createContextLogger } = require('./logger');
 const { atomicWriteSync } = require('./durable-write');
 

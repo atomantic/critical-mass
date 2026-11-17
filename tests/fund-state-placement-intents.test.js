@@ -9,7 +9,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const migration = require('../src/migration');
+const fundPaths = require('../src/fund-paths');
 const { ledgerOf } = require('./helpers/ledger-fixture');
 const stateTracker = require('../src/state-tracker');
 const { placeWithUnknownReconcile } = require('../src/order-manager');
@@ -39,7 +39,7 @@ beforeEach(() => {
   dataDir = path.join(root, 'data');
   paths = { dataDir, baseConfigFile: path.join(root, 'config.json') };
   fundDir = path.join(dataDir, EXCHANGE, PAIR);
-  mock.method(migration, 'getExchangeDataDir', (exchange) => path.join(dataDir, exchange));
+  mock.method(fundPaths, 'getExchangeDataDir', (exchange) => path.join(dataDir, exchange));
   writeJson(paths.baseConfigFile, { exchanges: { [EXCHANGE]: { pairs: { [PAIR]: { productId: PAIR, enabled: true } } } } });
   writeJson(path.join(fundDir, 'fill-ledger.json'), ledgerOf('fill-1'));
 });
@@ -224,7 +224,7 @@ describe('fund-state snapshots preserve placement intents (#1810)', () => {
     });
     const result = restoreFundStateBackup(backup.snapshotId, EXCHANGE, PAIR, { paths });
     mock.restoreAll();
-    mock.method(migration, 'getExchangeDataDir', (exchange) => path.join(dataDir, exchange));
+    mock.method(fundPaths, 'getExchangeDataDir', (exchange) => path.join(dataDir, exchange));
 
     assert.equal(result.success, false, JSON.stringify(result));
     assert.deepEqual(Object.fromEntries(fs.readdirSync(fundDir).map((name) => [name, fs.readFileSync(path.join(fundDir, name), 'utf8')])), liveBefore);

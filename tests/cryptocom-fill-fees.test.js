@@ -7,9 +7,9 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { createCryptocomAdapter } = require('../src/adapters/cryptocom/api');
-const migration = require('../src/migration');
+const fundPaths = require('../src/fund-paths');
 const ledgerModule = require.resolve('../src/fill-ledger');
-const originalGetExchangeDataDir = migration.getExchangeDataDir;
+const originalGetExchangeDataDir = fundPaths.getExchangeDataDir;
 const PAIR = 'BTC-USDT';
 
 let tempDir;
@@ -18,7 +18,7 @@ let originalFetch;
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cryptocom-fill-fees-'));
   originalFetch = global.fetch;
-  migration.getExchangeDataDir = (exchange) => {
+  fundPaths.getExchangeDataDir = (exchange) => {
     const dir = path.join(tempDir, exchange);
     fs.mkdirSync(dir, { recursive: true });
     return dir;
@@ -27,7 +27,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   global.fetch = originalFetch;
-  migration.getExchangeDataDir = originalGetExchangeDataDir;
+  fundPaths.getExchangeDataDir = originalGetExchangeDataDir;
   delete require.cache[ledgerModule];
   fs.rmSync(tempDir, { recursive: true, force: true });
 });

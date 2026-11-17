@@ -22,6 +22,7 @@ const os = require('os');
 // fresh so its module-level path constants pick up the mutated values.
 
 const migrationPath = require.resolve('../src/migration');
+const fundPathsPath = require.resolve('../src/fund-paths');
 const pathsModule = require('../src/paths');
 
 const originalAppRoot = pathsModule.APP_ROOT;
@@ -36,6 +37,7 @@ const freshMigration = (appRoot) => {
   pathsModule.APP_ROOT = appRoot;
   pathsModule.DATA_DIR = path.join(appRoot, 'data');
   delete require.cache[migrationPath];
+  delete require.cache[fundPathsPath];
   return require('../src/migration');
 };
 

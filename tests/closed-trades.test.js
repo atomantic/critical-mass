@@ -7,8 +7,8 @@ const os = require('os');
 
 const closedTradesPath = require.resolve('../src/closed-trades');
 const fillLedgerPath = require.resolve('../src/fill-ledger');
-const migration = require('../src/migration');
-const originalGetExchangeDataDir = migration.getExchangeDataDir;
+const fundPaths = require('../src/fund-paths');
+const originalGetExchangeDataDir = fundPaths.getExchangeDataDir;
 
 /** @type {string|null} */
 let tmpDir = null;
@@ -26,7 +26,7 @@ const freshFillLedgerModule = () => {
 describe('Closed Trades dedup and aggregation', () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'closed-trades-test-'));
-    migration.getExchangeDataDir = (exchange) => {
+    fundPaths.getExchangeDataDir = (exchange) => {
       const dir = path.join(tmpDir, exchange);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
       return dir;
@@ -34,7 +34,7 @@ describe('Closed Trades dedup and aggregation', () => {
   });
 
   afterEach(() => {
-    migration.getExchangeDataDir = originalGetExchangeDataDir;
+    fundPaths.getExchangeDataDir = originalGetExchangeDataDir;
     if (tmpDir && fs.existsSync(tmpDir)) fs.rmSync(tmpDir, { recursive: true, force: true });
     tmpDir = null;
     delete require.cache[closedTradesPath];
@@ -179,7 +179,7 @@ describe('Closed Trades dedup and aggregation', () => {
 describe('Closed Trades unreadable file', () => {
   it('quarantines a truncated closed-trades.json with its original bytes before any persist', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'closed-trades-corrupt-'));
-    migration.getExchangeDataDir = (exchange) => {
+    fundPaths.getExchangeDataDir = (exchange) => {
       const d = path.join(dir, exchange);
       fs.mkdirSync(d, { recursive: true });
       return d;
@@ -187,7 +187,7 @@ describe('Closed Trades unreadable file', () => {
     try {
       const { createClosedTrades } = freshModule();
       const ct = createClosedTrades('coinbase', 'BTC-USDC');
-      const filePath = path.join(migration.getExchangeDataDir('coinbase'), 'BTC-USDC', 'closed-trades.json');
+      const filePath = path.join(fundPaths.getExchangeDataDir('coinbase'), 'BTC-USDC', 'closed-trades.json');
       fs.mkdirSync(path.dirname(filePath), { recursive: true });
       fs.writeFileSync(filePath, '[{"sellOrderId":"a",');
 
@@ -197,7 +197,7 @@ describe('Closed Trades unreadable file', () => {
       assert.equal(q.length, 1);
       assert.equal(fs.readFileSync(path.join(path.dirname(filePath), q[0]), 'utf8'), '[{"sellOrderId":"a",');
     } finally {
-      migration.getExchangeDataDir = originalGetExchangeDataDir;
+      fundPaths.getExchangeDataDir = originalGetExchangeDataDir;
       delete require.cache[closedTradesPath];
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -207,7 +207,7 @@ describe('Closed Trades unreadable file', () => {
 describe('Closed Trades transient read error', () => {
   it('does not quarantine a valid closed-trades.json when readFileSync throws EIO', (t) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'closed-trades-eio-'));
-    migration.getExchangeDataDir = (exchange) => {
+    fundPaths.getExchangeDataDir = (exchange) => {
       const d = path.join(dir, exchange);
       fs.mkdirSync(d, { recursive: true });
       return d;
@@ -215,7 +215,7 @@ describe('Closed Trades transient read error', () => {
     try {
       const { createClosedTrades } = freshModule();
       const ct = createClosedTrades('coinbase', 'BTC-USDC');
-      const filePath = path.join(migration.getExchangeDataDir('coinbase'), 'BTC-USDC', 'closed-trades.json');
+      const filePath = path.join(fundPaths.getExchangeDataDir('coinbase'), 'BTC-USDC', 'closed-trades.json');
       fs.mkdirSync(path.dirname(filePath), { recursive: true });
       fs.writeFileSync(filePath, '[]');
       const realRead = fs.readFileSync;
@@ -227,7 +227,7 @@ describe('Closed Trades transient read error', () => {
       assert.equal(fs.existsSync(filePath), true);
       assert.equal(fs.readdirSync(path.dirname(filePath)).some(f => f.includes('.corrupt-')), false);
     } finally {
-      migration.getExchangeDataDir = originalGetExchangeDataDir;
+      fundPaths.getExchangeDataDir = originalGetExchangeDataDir;
       delete require.cache[closedTradesPath];
       fs.rmSync(dir, { recursive: true, force: true });
     }

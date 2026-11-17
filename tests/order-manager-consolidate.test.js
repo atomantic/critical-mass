@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { consolidatePendingOrders } = require('../src/order-manager');
-const migration = require('../src/migration');
+const fundPaths = require('../src/fund-paths');
 const stateTracker = require('../src/state-tracker');
 
 const baseConfig = () => ({ productId: 'BTC-USD' });
@@ -556,7 +556,7 @@ describe('consolidatePendingOrders — refuses to cancel while a placement inten
 
   beforeEach(() => {
     tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'consolidate-blocking-intent-'));
-    mock.method(migration, 'getExchangeDataDir', () => path.join(tmpRoot, EXCHANGE));
+    mock.method(fundPaths, 'getExchangeDataDir', () => path.join(tmpRoot, EXCHANGE));
   });
 
   afterEach(() => {
@@ -625,7 +625,7 @@ describe('restoreCancelledSellOrders — distinguishes unresolved restores from 
 
   beforeEach(() => {
     tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'consolidate-unresolved-restore-'));
-    mock.method(migration, 'getExchangeDataDir', () => path.join(tmpRoot, EXCHANGE));
+    mock.method(fundPaths, 'getExchangeDataDir', () => path.join(tmpRoot, EXCHANGE));
   });
 
   afterEach(() => {
@@ -691,7 +691,7 @@ describe('consolidatePendingOrders — a pre-dispatch block (mid-flight, from el
 
   beforeEach(() => {
     tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'consolidate-mid-flight-block-'));
-    mock.method(migration, 'getExchangeDataDir', () => path.join(tmpRoot, EXCHANGE));
+    mock.method(fundPaths, 'getExchangeDataDir', () => path.join(tmpRoot, EXCHANGE));
   });
 
   afterEach(() => {

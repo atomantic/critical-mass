@@ -5,19 +5,19 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-const migration = require('../src/migration');
+const fundPaths = require('../src/fund-paths');
 
 describe('manual-trades unreadable file', () => {
   it('preserves a truncated manual-trades.json as .corrupt-* before any persist', (t) => {
     const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'manual-trades-corrupt-'));
-    const original = migration.getExchangeDataDir;
-    migration.getExchangeDataDir = (exchange) => {
+    const original = fundPaths.getExchangeDataDir;
+    fundPaths.getExchangeDataDir = (exchange) => {
       const d = path.join(tmpRoot, exchange);
       fs.mkdirSync(d, { recursive: true });
       return d;
     };
     t.after(() => {
-      migration.getExchangeDataDir = original;
+      fundPaths.getExchangeDataDir = original;
       fs.rmSync(tmpRoot, { recursive: true, force: true });
     });
 
@@ -40,14 +40,14 @@ describe('manual-trades unreadable file', () => {
 describe('manual-trades transient read error', () => {
   it('does not quarantine a valid file when readFileSync throws EIO', (t) => {
     const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'manual-trades-eio-'));
-    const original = migration.getExchangeDataDir;
-    migration.getExchangeDataDir = (exchange) => {
+    const original = fundPaths.getExchangeDataDir;
+    fundPaths.getExchangeDataDir = (exchange) => {
       const d = path.join(tmpRoot, exchange);
       fs.mkdirSync(d, { recursive: true });
       return d;
     };
     t.after(() => {
-      migration.getExchangeDataDir = original;
+      fundPaths.getExchangeDataDir = original;
       fs.rmSync(tmpRoot, { recursive: true, force: true });
     });
 
@@ -73,14 +73,14 @@ describe('manual-trades transient read error', () => {
 describe('manual-trades wrong top-level shape', () => {
   const setup = (t, content) => {
     const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'manual-trades-shape-'));
-    const original = migration.getExchangeDataDir;
-    migration.getExchangeDataDir = (exchange) => {
+    const original = fundPaths.getExchangeDataDir;
+    fundPaths.getExchangeDataDir = (exchange) => {
       const d = path.join(tmpRoot, exchange);
       fs.mkdirSync(d, { recursive: true });
       return d;
     };
     t.after(() => {
-      migration.getExchangeDataDir = original;
+      fundPaths.getExchangeDataDir = original;
       fs.rmSync(tmpRoot, { recursive: true, force: true });
     });
     const { createManualTradeStore } = require('../src/manual-trades');

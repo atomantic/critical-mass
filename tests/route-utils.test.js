@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const migration = require('../src/migration');
+const fundPaths = require('../src/fund-paths');
 const { resolvePairParam, getIPC, getSafeIPC, withConfiguredPair } = require('../src/routes/route-utils');
 
 describe('getIPC', () => {
@@ -79,22 +79,22 @@ describe('configured pair boundary', () => {
 
   it('never resolves or creates a fund directory outside its exchange directory', (t) => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fund-path-boundary-'));
-    const originalGetExchangeDataDir = migration.getExchangeDataDir;
-    migration.getExchangeDataDir = (exchange) => {
+    const originalGetExchangeDataDir = fundPaths.getExchangeDataDir;
+    fundPaths.getExchangeDataDir = (exchange) => {
       const exchangeDir = path.join(root, exchange);
       fs.mkdirSync(exchangeDir, { recursive: true });
       return exchangeDir;
     };
     t.after(() => {
-      migration.getExchangeDataDir = originalGetExchangeDataDir;
+      fundPaths.getExchangeDataDir = originalGetExchangeDataDir;
       fs.rmSync(root, { recursive: true, force: true });
     });
 
-    assert.throws(() => migration.resolveFundDataDir('coinbase', '../keys'), /escapes exchange data directory/);
-    assert.throws(() => migration.getFundDataDir('coinbase', '/tmp/keys'), /escapes exchange data directory/);
+    assert.throws(() => fundPaths.resolveFundDataDir('coinbase', '../keys'), /escapes exchange data directory/);
+    assert.throws(() => fundPaths.getFundDataDir('coinbase', '/tmp/keys'), /escapes exchange data directory/);
     assert.equal(fs.existsSync(path.join(root, 'keys')), false);
 
-    const valid = migration.getFundDataDir('coinbase', 'BTC-USDC');
+    const valid = fundPaths.getFundDataDir('coinbase', 'BTC-USDC');
     assert.equal(valid, path.join(root, 'coinbase', 'BTC-USDC'));
     assert.equal(fs.existsSync(valid), true);
   });

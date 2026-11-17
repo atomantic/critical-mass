@@ -21,7 +21,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const migration = require('../src/migration');
+const fundPaths = require('../src/fund-paths');
 const configUtils = require('../src/config-utils');
 const orderManager = require('../src/order-manager');
 const adapters = require('../src/adapters');
@@ -100,7 +100,7 @@ beforeEach(() => {
   consolidations = [];
 
   originals = {
-    getExchangeDataDir: migration.getExchangeDataDir,
+    getExchangeDataDir: fundPaths.getExchangeDataDir,
     getFundConfig: configUtils.getFundConfig,
     getDefaultPair: configUtils.getDefaultPair,
     getAdapter: adapters.getAdapter,
@@ -113,7 +113,7 @@ beforeEach(() => {
     logConsolidation: logger.logConsolidation,
   };
 
-  migration.getExchangeDataDir = (exchange) => {
+  fundPaths.getExchangeDataDir = (exchange) => {
     const dir = path.join(tmpDir, exchange);
     fs.mkdirSync(dir, { recursive: true });
     return dir;
@@ -198,7 +198,7 @@ beforeEach(() => {
 
 afterEach(() => {
   for (const [key, value] of Object.entries(originals)) {
-    if (key === 'getExchangeDataDir') migration.getExchangeDataDir = value;
+    if (key === 'getExchangeDataDir') fundPaths.getExchangeDataDir = value;
     else if (key in configUtils) configUtils[key] = value;
     else if (key in adapters) adapters[key] = value;
     else if (key in orderManager) orderManager[key] = value;

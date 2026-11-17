@@ -32,7 +32,7 @@
 
 const fs = require('fs')
 const path = require('path')
-const { resolveFundDataDir } = require('../src/migration')
+const { resolveFundDataDir } = require('../src/fund-paths')
 
 const args = (() => {
   const out = { exchange: 'coinbase', pair: 'BTC-USDC', out: null, category: null, limit: 0, ignore: new Set() }

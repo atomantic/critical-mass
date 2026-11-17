@@ -12,7 +12,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { resolveFundDataDir } = require('./migration');
+const { resolveFundDataDir } = require('./fund-paths');
 const { atomicWriteSync, quarantineFile } = require('./state-tracker');
 const { createContextLogger } = require('./logger');
 const { findInvalidManualTradesReason } = require('./persisted-payload-validation');

@@ -56,7 +56,7 @@ describe('dca-converter fund routing (issue #414)', () => {
   const STATE_TRACKER = require.resolve('../src/state-tracker');
   const FILL_LEDGER = require.resolve('../src/fill-ledger');
 
-  const migration = require('../src/migration');
+  const fundPaths = require('../src/fund-paths');
   const configUtils = require('../src/config-utils');
 
   const EXCHANGE = 'coinbase';
@@ -130,7 +130,7 @@ describe('dca-converter fund routing (issue #414)', () => {
     enabledCalls = [];
 
     originals = {
-      getExchangeDataDir: migration.getExchangeDataDir,
+      getExchangeDataDir: fundPaths.getExchangeDataDir,
       getDefaultPair: configUtils.getDefaultPair,
       getFundConfig: configUtils.getFundConfig,
       getRegimeConfig: configUtils.getRegimeConfig,
@@ -139,7 +139,7 @@ describe('dca-converter fund routing (issue #414)', () => {
       loadRawConfig: configUtils.loadRawConfig,
     };
 
-    migration.getExchangeDataDir = (exchange) => {
+    fundPaths.getExchangeDataDir = (exchange) => {
       const dir = path.join(tmpDir, exchange);
       fs.mkdirSync(dir, { recursive: true });
       return dir;
@@ -168,7 +168,7 @@ describe('dca-converter fund routing (issue #414)', () => {
   });
 
   afterEach(() => {
-    migration.getExchangeDataDir = originals.getExchangeDataDir;
+    fundPaths.getExchangeDataDir = originals.getExchangeDataDir;
     configUtils.getDefaultPair = originals.getDefaultPair;
     configUtils.getFundConfig = originals.getFundConfig;
     configUtils.getRegimeConfig = originals.getRegimeConfig;

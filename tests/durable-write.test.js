@@ -94,17 +94,17 @@ test('real directory flush failures propagate after publication without leaking 
 for (const code of ['EINVAL', 'EPERM']) {
   test(`DCA import commits its targets and removes its journal with directory fsync ${code}`, (t) => {
     const dir = fixture(t);
-    const migration = require('../src/migration');
+    const fundPaths = require('../src/fund-paths');
     const txn = require('../src/dca-conversion-transaction');
     unsupportedDirectorySync(t, code);
-    t.mock.method(migration, 'getExchangeDataDir', () => dir);
+    t.mock.method(fundPaths, 'getExchangeDataDir', () => dir);
     const fundDir = path.join(dir, 'AAA-USD');
     fs.mkdirSync(fundDir);
     {
       const result = txn.runDcaImportTransaction({
         exchange: 'synthetic', pair: 'AAA-USD', kind: 'convert', sourceOrders: [],
         stage: () => {
-          const stageDir = migration.resolveFundDataDir('synthetic', 'AAA-USD');
+          const stageDir = fundPaths.resolveFundDataDir('synthetic', 'AAA-USD');
           fs.writeFileSync(path.join(stageDir, 'fill-ledger.json'), '[]');
           fs.writeFileSync(path.join(stageDir, 'state.json'), '{"orders":[]}');
           fs.writeFileSync(path.join(stageDir, 'regime-state.json'), '{"position":{"celestialBodies":[]}}');
