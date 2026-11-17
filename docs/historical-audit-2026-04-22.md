@@ -58,11 +58,11 @@ Summary: 82 findings across 45+ files. 2 shared utilities to extract.
 | `admin/src/components/updown/SignalPanel.jsx` | stack-specific | LOW unmount fetch |
 | `scripts/audit-fills.js` | dry | CRITICAL duplicated auth + undeclared axios |
 | `scripts/check-orders.js` | dry | CRITICAL duplicated auth + undeclared axios |
-| `scripts/query-fills.js` | dry | CRITICAL duplicated auth + undeclared axios |
+| `scripts/query-fills.js` (removed, #1970) | dry | CRITICAL duplicated auth + undeclared axios |
 | `scripts/restore-state.js` (retired) | dry | CRITICAL duplicated auth + undeclared axios |
-| `scripts/add-recovery-fill.js` | dry | CRITICAL duplicated auth + undeclared axios |
-| `scripts/recover-btc.js` | dry | CRITICAL duplicated auth + undeclared axios |
-| `scripts/reconcile-state.js` | dry | CRITICAL duplicated auth + undeclared axios |
+| `scripts/add-recovery-fill.js` (removed, #1970) | dry | CRITICAL duplicated auth + undeclared axios |
+| `scripts/recover-btc.js` (removed, #1970) | dry | CRITICAL duplicated auth + undeclared axios |
+| `scripts/reconcile-state.js` (removed, #1970) | dry | CRITICAL duplicated auth + undeclared axios |
 | `correct-state.js` (removed, #1157) | dry | CRITICAL duplicated auth + undeclared axios |
 | `recover-duplicate-tp-btc.js` (removed, #1157) | dry | CRITICAL duplicated auth + undeclared axios |
 | `scripts/audit-gemini-fills.js` | dry | HIGH duplicated fetchAllTrades |
