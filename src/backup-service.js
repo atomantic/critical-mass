@@ -3,8 +3,8 @@
  * Backup Service
  *
  * Handles scheduled and manual backups of trading data files.
- * Archive creation and listing use async spawn for zip/unzip; restore uses spawnSync
- * (and the schedule anchor, for the newest archive on a cold cache — see archiveValidityCache).
+ * Archive creation, listing and the schedule anchor use async spawn for zip/unzip;
+ * restore uses spawnSync.
  * Excludes credentials, live configuration, and the backup directory from archives.
  *
  * Archives also carry a versioned manifest (`backup-manifest.json`) holding a
@@ -888,9 +888,6 @@ const payloadMemberVerdict = (entry, target, read) => {
     : { ok: false, code: 'payload-incompatible', error: `Archive accounting is not readable by this build: ${checked.error}. No files were changed.` };
 };
 
-/** Largest accounting member the synchronous validity pass will buffer. */
-const PAYLOAD_VALIDATION_MAX_BYTES = 1024 * 1024 * 1024;
-
 /**
  * Archive-local restorability (#1885): the refusals restore applies that depend
  * only on the archive itself. Destination choices (fund removal, legacy base
@@ -899,18 +896,6 @@ const PAYLOAD_VALIDATION_MAX_BYTES = 1024 * 1024 * 1024;
  * @param {string} zipPath
  * @param {{entries: string[], members: Map<string, string>}} archive
  */
-const checkArchiveRestorable = (zipPath, { entries, members }) => {
-  const journals = dcaImportJournalPaths(entries);
-  if (journals.length > 0) return { ok: false, ...archivedDcaImportRefusal(journals) };
-  for (const { entry, target } of archivePayloadMembers(entries)) {
-    const read = spawnSync('unzip', ['-p', zipPath, unzipMember(members.get(entry))], { timeout: SPAWN_TIMEOUT_MS, maxBuffer: PAYLOAD_VALIDATION_MAX_BYTES });
-    const verdict = payloadMemberVerdict(entry, target, read);
-    if (!verdict.ok) return verdict;
-  }
-  return { ok: true };
-};
-
-/** Non-blocking checkArchiveRestorable for the backup-creation path. */
 const checkArchiveRestorableAsync = async (zipPath, { entries, members }) => {
   const journals = dcaImportJournalPaths(entries);
   if (journals.length > 0) return { ok: false, ...archivedDcaImportRefusal(journals) };
@@ -923,17 +908,6 @@ const checkArchiveRestorableAsync = async (zipPath, { entries, members }) => {
 };
 
 /** Validate an archive; only listing may admit the supported pre-manifest format. */
-const validateBackupArchive = (zipPath, { allowLegacy = false } = {}) => {
-  const integrity = spawnSync('unzip', ['-tq', zipPath], { timeout: SPAWN_TIMEOUT_MS });
-  const integrityFailure = checkTailFailure(integrity, 'Archive integrity check failed');
-  if (integrityFailure) return integrityFailure;
-  const archive = inspectArchivePaths(zipPath);
-  if (!archive.ok) return archive;
-  const evaluated = evaluateArchive({ archive, allowLegacy, readManifest: (name) => readArchiveManifest(zipPath, name) });
-  return evaluated.ok ? checkArchiveRestorable(zipPath, archive) : evaluated;
-};
-
-/** Non-blocking validateBackupArchive for the backup-creation path. */
 const validateBackupArchiveAsync = async (zipPath, { allowLegacy = false } = {}) => {
   const integrity = await spawnAsync('unzip', ['-tq', zipPath]);
   const integrityFailure = checkTailFailure(integrity, 'Archive integrity check failed');
@@ -957,34 +931,20 @@ const validateBackupArchiveAsync = async (zipPath, { allowLegacy = false } = {})
  * and after a gateway restart. Silent corruption that changes neither mtime nor
  * size (bit rot) is NOT detected until then; verdict age is deliberately not
  * bounded, since a periodic re-test would reintroduce the event-loop stall this
- * cache removes. Restore does not use this cache or validateBackupArchive: it
- * relies on the CRC checks `unzip` performs while extracting.
+ * cache removes. Restore does not use this cache or validateBackupArchiveAsync:
+ * it relies on the CRC checks `unzip` performs while extracting.
  */
 const archiveValidityCache = new Map();
 
 const archiveValidityKey = (filePath, stats) => `${filePath}:${stats.mtimeMs}:${stats.size}`;
 
-/**
- * Cached validity of an archive file in its current state (legacy pre-manifest
- * archives are admitted, as listing and scheduling always did).
- * @param {string} filePath
- * @param {import('fs').Stats} stats
- * @returns {boolean}
- */
-const isArchiveListable = (filePath, stats) => {
-  const key = archiveValidityKey(filePath, stats);
-  if (!archiveValidityCache.has(key)) {
-    archiveValidityCache.set(key, validateBackupArchive(filePath, { allowLegacy: true }).ok);
-  }
-  return archiveValidityCache.get(key);
-};
-
 /** In-flight async validations keyed like archiveValidityCache, so concurrent listings share one test. */
 const pendingArchiveValidity = new Map();
 
 /**
- * Non-blocking isArchiveListable for listing and pruning. After a restart every
- * retained archive is cold, and testing them all synchronously stalls the
+ * Cached validity of an archive file in its current state (legacy pre-manifest
+ * archives are admitted, as listing and scheduling always did). After a restart
+ * every retained archive is cold, and testing them synchronously would stall the
  * gateway for seconds per archive (IPC requests time out meanwhile).
  * @param {string} filePath
  * @param {import('fs').Stats} stats
@@ -1550,31 +1510,11 @@ const listFundStateBackups = ({ paths: pathOverrides } = {}) => {
 };
 
 /**
- * Epoch ms of the newest valid archive, or null when none exist. Anchors the schedule.
- * @returns {number | null}
- */
-const getNewestBackupTime = () => {
-  ensureBackupsDir();
-  const candidates = [];
-  for (const filename of fs.readdirSync(BACKUPS_DIR)) {
-    if (!filename.startsWith('backup-') || !filename.endsWith('.zip')) continue;
-    const filePath = path.join(BACKUPS_DIR, filename);
-    const stats = fs.lstatSync(filePath);
-    if (stats.isFile()) candidates.push({ filename, filePath, stats, createdAtMs: archiveCreatedAtMs(filename, stats), mtimeMs: stats.mtimeMs });
-  }
-  candidates.sort(compareArchivesNewestFirst);
-  // Only the newest candidates are integrity-tested (not every retained ZIP), and
-  // verdicts are cached so a corrupt partial never anchors the schedule nor re-tests.
-  for (const { filePath, stats, createdAtMs } of candidates) {
-    if (isArchiveListable(filePath, stats)) return Math.round(createdAtMs);
-  }
-  return null;
-};
-
-/**
- * Non-blocking getNewestBackupTime for the scheduler. A cold gateway start has
- * an empty verdict cache, so the sync variant would run unzip tests on the
- * event loop for every candidate it walks past.
+ * Epoch ms of the newest valid archive, or null when none exist. Anchors the
+ * schedule. A cold gateway start has an empty verdict cache, so only the first
+ * look at each candidate runs `unzip` tests, and never on the event loop.
+ * Only the newest candidates are integrity-tested (not every retained ZIP), and
+ * verdicts are cached so a corrupt partial never anchors the schedule nor re-tests.
  * @returns {Promise<number | null>}
  */
 const getNewestBackupTimeAsync = async () => {
@@ -2535,7 +2475,6 @@ module.exports = {
   createFundStateBackup,
   listBackups,
   listFundStateBackups,
-  getNewestBackupTime,
   getNewestBackupTimeAsync,
   getNewestFundStateBackupTime,
   deleteBackup,
