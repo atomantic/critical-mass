@@ -22,7 +22,8 @@
 const fs = require('fs');
 const path = require('path');
 const { resolveFundDataDir, getFundDataDir } = require('./fund-paths');
-const { atomicWriteSync, quarantineFile } = require('./state-tracker');
+const { atomicWriteSync } = require('./durable-write');
+const { quarantineFile } = require('./state-file-quarantine');
 const { fundKey: composeFundKey } = require('./shared-utils');
 const { createContextLogger } = require('./logger');
 const { APP_ROOT } = require('./paths');

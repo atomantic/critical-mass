@@ -12,7 +12,7 @@ const {
   retainPlacementIntentInProcess,
   resolvePlacementIntent,
   deferPlacementIntentRemoval,
-} = require('./state-tracker');
+} = require('./placement-intent-storage');
 
 /**
  * @typedef {import('./types').ExchangeConfig} ExchangeConfig
@@ -732,7 +732,7 @@ const executeDailyBuy = async (config, usdcAmount, adapter = null, scope = null,
  * A reconciled placement only carries orderId/clientOrderId (the exchange
  * lookup that adopted it doesn't echo back the limit price/size we requested),
  * so the locally-known request parameters are filled in. Callers such as
- * state-tracker's attachSellOrder read sellOrder.limitPrice for accounting, and
+ * dca-state's attachSellOrder read sellOrder.limitPrice for accounting, and
  * an accepted-sell handoff sees the placement before it is returned, so this
  * runs before either (issue #1886). Mutates and returns the placement.
  * @param {Object} placement - Accepted sell placement

@@ -23,7 +23,7 @@
  *  - src/regime-engine.js: the guarded background save, the guarded SIGUSR1
  *    reload (including a REAL signal delivery), and a boot against a corrupt
  *    state file returning a structured failure instead of throwing.
- *  - src/state-tracker.js: loadRegimeStateSafe surfaces the repair message.
+ *  - src/regime-state-store.js: loadRegimeStateSafe surfaces the repair message.
  *  - src/process-guard.js: last-resort reporters log, notify, flush, exit(1).
  *
  * No PM2 and no live data files: the engine uses a throwaway pair whose data
@@ -44,7 +44,7 @@ const {
   MAX_CONSECUTIVE_PERSISTENCE_FAILURES,
   PERSISTENCE_FAILED_PREFIX,
 } = require('../src/health-monitor');
-const { loadRegimeStateSafe } = require('../src/state-tracker');
+const { loadRegimeStateSafe } = require('../src/regime-state-store');
 const { createFaultReporter, registerProcessGuards } = require('../src/process-guard');
 const { tradeEvents } = require('../src/trade-events');
 
@@ -181,7 +181,7 @@ describe('health monitor treats unpersistable state as a health condition', () =
 });
 
 // ============================================================================
-// state-tracker — non-throwing load for reporting / supervision paths
+// regime-state-store — non-throwing load for reporting / supervision paths
 // ============================================================================
 describe('loadRegimeStateSafe surfaces the repair message instead of throwing', () => {
   before(() => fs.mkdirSync(FUND_DIR, { recursive: true }));

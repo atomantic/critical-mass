@@ -6,7 +6,7 @@ const http = require('http');
 const os = require('os');
 const path = require('path');
 
-const { quarantineIfUnreadable } = require('../src/state-tracker');
+const { quarantineIfUnreadable } = require('../src/state-file-quarantine');
 const { createUpDownService } = require('../src/updown/updown-service');
 const { createSentinelService } = require('../src/sentinel/sentinel-service');
 const { createOperatorAuth } = require('../src/operator-auth');

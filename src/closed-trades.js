@@ -11,7 +11,8 @@
 const fs = require('fs');
 const path = require('path');
 const { resolveFundDataDir } = require('./fund-paths');
-const { atomicWriteSync, quarantineFile } = require('./state-tracker');
+const { atomicWriteSync } = require('./durable-write');
+const { quarantineFile } = require('./state-file-quarantine');
 const { createContextLogger } = require('./logger');
 const { roundAsset, roundUSDC } = require('./volatility-utils');
 

@@ -2,7 +2,7 @@
  * Value Guards
  *
  * Dependency-free type-guard and rounding helpers. Kept out of shared-utils
- * because that module pulls in state-tracker/logger, which transitively
+ * because that module pulls in the state stores/logger, which transitively
  * require config modules that would then form a require cycle.
  */
 

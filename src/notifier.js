@@ -8,7 +8,7 @@
 
 const { tradeEvents } = require('./trade-events');
 const { getNotificationConfig, getConfiguredFunds, getFundConfig, getBaseCurrency } = require('./config-utils');
-const { loadFundRegimeState } = require('./state-tracker');
+const { loadFundRegimeState } = require('./regime-state-store');
 const { createContextLogger } = require('./logger');
 const { NOTIFIER_REQUEST_TIMEOUT_MS } = require('./timing-constants');
 

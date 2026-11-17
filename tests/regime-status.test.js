@@ -203,7 +203,7 @@ describe('buildStoppedRegimeStatus (issue #357)', () => {
 // ---------------------------------------------------------------------------
 describe('buildStoppedRegimeStatus — disk-backed (requireExistingState + real ledger)', () => {
   const fundPaths = require('../src/fund-paths');
-  const stateTracker = require('../src/state-tracker');
+  const regimeStateStore = require('../src/regime-state-store');
   const fillLedgerModule = require('../src/fill-ledger');
   const originalGetExchangeDataDir = fundPaths.getExchangeDataDir;
   const fillLedgerPath = require.resolve('../src/fill-ledger');
@@ -235,7 +235,7 @@ describe('buildStoppedRegimeStatus — disk-backed (requireExistingState + real 
   });
 
   it('returns null when requireExistingState is set and regime-state.json is corrupt, instead of throwing', () => {
-    const stateFile = stateTracker.getRegimeStateFile('coinbase', 'BTC-USD');
+    const stateFile = regimeStateStore.getRegimeStateFile('coinbase', 'BTC-USD');
     fs.mkdirSync(path.dirname(stateFile), { recursive: true });
     fs.writeFileSync(stateFile, '{ not valid json');
 
@@ -244,7 +244,7 @@ describe('buildStoppedRegimeStatus — disk-backed (requireExistingState + real 
   });
 
   it('propagates the corrupt-state error when requireExistingState is NOT set (callers that always expect a status, e.g. the engine IPC handler)', () => {
-    const stateFile = stateTracker.getRegimeStateFile('coinbase', 'BTC-USD');
+    const stateFile = regimeStateStore.getRegimeStateFile('coinbase', 'BTC-USD');
     fs.mkdirSync(path.dirname(stateFile), { recursive: true });
     fs.writeFileSync(stateFile, '{ not valid json');
 
@@ -253,12 +253,12 @@ describe('buildStoppedRegimeStatus — disk-backed (requireExistingState + real 
 
   it('end-to-end: re-derives realizedPnL from a real fill ledger on disk, overwriting the stale persisted position', () => {
     const position = {
-      ...stateTracker.createInitialRegimePositionState(),
-      lifecycle: stateTracker.LIFECYCLE.ACTIVE,
+      ...regimeStateStore.createInitialRegimePositionState(),
+      lifecycle: regimeStateStore.LIFECYCLE.ACTIVE,
       realizedPnL: -1, // stale — the real fill ledger below says otherwise
       realizedAssetPnL: -1,
     };
-    stateTracker.saveRegimeState(position, { mode: 'harvest' }, 'coinbase', null, null, 'BTC-USD');
+    regimeStateStore.saveRegimeState(position, { mode: 'harvest' }, 'coinbase', null, null, 'BTC-USD');
 
     const { createFillLedger } = fillLedgerModule;
     const ledger = createFillLedger('coinbase', 'BTC-USD', 'BTC-USD');

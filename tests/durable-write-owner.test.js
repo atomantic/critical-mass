@@ -40,6 +40,6 @@ test('durable publication has one owner, with explicit migration and backup stag
   const owner = fs.readFileSync(path.join(root, 'durable-write.js'), 'utf8');
   assert.deepEqual([...owner.matchAll(/require\(['"]([^'"]+)['"]\)/g)].map((match) => match[1]).sort(), ['crypto', 'fs', 'path', './fsync-dir'].sort());
   for (const name of ['migration.js', 'logger.js']) {
-    assert.doesNotMatch(fs.readFileSync(path.join(root, name), 'utf8'), /require\(['"]\.\/state-tracker['"]\)/);
+    assert.doesNotMatch(fs.readFileSync(path.join(root, name), 'utf8'), /require\(['"]\.\/(?:dca-state|regime-state-store)['"]\)/);
   }
 });

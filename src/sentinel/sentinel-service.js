@@ -11,7 +11,7 @@ const crypto = require('crypto');
 const { fetchAllFeeds } = require('./feed-poller');
 const { classifyByKeywords, classifyByAI, resolveSeverity, sanitizeForTelegram } = require('./classifier');
 const { createContextLogger } = require('../logger');
-const { quarantineIfUnreadable } = require('../state-tracker');
+const { quarantineIfUnreadable } = require('../state-file-quarantine');
 const { tradeEvents } = require('../trade-events');
 
 /**
