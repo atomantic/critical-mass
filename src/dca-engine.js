@@ -7,6 +7,7 @@ const orderManager = require('./order-manager');
 const logger = require('./logger');
 const { createContextLogger } = logger;
 const { consolidatePendingOrders } = require('./order-manager');
+const { isAdoptableOrder } = require('./placement-reconcile');
 const { getFundConfig, getDefaultPair, getBaseCurrency, getQuoteCurrency } = require('./config-utils');
 const { formatInterval, shouldRunConsolidation, getConsolidationRunId, getRunIdentifier } = require('./interval-utils');
 const { tradeEvents } = require('./trade-events');
@@ -1437,7 +1438,7 @@ const priorSellRefusal = async (prior, config, adapter, exchange, pair) => {
     if (status?.__lookupError) {
       return refuse(`Could not check the exchange for the earlier accepted sell ${prior.orderId} (${status.__lookupError.message}) — not placing another sell`);
     }
-    if (orderManager.isAdoptableOrder(status)) {
+    if (isAdoptableOrder(status)) {
       return refuse(
         `The earlier sell attempt exists on the exchange as order ${prior.orderId} (status ${status.status}) — not placing a second sell for this buy`,
         { orderId: prior.orderId, orderStatus: status.status ?? null },
@@ -1454,7 +1455,7 @@ const priorSellRefusal = async (prior, config, adapter, exchange, pair) => {
   if (found?.__lookupError) {
     return refuse(`Could not check the exchange for the earlier sell attempt (${found.__lookupError.message}) — not placing another sell`);
   }
-  if (orderManager.isAdoptableOrder(found)) {
+  if (isAdoptableOrder(found)) {
     return refuse(
       `The earlier sell attempt exists on the exchange as order ${found.orderId} (status ${found.status}) — not placing a second sell for this buy`,
       { orderId: found.orderId, orderStatus: found.status ?? null },

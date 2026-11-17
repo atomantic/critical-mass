@@ -22,7 +22,8 @@ const path = require('node:path');
 
 const fundPaths = require('../src/fund-paths');
 const placementIntents = require('../src/placement-intent-storage');
-const { placeWithUnknownReconcile, placeSellOrderWithRetry } = require('../src/order-manager');
+const { placeSellOrderWithRetry } = require('../src/order-manager');
+const { placeWithUnknownReconcile } = require('../src/placement-reconcile');
 const { createOrderExecutor } = require('../src/order-executor');
 
 const EXCHANGE = 'coinbase';
