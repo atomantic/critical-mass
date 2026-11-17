@@ -125,3 +125,39 @@ test('historical recovery publishes only the versioned tag; normal release also 
   assert.match(releaseWorkflow, /release_tag: \$\{\{ needs\.release\.outputs\.release_tag \}\}\n      publish_latest: true/);
   assert.match(releaseDocs, /leaves `latest` unchanged/);
 });
+
+test('Docker workflow fails unless both platforms are in the pushed manifest', () => {
+  const step = dockerWorkflow.slice(dockerWorkflow.indexOf('- name: Verify multi-arch manifest'));
+  assert.ok(step.length > 0);
+  assert.match(step, /docker buildx imagetools inspect "\$IMAGE_REF"/);
+  assert.match(step, /linux\/amd64 linux\/arm64/);
+  assert.match(step, /exit 1/);
+  // Must be the last step, after the push.
+  assert.ok(dockerWorkflow.indexOf('docker/build-push-action') < dockerWorkflow.indexOf('Verify multi-arch manifest'));
+  assert.match(dockerWorkflow, /Verify immutable release tag/);
+});
+
+test('release fails before tagging when notes are missing, with no commit-list fallback', () => {
+  const req = releaseWorkflow.indexOf('- name: Require release notes for new version');
+  assert.ok(req > releaseWorkflow.indexOf('- name: Check if tag exists'));
+  assert.ok(req < releaseWorkflow.indexOf('- name: Create Release'));
+  assert.match(releaseWorkflow, /Require release notes for new version\n        if: steps\.tag-check\.outputs\.exists == 'false'/);
+  assert.doesNotMatch(releaseWorkflow, /git log \$PREV_TAG|COMMIT_LOG/);
+  assert.match(releaseDocs, /npm version X\.Y\.Z --no-git-tag-version/);
+});
+
+test('missing-notes step exits non-zero only for a new version without its notes file', () => {
+  const m = releaseWorkflow.match(/- name: Require release notes for new version[\s\S]*?run: \|\n([\s\S]*?)\n\n      - name:/);
+  assert.ok(m);
+  const script = m[1].replace(/^ {10}/gm, '');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'notes-'));
+  try {
+    const run = () => execFileSync('bash', ['-c', script], { cwd: dir, env: { PATH: process.env.PATH, VERSION: '9.9.9' }, stdio: 'pipe' });
+    assert.throws(run);
+    fs.mkdirSync(path.join(dir, '.changelogs'));
+    fs.writeFileSync(path.join(dir, '.changelogs/v9.9.9.md'), '# notes\n');
+    assert.doesNotThrow(run);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
