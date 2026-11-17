@@ -33,7 +33,7 @@
  */
 async function main() {
 const { parseFundCli } = require('./lib/fund-cli');
-const { atomicWriteSync } = require('../src/state-tracker');
+const { atomicWriteSync } = require('../src/durable-write');
 const { apply: APPLY, prepareApply, fundDir } = parseFundCli(process.argv, {
   exchange: 'cryptocom', pair: 'CRO_USD', usage: 'node scripts/cryptocom-recover-orphan-buys.js'
 });

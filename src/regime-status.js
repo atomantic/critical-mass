@@ -14,7 +14,8 @@
  * here.
  */
 
-const { loadFundRegimeState, LIFECYCLE, describePlacementIntents } = require('./state-tracker');
+const { loadFundRegimeState, LIFECYCLE } = require('./regime-state-store');
+const { describePlacementIntents } = require('./placement-intent-storage');
 const { getCachedFillLedger, createFillLedger } = require('./fill-ledger');
 const { calculateApyMetrics } = require('./apy-calculator');
 const celestialHierarchy = require('./celestial-hierarchy');

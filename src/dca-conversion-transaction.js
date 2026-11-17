@@ -222,7 +222,7 @@ const recoverDcaImport = (exchange, pair) => {
  * Run one DCA import as a recoverable transaction.
  *
  * `stage` runs synchronously with this fund's data directory redirected to a
- * private staging copy; it performs the import with the ordinary state-tracker
+ * private staging copy; it performs the import with the ordinary dca-state / regime-state-store
  * / fill-ledger APIs and returns the caller's result. Nothing it writes is
  * visible until the whole staged generation validates and is journaled.
  *

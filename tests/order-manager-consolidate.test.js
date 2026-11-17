@@ -7,7 +7,7 @@ const path = require('node:path');
 
 const { consolidatePendingOrders } = require('../src/order-manager');
 const fundPaths = require('../src/fund-paths');
-const stateTracker = require('../src/state-tracker');
+const placementIntents = require('../src/placement-intent-storage');
 
 const baseConfig = () => ({ productId: 'BTC-USD' });
 
@@ -565,14 +565,14 @@ describe('consolidatePendingOrders — refuses to cancel while a placement inten
   });
 
   it('refuses without cancelling any order when the fund already has a blocking intent', async () => {
-    const recorded = stateTracker.recordPlacementIntent({
+    const recorded = placementIntents.recordPlacementIntent({
       exchange: EXCHANGE, pair: PAIR, action: 'dca_buy', side: 'buy', price: 100, size: 0.5, sizeUsdc: 50,
     });
     // A freshly recorded intent is only "dispatching" and owned by THIS process,
     // which is deliberately non-blocking (a placement this same process has in
     // flight right now) — mark it unresolved to model the real blocking case: an
     // earlier ambiguous placement no one has reconciled yet.
-    const blocking = stateTracker.markPlacementIntentUnresolved(EXCHANGE, PAIR, recorded.id, { reason: 'ambiguous outcome' });
+    const blocking = placementIntents.markPlacementIntentUnresolved(EXCHANGE, PAIR, recorded.id, { reason: 'ambiguous outcome' });
 
     const orders = [order('a', 0.1, 2400), order('b', 0.2, 2500)];
     let cancelCalls = 0;
@@ -709,10 +709,10 @@ describe('consolidatePendingOrders — a pre-dispatch block (mid-flight, from el
       // check already passed clean.
       cancelOrder: async (orderId) => {
         if (orderId === 'a') {
-          const recorded = stateTracker.recordPlacementIntent({
+          const recorded = placementIntents.recordPlacementIntent({
             exchange: EXCHANGE, pair: PAIR, action: 'entry_bid', side: 'buy', price: 100, size: 0.5, sizeUsdc: 50,
           });
-          stateTracker.markPlacementIntentUnresolved(EXCHANGE, PAIR, recorded.id, { reason: 'mid-flight race' });
+          placementIntents.markPlacementIntentUnresolved(EXCHANGE, PAIR, recorded.id, { reason: 'mid-flight race' });
         }
         return { success: true };
       },

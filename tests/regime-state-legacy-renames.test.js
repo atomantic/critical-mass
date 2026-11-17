@@ -9,7 +9,7 @@ const os = require('os');
 // Old key names are built by concatenation so refactoring scripts do not rename them.
 const old = (prefix, suffix) => prefix + suffix;
 
-const stateTrackerPath = require.resolve('../src/state-tracker');
+const regimeStateStorePath = require.resolve('../src/regime-state-store');
 const fundPaths = require('../src/fund-paths');
 const originalGetExchangeDataDir = fundPaths.getExchangeDataDir;
 
@@ -17,8 +17,8 @@ const originalGetExchangeDataDir = fundPaths.getExchangeDataDir;
 let tmpDir = null;
 
 const freshModule = () => {
-  delete require.cache[stateTrackerPath];
-  return require('../src/state-tracker');
+  delete require.cache[regimeStateStorePath];
+  return require('../src/regime-state-store');
 };
 
 const writeState = (st, data) => {
@@ -29,7 +29,7 @@ const writeState = (st, data) => {
 
 describe('loadRegimeState legacy field renames (issue #1232)', () => {
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'state-tracker-renames-'));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'regime-state-renames-'));
     fundPaths.getExchangeDataDir = (exchange) => {
       const dir = path.join(tmpDir, exchange);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -41,7 +41,7 @@ describe('loadRegimeState legacy field renames (issue #1232)', () => {
     fundPaths.getExchangeDataDir = originalGetExchangeDataDir;
     if (tmpDir && fs.existsSync(tmpDir)) fs.rmSync(tmpDir, { recursive: true, force: true });
     tmpDir = null;
-    delete require.cache[stateTrackerPath];
+    delete require.cache[regimeStateStorePath];
   });
 
   it('renames every legacy key to its asset-agnostic name with identical values', () => {

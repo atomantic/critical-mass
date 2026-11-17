@@ -52,7 +52,7 @@ const {
   LIFECYCLE,
   createInitialRegimePositionState,
   closeDrainedEmptyPosition,
-} = require('./state-tracker');
+} = require('./regime-state-store');
 const { createEngineStatePersistence } = require('./regime-state-persistence');
 const { buildRegimeEngineStatus } = require('./regime-engine-status');
 const { createPlacementReconciler } = require('./regime-placement-reconciler');

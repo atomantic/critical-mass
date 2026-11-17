@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "lint": "eslint . --max-warnings 49"
   },
   "dependencies": {
     "@react-three/fiber": "^9.8.2",
@@ -16,10 +17,15 @@
     "three": "^0.187.0"
   },
   "devDependencies": {
+    "@eslint/js": "10.0.1",
     "@tailwindcss/postcss": "^4.3.5",
     "@testing-library/dom": "10.4.2",
     "@testing-library/react": "16.3.3",
     "@vitejs/plugin-react": "^6.3.0",
+    "eslint": "10.15.0",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "eslint-plugin-react-refresh": "0.5.8",
+    "globals": "17.14.0",
     "jsdom": "31.0.1",
     "tailwindcss": "^4.3.5",
     "vite": "^8.3.8",

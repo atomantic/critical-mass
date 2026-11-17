@@ -3,7 +3,7 @@
  * Legacy API Routes (backward compatibility for /api/* without exchange prefix)
  */
 
-const stateTracker = require('../state-tracker');
+const dcaState = require('../dca-state');
 const { IPC_CHANNELS } = require('../ipc/ipc-protocol');
 const { getExchangeConfig, getDefaultPair, getFundsForExchange, setExchangeEnabled, setExchangeDryRun, getGlobalConfig } = require('../config-utils');
 const { syncFundOrders, runIntervalCycle } = require('../dca-engine');
@@ -143,7 +143,7 @@ module.exports = (app, deps) => {
 
   app.get('/api/state', (req, res) => {
     const config = getExchangeConfig('coinbase');
-    const state = stateTracker.loadState(config, 'coinbase', legacyPair());
+    const state = dcaState.loadState(config, 'coinbase', legacyPair());
     res.json(state);
   });
 

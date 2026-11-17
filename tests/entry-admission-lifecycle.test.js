@@ -19,7 +19,7 @@ const dryRunState = require('../src/dry-run-state');
 const oldForceSave = dryRunState.forceSave;
 dryRunState.forceSave = () => {};
 const { createRegimeEngine } = require('../src/regime-engine');
-const { LIFECYCLE } = require('../src/state-tracker');
+const { LIFECYCLE } = require('../src/regime-state-store');
 
 const engines = [];
 after(async () => {

@@ -344,7 +344,8 @@ npm run test:changed                       # tests changed vs origin/main, plus 
                                            # mention a changed src/, shared/ or engines/ file
 npm run test:admin                         # admin (vitest) suite
 npm run test:all                           # backend, then admin
-npm run check                              # test:all, then the admin build
+npm run lint:admin                         # ESLint on admin/ (react-hooks rules; warning ceiling in admin/package.json)
+npm run check                              # test:all, lint:admin, then the admin build
 ```
 
 File or directory arguments replace the default file list; `--test-*` and other

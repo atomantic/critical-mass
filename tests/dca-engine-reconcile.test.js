@@ -6,8 +6,9 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { reconcileAwaitingSells } = require('../src/dca-engine');
-const { createInitialState, recordBuyFill, getPendingOrders } = require('../src/state-tracker');
-const stateTracker = require('../src/state-tracker');
+const { createInitialState, recordBuyFill, getPendingOrders } = require('../src/dca-state');
+const dcaState = require('../src/dca-state');
+const placementIntents = require('../src/placement-intent-storage');
 const fundPaths = require('../src/fund-paths');
 const configUtils = require('../src/config-utils');
 const orderManager = require('../src/order-manager');
@@ -192,7 +193,7 @@ describe('retryFailedSell (issue #1035)', () => {
   const stateFile = () => path.join(tmpDir, EXCHANGE, PAIR, 'state.json');
   const readState = () => JSON.parse(fs.readFileSync(stateFile(), 'utf8'));
   const writeState = (state) => fs.writeFileSync(stateFile(), JSON.stringify(state, null, 2));
-  const readIntents = () => stateTracker.loadPlacementIntents(EXCHANGE, PAIR);
+  const readIntents = () => placementIntents.loadPlacementIntents(EXCHANGE, PAIR);
   /** Re-require the engine, as a restarted process would. */
   const restartEngine = () => {
     delete require.cache[DCA_ENGINE];
@@ -305,7 +306,7 @@ describe('retryFailedSell (issue #1035)', () => {
     global.setTimeout = (fn, _ms, ...args) => realSetTimeout(fn, 0, ...args);
 
     fs.mkdirSync(path.dirname(stateFile()), { recursive: true });
-    writeState(stateTracker.createInitialState(fundConfig));
+    writeState(dcaState.createInitialState(fundConfig));
     restartEngine();
   });
 
@@ -544,11 +545,11 @@ describe('retryFailedSell (issue #1035)', () => {
     let realSaveState;
 
     beforeEach(() => {
-      realSaveState = stateTracker.saveState;
+      realSaveState = dcaState.saveState;
     });
 
     afterEach(() => {
-      stateTracker.saveState = realSaveState;
+      dcaState.saveState = realSaveState;
     });
 
     /**
@@ -561,12 +562,12 @@ describe('retryFailedSell (issue #1035)', () => {
       const acceptedBefore = ex.acceptedSells;
       const snapshots = [];
       const snapshot = () => snapshots.push({ stateRaw: fs.readFileSync(stateFile(), 'utf8'), intents: readIntents() });
-      stateTracker.saveState = (...args) => {
+      dcaState.saveState = (...args) => {
         if (ex.acceptedSells > acceptedBefore) snapshot();
         return realSaveState(...args);
       };
       await run();
-      stateTracker.saveState = realSaveState;
+      dcaState.saveState = realSaveState;
       snapshot();
       assert.ok(ex.acceptedSells > acceptedBefore, 'the run accepted a sell');
       return snapshots;
@@ -581,12 +582,12 @@ describe('retryFailedSell (issue #1035)', () => {
      */
     const assertOwnedAfterRestart = async (crash, buyOrderId, sellOrderId) => {
       fs.writeFileSync(stateFile(), crash.stateRaw);
-      stateTracker.savePlacementIntents(crash.intents.map(i => ({ ...i, instanceId: 'a-process-that-died' })), EXCHANGE, PAIR);
+      placementIntents.savePlacementIntents(crash.intents.map(i => ({ ...i, instanceId: 'a-process-that-died' })), EXCHANGE, PAIR);
       restartEngine();
 
-      const state = stateTracker.loadState(fundConfig, EXCHANGE, PAIR);
+      const state = dcaState.loadState(fundConfig, EXCHANGE, PAIR);
       const row = state.orders.find(o => o.buyOrderId === buyOrderId);
-      const blocking = stateTracker.getBlockingPlacementIntents(EXCHANGE, PAIR);
+      const blocking = placementIntents.getBlockingPlacementIntents(EXCHANGE, PAIR);
       assert.ok(row.orderId === sellOrderId || blocking.length > 0,
         `crash leaves a durable owner: row ${row.status}/${row.orderId}, ${blocking.length} blocking intent(s)`);
 
@@ -620,7 +621,7 @@ describe('retryFailedSell (issue #1035)', () => {
 
       ex.sellMode = 'accept';
       const crashes = await crashPointsAfterAcceptance(async () => {
-        const state = stateTracker.loadState(fundConfig, EXCHANGE, PAIR);
+        const state = dcaState.loadState(fundConfig, EXCHANGE, PAIR);
         const recon = await engine.reconcileAwaitingSells(state, fundConfig, ex.adapter, EXCHANGE, PAIR);
         assert.deepEqual(recon, { recovered: 1, failed: 0 });
       });
@@ -646,7 +647,7 @@ describe('retryFailedSell (issue #1035)', () => {
       ex.lookup = { orderId: 'sell-adopted', status: 'OPEN', filledSize: 0 };
       /** @type {any[]} */
       const savedSellPrices = [];
-      stateTracker.saveState = (state, ...rest) => {
+      dcaState.saveState = (state, ...rest) => {
         const row = state.orders?.[0];
         if (row?.orderId === 'sell-adopted') savedSellPrices.push({ sellPrice: row.sellPrice, intents: readIntents().length });
         return realSaveState(state, ...rest);
@@ -668,7 +669,7 @@ describe('retryFailedSell (issue #1035)', () => {
     it('a failed handoff save keeps the accepted sell recoverable without crediting it or placing another', async () => {
       ex.sellMode = 'accept';
       let failedOnce = false;
-      stateTracker.saveState = (state, ...rest) => {
+      dcaState.saveState = (state, ...rest) => {
         if (!failedOnce && state.orders?.some(o => o.orderId === 'sell-1')) {
           failedOnce = true;
           throw new Error('ENOSPC: no space left on device');
@@ -694,7 +695,7 @@ describe('retryFailedSell (issue #1035)', () => {
       assert.equal(stored.outstandingOrdersUSDC, 0);
 
       // Restart: the retained intent still blocks a retry.
-      stateTracker.savePlacementIntents(readIntents().map(i => ({ ...i, instanceId: 'a-process-that-died' })), EXCHANGE, PAIR);
+      placementIntents.savePlacementIntents(readIntents().map(i => ({ ...i, instanceId: 'a-process-that-died' })), EXCHANGE, PAIR);
       restartEngine();
       const blocked = await engine.retryFailedSell(EXCHANGE, PAIR, row.buyOrderId);
       assert.equal(blocked.code, 'placement_unresolved');
@@ -1170,7 +1171,7 @@ describe('retryFailedSell (issue #1035)', () => {
       assert.match(after.orders[0].sellFailedReason, /may already be resting live/);
       assert.equal(after.orders[1].orderId, b);
       assert.equal(after.orders[1].status, 'pending');
-      assert.equal(stateTracker.getBlockingPlacementIntents(EXCHANGE, PAIR).length, 1);
+      assert.equal(placementIntents.getBlockingPlacementIntents(EXCHANGE, PAIR).length, 1);
     });
 
     it('a sell that filled during its cancel window is not restored; the other earlier sell is', async () => {

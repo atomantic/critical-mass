@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, renderHook } from '@testing-library/react'
 import useCandleData from '../src/hooks/useCandleData'
 
@@ -229,11 +229,8 @@ describe('useCandleData display limit and live candle preservation', () => {
   })
 
   it('keeps timeframe/exchange changes isolated without mixing instruments or candle widths', async () => {
-    let coinbaseControllerSignal
-    let geminiControllerSignal
     const fetchMock = vi.fn(async (url, opts) => {
       if (url.includes('coinbase')) {
-        coinbaseControllerSignal = opts?.signal
         return {
           ok: true, status: 200,
           headers: new Headers({ 'content-type': 'application/json' }),
@@ -247,7 +244,6 @@ describe('useCandleData display limit and live candle preservation', () => {
         }
       }
       if (url.includes('gemini')) {
-        geminiControllerSignal = opts?.signal
         return {
           ok: true, status: 200,
           headers: new Headers({ 'content-type': 'application/json' }),

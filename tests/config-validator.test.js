@@ -84,7 +84,7 @@ describe('validateConfigUpdate', () => {
 
   it('dcaStrategy enum matches engine-honored values (fixed, fibonacci)', () => {
     // The engine branches on dcaStrategy === 'fibonacci' (dca-engine.js,
-    // state-tracker.js, backtest-engine.js); 'regime' is not read anywhere.
+    // dca-state.js, backtest-engine.js); 'regime' is not read anywhere.
     for (const strategy of ['fixed', 'fibonacci']) {
       const { value, errors } = validateConfigUpdate(EXCHANGE_CONFIG_SCHEMA, { dcaStrategy: strategy });
       assert.deepStrictEqual(errors, [], `expected ${strategy} to be accepted`);

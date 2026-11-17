@@ -2,14 +2,7 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 
-const {
-  createInitialState,
-  recordBuyFill,
-  attachSellOrder,
-  markSellPlacementFailed,
-  updateAfterBuy,
-  getPendingOrders,
-} = require('../src/state-tracker');
+const { createInitialState, recordBuyFill, attachSellOrder, markSellPlacementFailed, updateAfterBuy, getPendingOrders } = require('../src/dca-state');
 
 // ---------------------------------------------------------------------------
 // issue #106 — the DCA real-trade cycle must persist the buy BEFORE attempting
@@ -35,7 +28,7 @@ const buyResult = {
   netFees: 0.1,
 };
 
-describe('state-tracker DCA buy persistence (issue #106)', () => {
+describe('dca-state DCA buy persistence (issue #106)', () => {
   it('recordBuyFill sets lastRunId and records an awaiting_sell order with no sell attached', () => {
     const state = createInitialState(baseConfig);
     recordBuyFill(state, buyResult, baseConfig);
@@ -112,7 +105,7 @@ describe('state-tracker DCA buy persistence (issue #106)', () => {
 // exchange IDs. applyConsolidationRecovery re-points tracked state at those IDs
 // and flags any sell that couldn't be re-placed so it isn't treated as pending.
 // ---------------------------------------------------------------------------
-const { applyConsolidationRecovery } = require('../src/state-tracker');
+const { applyConsolidationRecovery } = require('../src/dca-state');
 
 describe('applyConsolidationRecovery (issue #149)', () => {
   const stateWithPendingSells = () => ({
@@ -182,7 +175,7 @@ describe('applyConsolidationRecovery (issue #149)', () => {
 // with an empty source set / null id previously pushed an orderId:null 'pending'
 // order that crashes the next sync's adapter.getOrder(null).
 // ---------------------------------------------------------------------------
-const { updateAfterConsolidation } = require('../src/state-tracker');
+const { updateAfterConsolidation } = require('../src/dca-state');
 
 describe('updateAfterConsolidation no-consolidation guard (issue #150)', () => {
   it('pushes no phantom order when newOrderId is null and there are no source orders', () => {
@@ -216,7 +209,7 @@ describe('updateAfterConsolidation no-consolidation guard (issue #150)', () => {
 // remainder as a retryable failed sell; the final fill folds the earlier
 // executed portion back into the row's totals.
 // ---------------------------------------------------------------------------
-const { settleCancelledSell, updateAfterSellFill, reopenFailedSell, getFailedSellOrders } = require('../src/state-tracker');
+const { settleCancelledSell, updateAfterSellFill, reopenFailedSell, getFailedSellOrders } = require('../src/dca-state');
 const { calculateCostBasis } = require('../src/shared-utils');
 
 describe('settleCancelledSell (issue #1887)', () => {

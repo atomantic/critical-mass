@@ -2,6 +2,7 @@ import { FormInput, FormSelect, SectionCard } from './config/ConfigFormControls'
 import { VolatilityClockCard, RegimeScalingCard, EntryModeLadderCard, TakeProfitCard, RegimeDetectionCard, CelestialHierarchyCard, MacroRegimeCard, TpAutoManagementCard, RiskCapsCard, OrderExecutionCard, SafetyTailEventsCard, SystemHealthCard } from './config/RegimeConfigCards'
 import { describeConfigSaveError } from '../utils/configSaveError.mjs'
 import { apiGet, apiPost, apiPut, apiPatch } from '../utils/apiClient'
+import { errorFieldKeys } from '../utils/regimeCardState.mjs'
 import { buildSavePayload } from '../utils/configSavePayload.mjs'
 import { INTERVAL_OPTIONS } from '../utils/intervals.mjs'
 import { useState, useEffect, useRef, useCallback } from 'react'
@@ -32,6 +33,8 @@ function ConfigEditor({ config: initialConfig, regimeDefaults, onSave, exchange 
     restartWarningRef.current = notify('warning', message, { sticky: true })
   }
   const [isDirty, setIsDirty] = useState(false)
+  // Regime fields the server named in the last rejected save; their card stays open.
+  const [errorKeys, setErrorKeys] = useState([])
   const [presets, setPresets] = useState(null)
   const [editingPresets, setEditingPresets] = useState(null)
   const [presetsError, setPresetsError] = useState(null)
@@ -206,6 +209,7 @@ function ConfigEditor({ config: initialConfig, regimeDefaults, onSave, exchange 
 
   // Get regime config with defaults
   const regimeConfig = config.regime || {}
+  const disclosure = { regimeConfig, baseline: baselineRef.current?.regime, defaults: regimeDefaults, errorKeys }
 
   const pairQuery = pair ? `?pair=${encodeURIComponent(pair)}` : ''
 
@@ -220,6 +224,7 @@ function ConfigEditor({ config: initialConfig, regimeDefaults, onSave, exchange 
     pendingWriteRef.current += 1
     setSaving(true)
     const payload = buildSavePayload(config, baselineRef.current)
+    setErrorKeys([])
     try {
       const res = await apiPut(`/api/${exchange}/config${pairQuery}`, payload, { allowEmpty: true })
       const result = res.data || {}
@@ -238,6 +243,7 @@ function ConfigEditor({ config: initialConfig, regimeDefaults, onSave, exchange 
         warnRestartNeeded('Configuration saved, but the live engine is still using the previous settings. Restart the engine to apply it.')
         onSave?.()
       } else {
+        setErrorKeys(errorFieldKeys([...(Array.isArray(result.errors) ? result.errors : []), result.error, result.message]))
         notify('error', describeWriteFailure(res))
       }
     } finally {
@@ -247,6 +253,7 @@ function ConfigEditor({ config: initialConfig, regimeDefaults, onSave, exchange 
   }
 
   const handleReset = () => {
+    setErrorKeys([])
     if (initialConfig) {
       loadDraft(initialConfig)
       setIsDirty(false)
@@ -695,18 +702,18 @@ function ConfigEditor({ config: initialConfig, regimeDefaults, onSave, exchange 
                 editing (savingPresets) stays independent of this save/toggle gate. */}
             <fieldset disabled={locked} className="contents">
 
-              <VolatilityClockCard config={config} regimeConfig={regimeConfig} defaults={regimeDefaults} quoteCurrency={quoteCurrency} handleChange={handleChange} handleRegimeChange={handleRegimeChange} />
+              <VolatilityClockCard config={config} regimeConfig={regimeConfig} defaults={regimeDefaults} quoteCurrency={quoteCurrency} handleChange={handleChange} handleRegimeChange={handleRegimeChange} productIdLocked={Boolean(initialConfig?.productId)} />
               <RegimeScalingCard regimeConfig={regimeConfig} defaults={regimeDefaults} handleRegimeChange={handleRegimeChange} />
               <EntryModeLadderCard regimeConfig={regimeConfig} defaults={regimeDefaults} quoteCurrency={quoteCurrency} handleRegimeChange={handleRegimeChange} />
               <TakeProfitCard regimeConfig={regimeConfig} defaults={regimeDefaults} baseCurrency={baseCurrency} handleRegimeChange={handleRegimeChange} />
-              <RegimeDetectionCard regimeConfig={regimeConfig} defaults={regimeDefaults} handleRegimeChange={handleRegimeChange} />
+              <RegimeDetectionCard regimeConfig={regimeConfig} defaults={regimeDefaults} handleRegimeChange={handleRegimeChange} disclosure={disclosure} />
               <CelestialHierarchyCard regimeConfig={regimeConfig} defaults={regimeDefaults} baseCurrency={baseCurrency} handleRegimeChange={handleRegimeChange} />
-              <MacroRegimeCard regimeConfig={regimeConfig} defaults={regimeDefaults} handleRegimeChange={handleRegimeChange} />
+              <MacroRegimeCard regimeConfig={regimeConfig} defaults={regimeDefaults} handleRegimeChange={handleRegimeChange} disclosure={disclosure} />
               <TpAutoManagementCard regimeConfig={regimeConfig} defaults={regimeDefaults} handleRegimeChange={handleRegimeChange} />
               <RiskCapsCard regimeConfig={regimeConfig} defaults={regimeDefaults} baseCurrency={baseCurrency} quoteCurrency={quoteCurrency} handleRegimeChange={handleRegimeChange} />
-              <OrderExecutionCard regimeConfig={regimeConfig} defaults={regimeDefaults} handleRegimeChange={handleRegimeChange} />
-              <SafetyTailEventsCard regimeConfig={regimeConfig} defaults={regimeDefaults} handleRegimeChange={handleRegimeChange} />
-              <SystemHealthCard regimeConfig={regimeConfig} defaults={regimeDefaults} handleRegimeChange={handleRegimeChange} />
+              <OrderExecutionCard regimeConfig={regimeConfig} defaults={regimeDefaults} handleRegimeChange={handleRegimeChange} disclosure={disclosure} />
+              <SafetyTailEventsCard regimeConfig={regimeConfig} defaults={regimeDefaults} handleRegimeChange={handleRegimeChange} disclosure={disclosure} />
+              <SystemHealthCard regimeConfig={regimeConfig} defaults={regimeDefaults} handleRegimeChange={handleRegimeChange} disclosure={disclosure} />
             </fieldset>
 
             {/* Aggressiveness Presets Editor — full width */}
