@@ -1,4 +1,4 @@
-const { describe, it } = require('node:test')
+const { before, describe, it } = require('node:test')
 const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
@@ -148,103 +148,52 @@ describe('ConfigEditor shared write gate (issue #455)', () => {
   })
 })
 
+let helper
+let savePayload
+before(async () => {
+  helper = await import('../admin/src/utils/regimeFieldValue.mjs')
+  savePayload = await import('../admin/src/utils/configSavePayload.mjs')
+})
 const regimeCardsSource = fs.readFileSync(path.join(__dirname, '..', 'admin/src/components/config/RegimeConfigCards.jsx'), 'utf8')
 const formControlsSource = fs.readFileSync(path.join(__dirname, '..', 'admin/src/components/config/ConfigFormControls.jsx'), 'utf8')
 
-describe('ConfigEditor zero-valued fields (issue #868)', () => {
-  it('displays zero cautionScale using nullish coalescing (??), not logical OR', () => {
-    assert.match(
-      regimeCardsSource,
-      /regimeConfig\.cautionScale \?\? 0\.5/,
-    )
-    // Ensure the old pattern is not present
-    assert.doesNotMatch(
-      regimeCardsSource,
-      /regimeConfig\.cautionScale \|\| 0\.5/,
-    )
+describe('ConfigEditor zero-valued fields (issues #868, #1983)', () => {
+  it('reads every field through the one fieldValue helper, with no inline fallback literals', () => {
+    // The server is the only source of defaults (summary.regimeDefaults).
+    assert.match(regimeCardsSource, /import \{ fieldValue \} from '..\/..\/utils\/regimeFieldValue\.mjs'/)
+    assert.doesNotMatch(regimeCardsSource, /\|\|\s*(-?\d|'|false|true)/, 'no `|| literal` fallback')
+    assert.doesNotMatch(regimeCardsSource, /\?\?\s*(-?\d|'|false|true)/, 'no `?? literal` fallback')
+    assert.doesNotMatch(regimeCardsSource, /!== false/, 'no implicit default-true reads')
   })
 
-  it('displays zero trendScale using nullish coalescing (??), not logical OR', () => {
-    assert.match(
-      regimeCardsSource,
-      /regimeConfig\.trendScale \?\? 0\.0/,
-    )
-    // Ensure the old pattern is not present
-    assert.doesNotMatch(
-      regimeCardsSource,
-      /regimeConfig\.trendScale \|\| 0\.0/,
-    )
+  it('fieldValue shows a saved 0 or false as saved and an absent field as the server default', () => {
+    const { fieldValue } = helper
+    const defaults = { harvestScale: 1, trendScale: 0.5, celestialEnabled: true, kFactor: 0.65 }
+    assert.equal(fieldValue({ harvestScale: 0 }, defaults, 'harvestScale'), 0)
+    assert.equal(fieldValue({ celestialEnabled: false }, defaults, 'celestialEnabled'), false)
+    assert.equal(fieldValue({}, defaults, 'kFactor'), 0.65)
+    assert.equal(fieldValue(undefined, defaults, 'trendScale'), 0.5)
+    assert.equal(fieldValue({ kFactor: null }, defaults, 'kFactor'), 0.65)
+    assert.equal(fieldValue({}, undefined, 'kFactor'), undefined)
   })
 
-  it('displays zero drawdownResetHours using nullish coalescing (??), not logical OR', () => {
-    assert.match(
-      regimeCardsSource,
-      /regimeConfig\.drawdownResetHours \?\? 72/,
-    )
-    // Ensure the old pattern is not present
-    assert.doesNotMatch(
-      regimeCardsSource,
-      /regimeConfig\.drawdownResetHours \|\| 72/,
-    )
+  it('every regime field the form reads exists in the server REGIME_DEFAULTS', () => {
+    const { REGIME_DEFAULTS } = require('../src/config-utils')
+    const keys = [...regimeCardsSource.matchAll(/fv\('(\w+)'\)/g)].map(m => m[1])
+    assert.ok(keys.length > 70)
+    const missing = [...new Set(keys)].filter(k => !(k in REGIME_DEFAULTS))
+    assert.deepEqual(missing, [])
   })
 
-  it('displays zero cycleResetHours using nullish coalescing (??), not logical OR', () => {
-    assert.match(
-      regimeCardsSource,
-      /regimeConfig\.cycleResetHours \?\? 72/,
-    )
-    // Ensure the old pattern is not present
-    assert.doesNotMatch(
-      regimeCardsSource,
-      /regimeConfig\.cycleResetHours \|\| 72/,
-    )
-  })
-
-  it('displays zero entryOffsetBps using nullish coalescing (??), not logical OR', () => {
-    assert.match(
-      regimeCardsSource,
-      /regimeConfig\.entryOffsetBps \?\? 10/,
-    )
-    // Ensure the old pattern is not present
-    assert.doesNotMatch(
-      regimeCardsSource,
-      /regimeConfig\.entryOffsetBps \|\| 10/,
-    )
-  })
-
-  it('displays zero entryOffsetUpBps using nullish coalescing (??), not logical OR', () => {
-    assert.match(
-      regimeCardsSource,
-      /regimeConfig\.entryOffsetUpBps \?\? 5/,
-    )
-    // Ensure the old pattern is not present
-    assert.doesNotMatch(
-      regimeCardsSource,
-      /regimeConfig\.entryOffsetUpBps \|\| 5/,
-    )
-  })
-
-  it('displays zero entryOffsetDownBps using nullish coalescing (??), not logical OR', () => {
-    assert.match(
-      regimeCardsSource,
-      /regimeConfig\.entryOffsetDownBps \?\? 15/,
-    )
-    // Ensure the old pattern is not present
-    assert.doesNotMatch(
-      regimeCardsSource,
-      /regimeConfig\.entryOffsetDownBps \|\| 15/,
-    )
-  })
-
-  it('uses nullish coalescing for scaling summary display', () => {
-    assert.match(
-      regimeCardsSource,
-      /CAUTION=\{regimeConfig\.cautionScale \?\? 0\.5\}x/,
-    )
-    assert.match(
-      regimeCardsSource,
-      /TREND=\{regimeConfig\.trendScale \?\? 0\.0\}x/,
-    )
+  it('an untouched form diffs to an empty save payload, with defaults shown for absent fields', () => {
+    const { buildSavePayload } = savePayload
+    const { REGIME_DEFAULTS } = require('../src/config-utils')
+    const baseline = { productId: 'BTC-USDC', dryRun: true, regime: { baseSizeUsdc: 0, harvestScale: 0 } }
+    const draft = structuredClone(baseline)
+    // Displayed values never enter the draft, so nothing is sent.
+    assert.deepEqual(buildSavePayload(draft, baseline), {})
+    assert.equal(helper.fieldValue(draft.regime, REGIME_DEFAULTS, 'harvestScale'), 0)
+    assert.equal(helper.fieldValue(draft.regime, REGIME_DEFAULTS, 'kFactor'), REGIME_DEFAULTS.kFactor)
   })
 
   it('never conflates zero values with missing/uninitialized fields in saved requests', () => {

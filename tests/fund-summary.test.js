@@ -408,3 +408,14 @@ describe('fund-summary: buildFundSummary', () => {
     });
   });
 });
+
+describe('fund-summary: buildActiveFundSummary regimeDefaults (#1983)', () => {
+  it('serves REGIME_DEFAULTS beside the stored (not default-merged) config.regime', () => {
+    const { buildActiveFundSummary } = require('../src/fund-summary');
+    const { REGIME_DEFAULTS } = require('../src/config-utils');
+    const summary = buildActiveFundSummary('coinbase', 'NOPE-USDC');
+    assert.deepEqual(summary.regimeDefaults, REGIME_DEFAULTS);
+    assert.notEqual(summary.regimeDefaults, REGIME_DEFAULTS, 'a copy, not the live object');
+    assert.ok(!('kFactor' in (summary.config.regime || {})), 'config.regime stays the stored block');
+  });
+});
