@@ -4,7 +4,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const { parseDiagnostics, compare, nextBaseline } = require('../scripts/typecheck');
+const { parseDiagnostics, countRawDiagnostics, compare, nextBaseline } = require('../scripts/typecheck');
 
 const SCRIPT = path.join(__dirname, '..', 'scripts', 'typecheck.js');
 
@@ -20,6 +20,13 @@ describe('typecheck ratchet: pure helpers', () => {
       "Found 3 errors.",
     ].join('\n');
     assert.deepEqual(parseDiagnostics(out, base), { 'src/a.js': 2, '<global>': 1 });
+  });
+
+  it('counts node_modules-only diagnostics as raw diagnostics so they are not mistaken for a tsc crash', () => {
+    const out = "node_modules/express/lib/express.js(38,9): error TS2339: nope.\n";
+    assert.deepEqual(parseDiagnostics(out, path.resolve('/proj')), {});
+    assert.equal(countRawDiagnostics(out), 1);
+    assert.equal(countRawDiagnostics('Segmentation fault\n'), 0);
   });
 
   it('flags a worse file and a new file, and reports improvements without failing', () => {

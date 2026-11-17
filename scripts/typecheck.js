@@ -60,6 +60,16 @@ function parseDiagnostics(output, baseDir) {
 }
 
 /**
+ * Every diagnostic tsc reported, including the node_modules ones that
+ * parseDiagnostics skips. Tells "tsc crashed" apart from "tsc only complained
+ * about third-party files".
+ * @param {string} output
+ */
+function countRawDiagnostics(output) {
+  return output.split(/\r?\n/).filter((line) => DIAGNOSTIC.test(line) || GLOBAL_DIAGNOSTIC.test(line)).length;
+}
+
+/**
  * @param {Record<string, number>} current
  * @param {Record<string, number>} baseline
  * @returns {{ regressions: {file: string, from: number, to: number}[], improvements: {file: string, from: number, to: number}[] }}
@@ -129,9 +139,10 @@ function main(argv) {
     console.error(`typecheck: could not run tsc: ${tsc.error.message}`);
     return 1;
   }
-  const current = parseDiagnostics(`${tsc.stdout}\n${tsc.stderr}`, projectDir);
+  const output = `${tsc.stdout}\n${tsc.stderr}`;
+  const current = parseDiagnostics(output, projectDir);
   const total = Object.values(current).reduce((a, b) => a + b, 0);
-  if (tsc.status !== 0 && total === 0) {
+  if (tsc.status !== 0 && countRawDiagnostics(output) === 0) {
     console.error(`typecheck: tsc exited ${tsc.status} without reporting a diagnostic:\n${tsc.stdout}${tsc.stderr}`);
     return 1;
   }
@@ -172,7 +183,7 @@ function main(argv) {
   return 0;
 }
 
-module.exports = { parseDiagnostics, compare, nextBaseline };
+module.exports = { parseDiagnostics, countRawDiagnostics, compare, nextBaseline };
 
 if (require.main === module) {
   process.exitCode = main(process.argv.slice(2));
