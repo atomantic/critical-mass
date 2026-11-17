@@ -11,7 +11,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const { defaultChildArgs, ROOT_PREFIX } = require('../scripts/test');
+const { defaultChildArgs, parseSelection, selectChangedTests, ROOT_PREFIX } = require('../scripts/test');
 
 const REPO_ROOT = path.join(__dirname, '..');
 
@@ -237,6 +237,45 @@ describe('scripts/test.js runner lifecycle', () => {
     const onDisk = fs.readdirSync(path.join(REPO_ROOT, 'tests')).filter((n) => n.endsWith('.test.js'));
     assert.equal(args.filter((a) => a.endsWith('.test.js')).length, onDisk.length);
     assert.equal(JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8')).scripts.test, 'node scripts/test.js');
+  });
+
+  it('positional files and directories replace the default list but keep preloads and options', () => {
+    const args = defaultChildArgs(['--test-name-pattern=foo', 'tests/runtime-env.test.js']);
+    assert.deepEqual(args, [
+      '--require', './tests/quiet-console.js',
+      '--require', './tests/isolated-data-root.js',
+      '--require', './tests/skip-fsync.js',
+      '--test', '--test-name-pattern=foo', path.join('tests', 'runtime-env.test.js'),
+    ]);
+    const abs = defaultChildArgs([path.join(REPO_ROOT, 'tests', 'runtime-env.test.js')]);
+    assert.equal(abs.at(-1), path.join('tests', 'runtime-env.test.js'));
+    const dir = parseSelection([path.join(REPO_ROOT, 'tests')]);
+    assert.ok(dir.files.includes(path.join('tests', 'runtime-env.test.js')));
+    assert.ok(dir.files.every((f) => f.endsWith('.test.js')));
+  });
+
+  it('keeps non-path values as options and rejects a missing path', () => {
+    const sel = parseSelection(['--test-name-pattern', 'no such thing', 'tests/runtime-env.test.js']);
+    assert.deepEqual(sel.options, ['--test-name-pattern', 'no such thing']);
+    assert.equal(sel.files.length, 1);
+    assert.match(parseSelection(['tests/nope.test.js']).error, /path not found/);
+    assert.match(parseSelection(['tests/typo-dir']).error, /path not found/);
+    assert.match(parseSelection(['docs']).error, /no \*\.test\.js files/);
+    const valued = parseSelection(['--test-reporter', 'tests', '--require', './nope.js', 'tests/runtime-env.test.js']);
+    assert.deepEqual(valued.options, ['--test-reporter', 'tests', '--require', './nope.js']);
+    assert.deepEqual(valued.files, [path.join('tests', 'runtime-env.test.js')]);
+    assert.equal(valued.error, undefined);
+    assert.throws(() => defaultChildArgs(['tests/nope.test.js']), /path not found/);
+  });
+
+  it('maps changed files to relevant tests', () => {
+    const tests = ['tests/a.test.js', 'tests/b.test.js', 'tests/c.test.js'];
+    const text = { 'tests/a.test.js': "require('../src/fill-ledger')", 'tests/b.test.js': 'nothing', 'tests/c.test.js': 'x' };
+    const read = (f) => text[f];
+    assert.deepEqual(selectChangedTests(['tests/c.test.js', 'src/fill-ledger.js', 'README.md'], tests, read),
+      ['tests/a.test.js', 'tests/c.test.js']);
+    assert.deepEqual(selectChangedTests(['tests/gone.test.js', 'docs/x.md', 'admin/src/fill-ledger.js'], tests, read), []);
+    assert.deepEqual(selectChangedTests(['engines/zzz.js'], tests, read), []);
   });
 
   it('the actual CLI accepts forwarded selection and reporter options', { timeout: 10000 }, async () => {
