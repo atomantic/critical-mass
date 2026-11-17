@@ -6,6 +6,7 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 
+const { useVirtualClock } = require('./virtual-clock');
 const { createCoinbaseAdapter } = require('../src/adapters/coinbase/api');
 
 // ---------------------------------------------------------------------------
@@ -152,7 +153,8 @@ describe('coinbase order-placement network-error handling (issue #199)', () => {
     assert.equal(calls.length, 1, 'cancel POST must not be blind-retried');
   });
 
-  it('still retries an idempotent GET on a transient network error', async () => {
+  it('still retries an idempotent GET on a transient network error', async (t) => {
+    const clock = useVirtualClock(t); // GET retry backoff runs on virtual time
     const adapter = createCoinbaseAdapter(keysPath);
     let attempts = 0;
     global.fetch = async (url) => {
@@ -161,7 +163,7 @@ describe('coinbase order-placement network-error handling (issue #199)', () => {
       return { ok: true, status: 200, statusText: 'OK', json: async () => ({ price: '50000' }) };
     };
 
-    const price = await adapter.getCurrentPrice('BTC-USDC');
+    const price = await clock.run(adapter.getCurrentPrice('BTC-USDC'));
     assert.equal(price, 50000);
     assert.equal(attempts, 2, 'GET should retry once and then succeed');
   });

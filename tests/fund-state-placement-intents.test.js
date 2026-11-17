@@ -12,7 +12,7 @@ const path = require('path');
 const fundPaths = require('../src/fund-paths');
 const { ledgerOf } = require('./helpers/ledger-fixture');
 const placementIntents = require('../src/placement-intent-storage');
-const { placeWithUnknownReconcile } = require('../src/order-manager');
+const { placeWithUnknownReconcile } = require('../src/placement-reconcile');
 const {
   createFundStateBackup,
   listFundStateBackups,

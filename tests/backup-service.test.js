@@ -28,7 +28,6 @@ const {
   pruneBackups,
   restoreBackup,
   inspectBackup,
-  getNewestBackupTime,
   getNewestBackupTimeAsync,
 } = require('../src/backup-service');
 const { GLOBAL_DEFAULTS } = require('../src/config-utils');
@@ -727,7 +726,6 @@ describe('backup-service — pruneBackups retention', () => {
     const listed = await listBackups();
     assert.deepEqual(listed.map((backup) => backup.filename), [...names].reverse());
     assert.deepEqual(listed.map((backup) => Date.parse(backup.createdAt)), [base + 3_000, base + 2_000, base + 1_000]);
-    assert.equal(getNewestBackupTime(), base + 3_000);
     assert.equal(await getNewestBackupTimeAsync(), base + 3_000);
 
     const result = await pruneBackups(2);
@@ -744,7 +742,7 @@ describe('backup-service — pruneBackups retention', () => {
     const listed = await listBackups();
     assert.deepEqual(listed.slice(0, 3).map((backup) => backup.filename), [...names].reverse());
     assert.equal(Date.parse(listed.find((backup) => backup.filename === legacyName).createdAt), Date.UTC(2025, 11, 31, 23, 59, 59));
-    assert.equal(getNewestBackupTime(), Date.UTC(2026, 0, 1, 0, 0, 3));
+    assert.equal(await getNewestBackupTimeAsync(), Date.UTC(2026, 0, 1, 0, 0, 3));
   });
 
   it('prunes nothing when the backup count is within the retention limit', async () => {
@@ -841,9 +839,10 @@ describe('backup-service — pruneBackups retention', () => {
     });
   });
 
-  it('getNewestBackupTimeAsync matches the sync anchor without blocking on a cold verdict cache', async () => {
-    const expected = getNewestBackupTime();
-    assert.equal(await getNewestBackupTimeAsync(), expected);
+  it('getNewestBackupTimeAsync anchors to the newest listed archive from a cold verdict cache', async () => {
+    // Read the anchor before listing, so it is the first look at every candidate.
+    const anchor = await getNewestBackupTimeAsync();
+    assert.equal(anchor, Date.parse((await listBackups())[0].createdAt));
   });
 
   it('anchors the schedule to the newest valid archive, not a newer corrupt one', async () => {
@@ -852,7 +851,7 @@ describe('backup-service — pruneBackups retention', () => {
     created.push(corrupt);
     const newestValid = Date.parse((await listBackups())[0].createdAt);
     assert.ok(fs.statSync(corrupt).mtimeMs >= newestValid);
-    assert.ok(Math.abs(getNewestBackupTime() - newestValid) <= 1);
+    assert.ok(Math.abs(await getNewestBackupTimeAsync() - newestValid) <= 1);
   });
 
   // #547: a route bug or hand-edited config.json can persist an invalid
@@ -992,7 +991,6 @@ describe('backup-service — unrestorable archives never displace usable recover
     const badLedger = await makeUnrestorable({ 'coinbase/BTC-USDC/fill-ledger.json': '{"fills":[]}' });
 
     assert.deepEqual((await listBackups()).map((b) => b.filename), [usable]);
-    assert.equal(getNewestBackupTime(), Date.UTC(2020, 0, 1));
     assert.equal(await getNewestBackupTimeAsync(), Date.UTC(2020, 0, 1));
     const pruned = await pruneBackups(1);
     assert.equal(pruned.pruned, 0);

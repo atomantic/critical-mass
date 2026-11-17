@@ -7,6 +7,7 @@ const { createIsolatedDataDir } = require('./test-data-dir');
 const isolatedData = createIsolatedDataDir('cm-race-conditions-test');
 after(() => isolatedData.cleanup());
 const assert = require('node:assert/strict');
+const { useVirtualClock } = require('./virtual-clock');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -186,15 +187,16 @@ describe('Race 1: Duplicate TP prevention', () => {
     maxOpenOrders: 20,
   });
 
-  it('cancelTpOrder returns {cancelled, filled} instead of boolean', async () => {
+  it('cancelTpOrder returns {cancelled, filled} instead of boolean', async (t) => {
+    const clock = useVirtualClock(t); // the executor's post-place/post-cancel verify delays run on virtual time
     const adapter = createMockAdapter();
     const executor = createOrderExecutor('test', createTestConfig(), adapter, 'BTC-USDC');
 
     // First place a TP so there's something to cancel
-    const placeResult = await executor.placeTakeProfitOrder(0.01, 105000, { forceUpdate: true });
+    const placeResult = await clock.run(executor.placeTakeProfitOrder(0.01, 105000, { forceUpdate: true }));
     assert.ok(placeResult.success);
 
-    const result = await executor.cancelTpOrder();
+    const result = await clock.run(executor.cancelTpOrder());
     assert.equal(typeof result.cancelled, 'boolean');
     assert.equal(typeof result.filled, 'boolean');
     assert.equal(result.cancelled, true);
@@ -253,7 +255,8 @@ describe('Race 1: Duplicate TP prevention', () => {
     assert.equal(result.totalFees, 1.05);
   });
 
-  it('concurrent placeTakeProfitOrder under a slow cancel leaves exactly one live TP (issue #209 B)', async () => {
+  it('concurrent placeTakeProfitOrder under a slow cancel leaves exactly one live TP (issue #209 B)', async (t) => {
+    const clock = useVirtualClock(t); // slow cancels and verify delays run on virtual time
     // Two placeTakeProfitOrder calls race while each TP cancel is slow. With
     // the deadlock guard sitting well above the section duration the mutex
     // fully serializes them, so the position ends with a single live TP sell —
@@ -289,10 +292,10 @@ describe('Race 1: Duplicate TP prevention', () => {
     executor.restorePendingOrder('tp-0', { type: 'take_profit', price: 99000, size: 0.01, sizeUsdc: 990, placedAt: Date.now() });
     live.add('tp-0');
 
-    await Promise.all([
+    await clock.run(Promise.all([
       executor.placeTakeProfitOrder(0.01, 100000, { forceUpdate: true }),
       executor.placeTakeProfitOrder(0.01, 101000, { forceUpdate: true }),
-    ]);
+    ]));
 
     assert.equal(live.size, 1, `exactly one TP should be live, found ${[...live].join(',')}`);
     assert.ok(live.has(executor._test.getActiveTpOrderId()), 'the tracked active TP is the live one');
