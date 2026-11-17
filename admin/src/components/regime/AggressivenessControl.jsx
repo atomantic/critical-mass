@@ -4,7 +4,7 @@ import { apiPut } from '../../utils/apiClient'
 import React, { useState, useMemo } from 'react'
 import { buildAggressivenessLevels, detectAggressivenessLevel, computeAggressivenessParams, formatInterval } from './aggressiveness'
 
-export default function AggressivenessControl({ config, exchange, pairQuery, onConfigUpdate, presets, presetsError, retryPresets, addToast }) {
+export default function AggressivenessControl({ config, exchange, pairQuery, onConfigUpdate, presets, presetsLoading = false, presetsError, retryPresets, addToast }) {
   const [updating, setUpdating] = useState(false)
   // The level whose parameters are displayed. Selecting is read-only; only the
   // explicit Apply button writes. The applied indicator stays derived from the
@@ -80,6 +80,9 @@ export default function AggressivenessControl({ config, exchange, pairQuery, onC
         )}
       </div>
 
+      {presetsLoading && !presets && (
+        <div role="status" className="text-xs text-gray-400 mb-2">Loading presets…</div>
+      )}
       {presetsError && !presets && (
         <div role="alert" className="flex items-center gap-3 text-xs text-yellow-400 mb-2">
           <span>Presets unavailable</span>

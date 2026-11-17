@@ -89,25 +89,43 @@ describe('#1500 candle fetch resilience', () => {
   });
 
   it('stops a Coinbase full fetch after the consecutive-failure limit', async () => {
-    const { privateKey } = require('node:crypto').generateKeyPairSync('ec', {
-      namedCurve: 'prime256v1',
-      privateKeyEncoding: { type: 'sec1', format: 'pem' },
-      publicKeyEncoding: { type: 'spki', format: 'pem' },
-    });
-    adapters.getAdapter = () => ({ loadCredentials: () => ({ apiKey: 'k', apiSecret: privateKey }) });
-    let requests = 0;
-    const origFetch = global.fetch;
-    global.fetch = async () => { requests++; return { ok: false, status: 503, statusText: 'Service Unavailable', json: async () => ({}) }; };
-    delete require.cache[ENGINE_PATH];
-    const cbEngine = require('../src/backtest-engine');
-    try {
-      // 1000 10min intervals = 2000 raw candles = 7 batches if it never stopped early.
-      const out = await cbEngine.fetchPriceData(1000, '10min', 'coinbase', 'BTC-USDC');
-      assert.deepEqual(out, []);
-    } finally {
-      global.fetch = origFetch;
-    }
-    assert.equal(requests, cbEngine.MAX_CONSECUTIVE_FETCH_FAILURES);
+    let calls = 0;
+    getCandles = async () => { calls++; throw new Error('Coinbase API error (503): Service Unavailable'); };
+    // 1000 10min intervals = 2000 raw candles = 7 batches if it never stopped early.
+    const out = await engine.fetchPriceData(1000, '10min', 'coinbase', 'BTC-USDC');
+    assert.deepEqual(out, []);
+    assert.equal(calls, engine.MAX_CONSECUTIVE_FETCH_FAILURES);
+  });
+
+  it('does not add a backtest-level 429 backoff on top of the Coinbase adapter retry', async () => {
+    let calls = 0;
+    getCandles = async () => { calls++; throw Object.assign(new Error('Coinbase API error (429): rate limit'), { status: 429 }); };
+    const started = Date.now();
+    // Default backoff is 2s x failure count (6s total); the adapter owns Coinbase retries so none is added here.
+    const out = await engine.fetchPriceData(2000, 'daily', 'coinbase', 'BTC-USDC');
+    assert.deepEqual(out, []);
+    assert.equal(calls, engine.MAX_CONSECUTIVE_FETCH_FAILURES);
+    assert.ok(Date.now() - started < 1500, 'no extra rate-limit sleep for Coinbase');
+  });
+
+  it('fetches Coinbase candles through the adapter and returns the same aggregated rows', async (t) => {
+    const intervalMs = 3600 * 1000;
+    const base = 1700000000000 - (1700000000000 % intervalMs);
+    const raw = [0, 1, 2].map(i => ({
+      timestamp: base + i * intervalMs, open: 10 + i, high: 12 + i, low: 9 + i, close: 11 + i, volume: 5,
+    }));
+    t.mock.timers.enable({ apis: ['Date'], now: base + 10 * intervalMs });
+    const seen = [];
+    getCandles = async (productId, start, end, granularity) => { seen.push({ productId, start, end, granularity }); return raw; };
+
+    const out = await engine.fetchPriceData(3, '1hour', 'coinbase', 'BTC-USDC');
+
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].productId, 'BTC-USDC');
+    assert.equal(seen[0].granularity, 'ONE_HOUR');
+    assert.equal(seen[0].end - seen[0].start, 3 * 3600);
+    assert.deepEqual(out.map(r => [r.timestamp, r.open, r.high, r.low, r.close]),
+      raw.map(c => [c.timestamp, c.open, c.high, c.low, c.close]));
   });
 
   it('backs off and retries on 429 before giving up', async () => {

@@ -1011,27 +1011,6 @@ const createCoinbaseAdapter = (keysPath = null, { sleep = defaultSleep, random =
   return adapter;
 };
 
-// Create default instance for backward compatibility
-const defaultAdapter = createCoinbaseAdapter();
-
 module.exports = {
   createCoinbaseAdapter,
-  // Export individual functions for backward compatibility
-  loadCredentials: defaultAdapter.loadCredentials,
-  getAccountBalance: defaultAdapter.getAccountBalance,
-  getCurrentPrice: defaultAdapter.getCurrentPrice,
-  getBidAsk: defaultAdapter.getBidAsk,
-  getProductDetails: defaultAdapter.getProductDetails,
-  placeMarketBuy: defaultAdapter.placeMarketBuy,
-  placeLimitBuy: defaultAdapter.placeLimitBuy,
-  placeLimitSell: defaultAdapter.placeLimitSell,
-  getOrder: defaultAdapter.getOrder,
-  findOrderByClientOrderId: defaultAdapter.findOrderByClientOrderId,
-  getOpenOrders: defaultAdapter.getOpenOrders,
-  cancelOrder: defaultAdapter.cancelOrder,
-  getOrderFills: defaultAdapter.getOrderFills,
-  getOrderFillSummary: defaultAdapter.getOrderFillSummary,
-  getCandles: defaultAdapter.getCandles,
-  placeStopLimitSell: defaultAdapter.placeStopLimitSell,
-  placeMarketSell: defaultAdapter.placeMarketSell,
 };

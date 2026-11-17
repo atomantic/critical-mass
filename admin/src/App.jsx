@@ -1115,7 +1115,7 @@ function AppContent() {
                   ? <ChartsRegime key={`${currentExchange}-${currentPair}`} exchange={currentExchange} pair={currentPair} />
                   : <ChartsDCA summary={summary} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />
               } />
-              <Route path="/:exchange/:pair/config" element={<ConfigEditor key={`${currentExchange}-${currentPair}`} config={summary?.config} loadError={error || (!loading && !summary?.config ? 'Configuration is unavailable' : null)} onRetry={fetchData} onSave={refreshFund} exchange={currentExchange} pair={currentPair} strategy={currentStrategy} engineRunning={regimeRunning} engineDryRun={regimeDryRun} onRestart={fetchRegimeStatus} />} />
+              <Route path="/:exchange/:pair/config" element={<ConfigEditor key={`${currentExchange}-${currentPair}`} config={summary?.config} regimeDefaults={summary?.regimeDefaults} loadError={error || (!loading && !summary?.config ? 'Configuration is unavailable' : null)} onRetry={fetchData} onSave={refreshFund} exchange={currentExchange} pair={currentPair} strategy={currentStrategy} engineRunning={regimeRunning} engineDryRun={regimeDryRun} onRestart={fetchRegimeStatus} />} />
 
               {/* DCA-only routes (backtest, optimizer) */}
               {simpleDcaEnabled && currentStrategy !== 'regime' && <>

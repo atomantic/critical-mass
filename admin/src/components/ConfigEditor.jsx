@@ -10,7 +10,7 @@ import { useNotify, useToast } from './Toast'
 import Button from './ui/Button'
 import { getBaseCurrency, getQuoteCurrency } from '../App'
 
-function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pair, strategy = 'dca', engineRunning = null, engineDryRun = null, onRestart, loadError, onRetry }) {
+function ConfigEditor({ config: initialConfig, regimeDefaults, onSave, exchange = 'coinbase', pair, strategy = 'dca', engineRunning = null, engineDryRun = null, onRestart, loadError, onRetry }) {
   const [config, setConfig] = useState(initialConfig)
   // The server copy the draft was loaded from; Save diffs against it (#1395).
   const baselineRef = useRef(initialConfig)
@@ -695,18 +695,18 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
                 editing (savingPresets) stays independent of this save/toggle gate. */}
             <fieldset disabled={locked} className="contents">
 
-              <VolatilityClockCard config={config} regimeConfig={regimeConfig} quoteCurrency={quoteCurrency} handleChange={handleChange} handleRegimeChange={handleRegimeChange} />
-              <RegimeScalingCard regimeConfig={regimeConfig} handleRegimeChange={handleRegimeChange} />
-              <EntryModeLadderCard regimeConfig={regimeConfig} quoteCurrency={quoteCurrency} handleRegimeChange={handleRegimeChange} />
-              <TakeProfitCard regimeConfig={regimeConfig} baseCurrency={baseCurrency} handleRegimeChange={handleRegimeChange} />
-              <RegimeDetectionCard regimeConfig={regimeConfig} handleRegimeChange={handleRegimeChange} />
-              <CelestialHierarchyCard regimeConfig={regimeConfig} baseCurrency={baseCurrency} handleRegimeChange={handleRegimeChange} />
-              <MacroRegimeCard regimeConfig={regimeConfig} handleRegimeChange={handleRegimeChange} />
-              <TpAutoManagementCard regimeConfig={regimeConfig} handleRegimeChange={handleRegimeChange} />
-              <RiskCapsCard regimeConfig={regimeConfig} baseCurrency={baseCurrency} quoteCurrency={quoteCurrency} handleRegimeChange={handleRegimeChange} />
-              <OrderExecutionCard regimeConfig={regimeConfig} handleRegimeChange={handleRegimeChange} />
-              <SafetyTailEventsCard regimeConfig={regimeConfig} handleRegimeChange={handleRegimeChange} />
-              <SystemHealthCard regimeConfig={regimeConfig} handleRegimeChange={handleRegimeChange} />
+              <VolatilityClockCard config={config} regimeConfig={regimeConfig} defaults={regimeDefaults} quoteCurrency={quoteCurrency} handleChange={handleChange} handleRegimeChange={handleRegimeChange} />
+              <RegimeScalingCard regimeConfig={regimeConfig} defaults={regimeDefaults} handleRegimeChange={handleRegimeChange} />
+              <EntryModeLadderCard regimeConfig={regimeConfig} defaults={regimeDefaults} quoteCurrency={quoteCurrency} handleRegimeChange={handleRegimeChange} />
+              <TakeProfitCard regimeConfig={regimeConfig} defaults={regimeDefaults} baseCurrency={baseCurrency} handleRegimeChange={handleRegimeChange} />
+              <RegimeDetectionCard regimeConfig={regimeConfig} defaults={regimeDefaults} handleRegimeChange={handleRegimeChange} />
+              <CelestialHierarchyCard regimeConfig={regimeConfig} defaults={regimeDefaults} baseCurrency={baseCurrency} handleRegimeChange={handleRegimeChange} />
+              <MacroRegimeCard regimeConfig={regimeConfig} defaults={regimeDefaults} handleRegimeChange={handleRegimeChange} />
+              <TpAutoManagementCard regimeConfig={regimeConfig} defaults={regimeDefaults} handleRegimeChange={handleRegimeChange} />
+              <RiskCapsCard regimeConfig={regimeConfig} defaults={regimeDefaults} baseCurrency={baseCurrency} quoteCurrency={quoteCurrency} handleRegimeChange={handleRegimeChange} />
+              <OrderExecutionCard regimeConfig={regimeConfig} defaults={regimeDefaults} handleRegimeChange={handleRegimeChange} />
+              <SafetyTailEventsCard regimeConfig={regimeConfig} defaults={regimeDefaults} handleRegimeChange={handleRegimeChange} />
+              <SystemHealthCard regimeConfig={regimeConfig} defaults={regimeDefaults} handleRegimeChange={handleRegimeChange} />
             </fieldset>
 
             {/* Aggressiveness Presets Editor — full width */}

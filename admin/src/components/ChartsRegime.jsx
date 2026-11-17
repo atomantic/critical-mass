@@ -396,7 +396,7 @@ function ChartsRegime({ exchange = 'coinbase', pair, fillDebounceMs = 1500 }) {
               currentPrice={market.lastPrice}
               anchorPrice={position.anchorPrice}
               atr={market.atr1m}
-              kFactor={config?.kFactor || 0.6}
+              kFactor={config?.kFactor}
               height={320}
             />
           </div>
