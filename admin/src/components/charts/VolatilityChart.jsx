@@ -1,4 +1,4 @@
-import { useId, useMemo } from 'react'
+import { memo, useId, useMemo } from 'react'
 import { areaPath, extent, formatTime, linePath, linearScale, max, timeScale } from '../../lib/chart-math'
 import { formatPriceCompact, regimeZones } from './chartUtils'
 import ChartDataAlternative from './ChartDataAlternative'
@@ -211,4 +211,4 @@ function VolatilityChart({
   )
 }
 
-export default VolatilityChart
+export default memo(VolatilityChart)

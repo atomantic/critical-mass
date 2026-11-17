@@ -1,3 +1,5 @@
+Historical snapshot from 2026-10-16; not a current task list.
+
 # Development environment audit, 2026-10-16
 
 The pre-fix baseline was `85c3c84c88060ef535fbd01cbb74630e76aa18ca`.

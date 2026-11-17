@@ -35,7 +35,7 @@ before(async () => {
 })
 function harness(name, props) {
   const context = { index: 0, state: [] }
-  return () => { active = context; active.index = 0; return components[name](props) }
+  return () => { active = context; active.index = 0; const component = components[name].type ?? components[name]; return component(props) }
 }
 function nodes(tree, predicate) {
   if (!tree || typeof tree !== 'object') return []
@@ -53,7 +53,7 @@ function assertDisclosure(tree, button) {
 }
 const buy = { orderId: 'buy-one', side: 'buy', size: 1, price: 100, timestamp: 1000, cycleId: 'cycle-1', sellOrderId: 'sell-one' }
 const sell = { orderId: 'sell-one', side: 'sell', size: .9, price: 120, timestamp: 2000, cycleId: 'cycle-1', bodyPnl: 18 }
-const baseFilled = { liveFills: [buy, sell, { ...buy, orderId: 'orphan', sellOrderId: undefined, cycleId: 'cycle-2' }], isDryRun: false, dryRunFilled: [], pendingOrdersList: [], market: { lastPrice: 120 }, asset: 'BTC' }
+const baseFilled = { liveFills: [buy, sell, { ...buy, orderId: 'orphan', sellOrderId: undefined, cycleId: 'cycle-2' }], isDryRun: false, dryRunFilled: [], pendingOrdersList: [], priceDecimals: 2, asset: 'BTC' }
 
 test('live cycles, sell buys and orphan groups expose independent persistent disclosures', () => {
   const render = harness('FilledOrdersSection', baseFilled)
@@ -106,7 +106,7 @@ test('dry-run filled sells expose buy details and empty views have no disclosure
 
 test('open-order buy disclosure preserves table sections and does not invoke trade actions', () => {
   let actions = 0
-  const render = harness('OpenOrdersTable', { pendingOrdersList: [{ orderId: 'sell-one', status: 'open', type: 'body_tp', price: 120, size: .9 }], liveFills: [buy], dryRunFilled: [], isDryRun: false, celestialBodies: [{ id: 'body-one', tpOrderId: 'sell-one', buyOrderIds: ['buy-one'], avgPrice: 100 }], position: {}, config: {}, market: { lastPrice: 120 }, asset: 'BTC', isRunning: true, openSearchId: '', setTpEditModal: () => actions++, setRollUpConfirm: () => actions++ })
+  const render = harness('OpenOrdersTable', { pendingOrdersList: [{ orderId: 'sell-one', status: 'open', type: 'body_tp', price: 120, size: .9 }], liveFills: [buy], dryRunFilled: [], isDryRun: false, celestialBodies: [{ id: 'body-one', tpOrderId: 'sell-one', buyOrderIds: ['buy-one'], avgPrice: 100 }], position: {}, config: {}, priceDecimals: 2, asset: 'BTC', isRunning: true, openSearchId: '', setTpEditModal: () => actions++, setRollUpConfirm: () => actions++ })
   let tree = render(); const disclosure = buttons(tree)[0]
   assert.ok(disclosure); assertDisclosure(tree, disclosure)
   disclosure.props.onClick(); tree = render()
