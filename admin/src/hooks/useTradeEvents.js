@@ -94,11 +94,7 @@ export function useRegimeEvents(exchange = null, pair = null) {
   }
   const committedSelection = useRef(currentSelection)
   useLayoutEffect(() => { committedSelection.current = currentSelection }, [currentSelection])
-  const [regimeState, setRegimeState] = useState(null)
-  const [healthState, setHealthState] = useState(null)
-  const [positionState, setPositionState] = useState(null)
   const [connected, setConnected] = useState(false)
-  const [events, setEvents] = useState([])
 
   useEffect(() => {
     const socket = getRealtimeClient()
@@ -126,39 +122,11 @@ export function useRegimeEvents(exchange = null, pair = null) {
       }))
     }
 
-    const handleRegimeChange = (data) => {
-      if (!matchesFund(data)) return
-      setRegimeState(data)
-      setEvents((prev) => [{
-        type: 'regime_change',
-        ...data,
-        timestamp: new Date().toISOString(),
-      }, ...prev].slice(0, MAX_EVENTS))
-    }
-
-    const handleHealthChange = (data) => {
-      if (!matchesFund(data)) return
-      setHealthState(data)
-      setEvents((prev) => [{
-        type: 'health_change',
-        ...data,
-        timestamp: new Date().toISOString(),
-      }, ...prev].slice(0, MAX_EVENTS))
-    }
-
-    const handlePositionUpdate = (data) => {
-      if (!matchesFund(data)) return
-      setPositionState(data)
-    }
-
     socket.on('connect', handleConnect)
     socket.on('disconnect', handleDisconnect)
     socket.on('regime:status', handleStatusUpdate)
     const room = statusRoom(exchange, pair)
     socket.subscribe(room)
-    socket.on('regime:change', handleRegimeChange)
-    socket.on('regime:health', handleHealthChange)
-    socket.on('regime:position', handlePositionUpdate)
 
     setConnected(socket.connected)
 
@@ -167,13 +135,9 @@ export function useRegimeEvents(exchange = null, pair = null) {
       socket.off('disconnect', handleDisconnect)
       socket.off('regime:status', handleStatusUpdate)
       socket.unsubscribe(room)
-      socket.off('regime:change', handleRegimeChange)
-      socket.off('regime:health', handleHealthChange)
-      socket.off('regime:position', handlePositionUpdate)
     }
   }, [exchange, pair, currentSelection])
 
-  const clearEvents = useCallback(() => setEvents([]), [])
   // Action responses carry a full snapshot: replace, stamped as newest.
   const setStatus = useCallback(status => setSnapshot(prev => committedSelection.current !== currentSelection
     ? prev
@@ -184,12 +148,7 @@ export function useRegimeEvents(exchange = null, pair = null) {
     status: currentSnapshot.status,
     statusSeq: currentSnapshot.seq,
     setStatus,
-    regimeState,
-    healthState,
-    positionState,
     connected,
-    events,
-    clearEvents,
   }
 }
 
