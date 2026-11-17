@@ -9,7 +9,7 @@ const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const { createReconcileLoop } = require('../src/regime-reconcile');
 const { createEngineLocks } = require('../src/engine-locks');
-const { createInitialRegimePositionState } = require('../src/state-tracker');
+const { createInitialRegimePositionState } = require('../src/regime-state-store');
 
 const noopLogger = { info() {}, warn() {}, error() {}, debug() {} };
 
