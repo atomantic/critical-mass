@@ -591,6 +591,7 @@ function Overview() {
                       currentPrice={card.lastPrice}
                       maxUsdcDeployed={card.maxUsdcDeployed}
                       baseCurrency={card.baseCurrency}
+                      lazyMount
                     />
                   </Suspense>
                 </div>

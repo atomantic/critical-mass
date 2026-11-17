@@ -5,6 +5,7 @@ import { Pause, Play } from '../icons'
 import CelestialScene from './CelestialScene'
 import { TIER_COLORS, TIER_EMOJIS, TIER_ORDER } from './celestialConstants'
 import useReducedMotion from '../../hooks/useReducedMotion'
+import useCanvasActive from '../../hooks/useCanvasActive'
 import { plural } from '../../utils/plural.mjs'
 
 const MOTION_PAUSED_STORAGE_KEY = 'celestial-motion-paused'
@@ -22,13 +23,20 @@ function readStoredMotionPreference() {
 /**
  * Card wrapper: header, 3D canvas container, and legend
  */
-const CelestialVisualization = ({ celestial, pendingOrders = [], currentPrice, maxUsdcDeployed, baseCurrency = 'BTC' }) => {
+const CelestialVisualization = ({ celestial, pendingOrders = [], currentPrice, maxUsdcDeployed, baseCurrency = 'BTC', lazyMount = false }) => {
   const bodies = celestial?.bodies || []
   const enabled = celestial?.enabled
 
   const prefersReducedMotion = useReducedMotion()
   const [explicitMotionPaused, setExplicitMotionPaused] = useState(readStoredMotionPreference)
   const motionPaused = explicitMotionPaused ?? prefersReducedMotion
+
+  // Stop rendering frames while the canvas is off-screen or the tab is hidden.
+  // The motion toggle / reduced-motion still win: they never resume motion.
+  const canvasBoxRef = useRef(null)
+  const { active: canvasActive, everInView } = useCanvasActive(canvasBoxRef)
+  const frameloop = motionPaused || !canvasActive ? 'demand' : 'always'
+  const mountCanvas = !lazyMount || everInView
 
   const toggleMotionPaused = () => {
     const next = !motionPaused
@@ -100,6 +108,7 @@ const CelestialVisualization = ({ celestial, pendingOrders = [], currentPrice, m
 
       {/* 3D Canvas container - 16:10 aspect ratio */}
       <div
+        ref={canvasBoxRef}
         className="relative w-full rounded-lg overflow-hidden"
         style={{ aspectRatio: '16/10', background: '#0f0f14' }}
       >
@@ -107,7 +116,7 @@ const CelestialVisualization = ({ celestial, pendingOrders = [], currentPrice, m
           <div className="absolute inset-0 flex items-center justify-center text-gray-400 text-xs">
             No celestial bodies yet
           </div>
-        ) : (
+        ) : !mountCanvas ? null : (
           <Suspense fallback={
             <div className="absolute inset-0 flex items-center justify-center text-gray-400 text-xs">
               Loading 3D scene...
@@ -117,7 +126,7 @@ const CelestialVisualization = ({ celestial, pendingOrders = [], currentPrice, m
               dpr={[1, 1.5]}
               camera={{ position: [0, 8, 12], fov: 45, near: 0.1, far: 100 }}
               gl={{ antialias: true, alpha: false }}
-              frameloop={motionPaused ? 'demand' : 'always'}
+              frameloop={frameloop}
               onCreated={({ gl }) => {
                 gl.setClearColor('#0f0f14')
                 canvasElRef.current = gl.domElement
