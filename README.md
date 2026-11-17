@@ -345,8 +345,21 @@ npm run test:changed                       # tests changed vs origin/main, plus 
 npm run test:admin                         # admin (vitest) suite
 npm run test:all                           # backend, then admin
 npm run lint:admin                         # ESLint on admin/ (react-hooks rules; warning ceiling in admin/package.json)
-npm run check                              # test:all, lint:admin, then the admin build
+npm run typecheck                          # tsc over the // @ts-check backend files, ratcheted against typecheck-baseline.json
+npm run check                              # test:all, lint:admin, typecheck, then the admin build
 ```
+
+**Typecheck ratchet.** `jsconfig.json` enables `checkJs`, and `npm run typecheck`
+(`scripts/typecheck.js`) runs `tsc --noEmit -p jsconfig.json` and compares the
+per-file error counts with `typecheck-baseline.json` (`{ "<posix path>": <count> }`,
+counts only). It fails when a file has more errors than its baseline or a file not in
+the baseline gains any; it does not fail when counts drop, it asks you to lower the
+baseline. After fixing errors, run `npm run typecheck -- --update` (only ever lowers
+counts) and commit the file. `--update --force` rewrites it to exactly the current
+counts; use it only when a toolchain bump legitimately shifts counts, and say so in the
+PR. `typescript` and `@types/node` are exact-pinned devDependencies, so the image
+(`npm ci --omit=dev`) is unaffected and the counts are the same on every machine.
+Errors inside `node_modules` are ignored. CI runs the same step in the `build` job.
 
 File or directory arguments replace the default file list; `--test-*` and other
 options keep forwarding to `node --test`. Every launch goes through the runner,
