@@ -1,1 +1,0 @@
-- The fund Config form now shows the server's own defaults for settings a fund has never saved (for example k Factor 0.65, Min Interval 120000 ms, Max Cycle Buys 15, Max Open Orders 100), and a setting saved as 0 now displays as 0 instead of reverting to a default. Saving an untouched form still changes nothing.

@@ -1,1 +1,0 @@
-- The regime dashboard now appears as soon as status and configuration arrive instead of waiting on fills, chart history and presets; those sections show their own loading placeholders, and the fills table, open orders and P&L totals never show "no fills" or a partial total while fills are still loading.

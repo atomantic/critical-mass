@@ -1,1 +1,0 @@
-- **Clearer arbitrage price columns** — the venue table now reads "Market buy (ask)", "Market sell (bid)", "Spread" (as a percentage) and "Size at buy / sell", and the Arbitrage page warns when the admin UI is older than the gateway and needs a rebuild.

@@ -1,1 +1,0 @@
-- **Dismissed arbitrage alerts are hidden** — dismissing an alert on the Arbitrage page now removes it from the open and history lists instead of leaving a faded card behind; a collapsed "Show N dismissed alerts" toggle brings them back.

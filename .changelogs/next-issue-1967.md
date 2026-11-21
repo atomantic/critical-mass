@@ -1,1 +1,0 @@
-- **[issue-1967] Releases now wait for passing CI** — a new version is tagged and published only after the CI run for that exact `main` commit succeeds, and superseded pull request CI runs are cancelled automatically.

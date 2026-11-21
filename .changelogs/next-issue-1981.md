@@ -1,2 +1,0 @@
-- **[issue-1981] Global pages no longer wait on a fund** — Overview, Backups, Notifications and Systems load immediately without fetching a fund's summary or engine status, and no longer show fund error banners or the fund tabs and Start/Stop/Close Fund controls.
-- **[issue-1981] Lighter fund page refreshes** — The admin reads a fund only after the fund list confirms it exists, skips the heavy summary on regime fund pages other than Config, and no longer reloads the fund list after every summary refresh.
