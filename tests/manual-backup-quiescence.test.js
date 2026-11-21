@@ -68,7 +68,7 @@ const setup = (t, { disconnected = false, resumeFails = false, createFails = fal
     // A short deadline makes accidental self-draining fail deterministically.
     drainPendingWrites: (_timeoutMs, matches) => drainPendingWrites(100, matches),
     SCORECARD_JOURNAL_WRITE_LABEL: JOURNAL_WRITE_LABEL,
-    updownService: service('updown', true), sentinelService: service('sentinel', false),
+    updownService: service('updown', true), sentinelService: service('sentinel', false), arbitrageService: service('arbitrage', true),
     createContextLogger: () => logger,
     // Capture the scheduler's kinds so tests run the server's own fund-state job.
     createBackupScheduler: (options) => options,
@@ -193,6 +193,8 @@ describe('manual backups use the server writer-quiescence gate', () => {
     assert.ok(w.events.includes('stop:sentinel'));
     assert.ok(w.events.includes('start:updown'));
     assert.ok(!w.events.includes('start:sentinel'), 'a previously stopped service stays stopped');
+    assert.ok(w.events.includes('stop:arbitrage'));
+    assert.ok(w.events.includes('start:arbitrage'));
     assert.equal(maintenance.isMaintenanceActive(), false);
   });
 
@@ -208,7 +210,7 @@ describe('manual backups use the server writer-quiescence gate', () => {
     const paused = w.events.indexOf('engine:backup-pause');
     assert.ok(paused >= 0 && paused < w.events.indexOf('fund-state'), 'engines must be quiesced before the copy');
     assert.ok(w.events.includes('engine:backup-resume'));
-    for (const name of ['updown', 'sentinel']) {
+    for (const name of ['updown', 'sentinel', 'arbitrage']) {
       assert.ok(!w.events.includes(`stop:${name}`), `${name} owns no file a fund-state snapshot copies`);
     }
     assert.equal(maintenance.isMaintenanceActive(), false);

@@ -74,14 +74,15 @@ describe('gateway shutdown owns admitted work', () => {
     for (const [maintenance, running, expected] of [
       // The paper books never persist on stop, so they always stop.
       [true, false, ['paper', 'shadow', 'logs']],
-      [true, true, ['updown', 'sentinel', 'paper', 'shadow', 'logs']],
-      [false, false, ['updown', 'sentinel', 'paper', 'shadow', 'logs']],
+      [true, true, ['updown', 'sentinel', 'arbitrage', 'paper', 'shadow', 'logs']],
+      [false, false, ['updown', 'sentinel', 'arbitrage', 'paper', 'shadow', 'logs']],
     ]) {
       const calls = [];
       const context = vm.createContext({
         isMaintenanceActive: () => maintenance,
         updownService: { getStatus: () => ({ running }), stop: () => calls.push('updown') },
         sentinelService: { getStatus: () => ({ running }), stop: () => calls.push('sentinel') },
+        arbitrageService: { getStatus: () => ({ running }), stop: () => calls.push('arbitrage') },
         upDipPaper: { stop: () => calls.push('paper') },
         upDipShadow: { stop: () => calls.push('shadow') },
         activeLogStreams: { stopAll: () => calls.push('logs') },

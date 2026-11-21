@@ -8,6 +8,7 @@ const SECTION_LINKS = [
   { to: '/systems', label: 'Systems' },
   { to: '/updown', label: 'UpDown' },
   { to: '/sentinel', label: 'Sentinel' },
+  { to: '/arbitrage', label: 'Arbitrage' },
   { to: '/ai', label: 'AI Providers' },
   { to: '/gateway', label: 'Gateway' },
 ]

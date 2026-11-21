@@ -36,10 +36,10 @@ const settingsLogger = (route) => createContextLogger({
 
 /**
  * @param {import('express').Express} app
- * @param {{notifier: Object, exchangeIPCMap: Object, rescheduleBackupTimer: Function, runBackup: Function, updownService?: Object, sentinelService?: Object, upDipPaper?: Object, upDipShadow?: Object, candleCache?: Object, getBackupSchedulerStatus?: Function, createRecoveryPoint?: Function, checkRestorePreconditions?: Function}} deps
+ * @param {{notifier: Object, exchangeIPCMap: Object, rescheduleBackupTimer: Function, runBackup: Function, updownService?: Object, sentinelService?: Object, arbitrageService?: Object, upDipPaper?: Object, upDipShadow?: Object, candleCache?: Object, getBackupSchedulerStatus?: Function, createRecoveryPoint?: Function, checkRestorePreconditions?: Function}} deps
  */
 module.exports = (app, deps) => {
-  const { notifier, exchangeIPCMap, rescheduleBackupTimer, updownService, sentinelService, upDipPaper, upDipShadow, candleCache, runBackup, getBackupSchedulerStatus } = deps;
+  const { notifier, exchangeIPCMap, rescheduleBackupTimer, updownService, sentinelService, arbitrageService, upDipPaper, upDipShadow, candleCache, runBackup, getBackupSchedulerStatus } = deps;
   // Both restore paths archive the live data (writers already stopped) before
   // replacing it, so a wrong restore can be undone from the Backups page.
   // Not pruned here: the next scheduled backup applies the retention count.
@@ -66,6 +66,14 @@ module.exports = (app, deps) => {
       resume: () => {
         sentinelService.reloadState?.();
         sentinelService.start();
+      },
+    },
+    arbitrageService && {
+      name: 'Arbitrage',
+      stop: () => arbitrageService.stop(),
+      resume: () => {
+        arbitrageService.reloadState();
+        arbitrageService.start();
       },
     },
     // The paper books keep their whole state in memory and rewrite it on every bar,

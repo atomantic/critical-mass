@@ -12,6 +12,7 @@ const { createNotificationSettings, NOTIFICATION_DEFAULTS } = require('./config-
 const { createAggressivenessSettings } = require('./config-settings/aggressiveness');
 const { createBackupSettings, BACKUP_INTERVAL_BOUNDS } = require('./config-settings/backup');
 const { createSentinelSettings, SENTINEL_DEFAULTS, SENTINEL_POLL_INTERVAL_BOUNDS, SENTINEL_MAX_ALERTS_BOUNDS } = require('./config-settings/sentinel');
+const { createArbitrageSettings, ARBITRAGE_DEFAULTS } = require('./config-settings/arbitrage');
 const fs = require('fs');
 const { atomicWriteSync } = require('./durable-write');
 const path = require('path');
@@ -713,6 +714,7 @@ const clearDeletedPair = (exchangeBlock, pair) => {
 const GLOBAL_KEYS_EXCLUDED_FROM_FUND_CONFIG = Object.freeze([
   'notifications',
   'sentinel',
+  'arbitrage',
   'backup',
   'aggressivenessPresets',
 ]);
@@ -1360,6 +1362,7 @@ const { getNotificationConfig, updateNotificationConfig } = createNotificationSe
 const { getAggressivenessPresets, updateAggressivenessPresets } = createAggressivenessSettings({ loadConfig, mutateConfig, computeDiff, configLogger });
 const { getBackupConfig, updateBackupConfig } = createBackupSettings({ loadConfig, mutateConfig, globalDefaults: GLOBAL_DEFAULTS });
 const { getSentinelConfig, updateSentinelConfig } = createSentinelSettings({ loadConfig, mutateConfig });
+const { getArbitrageConfig, updateArbitrageConfig } = createArbitrageSettings({ loadConfig, mutateConfig });
 
 const initializeConfigBase = () => {
   const result = reconcileBaseConfig({ dataDir: pathsModule.DATA_DIR, baseConfigFile: resolveBaseConfigFile(), logger: configLogger });
@@ -1421,6 +1424,10 @@ module.exports = {
   SENTINEL_DEFAULTS,
   SENTINEL_POLL_INTERVAL_BOUNDS,
   SENTINEL_MAX_ALERTS_BOUNDS,
+  // Cross-pair arbitrage monitor
+  getArbitrageConfig,
+  updateArbitrageConfig,
+  ARBITRAGE_DEFAULTS,
   DEFAULTS,
   GLOBAL_DEFAULTS,
   REGIME_DEFAULTS,

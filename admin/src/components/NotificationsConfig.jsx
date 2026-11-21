@@ -27,6 +27,11 @@ const EVENT_GROUPS = {
     { key: 'aggressiveness_suggestion', label: 'Aggressiveness Suggestions (advisory)' },
     { key: 'orders_consolidated', label: 'Orders Consolidated' },
   ],
+  'Arbitrage monitor': [
+    { key: 'arbitrage_opportunity', label: 'Executable Opportunity Opened' },
+    { key: 'arbitrage_dislocation', label: 'Non-executable Price Dislocation' },
+    { key: 'arbitrage_closed', label: 'Opportunity Closed' },
+  ],
 }
 
 function NotificationsConfig() {
