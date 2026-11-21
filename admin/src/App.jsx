@@ -28,6 +28,7 @@ const GatewayAccess = lazy(() => import('./components/GatewayAccess'))
 const UpDownDashboard = lazy(() => import('./components/updown/Dashboard'))
 const ScorecardAnalysis = lazy(() => import('./components/updown/ScorecardAnalysis'))
 const SentinelDashboard = lazy(() => import('./components/sentinel/Dashboard'))
+const ArbitrageDashboard = lazy(() => import('./components/arbitrage/Dashboard'))
 import AlertBanner from './components/sentinel/AlertBanner'
 import { ToastProvider, useToast, tradeEventToToast } from './components/Toast'
 import { useTradeEvents } from './hooks/useTradeEvents'
@@ -282,6 +283,8 @@ function AppContent() {
 
               {/* Sentinel news monitor */}
               <Route path="/sentinel" element={<SentinelDashboard />} />
+              {/* Cross-pair arbitrage monitor (alerts only) */}
+              <Route path="/arbitrage" element={<ArbitrageDashboard />} />
 
               {/* Gateway access + logs */}
               <Route path="/gateway" element={<GatewayAccess />} />

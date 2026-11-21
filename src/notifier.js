@@ -94,6 +94,9 @@ const EVENT_EMOJI = {
   sentinel_critical: '🚨',
   sentinel_warning: '⚠️',
   sentinel_info: 'ℹ️',
+  arbitrage_opportunity: '💱',
+  arbitrage_dislocation: '📉',
+  arbitrage_closed: '✅',
 };
 
 /**

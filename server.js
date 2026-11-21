@@ -58,7 +58,8 @@ const { DAILY_TREND_PARAMS, createDailyTrendEntryFilter } = require('./src/updow
 const { JOURNAL_WRITE_LABEL: SCORECARD_JOURNAL_WRITE_LABEL } = require('./src/updown/scorecard');
 const { createCandleCache } = require('./src/candle-cache');
 const { createSentinelService } = require('./src/sentinel/sentinel-service');
-const { getSentinelConfig, updateSentinelConfig } = require('./src/config-utils');
+const { getSentinelConfig, updateSentinelConfig, getArbitrageConfig, updateArbitrageConfig } = require('./src/config-utils');
+const { createArbitrageService } = require('./src/arbitrage/arbitrage-service');
 const { createRuntimeHealthMonitor } = require('./src/runtime-health');
 const { createOperatorAuth } = require('./src/operator-auth');
 const { resolveListenHosts, createCorsMiddleware, createSecurityHeadersMiddleware, bindGatewayListeners, watchTailscaleListeners } = require('./src/gateway-listen');
@@ -116,8 +117,8 @@ const LISTEN_HOSTS = resolveListenHosts(process.env.HOST, undefined, { allowRemo
 const CORS_ORIGINS = (process.env.CORS_ORIGINS || `http://localhost:${PORT},http://localhost:5571`).split(',').map(s => s.trim());
 
 // Rooms a client may subscribe to: engine events forwarded over IPC with a
-// room, and the UpDown and Sentinel feeds.
-const REALTIME_ROOMS = ['coinbase', 'gemini', 'cryptocom', 'updown', 'sentinel'];
+// room, and the UpDown, Sentinel and Arbitrage feeds.
+const REALTIME_ROOMS = ['coinbase', 'gemini', 'cryptocom', 'updown', 'sentinel', 'arbitrage'];
 
 // Admin realtime bus (src/realtime-bus.js). Upgrades are refused while the
 // gateway drains and need an operator session or bearer password from this
@@ -156,7 +157,7 @@ const gatewayShutdown = createGatewayShutdown({
     const ownedByMaintenance = (service) => isMaintenanceActive() && !service.getStatus().running;
     const failures = [];
     for (const [name, stop] of [
-      ...[['UpDown', updownService], ['Sentinel', sentinelService]]
+      ...[['UpDown', updownService], ['Sentinel', sentinelService], ['Arbitrage', arbitrageService]]
         .filter(([, service]) => !ownedByMaintenance(service))
         .map(([serviceName, service]) => [serviceName, () => service.stop()]),
       ['UpDown paper book', () => upDipPaper.stop()],
@@ -240,10 +241,10 @@ const runBackup = (kind, create, { stopGatewayWriters = true } = {}) => performB
   configuredExchanges: getConfiguredExchanges().filter((name) => exchangeIPCMap[name]),
   drainPendingWrites: stopGatewayWriters ? drainPendingWrites
     : (timeoutMs) => drainPendingWrites(timeoutMs, (entry) => entry.label !== SCORECARD_JOURNAL_WRITE_LABEL),
-  gatewayWriters: stopGatewayWriters ? [updownService, sentinelService].map((service, index) => {
+  gatewayWriters: stopGatewayWriters ? [['UpDown', updownService], ['Sentinel', sentinelService], ['Arbitrage', arbitrageService]].map(([name, service]) => {
     const wasRunning = service.getStatus().running;
     return {
-      name: index === 0 ? 'UpDown' : 'Sentinel',
+      name,
       stop: () => service.stop(),
       resume: () => wasRunning ? service.start() : undefined,
     };
@@ -417,13 +418,19 @@ ipcEventListeners.push((name, msg) => {
 
 const sentinelService = createSentinelService(io, { readJSON, writeJSON, DATA_DIR, getSentinelConfig });
 
+// ============ Cross-pair Arbitrage Monitor ============
+// Public order books only; alerts, never orders.
+
+const arbitrageService = createArbitrageService(io, { readJSON, writeJSON, DATA_DIR, getArbitrageConfig });
+
 // ============ Route Modules ============
 
 const sharedDeps = { trackBackgroundWork: gatewayShutdown.track, io, parseTSV, calculateCostBasis, getNextTradeInfo, readJSON, writeJSON, DATA_DIR, notifier, exchangeIPCMap, rescheduleBackupTimer };
 
 require('./src/routes/sentinel-routes')(routes, { ...sharedDeps, sentinelService, getSentinelConfig, updateSentinelConfig });
+require('./src/routes/arbitrage-routes')(routes, { arbitrageService, getArbitrageConfig, updateArbitrageConfig });
 require('./src/routes/ai-routes')(routes, sharedDeps);
-require('./src/routes/settings-routes')(routes, { ...sharedDeps, updownService, sentinelService, upDipPaper, upDipShadow, candleCache, runBackup, getBackupSchedulerStatus: () => backupScheduler.getStatus() });
+require('./src/routes/settings-routes')(routes, { ...sharedDeps, updownService, sentinelService, arbitrageService, upDipPaper, upDipShadow, candleCache, runBackup, getBackupSchedulerStatus: () => backupScheduler.getStatus() });
 require('./src/routes/candle-routes')(routes, { candleCache });
 require('./src/routes/updown-routes')(routes, { ...sharedDeps, updownService, candleCache, upDipPaper, upDipShadow });
 require('./src/routes/exchange-routes')(routes, sharedDeps);
@@ -662,6 +669,7 @@ const startGatewayServices = () => {
 
   gatewayShutdown.track(updownService.start()).catch((err) => log('ERROR', `UpDown startup failed: ${err.message}`));
   sentinelService.start();
+  arbitrageService.start();
 
   exchangeRefreshTimer = setInterval(() => { for (const e of getConfiguredExchanges()) KNOWN_EXCHANGES.add(e); }, 60_000);
 
