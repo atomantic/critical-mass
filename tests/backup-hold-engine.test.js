@@ -335,4 +335,27 @@ describe('in-place backup hold with a real regime engine (#1945)', () => {
     assert.equal(exec.getPendingCounts().entries, 0);
     assert.equal(getPendingWrites().filter((w) => w.label.startsWith('engine-stale-order:')).length, 0);
   });
+
+  it('a stale-order check parked during the hold is dropped when stop() ends the hold, never reaching the exchange (#1959)', async (t) => {
+    const exchangeCalls = [];
+    const coinbase = getAdapter('coinbase');
+    t.mock.method(coinbase, 'getOrder', async (id) => { exchangeCalls.push(`getOrder:${id}`); return { status: 'OPEN', filledSize: 0 }; });
+    t.mock.method(coinbase, 'cancelOrder', async (id) => { exchangeCalls.push(`cancel:${id}`); return { success: true }; });
+    const h = setup('__testbackupholdstalestop__', { realExecutor: true });
+    const exec = h.eng._test.getOrderExecutor();
+    const clock = useVirtualClock(t);
+    t.after(() => exec.clearTimers());
+
+    assert.deepEqual(await h.eng.holdForBackup(), { quiesced: true });
+    exec.restorePendingOrder('stale-at-stop', { type: 'entry', side: 'buy', price: 2000, size: 0.01, placedAt: Date.now() - 600_000, staleMs: 60_000 });
+    await clock.advance(6_000);
+    assert.equal(getPendingWrites().filter((w) => w.label.startsWith('engine-stale-order:')).length, 1, 'the fired check is parked');
+
+    // stop() releases the hold, which wakes the parked check into a stopping engine.
+    await clock.run(h.eng.stop());
+    await clock.advance(3_000);
+
+    assert.deepEqual(exchangeCalls, [], 'no status read or cancel after the engine stopped');
+    assert.equal(getPendingWrites().filter((w) => w.label.startsWith('engine-stale-order:')).length, 0, 'the dropped check still settles its tracked write');
+  });
 });

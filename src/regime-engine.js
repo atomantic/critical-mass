@@ -496,8 +496,15 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         getRecordedSizeForOrder: (orderId) => fillLedger.getRecordedSizeForOrder(orderId),
         onEntryCancelled: (orderId, info) => handleEntryCancelled(orderId, info),
         // A stale-order timer is a top-level writer (#1959): during a backup
-        // hold it parks before cancelling, then re-checks the order.
-        withStaleCheckFence: (run) => fencedWrite(`engine-stale-order:${fundLabel}`, run),
+        // hold it parks before cancelling, then re-checks the order. stop()
+        // clears unfired timers but wakes parked checks when it releases the
+        // hold, so a check that parked across a stop is dropped instead of
+        // reading and cancelling orders on the exchange while shutdown drains.
+        withStaleCheckFence: (run) => {
+          const stopsAtFire = stopGeneration;
+          return fencedWrite(`engine-stale-order:${fundLabel}`,
+            () => (stopGeneration === stopsAtFire ? run() : Promise.resolve()));
+        },
       }, pair);
 
   validateExecutor(orderExecutor, isDryRun ? 'dry-run' : 'live');
@@ -552,6 +559,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
   let isRunning = false;
   let isStarting = false; // reentrancy guard for start() (#113)
+  // Bumped by every stop(). A writer parked at the backup fence compares it
+  // after the park to tell whether the engine was stopped meanwhile.
+  let stopGeneration = 0;
   // Entry admission (#1009). An entry evaluation captures this generation
   // before its balance preflight; stop() and close() bump it synchronously and
   // a successful start opens a fresh one, so an evaluation still awaiting the
@@ -1239,6 +1249,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     // Mark as not running FIRST to prevent callbacks from taking action
     isRunning = false;
+    stopGeneration += 1;
     // A stop ends any backup hold on this fund: writers parked at the fence
     // wake into a stopping engine (fills are refused once the gate closes
     // below, and recovered on the next start) instead of waiting it out. The
