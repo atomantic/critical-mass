@@ -23,8 +23,9 @@ const snapshot = {
       analysis: {
         home: 'USD', medianImplied: 96000, notionalUsd: 1000, unconvertible: [],
         pairs: [
-          { symbol: 'XXBTZUSD', pair: 'BTC/USD', bid: 95990, ask: 96010, impliedMid: 96000, deviationBps: 0, conversionSource: 'home', conversionPath: [] },
-          { symbol: 'XXBTZCAD', pair: 'BTC/CAD', bid: 67100, ask: 67200, impliedMid: 47950, deviationBps: -5005, conversionSource: 'venue', conversionPath: ['USD/CAD'] },
+          { symbol: 'XXBTZUSD', pair: 'BTC/USD', bid: 95990, ask: 96010, impliedMid: 96000, deviationBps: 0, conversionSource: 'home', conversionPath: [], priceBasis: 'executable', edgeBps: -80, spreadBps: 0 },
+          { symbol: 'XXBTZCAD', pair: 'BTC/CAD', bid: 67100, ask: 67200, impliedMid: 47950, deviationBps: -5005, conversionSource: 'venue', conversionPath: ['USD/CAD'], priceBasis: 'executable', edgeBps: 9800, edgeSide: 'buy', spreadBps: 15 },
+          { symbol: 'btceur', pair: 'BTC/EUR', bid: 59051, ask: 77600, impliedMid: 75090, deviationBps: 2479, conversionSource: 'external', conversionPath: null, priceBasis: 'indicative', edgeBps: 741, edgeSide: 'sell', spreadBps: 2716 },
         ],
         routes: [{ id: 'a>b', buyPair: 'BTC/CAD', sellPair: 'BTC/USD', grossBps: 9900, atNotional: { netBps: 9800 } }],
       },
@@ -56,6 +57,12 @@ it('shows the open opportunity, the venue pair table and saves settings changes'
   expect(screen.getByText('-50.05%')).toBeTruthy()
   expect(screen.getAllByText('+9,800 bps').length).toBeGreaterThan(0)
   expect(screen.getByText(/nothing here places orders/)).toBeTruthy()
+  // A pair with no on-venue conversion is badged and greyed, its edge uncolored.
+  const eurRow = screen.getByText('BTC/EUR', { selector: 'td' }).closest('tr')
+  expect(eurRow.className).toContain('opacity-60')
+  expect(eurRow.textContent).toContain('no round trip')
+  expect(screen.getByText('+741 bps sell').className).toContain('text-gray-400')
+  expect(screen.getByText('+9,800 bps buy').className).toContain('text-green-300')
 
   const input = await screen.findByLabelText('Alert at net edge (bps, after fees)')
   fireEvent.change(input, { target: { value: '75' } })

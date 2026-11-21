@@ -128,6 +128,55 @@ describe('analyzeVenue', () => {
   });
 });
 
+describe('spread-aware pair edges (Gemini EUR/GBP readings)', () => {
+  // Shaped on a live Gemini poll: BTC/GBP converts on venue through a thin
+  // GUSD/GBP book, BTC/EUR has no on-venue EUR conversion at all, and both
+  // BTC books are very wide, so their mids sit 25-28% over BTC/USD.
+  const markets = [
+    market('btcusd', 'BTC', 'USD'),
+    market('btcusdt', 'BTC', 'USDT'),
+    market('btcgbp', 'BTC', 'GBP'),
+    market('btceur', 'BTC', 'EUR'),
+    market('usdtusd', 'USDT', 'USD'),
+    market('gusdgbp', 'GUSD', 'GBP'),
+  ];
+  const plan = planVenue({ markets, quoteCurrencies: [...QUOTES, 'GUSD', 'GBP'], parity: [['GUSD', 'USD']] });
+  const books = {
+    btcusd: { bids: [[60_176.91, 2]], asks: [[60_176.92, 2]] },
+    btcusdt: { bids: [[60_170, 2]], asks: [[60_180, 2]] },
+    usdtusd: deep(1, 0.0001, 10_000_000),
+    gusdgbp: { bids: [[0.76, 50_000]], asks: [[0.77, 50_000]] },
+    btcgbp: { bids: [[43_464.24, 0.05]], asks: [[74_561.97, 0.05]] },
+    btceur: { bids: [[59_051.53, 0.02]], asks: [[77_600.11, 0.02]] },
+  };
+  const analysis = analyzeVenue({ venue: 'gemini', plan, books, feeBps: 40, notionalUsd: 1000, externalHomePerUnit: { EUR: 1.099 } });
+  const byPair = Object.fromEntries(analysis.pairs.map((p) => [p.pair, p]));
+
+  it('shows a mid premium for the wide books but a negative executable edge for GBP', () => {
+    assert.ok(byPair['BTC/GBP'].deviationBps > 2000, `mid deviation ${byPair['BTC/GBP'].deviationBps}`);
+    assert.equal(byPair['BTC/GBP'].priceBasis, 'executable');
+    // Its bid converts to well under the BTC/USD ask, so selling via GBP loses.
+    assert.ok(byPair['BTC/GBP'].sellPrice < 60_176.92);
+    assert.ok(byPair['BTC/GBP'].edgeBps < 0, `edge ${byPair['BTC/GBP'].edgeBps}`);
+    assert.ok(analysis.routes.every((r) => r.best === null), 'no executable loop clears fees');
+  });
+
+  it('prices EUR from its top of book at reference FX and marks it indicative', () => {
+    const eur = byPair['BTC/EUR'];
+    assert.equal(eur.conversionSource, 'external');
+    assert.equal(eur.priceBasis, 'indicative');
+    assert.equal(eur.executable, false);
+    assert.ok(eur.edgeBps > 500 && eur.edgeSide === 'sell', `edge ${eur.edgeBps} ${eur.edgeSide}`);
+    assert.ok(!analysis.routes.some((r) => r.buy === 'btceur' || r.sell === 'btceur'));
+  });
+
+  it('reports spread and top-of-book depth, and lists indicative pairs last', () => {
+    assert.ok(byPair['BTC/GBP'].spreadBps > 4000);
+    assert.ok(Math.abs(byPair['BTC/EUR'].topBidHome - 59_051.53 * 0.02 * 1.099) < 1);
+    assert.equal(analysis.pairs.at(-1).pair, 'BTC/EUR');
+  });
+});
+
 describe('venue symbol helpers', () => {
   it('splits Gemini-style concatenated symbols', () => {
     const known = new Set(['BTC', 'USD', 'GUSD', 'USDT', 'EUR']);

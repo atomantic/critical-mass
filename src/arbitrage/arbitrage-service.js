@@ -187,8 +187,10 @@ const createArbitrageService = (io, deps) => {
 
   /** The pair farther from the venue median is the anomalous one. */
   const anomalousPair = (analysis, route) => {
-    const dev = (symbol) => Math.abs(analysis.pairs.find((p) => p.symbol === symbol)?.deviationBps ?? 0);
-    return dev(route.buy) >= dev(route.sell) ? route.buy : route.sell;
+    // Spread-aware edge, not mid deviation: a wide book's mid can sit far
+    // from the reference while neither side of it is tradeable at a profit.
+    const edge = (symbol) => analysis.pairs.find((p) => p.symbol === symbol)?.edgeBps ?? -Infinity;
+    return edge(route.buy) >= edge(route.sell) ? route.buy : route.sell;
   };
 
   /**
@@ -232,12 +234,16 @@ const createArbitrageService = (io, deps) => {
         },
       });
     }
+    // Executable pairs alert only as opportunities (net of fees, real depth).
+    // A dislocation is the watch-only case: a pair that cannot complete a
+    // round trip on the venue (no on-venue conversion, e.g. EUR on Gemini)
+    // whose top-of-book edge at reference FX is large. It is never actionable.
     for (const pair of analysis.pairs) {
-      if (!Number.isFinite(pair.deviationBps) || Math.abs(pair.deviationBps) < config.dislocationAlertBps) continue;
+      if (pair.priceBasis !== 'indicative' || !Number.isFinite(pair.edgeBps) || pair.edgeBps < config.dislocationAlertBps) continue;
       found.push({
         key: `dislocation:${venueResult.id}:${pair.symbol}`,
         type: 'dislocation',
-        severity: pair.executable ? 'warning' : 'info',
+        severity: 'info',
         venue: venueResult.id,
         venueLabel: venueResult.label,
         pair: pair.pair,
@@ -248,8 +254,14 @@ const createArbitrageService = (io, deps) => {
           medianImplied: analysis.medianImplied,
           conversionSource: pair.conversionSource,
           conversionPath: pair.conversionPath,
-          executable: pair.executable,
+          executable: false,
           spreadBps: pair.spreadBps,
+          edgeBps: pair.edgeBps,
+          edgeSide: pair.edgeSide,
+          buyPrice: pair.buyPrice,
+          sellPrice: pair.sellPrice,
+          topBidHome: pair.topBidHome,
+          topAskHome: pair.topAskHome,
         },
       });
     }
@@ -257,7 +269,7 @@ const createArbitrageService = (io, deps) => {
   };
 
   /** Rank used for "peak": profit for opportunities, |deviation| for dislocations. */
-  const magnitude = (type, measure) => type === 'opportunity' ? (measure.profitUsd ?? 0) : Math.abs(measure.deviationBps ?? 0);
+  const magnitude = (type, measure) => type === 'opportunity' ? (measure.profitUsd ?? 0) : (measure.edgeBps ?? Math.abs(measure.deviationBps ?? 0));
 
   const notifyOpened = (alert) => {
     const m = alert.current;
@@ -273,11 +285,11 @@ const createArbitrageService = (io, deps) => {
         ].join('\n'),
       });
     } else if (!m.executable) {
-      // An executable dislocation already pings as an opportunity if it clears fees.
+      // Dislocations are watch-only: the pair cannot round-trip on the venue.
       tradeEvents.emit('trade', {
         type: 'arbitrage_dislocation',
         exchange: 'arbitrage',
-        message: `*Price dislocation* ${tg(alert.venueLabel)} ${tg(alert.pair)}: ${fmtBps(m.deviationBps)} vs venue median (${m.conversionSource === 'external' ? 'reference FX, not executable on venue' : 'not executable'})`,
+        message: `*Price dislocation (watch only)* ${tg(alert.venueLabel)} ${tg(alert.pair)}: ${fmtBps(m.edgeBps)} top-of-book edge at reference FX. Not executable on venue: no ${tg(alert.pair.split('/')[1])} conversion market there.`,
       });
     }
   };
@@ -287,7 +299,7 @@ const createArbitrageService = (io, deps) => {
     tradeEvents.emit('trade', {
       type: 'arbitrage_closed',
       exchange: 'arbitrage',
-      message: `Arbitrage ${alert.type} closed: ${tg(alert.venueLabel)} ${tg(alert.pair)} after ${minutes} min (peak ${alert.type === 'opportunity' ? `${fmtBps(alert.peak.netBps)}, ${fmtUsd(alert.peak.profitUsd)}` : fmtBps(alert.peak.deviationBps)})`,
+      message: `Arbitrage ${alert.type} closed: ${tg(alert.venueLabel)} ${tg(alert.pair)} after ${minutes} min (peak ${alert.type === 'opportunity' ? `${fmtBps(alert.peak.netBps)}, ${fmtUsd(alert.peak.profitUsd)}` : fmtBps(alert.peak.edgeBps ?? alert.peak.deviationBps)})`,
     });
   };
 

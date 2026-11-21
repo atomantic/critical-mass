@@ -30,6 +30,9 @@ const { convertThroughBook, midRate, midPrice, spreadBps, isUsableBook } = requi
  * }} VenuePlan
  */
 
+/** Books wider than this do not set the venue reference price. */
+const REFERENCE_MAX_SPREAD_BPS = 200;
+
 const DEFAULT_SIZE_GRID_USD = [100, 250, 500, 1_000, 2_500, 5_000, 10_000, 25_000, 50_000, 100_000, 250_000, 500_000, 1_000_000];
 
 const pairLabel = (market) => `${market.base}/${market.quote}`;
@@ -204,13 +207,27 @@ const analyzeVenue = ({
       executable: Boolean(path && isUsableBook(book) && conversionSource !== 'external'),
       /** @type {number|null} */ deviationBps: null,
       /** @type {number|null} */ externalDeviationBps: null,
+      /** @type {'executable'|'indicative'|null} */ priceBasis: null,
+      /** @type {number|null} */ buyPrice: null,
+      /** @type {number|null} */ sellPrice: null,
+      /** @type {number|null} */ edgeBps: null,
+      /** @type {'buy'|'sell'|null} */ edgeSide: null,
+      depthLimited: false,
+      /** @type {number|null} */ topBidHome: null,
+      /** @type {number|null} */ topAskHome: null,
+      /** @type {number|null} */ topBidSize: null,
+      /** @type {number|null} */ topAskSize: null,
     };
   });
 
-  // The reference price is the median implied price. With fewer than three
-  // priced pairs a median cannot say which one slipped, so anchor to the
-  // venue's home-quote pair (BTC/USD) when it is priced.
-  const priced = pairs.filter((p) => Number.isFinite(p.impliedMid));
+  // The reference price is the median implied price of the tight books
+  // (spread <= REFERENCE_MAX_SPREAD_BPS), so a couple of wide, thin books
+  // cannot drag it; with no tight book every priced pair counts. With fewer
+  // than three such pairs a median cannot say which one slipped, so anchor to
+  // the venue's home-quote pair (BTC/USD) when it is priced.
+  const allPriced = pairs.filter((p) => Number.isFinite(p.impliedMid));
+  const tight = allPriced.filter((p) => Number.isFinite(p.spreadBps) && p.spreadBps <= REFERENCE_MAX_SPREAD_BPS);
+  const priced = tight.length ? tight : allPriced;
   const homePair = priced.find((p) => p.quote === home);
   const medianImplied = priced.length < 3 && homePair ? homePair.impliedMid : median(priced.map((p) => p.impliedMid));
   for (const pair of pairs) {
@@ -218,6 +235,56 @@ const analyzeVenue = ({
     // The venue's own FX market can be the broken leg; compare with reference FX too.
     pair.externalDeviationBps = medianImplied && pair.externalImplied ? round(((pair.externalImplied - medianImplied) / medianImplied) * 10_000, 1) : null;
   }
+
+  // Spread-aware view. A mid hides a wide book: Gemini BTC/GBP can show a mid
+  // 28% over BTC/USD while its bid converts to less than the BTC/USD ask. So
+  // each pair also gets the price a taker actually gets, walked through the
+  // pair's book and its conversion path at `notionalUsd` with fees on every
+  // leg: buyPrice (home spent per BTC bought via this pair) and sellPrice
+  // (home received per BTC sold via it). A pair without an on-venue path is
+  // priced from its top of book at reference FX, fee-free, and stays
+  // indicative: it cannot complete a round trip on the venue.
+  const referenceSize = medianImplied ? notionalUsd / medianImplied : null;
+  for (const pair of pairs) {
+    const market = plan.assetMarkets.find((m) => m.symbol === pair.symbol);
+    const book = books[pair.symbol];
+    pair.priceBasis = null;
+    pair.buyPrice = null;
+    pair.sellPrice = null;
+    pair.depthLimited = false;
+    pair.topBidHome = isUsableBook(book) && pair.homePerQuote ? round(book.bids[0][0] * book.bids[0][1] * pair.homePerQuote) : null;
+    pair.topAskHome = isUsableBook(book) && pair.homePerQuote ? round(book.asks[0][0] * book.asks[0][1] * pair.homePerQuote) : null;
+    pair.topBidSize = isUsableBook(book) ? book.bids[0][1] : null;
+    pair.topAskSize = isUsableBook(book) ? book.asks[0][1] : null;
+    if (pair.executable && referenceSize) {
+      const path = plan.paths[market.quote];
+      const bought = simulateLegs(notionalUsd, [...path, { market, from: market.quote, to: asset }], books, feeBps);
+      const sold = simulateLegs(referenceSize, [{ market, from: asset, to: market.quote }, ...reversePath(path)], books, feeBps);
+      if (bought && bought.out > 0) pair.buyPrice = round(notionalUsd / bought.out);
+      if (sold && sold.out > 0) pair.sellPrice = round(sold.out / referenceSize);
+      pair.depthLimited = Boolean(bought?.exhausted || sold?.exhausted);
+      pair.priceBasis = 'executable';
+    } else if (isUsableBook(book) && pair.homePerQuote) {
+      pair.buyPrice = round(book.asks[0][0] * pair.homePerQuote);
+      pair.sellPrice = round(book.bids[0][0] * pair.homePerQuote);
+      pair.priceBasis = 'indicative';
+    }
+  }
+  // Edge against the best executable price on any OTHER pair of the venue:
+  // sell here and buy back elsewhere, or buy here and sell elsewhere.
+  for (const pair of pairs) {
+    const others = pairs.filter((p) => p !== pair && p.priceBasis === 'executable');
+    const bestBuyElsewhere = Math.min(...others.map((p) => p.buyPrice).filter(Number.isFinite));
+    const bestSellElsewhere = Math.max(...others.map((p) => p.sellPrice).filter(Number.isFinite));
+    const sellEdge = Number.isFinite(pair.sellPrice) && Number.isFinite(bestBuyElsewhere) ? ((pair.sellPrice - bestBuyElsewhere) / bestBuyElsewhere) * 10_000 : null;
+    const buyEdge = Number.isFinite(pair.buyPrice) && Number.isFinite(bestSellElsewhere) ? ((bestSellElsewhere - pair.buyPrice) / pair.buyPrice) * 10_000 : null;
+    const edges = [sellEdge, buyEdge].filter(Number.isFinite);
+    pair.edgeBps = edges.length ? round(Math.max(...edges), 1) : null;
+    pair.edgeSide = pair.edgeBps === null ? null : pair.edgeBps === round(sellEdge, 1) ? 'sell' : 'buy';
+  }
+  // Best actionable first; indicative pairs after every executable one.
+  pairs.sort((a, b) => (a.priceBasis === 'executable' ? 0 : 1) - (b.priceBasis === 'executable' ? 0 : 1)
+    || (b.edgeBps ?? -Infinity) - (a.edgeBps ?? -Infinity));
 
   const executable = plan.assetMarkets.filter((m) => pairs.find((p) => p.symbol === m.symbol)?.executable);
   const routes = [];
