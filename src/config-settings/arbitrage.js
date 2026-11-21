@@ -29,6 +29,9 @@ const ARBITRAGE_DEFAULTS = {
   // An indicative dislocation: a pair's implied price this far from the venue
   // median, whether or not the loop is executable (e.g. no on-venue FX leg).
   dislocationAlertBps: 300,
+  // ...and only when that pair's own book is at most this wide. A 27% spread
+  // (Gemini BTC/EUR) says the book is empty, not that BTC is mispriced.
+  dislocationMaxSpreadBps: 200,
   // Polls in a row a condition must hold before an alert opens / fails before it closes.
   confirmPolls: 2,
   closeAfterPolls: 3,
@@ -56,6 +59,7 @@ const ARBITRAGE_NUMERIC_BOUNDS = {
   alertMinNetBps: [0, 10_000, false],
   minAlertNotionalUsd: [0, 10_000_000, false],
   dislocationAlertBps: [10, 10_000, false],
+  dislocationMaxSpreadBps: [0, 10_000, false],
   confirmPolls: [1, 20, true],
   closeAfterPolls: [1, 100, true],
   bookDepth: [5, 200, true],

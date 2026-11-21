@@ -54,7 +54,8 @@ it('shows the open opportunity, the venue pair table and saves settings changes'
   render(<ArbitrageDashboard />)
   expect(await screen.findByText('Opportunity')).toBeTruthy()
   expect(screen.getByText('BTC/CAD', { selector: 'td' })).toBeTruthy()
-  expect(screen.getByText('-50.05%')).toBeTruthy()
+  // The mid-based deviation is no longer a table column; edge is.
+  expect(screen.queryByText('-50.05%')).toBeNull()
   expect(screen.getAllByText('+9,800 bps').length).toBeGreaterThan(0)
   expect(screen.getByText(/nothing here places orders/)).toBeTruthy()
   // A pair with no on-venue conversion is badged and greyed, its edge uncolored.
@@ -72,4 +73,23 @@ it('shows the open opportunity, the venue pair table and saves settings changes'
     expect(put).toBeTruthy()
     expect(JSON.parse(put[1].body)).toEqual({ alertMinNetBps: 75 })
   })
+})
+
+it('hides dismissed alerts behind a collapsed toggle', async () => {
+  const dismissed = { ...opportunity, id: 'opp-2', pair: 'BTC/EUR', dismissed: true, status: 'closed', closedAt: new Date().toISOString() }
+  fetch.mockImplementation(async (url) => {
+    if (url === '/api/arbitrage/status') return ok(status)
+    if (url === '/api/arbitrage/snapshot') return ok(snapshot)
+    if (url.startsWith('/api/arbitrage/alerts')) return ok({ success: true, items: [opportunity, dismissed] })
+    return ok({ success: true })
+  })
+  render(<ArbitrageDashboard />)
+  const toggle = await screen.findByRole('button', { name: 'Show 1 dismissed alert' })
+  expect(toggle.getAttribute('aria-expanded')).toBe('false')
+  // Only the undismissed opportunity card renders until the toggle opens.
+  expect(screen.getAllByText('Opportunity')).toHaveLength(1)
+  expect(screen.getByText('No closed alerts yet.')).toBeTruthy()
+  fireEvent.click(toggle)
+  expect(screen.getAllByText('Opportunity')).toHaveLength(2)
+  expect(screen.getByRole('button', { name: 'Hide 1 dismissed alert' })).toBeTruthy()
 })

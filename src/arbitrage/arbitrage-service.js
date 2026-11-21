@@ -240,6 +240,7 @@ const createArbitrageService = (io, deps) => {
     // whose top-of-book edge at reference FX is large. It is never actionable.
     for (const pair of analysis.pairs) {
       if (pair.priceBasis !== 'indicative' || !Number.isFinite(pair.edgeBps) || pair.edgeBps < config.dislocationAlertBps) continue;
+      if (!Number.isFinite(pair.spreadBps) || pair.spreadBps > config.dislocationMaxSpreadBps) continue;
       found.push({
         key: `dislocation:${venueResult.id}:${pair.symbol}`,
         type: 'dislocation',

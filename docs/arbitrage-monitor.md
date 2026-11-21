@@ -47,8 +47,13 @@ Reference FX (indicative only) comes from `api.frankfurter.app` (ECB rates).
 * **Opportunity** (critical): best route clears `alertMinNetBps` net at a size
   of at least `minAlertNotionalUsd`. One alert per anomalous pair.
 * **Dislocation** (watch only): a pair that cannot round-trip on the venue
-  whose top-of-book edge at reference FX is at least `dislocationAlertBps`.
-  Executable pairs alert only as opportunities.
+  whose top-of-book edge at reference FX is at least `dislocationAlertBps`
+  and whose own spread is at most `dislocationMaxSpreadBps` (default 200), so
+  an empty-looking book never alerts. Shown in a muted "Watch only" section,
+  not with the opportunities. Executable pairs alert only as opportunities.
+
+The admin UI is a built bundle served from `admin/dist`. After pulling dashboard
+changes, run `npm run build` (UPGRADE.md step 4) or the page keeps the old UI.
 
 An alert opens after `confirmPolls` polls in a row, tracks its current and
 peak edge while it lasts, and closes after `closeAfterPolls` polls without the
