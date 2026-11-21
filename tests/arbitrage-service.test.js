@@ -19,7 +19,7 @@ const HEALTHY = {
 };
 const SLIPPED = { ...HEALTHY, BTCCAD: { bids: [[67_100, 0.5]], asks: [[67_200, 0.5], [134_500, 5]] } };
 
-const makeService = ({ configOverrides = {} } = {}) => {
+const makeService = ({ configOverrides = {}, markets = MARKETS, fx = null } = {}) => {
   let books = HEALTHY;
   let fail = false;
   const source = {
@@ -27,7 +27,7 @@ const makeService = ({ configOverrides = {} } = {}) => {
     label: 'Kraken',
     minRequestSpacingMs: 0,
     parity: [],
-    listMarkets: async () => MARKETS,
+    listMarkets: async () => markets,
     fetchBook: async (symbol) => {
       if (fail) throw new Error('down');
       return books[symbol];
@@ -38,7 +38,7 @@ const makeService = ({ configOverrides = {} } = {}) => {
     enabled: true,
     confirmPolls: 2,
     closeAfterPolls: 2,
-    referenceFx: { enabled: false, refreshMs: 3_600_000 },
+    referenceFx: { enabled: Boolean(fx), refreshMs: 3_600_000 },
     venues: {
       coinbase: { enabled: false, takerFeeBps: 60 },
       gemini: { enabled: false, takerFeeBps: 40 },
@@ -56,6 +56,7 @@ const makeService = ({ configOverrides = {} } = {}) => {
     getArbitrageConfig: () => config,
     sources: { kraken: source },
     sleep: async () => {},
+    fetchReferenceFx: async () => fx || {},
   });
   return {
     service,
@@ -146,6 +147,25 @@ describe('arbitrage service episodes', () => {
     await service.forcePoll();
     service.clearAlerts();
     assert.equal(service.getAlerts().length, 0);
+  });
+
+  it('raises watch-only alerts only for a no-round-trip pair whose book is tight', async () => {
+    const markets = [...MARKETS, { symbol: 'BTCEUR', base: 'BTC', quote: 'EUR' }];
+    const { service, setBooks } = makeService({ markets, fx: { EUR: 1.1 } });
+    // Gemini-shaped: an empty-looking EUR book with a ~27% spread whose bid
+    // still converts above the USD ask. No alert of any kind.
+    setBooks({ ...HEALTHY, BTCEUR: { bids: [[59_051, 0.02]], asks: [[77_600, 0.02]] } });
+    await service.forcePoll();
+    await service.forcePoll();
+    assert.equal(service.getAlerts().length, 0, JSON.stringify(service.getAlerts()));
+
+    // A tight EUR book 8% rich is worth watching, but never as an opportunity.
+    setBooks({ ...HEALTHY, BTCEUR: { bids: [[59_000, 1]], asks: [[59_050, 1]] } });
+    await service.forcePoll();
+    await service.forcePoll();
+    const open = service.getAlerts({ status: 'open' });
+    assert.deepEqual(open.map((a) => `${a.type}:${a.pair}`), ['dislocation:BTC/EUR']);
+    assert.equal(open[0].severity, 'info');
   });
 
   it('does nothing while disabled', async () => {

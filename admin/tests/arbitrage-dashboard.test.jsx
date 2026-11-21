@@ -54,7 +54,8 @@ it('shows the open opportunity, the venue pair table and saves settings changes'
   render(<ArbitrageDashboard />)
   expect(await screen.findByText('Opportunity')).toBeTruthy()
   expect(screen.getByText('BTC/CAD', { selector: 'td' })).toBeTruthy()
-  expect(screen.getByText('-50.05%')).toBeTruthy()
+  // The mid-based deviation is no longer a table column; edge is.
+  expect(screen.queryByText('-50.05%')).toBeNull()
   expect(screen.getAllByText('+9,800 bps').length).toBeGreaterThan(0)
   expect(screen.getByText(/nothing here places orders/)).toBeTruthy()
   // A pair with no on-venue conversion is badged and greyed, its edge uncolored.
