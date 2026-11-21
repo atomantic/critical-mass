@@ -97,19 +97,19 @@ describe('arbitrage service episodes', () => {
     assert.equal(opportunity.current.buyPair, 'BTC/CAD');
     assert.equal(opportunity.current.sellPair, 'BTC/USD');
     assert.ok(opportunity.current.netBps > 50);
-    assert.ok(open.some((a) => a.type === 'dislocation' && a.pair === 'BTC/CAD'));
+    // An executable pair alerts only as an opportunity, never also as a dislocation.
+    assert.equal(open.filter((a) => a.type === 'dislocation').length, 0);
     assert.ok(emitted.some((e) => e.room === 'arbitrage' && e.event === 'arbitrage:alert'));
 
     const ping = capture.events.find((e) => e.type === 'arbitrage_opportunity');
     assert.ok(ping, 'opportunity notifies');
     assert.match(ping.message, /Kraken: buy BTC via BTC\/CAD, sell via BTC\/USD/);
     assert.match(ping.message, /no orders placed/);
-    // An executable dislocation is already covered by the opportunity ping.
     assert.equal(capture.events.filter((e) => e.type === 'arbitrage_dislocation').length, 0);
 
     setBooks(HEALTHY);
     await service.forcePoll();
-    assert.equal(service.getAlerts({ status: 'open' }).length, 2, 'one miss keeps it open');
+    assert.equal(service.getAlerts({ status: 'open' }).length, 1, 'one miss keeps it open');
     await service.forcePoll();
     assert.equal(service.getAlerts({ status: 'open' }).length, 0);
     const closed = service.getAlerts({ status: 'closed' }).find((a) => a.type === 'opportunity');

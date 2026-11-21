@@ -25,12 +25,20 @@ const fmtDuration = (from, to) => {
   return `${Math.floor(minutes / 60)}h ${minutes % 60}m`
 }
 
-const deviationClass = (bps, threshold) => {
-  if (!Number.isFinite(bps)) return 'text-gray-400'
-  const abs = Math.abs(bps)
-  if (abs >= threshold) return 'text-red-300 font-semibold'
-  if (abs >= threshold / 3) return 'text-yellow-300'
+// Colored by the executable edge (bid/ask through real depth, fees on every
+// leg), never by mid: a wide book's mid can look 28% rich while its bid loses.
+const edgeClass = (pair, alertBps) => {
+  if (pair.priceBasis !== 'executable') return 'text-gray-400'
+  if (!Number.isFinite(pair.edgeBps)) return 'text-gray-400'
+  if (pair.edgeBps >= alertBps) return 'text-green-300 font-semibold'
+  if (pair.edgeBps > 0) return 'text-yellow-300'
   return 'text-gray-300'
+}
+const fmtCompactUsd = (value) => {
+  if (!Number.isFinite(value)) return '-'
+  if (value >= 1_000_000) return `$${(value / 1_000_000).toFixed(1)}M`
+  if (value >= 1_000) return `$${(value / 1_000).toFixed(1)}k`
+  return `$${Math.round(value)}`
 }
 
 const SOURCE_LABELS = {
@@ -43,7 +51,7 @@ const SOURCE_LABELS = {
 const SETTINGS_FIELDS = [
   { key: 'alertMinNetBps', label: 'Alert at net edge (bps, after fees)', step: 1 },
   { key: 'minAlertNotionalUsd', label: 'Minimum executable size ($)', step: 100 },
-  { key: 'dislocationAlertBps', label: 'Dislocation alert (bps from reference)', step: 10 },
+  { key: 'dislocationAlertBps', label: 'Watch-only alert (bps, pairs with no round trip)', step: 10 },
   { key: 'notionalUsd', label: 'Quote routes at ($)', step: 100 },
   { key: 'confirmPolls', label: 'Polls to confirm', step: 1 },
   { key: 'closeAfterPolls', label: 'Polls to close', step: 1 },
@@ -92,8 +100,7 @@ function OpportunityCard({ alert, onDismiss }) {
             </p>
           ) : (
             <p className="mt-1 text-sm text-gray-200">
-              Implied {fmtUsd(m.impliedMid)} vs reference {fmtUsd(m.medianImplied)}
-              <span className="text-gray-400"> · conversion {SOURCE_LABELS[m.conversionSource] || '-'}{m.executable ? '' : ', not executable on venue'}</span>
+              Watch only: this pair cannot round-trip on {alert.venueLabel} (no on-venue {String(alert.pair).split('/')[1]} conversion), so the edge uses reference FX.
             </p>
           )}
         </div>
@@ -111,10 +118,10 @@ function OpportunityCard({ alert, onDismiss }) {
           </>
         ) : (
           <>
-            <div><span className="text-gray-400">Deviation </span><span className="text-yellow-300 font-semibold">{fmtPct(m.deviationBps)}</span></div>
-            <div><span className="text-gray-400">vs reference FX </span><span className="text-white">{fmtPct(m.externalDeviationBps)}</span></div>
+            <div><span className="text-gray-400">Top-of-book edge </span><span className="text-yellow-300 font-semibold">{fmtBps(m.edgeBps ?? m.deviationBps)}</span>{m.edgeSide && <span className="text-gray-400"> ({m.edgeSide} here)</span>}</div>
+            <div><span className="text-gray-400">Top of book </span><span className="text-white">{fmtCompactUsd(m.topBidHome)} bid / {fmtCompactUsd(m.topAskHome)} ask</span></div>
             <div><span className="text-gray-400">Spread </span><span className="text-white">{fmtBps(m.spreadBps)}</span></div>
-            <div><span className="text-gray-400">Peak </span><span className="text-white">{fmtPct(alert.peak?.deviationBps)}</span></div>
+            <div><span className="text-gray-400">Peak </span><span className="text-white">{fmtBps(alert.peak?.edgeBps ?? alert.peak?.deviationBps)}</span></div>
           </>
         )}
       </div>
@@ -125,7 +132,7 @@ function OpportunityCard({ alert, onDismiss }) {
   )
 }
 
-function VenueCard({ venue, status, dislocationBps }) {
+function VenueCard({ venue, status, alertBps }) {
   const analysis = venue?.analysis
   const topRoute = analysis?.routes?.[0]
   return (
@@ -150,29 +157,44 @@ function VenueCard({ venue, status, dislocationBps }) {
                   <th className="py-1 pr-3 font-normal">Pair</th>
                   <th className="py-1 pr-3 font-normal text-right">Bid</th>
                   <th className="py-1 pr-3 font-normal text-right">Ask</th>
-                  <th className="py-1 pr-3 font-normal text-right">Implied {analysis.home}</th>
-                  <th className="py-1 pr-3 font-normal text-right">vs ref</th>
+                  <th className="py-1 pr-3 font-normal text-right">Spread</th>
+                  <th className="py-1 pr-3 font-normal text-right" title={`Top-of-book size in ${analysis.home}`}>Top bid / ask</th>
+                  <th className="py-1 pr-3 font-normal text-right" title="Best of: sell here and buy back on another pair, or buy here and sell on another pair. Real depth, taker fee on every leg.">Exec. edge</th>
+                  <th className="py-1 pr-3 font-normal text-right" title="Mid-price deviation from the venue reference. Ignores spread.">Mid vs ref</th>
                   <th className="py-1 font-normal">Conversion</th>
                 </tr>
               </thead>
               <tbody>
-                {analysis.pairs.map(p => (
-                  <tr key={p.symbol} className="border-b border-gray-800">
-                    <td className="py-1 pr-3 text-white whitespace-nowrap">{p.pair}</td>
-                    <td className="py-1 pr-3 text-right text-gray-300 tabular-nums">{fmtPrice(p.bid)}</td>
-                    <td className="py-1 pr-3 text-right text-gray-300 tabular-nums">{fmtPrice(p.ask)}</td>
-                    <td className="py-1 pr-3 text-right text-gray-200 tabular-nums">{fmtUsd(p.impliedMid)}</td>
-                    <td className={`py-1 pr-3 text-right tabular-nums ${deviationClass(p.deviationBps, dislocationBps)}`}>{fmtPct(p.deviationBps)}</td>
-                    <td className="py-1 text-xs text-gray-400 whitespace-nowrap">
-                      {SOURCE_LABELS[p.conversionSource] || 'none'}{p.conversionPath?.length ? ` (${p.conversionPath.join(' → ')})` : ''}
-                    </td>
-                  </tr>
-                ))}
+                {analysis.pairs.map(p => {
+                  const indicative = p.priceBasis !== 'executable'
+                  return (
+                    <tr key={p.symbol} className={`border-b border-gray-800 ${indicative ? 'opacity-60' : ''}`}>
+                      <td className="py-1 pr-3 text-white whitespace-nowrap">
+                        {p.pair}
+                        {indicative && <span className="ml-1 text-xs px-1 py-0.5 rounded-sm bg-gray-700 text-gray-300" title="No on-venue conversion back to the home currency, so this pair cannot complete a round trip here.">no round trip</span>}
+                      </td>
+                      <td className="py-1 pr-3 text-right text-gray-300 tabular-nums">{fmtPrice(p.bid)}</td>
+                      <td className="py-1 pr-3 text-right text-gray-300 tabular-nums">{fmtPrice(p.ask)}</td>
+                      <td className={`py-1 pr-3 text-right tabular-nums ${p.spreadBps > 100 ? 'text-yellow-300' : 'text-gray-300'}`}>{fmtBps(p.spreadBps)}</td>
+                      <td className="py-1 pr-3 text-right text-gray-300 tabular-nums whitespace-nowrap">{fmtCompactUsd(p.topBidHome)} / {fmtCompactUsd(p.topAskHome)}</td>
+                      <td className={`py-1 pr-3 text-right tabular-nums whitespace-nowrap ${edgeClass(p, alertBps)}`}>
+                        {fmtBps(p.edgeBps)}{p.edgeSide && Number.isFinite(p.edgeBps) && p.edgeBps > 0 ? ` ${p.edgeSide}` : ''}{p.depthLimited ? '*' : ''}
+                      </td>
+                      <td className="py-1 pr-3 text-right tabular-nums text-gray-400">{fmtPct(p.deviationBps)}</td>
+                      <td className="py-1 text-xs text-gray-400 whitespace-nowrap">
+                        {SOURCE_LABELS[p.conversionSource] || 'none'}{p.conversionPath?.length ? ` (${p.conversionPath.join(' → ')})` : ''}
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>
           {analysis.unconvertible?.length > 0 && (
-            <p className="mt-2 text-xs text-gray-400">No on-venue conversion for {analysis.unconvertible.join(', ')}; shown at reference FX, not executable.</p>
+            <p className="mt-2 text-xs text-gray-400">No on-venue conversion for {analysis.unconvertible.join(', ')}: priced from top of book at reference FX, watch only, never an opportunity.</p>
+          )}
+          {analysis.pairs.some(p => p.depthLimited) && (
+            <p className="mt-1 text-xs text-gray-400">* The order book ran out before the quoted size.</p>
           )}
           {venue.failedBooks?.length > 0 && (
             <p className="mt-1 text-xs text-yellow-300">{venue.failedBooks.length} order book(s) failed to load this poll.</p>
@@ -347,7 +369,7 @@ export default function ArbitrageDashboard() {
         <h2 className="text-lg font-semibold text-white">Venues</h2>
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
           {(status?.venues || []).map(v => (
-            <VenueCard key={v.id} status={v} venue={snapshot?.venues?.[v.id]} dislocationBps={config?.dislocationAlertBps || 300} />
+            <VenueCard key={v.id} status={v} venue={snapshot?.venues?.[v.id]} alertBps={config?.alertMinNetBps ?? 50} />
           ))}
         </div>
       </section>
