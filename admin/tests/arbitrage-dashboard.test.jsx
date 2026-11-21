@@ -58,6 +58,12 @@ it('shows the open opportunity, the venue pair table and saves settings changes'
   expect(screen.queryByText('-50.05%')).toBeNull()
   expect(screen.getAllByText('+9,800 bps').length).toBeGreaterThan(0)
   expect(screen.getByText(/nothing here places orders/)).toBeTruthy()
+  expect(screen.getByRole('columnheader', { name: 'Market buy (ask)' })).toBeTruthy()
+  expect(screen.getByRole('columnheader', { name: 'Market sell (bid)' })).toBeTruthy()
+  expect(screen.getByRole('columnheader', { name: 'Spread' })).toBeTruthy()
+  expect(screen.getByText('27.16%')).toBeTruthy()
+  // A matching gateway shows no stale-build warning.
+  expect(screen.queryByText(/This page is older than the gateway/)).toBeNull()
   // A pair with no on-venue conversion is badged and greyed, its edge uncolored.
   const eurRow = screen.getByText('BTC/EUR', { selector: 'td' }).closest('tr')
   expect(eurRow.className).toContain('opacity-60')
@@ -92,4 +98,15 @@ it('hides dismissed alerts behind a collapsed toggle', async () => {
   fireEvent.click(toggle)
   expect(screen.getAllByText('Opportunity')).toHaveLength(2)
   expect(screen.getByRole('button', { name: 'Hide 1 dismissed alert' })).toBeTruthy()
+})
+
+it('warns when the gateway is newer than this admin build', async () => {
+  fetch.mockImplementation(async (url) => {
+    if (url === '/api/arbitrage/status') return ok({ ...status, dashboardVersion: 99 })
+    if (url === '/api/arbitrage/snapshot') return ok(snapshot)
+    if (url.startsWith('/api/arbitrage/alerts')) return ok({ success: true, items: [] })
+    return ok({ success: true })
+  })
+  render(<ArbitrageDashboard />)
+  expect(await screen.findByText(/This page is older than the gateway/)).toBeTruthy()
 })

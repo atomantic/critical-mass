@@ -6,6 +6,10 @@ import { apiGet, apiPost, apiPut, apiDelete, describeMutationFailure } from '../
 import { useNotify } from '../Toast'
 
 const ROOM = 'arbitrage'
+// Bumped with the gateway's ARBITRAGE_DASHBOARD_VERSION whenever the page and
+// the API change together, so a stale admin build says so instead of quietly
+// rendering the old table.
+const DASHBOARD_VERSION = 4
 const EVENTS = ['arbitrage:status', 'arbitrage:alert']
 
 const fmtUsd = (value, digits = 0) => Number.isFinite(value)
@@ -33,6 +37,7 @@ const edgeClass = (pair, alertBps) => {
   if (pair.edgeBps > 0) return 'text-yellow-300'
   return 'text-gray-300'
 }
+const fmtSpread = (bps) => Number.isFinite(bps) ? `${(bps / 100).toFixed(bps < 10 ? 3 : 2)}%` : '-'
 const fmtCompactUsd = (value) => {
   if (!Number.isFinite(value)) return '-'
   if (value >= 1_000_000) return `$${(value / 1_000_000).toFixed(1)}M`
@@ -155,10 +160,10 @@ function VenueCard({ venue, status, alertBps }) {
               <thead>
                 <tr className="text-left text-gray-400 border-b border-gray-700">
                   <th className="py-1 pr-3 font-normal">Pair</th>
-                  <th className="py-1 pr-3 font-normal text-right">Bid</th>
-                  <th className="py-1 pr-3 font-normal text-right">Ask</th>
-                  <th className="py-1 pr-3 font-normal text-right">Spread</th>
-                  <th className="py-1 pr-3 font-normal text-right" title={`Top-of-book size in ${analysis.home}`}>Top bid / ask</th>
+                  <th className="py-1 pr-3 font-normal text-right" title="Best ask, in the pair's quote currency: what a market buy pays first">Market buy (ask)</th>
+                  <th className="py-1 pr-3 font-normal text-right" title="Best bid, in the pair's quote currency: what a market sell gets first">Market sell (bid)</th>
+                  <th className="py-1 pr-3 font-normal text-right" title="(ask - bid) / mid">Spread</th>
+                  <th className="py-1 pr-3 font-normal text-right" title={`Size available at the best price, in ${analysis.home}`}>Size at buy / sell</th>
                   <th className="py-1 pr-3 font-normal text-right" title="Best of: sell here and buy back on another pair, or buy here and sell on another pair. Real depth, taker fee on every leg.">Exec. edge</th>
                   <th className="py-1 font-normal">Conversion</th>
                 </tr>
@@ -172,10 +177,10 @@ function VenueCard({ venue, status, alertBps }) {
                         {p.pair}
                         {indicative && <span className="ml-1 text-xs px-1 py-0.5 rounded-sm bg-gray-700 text-gray-300" title="No on-venue conversion back to the home currency, so this pair cannot complete a round trip here.">no round trip</span>}
                       </td>
-                      <td className="py-1 pr-3 text-right text-gray-300 tabular-nums">{fmtPrice(p.bid)}</td>
                       <td className="py-1 pr-3 text-right text-gray-300 tabular-nums">{fmtPrice(p.ask)}</td>
-                      <td className={`py-1 pr-3 text-right tabular-nums ${p.spreadBps > 100 ? 'text-yellow-300' : 'text-gray-300'}`}>{fmtBps(p.spreadBps)}</td>
-                      <td className="py-1 pr-3 text-right text-gray-300 tabular-nums whitespace-nowrap">{fmtCompactUsd(p.topBidHome)} / {fmtCompactUsd(p.topAskHome)}</td>
+                      <td className="py-1 pr-3 text-right text-gray-300 tabular-nums">{fmtPrice(p.bid)}</td>
+                      <td className={`py-1 pr-3 text-right tabular-nums ${p.spreadBps > 100 ? 'text-yellow-300' : 'text-gray-300'}`}>{fmtSpread(p.spreadBps)}</td>
+                      <td className="py-1 pr-3 text-right text-gray-300 tabular-nums whitespace-nowrap">{fmtCompactUsd(p.topAskHome)} / {fmtCompactUsd(p.topBidHome)}</td>
                       <td className={`py-1 pr-3 text-right tabular-nums whitespace-nowrap ${edgeClass(p, alertBps)}`}>
                         {fmtBps(p.edgeBps)}{p.edgeSide && Number.isFinite(p.edgeBps) && p.edgeBps > 0 ? ` ${p.edgeSide}` : ''}{p.depthLimited ? '*' : ''}
                       </td>
@@ -325,6 +330,12 @@ export default function ArbitrageDashboard() {
           <span className={`text-xs ${connected ? 'text-green-400' : 'text-red-400'}`}>{connected ? 'Live' : 'Offline'}</span>
         </div>
       </div>
+
+      {status?.dashboardVersion > DASHBOARD_VERSION && (
+        <div role="alert" className="rounded-lg border border-yellow-700 bg-yellow-900/30 p-3 text-sm text-yellow-200">
+          This page is older than the gateway. Rebuild the admin UI (<code>npm run build</code>, or <code>docker compose up -d --build</code> for Docker) and reload.
+        </div>
+      )}
 
       {loadError && (
         <div role="alert" className="flex items-center justify-between gap-2 text-sm text-red-400">

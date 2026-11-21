@@ -25,6 +25,11 @@ const arbitrageLogger = createContextLogger({ module: 'arbitrage-service' });
 const STATE_FILE = 'arbitrage-state.json';
 const MARKETS_TTL_MS = 60 * 60 * 1000;
 const ROOM = 'arbitrage';
+/**
+ * Bumped with the admin page's DASHBOARD_VERSION when the API and page change
+ * together, so a stale admin build can say it is stale.
+ */
+const ARBITRAGE_DASHBOARD_VERSION = 4;
 
 const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -462,6 +467,7 @@ const createArbitrageService = (io, deps) => {
   const getStatus = () => {
     const config = getArbitrageConfig();
     return {
+      dashboardVersion: ARBITRAGE_DASHBOARD_VERSION,
       running,
       enabled: config.enabled,
       lastPollAt,
