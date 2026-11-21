@@ -82,7 +82,7 @@ function OpportunityCard({ alert, onDismiss }) {
     ? (open ? 'border-green-600 bg-green-900/30' : 'border-gray-700 bg-gray-900/40')
     : (open ? 'border-yellow-700 bg-yellow-900/20' : 'border-gray-700 bg-gray-900/40')
   return (
-    <div className={`rounded-lg border p-3 ${tone} ${alert.dismissed ? 'opacity-60' : ''}`}>
+    <div className={`rounded-lg border p-3 ${tone}`}>
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
@@ -220,6 +220,7 @@ export default function ArbitrageDashboard() {
   const [polling, setPolling] = useState(false)
   const [saving, setSaving] = useState(false)
   const [draft, setDraft] = useState(null)
+  const [showDismissed, setShowDismissed] = useState(false)
 
   const refresh = useCallback(async () => {
     const [s, snap, list] = await Promise.all([
@@ -305,10 +306,13 @@ export default function ArbitrageDashboard() {
     save(updates, { resetDraft: true })
   }
 
-  const openAlerts = (alerts || []).filter(a => a.status === 'open')
+  // Dismissed alerts drop out of both lists; one collapsed toggle brings them back.
+  const visible = (alerts || []).filter(a => !a.dismissed)
+  const dismissed = (alerts || []).filter(a => a.dismissed)
+  const openAlerts = visible.filter(a => a.status === 'open')
   const openOpportunities = openAlerts.filter(a => a.type === 'opportunity')
   const openDislocations = openAlerts.filter(a => a.type === 'dislocation')
-  const history = (alerts || []).filter(a => a.status !== 'open')
+  const history = visible.filter(a => a.status !== 'open')
   const enabled = Boolean(config?.enabled)
 
   return (
@@ -417,11 +421,20 @@ export default function ArbitrageDashboard() {
       <section className="space-y-3">
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-semibold text-white">History</h2>
-          {history.length > 0 && <Button onClick={handleClearHistory} variant="quiet-danger" size="xs" touchTarget="always">Clear history</Button>}
+          {history.length + dismissed.filter(a => a.status !== 'open').length > 0 && <Button onClick={handleClearHistory} variant="quiet-danger" size="xs" touchTarget="always">Clear history</Button>}
         </div>
         {alerts && history.length === 0 && <p className="text-sm text-gray-400">No closed alerts yet.</p>}
         {history.map(a => <OpportunityCard key={a.id} alert={a} onDismiss={handleDismiss} />)}
       </section>
+
+      {dismissed.length > 0 && (
+        <section className="space-y-3">
+          <Button onClick={() => setShowDismissed(v => !v)} aria-expanded={showDismissed} variant="quiet" size="xs" touchTarget="always">
+            {showDismissed ? 'Hide' : 'Show'} {dismissed.length} dismissed {dismissed.length === 1 ? 'alert' : 'alerts'}
+          </Button>
+          {showDismissed && dismissed.map(a => <OpportunityCard key={a.id} alert={a} onDismiss={handleDismiss} />)}
+        </section>
+      )}
     </div>
   )
 }
