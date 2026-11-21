@@ -1,1 +1,0 @@
-- Backend `// @ts-check` annotations are now enforced in CI: a new `npm run typecheck` step fails when a file gains type errors, while the existing errors are tracked in a baseline that can only shrink.

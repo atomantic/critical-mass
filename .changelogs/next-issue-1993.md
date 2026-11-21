@@ -1,2 +1,0 @@
-- **Run one test file, a changed subset, or the whole check from npm** — `npm test -- tests/x.test.js` now runs just that file (still isolated from the real data directory), and new `test:watch`, `test:changed`, `test:admin`, `test:all` and `check` scripts cover the inner loop and the full backend, admin and build pass.
-- **Document the test workflow** — the README Testing section now covers single files, name patterns, watch mode, changed-only runs, the admin suite and `TEST_CONSOLE`.

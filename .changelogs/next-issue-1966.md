@@ -1,1 +1,0 @@
-- Pull requests that change the Docker image inputs now build the image and run the seed-config smoke test before merge, so packaging breakage is caught before a release tag is created.

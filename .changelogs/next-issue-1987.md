@@ -1,1 +1,0 @@
-- **[issue-1987] Full-restore confirmation opens in a dialog** — clicking Restore on a backup now opens the "Confirm Restore" step in a focused, scrollable dialog instead of a panel far above the list. All acknowledgments and the blocked-writers retry are unchanged, the dialog cannot be dismissed while a restore is running, and focus returns to the Restore button when it closes.

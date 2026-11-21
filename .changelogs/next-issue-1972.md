@@ -1,1 +1,0 @@
-- **[issue-1972] Internal: the double-order guard now lives in its own module** — `placeWithUnknownReconcile` and its helpers moved out of the Simple DCA order module into `src/placement-reconcile.js`, so the regime executor no longer imports the DCA module just for it. No behaviour change.

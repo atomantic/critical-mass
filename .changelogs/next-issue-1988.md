@@ -1,1 +1,0 @@
-- **[issue-1988] The admin shell is split into a fund controller hook, header, fund sub-nav and lifecycle dialogs** — `App.jsx` no longer mixes fund fetching, status fencing and lifecycle actions with layout, and the currency helpers moved to `utils/productId.mjs`, removing the import cycle between `App.jsx` and the feature components. No behaviour or markup changes.

@@ -1,1 +1,0 @@
-- Put keyboard focus on Cancel when Close Fund opens and on the active input when the take-profit editor opens.

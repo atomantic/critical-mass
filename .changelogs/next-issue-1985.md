@@ -1,1 +1,0 @@
-- **[issue-1985] Celestial 3D scene stops rendering when hidden** — the fund-card 3D scenes no longer draw frames while scrolled off-screen or in a background tab, and each card only loads its scene once it scrolls into view. The visuals, the Pause motion toggle and reduced-motion behavior are unchanged.
