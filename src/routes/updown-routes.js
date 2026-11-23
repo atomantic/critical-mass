@@ -144,7 +144,7 @@ const parseExpiryToMs = (value) => {
 
 /**
  * @param {import('express').Express} app
- * @param {{updownService: Object, readJSON: Function, DATA_DIR: string, validateEndpointUrl?: Function, safeFetch?: Function, allowedAiOrigins?: Set<string>}} deps
+ * @param {{updownService: Object, upDipHeld?: Object, readJSON: Function, DATA_DIR: string, validateEndpointUrl?: Function, safeFetch?: Function, allowedAiOrigins?: Set<string>}} deps
  */
 module.exports = (app, deps) => {
   const {
@@ -152,6 +152,7 @@ module.exports = (app, deps) => {
     candleCache,
     upDipPaper = null,
     upDipShadow = null,
+    upDipHeld = null,
     readJSON,
     writeJSON,
     DATA_DIR,
@@ -511,7 +512,23 @@ module.exports = (app, deps) => {
   app.get('/api/updown/up-dip', (req, res) => {
     if (!upDipPaper) return res.status(503).json({ success: false, error: 'Up dip paper tracker not running' });
     // shadow: the daily-trend-filtered SHADOW paper book (null when not running).
-    res.json({ success: true, ...upDipPaper.getStatus(), shadow: upDipShadow ? upDipShadow.getStatus() : null });
+    const paper = upDipPaper.getStatus();
+    res.json({ success: true, ...paper, shadow: upDipShadow ? upDipShadow.getStatus() : null,
+      // held: the operator's own contract (null when none is tracked; absent when not running).
+      ...(upDipHeld ? { held: upDipHeld.getStatus(paper.latest) } : {}) });
+  });
+
+  app.put('/api/updown/up-dip/held', (req, res) => {
+    if (!upDipHeld) return res.status(503).json({ success: false, error: 'Up dip contract tracker not running' });
+    const { error } = upDipHeld.set(req.body);
+    if (error) return res.status(400).json({ success: false, error });
+    res.json({ success: true });
+  });
+
+  app.delete('/api/updown/up-dip/held', (req, res) => {
+    if (!upDipHeld) return res.status(503).json({ success: false, error: 'Up dip contract tracker not running' });
+    upDipHeld.clear();
+    res.json({ success: true });
   });
 
   // --- Trade History ---

@@ -1,0 +1,1 @@
+- **Exit calls on your own Up contract** — enter a fill (floor, range, contracts, total cost) in the Up Dip Setup panel and it shows fee-aware P&L and the 4% exit rule for your position rather than the paper book's. It says so when candles are stale, the contract has expired, or Coinbase touched the floor or ceiling. Advice only; it places no orders.

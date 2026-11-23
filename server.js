@@ -54,6 +54,7 @@ const { drainPendingWrites, trackPendingWrite } = require('./src/pending-writes'
 const { maintenanceGuard, isMaintenanceActive } = require('./src/restore-maintenance');
 const { createUpDownService } = require('./src/updown/updown-service');
 const { createUpDipPaper } = require('./src/updown/up-dip-paper');
+const { createUpDipHeld } = require('./src/updown/up-dip-held');
 const { DAILY_TREND_PARAMS, createDailyTrendEntryFilter } = require('./src/updown/up-dip-trend-filter');
 const { JOURNAL_WRITE_LABEL: SCORECARD_JOURNAL_WRITE_LABEL } = require('./src/updown/scorecard');
 const { createCandleCache } = require('./src/candle-cache');
@@ -378,6 +379,14 @@ const upDipPaper = createUpDipPaper({
   onChange: () => io.to('updown').emit('updown:up-dip', {}),
 });
 upDipPaper.start();
+// The operator's own contract, entered by hand: exit advice only, no order paths.
+const upDipHeld = createUpDipHeld({
+  getCandles: getUpDipCandles,
+  statePath: path.join(DATA_DIR, 'updown', 'up-dip-held.json'),
+  readJSON,
+  writeJSON,
+  onChange: () => io.to('updown').emit('updown:up-dip', {}),
+});
 // SHADOW paper book: same rule plus the daily-trend stand-aside filter (chosen after
 // seeing held-out results, so it is under live test). Separate state file; the base
 // book above is untouched. UPDOWN_SHADOW_MAX_BELOW_SMA_PCT overrides the 4% default
@@ -432,7 +441,7 @@ require('./src/routes/arbitrage-routes')(routes, { arbitrageService, getArbitrag
 require('./src/routes/ai-routes')(routes, sharedDeps);
 require('./src/routes/settings-routes')(routes, { ...sharedDeps, updownService, sentinelService, arbitrageService, upDipPaper, upDipShadow, candleCache, runBackup, getBackupSchedulerStatus: () => backupScheduler.getStatus() });
 require('./src/routes/candle-routes')(routes, { candleCache });
-require('./src/routes/updown-routes')(routes, { ...sharedDeps, updownService, candleCache, upDipPaper, upDipShadow });
+require('./src/routes/updown-routes')(routes, { ...sharedDeps, updownService, candleCache, upDipPaper, upDipShadow, upDipHeld });
 require('./src/routes/exchange-routes')(routes, sharedDeps);
 require('./src/routes/regime-routes')(routes, sharedDeps);
 require('./src/routes/keys-routes')(routes, sharedDeps);
