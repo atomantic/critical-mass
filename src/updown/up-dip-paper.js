@@ -14,6 +14,12 @@
  * optional `entryFilter` post-processes each decision (the shadow book's
  * daily-trend filter in up-dip-trend-filter.js); without it the book is the
  * plain rule.
+ *
+ * Two outputs, never conflated: `latest.decision` is what the PAPER BOOK does given
+ * its own position and cooldown; `latest.signal` is what the rule says about the
+ * market right now for someone who is flat. A held paper position turns the former
+ * into HOLD for hours, so it must not stand in for the latter. The signal never
+ * trades — only `decision` fills.
  */
 
 const fs = require('fs');
@@ -35,7 +41,7 @@ const r2 = (n) => Math.round(n * 100) / 100;
  *   label?: string}} deps
  */
 const createUpDipPaper = ({ getCandles, statePath, writeJSON, backtestPath, params = UP_DIP_PARAMS, logger, onChange, entryFilter, label = 'up-dip paper' }) => {
-  const empty = () => ({ position: null, pending: null, lastExitAt: null, lastBarTs: 0, cycles: [], events: [], latest: null, startedAt: null, totals: null, gaps: 0 });
+  const empty = () => ({ position: null, pending: null, lastExitAt: null, lastBarTs: 0, cycles: [], events: [], latest: null, lastEntrySignal: null, startedAt: null, totals: null, gaps: 0 });
   let state = empty();
   const load = () => {
     state = empty();
@@ -125,10 +131,13 @@ const createUpDipPaper = ({ getCandles, statePath, writeJSON, backtestPath, para
     // Decide on the newest bar with the full buffers.
     const now = last.timestamp + MINUTE_MS;
     const features = computeUpDipFeatures(tf, params);
-    const raw = decideUpDip({ features, position: state.position, now, lastExitAt: state.lastExitAt, params });
-    const { decision, filter = null } = entryFilter ? entryFilter({ tf, features, decision: raw }) : { decision: raw };
+    const gate = (raw) => (entryFilter ? entryFilter({ tf, features, decision: raw }) : { decision: raw, filter: null });
+    const { decision, filter } = gate(decideUpDip({ features, position: state.position, now, lastExitAt: state.lastExitAt, params }));
+    const { decision: signal } = gate(decideUpDip({ features, position: null, now, params }));
     const prev = state.latest?.decision?.action;
-    state.latest = { at: now, decision, features, ...(entryFilter ? { filter } : {}) };
+    state.latest = { at: now, decision, signal, features, ...(entryFilter ? { filter } : {}) };
+    // ENTER is usually a one-bar window; keep the last one so it can still be seen afterwards.
+    if (signal.action === 'ENTER') state.lastEntrySignal = { at: now, btc: features.price, contract: signal.contract, bookHeld: !!state.position };
     if (['ENTER', 'ADD', 'EXIT'].includes(decision.action)) {
       state.pending = decision;
       event({ at: now, action: decision.action, btc: features?.price ?? null, reasons: decision.reasons, expected: decision.expected ?? null });
@@ -160,6 +169,7 @@ const createUpDipPaper = ({ getCandles, statePath, writeJSON, backtestPath, para
       ...(entryFilter ? { filter: state.latest?.filter ?? null } : {}),
       startedAt: state.startedAt,
       latest: state.latest,
+      lastEntrySignal: state.lastEntrySignal,
       pending: state.pending ? { action: state.pending.action } : null,
       position: state.position ? { ...state.position, cost: r2(state.position.cost),
         ...(price ? { markBtc: price, pnl: r2(markPosition(state.position, price).pnl) } : {}) } : null,

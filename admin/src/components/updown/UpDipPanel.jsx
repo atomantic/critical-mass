@@ -160,7 +160,11 @@ export default function UpDipPanel() {
   // The gateway emits updown:up-dip after each completed 1m bar it evaluates.
   useRealtimeRefresh({ events: ['updown:up-dip'], rooms: ['updown'], minIntervalMs: 5000, onRefresh: load })
 
-  const decision = data?.latest?.decision
+  const book = data?.latest?.decision
+  // Market signal = the rule as if flat. Gateways without it only report the book's own decision.
+  const decision = data?.latest?.signal ?? book
+  const hasSignal = !!data?.latest?.signal
+  const lastEntry = data?.lastEntrySignal
   const pos = data?.position
   const s = data?.summary
 
@@ -179,9 +183,9 @@ export default function UpDipPanel() {
       {!data && !error && <div className="text-xs text-gray-400 py-2">Loading…</div>}
 
       {decision && (
-        <div className={`border rounded-sm px-2 py-1.5 mb-2 ${ACTION_STYLE[decision.action] || ACTION_STYLE.STAND_ASIDE}`}>
+        <div data-testid="up-dip-signal" className={`border rounded-sm px-2 py-1.5 mb-2 ${ACTION_STYLE[decision.action] || ACTION_STYLE.STAND_ASIDE}`}>
           <div className="flex justify-between items-baseline">
-            <span className="font-semibold text-sm">{decision.action.replace('_', ' ')}</span>
+            <span className="font-semibold text-sm">{hasSignal && <span className="text-2xs font-normal text-gray-400">If flat: </span>}{decision.action.replace('_', ' ')}</span>
             <span className="text-2xs text-gray-400">{when(data.latest.at)} · BTC {data.latest.features?.price?.toLocaleString() ?? '---'}</span>
           </div>
           {decision.contract && (
@@ -197,6 +201,21 @@ export default function UpDipPanel() {
           <ul className="text-2xs mt-1 text-gray-300 list-disc pl-4">
             {decision.reasons.map((r, i) => <li key={i}>{r}</li>)}
           </ul>
+          {hasSignal && decision.action === 'ENTER' && pos && (
+            <div className="text-2xs mt-1 text-amber-300">An earlier paper entry is still open. In the held-out backtest, repeat signals an hour or more into an open trade lost money.</div>
+          )}
+        </div>
+      )}
+
+      {lastEntry && decision?.action !== 'ENTER' && (
+        <div data-testid="up-dip-last-entry" className="text-2xs text-gray-400 mb-2">
+          Last ENTER signal {when(lastEntry.at)} · BTC {lastEntry.btc?.toLocaleString()} · Up {k(lastEntry.contract.floor)}–{k(lastEntry.contract.ceiling)}{lastEntry.bookHeld && ' · paper book was already holding'}
+        </div>
+      )}
+
+      {hasSignal && book && (pos || book.action !== decision.action) && (
+        <div data-testid="up-dip-book" className="text-2xs mb-2">
+          <span className="text-gray-400">Paper book: </span>{book.action.replace('_', ' ')}{book.reasons?.[0] && ` · ${book.reasons[0]}`}
         </div>
       )}
 
