@@ -131,8 +131,8 @@ const createUpDipPaper = ({ getCandles, statePath, writeJSON, backtestPath, para
     // Decide on the newest bar with the full buffers.
     const now = last.timestamp + MINUTE_MS;
     const features = computeUpDipFeatures(tf, params);
-    const gate = (raw) => (entryFilter ? entryFilter({ tf, features, decision: raw }) : { decision: raw });
-    const { decision, filter = null } = gate(decideUpDip({ features, position: state.position, now, lastExitAt: state.lastExitAt, params }));
+    const gate = (raw) => (entryFilter ? entryFilter({ tf, features, decision: raw }) : { decision: raw, filter: null });
+    const { decision, filter } = gate(decideUpDip({ features, position: state.position, now, lastExitAt: state.lastExitAt, params }));
     const { decision: signal } = gate(decideUpDip({ features, position: null, now, params }));
     const prev = state.latest?.decision?.action;
     state.latest = { at: now, decision, signal, features, ...(entryFilter ? { filter } : {}) };
