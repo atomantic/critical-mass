@@ -84,12 +84,24 @@ present, that origin is the gateway itself (same rule as session-cookie
 mutations); it is refused with 503 while the gateway drains. Frames are JSON:
 the server sends `{t:'open', id, pingInterval, pingTimeout}` and then
 `{t:'event', e, p}` and `{t:'ping'}`; the client sends `{t:'sub'|'unsub', r}`
-for the `coinbase`/`gemini`/`cryptocom`/`updown`/`sentinel` rooms,
+for the `coinbase`/`gemini`/`cryptocom`/`updown`/`sentinel`/`arbitrage`/`btc-feed` rooms,
 `{t:'event', e, p}` for PM2 log commands, and `{t:'pong'}`. A client that misses
 a heartbeat for 20 seconds is dropped. A password change closes every
 connection; shutdown closes them with 1001. `admin/src/lib/realtime.js` is the
 client: shared subscriptions re-sent after every reconnect, events queued while
 disconnected, and 1–30 second exponential backoff.
+
+## BTC 1s feed (`src/btc-feed/`)
+
+The gateway itself opens two public market sockets, without keys and whatever
+funds are open: Coinbase `BTC-USD` trades and the Crypto.com `BTCUSD-INDEX`.
+Trades become 1s bars held in memory for an hour (Coinbase reports the maker's
+side; volume is stored by aggressor). Only an accepted trade or value counts as
+liveness: a source silent for 30 seconds is replaced, at most once a minute.
+`GET /api/btc-feed/seconds` and the `btc-feed` room serve the UpDown 1s chart.
+Completed 1m index bars are appended to `data/btc-feed/index-YYYY-MM-DD.jsonl`
+(UTC, not pruned); full backups and restores pause that writer. Nothing in the
+feed reaches a signal, paper book, engine or order.
 
 ## Engine Processes (`engines/`)
 
