@@ -155,3 +155,26 @@ State: `data/updown/up-dip-paper-shadow.json`, separate from
 `blocking`, `sufficient`, `dailyCandles`). `/updown` shows it under the base panel
 as "SHADOW · PAPER ONLY · daily-trend filter". Paper only, BTC Up only; nothing
 places orders.
+
+## Market signal vs paper book
+
+`latest.decision` is the paper book's own action given its position and cooldown;
+`latest.signal` is the rule evaluated as if flat, and `lastEntrySignal` keeps the most
+recent ENTER (usually a one-bar window). Until 2026-11-23 the panel showed only the book
+decision, so an open paper position displayed HOLD and hid every entry. On Nov 23 the
+book held a 62,178 entry from 08:59 PT and masked ENTERs at 10:48, 10:50, 10:51 and
+10:55 PT (61,338–61,377). Only `decision` fills; the paper book and its tally are unchanged.
+
+Signals masked by an open paper position, each replayed standalone (spaced at least the
+stated gap after the paper entry and from each other):
+
+| gap | set | n | win rate | P&L | avg | floor KOs |
+|---|---|---|---|---|---|---|
+| 30 min | train | 37 | 100% | +$2,036 | +$55.0 | 0 |
+| 30 min | **test** | 90 | 94.4% | +$266 | +$3.0 | 5 |
+| 60 min | train | 17 | 100% | +$901 | +$53.0 | 0 |
+| 60 min | **test** | 37 | 89.2% | **−$1,369** | −$37.0 | 4 |
+
+Signals can overlap in time, so these are not independent trades. The panel cautions on
+an ENTER while the paper book is holding. The 4% exit applies only to the paper position;
+nothing tracks the operator's actual contract.
