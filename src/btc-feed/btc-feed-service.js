@@ -23,9 +23,6 @@ const DROPPED_WARN_COUNT = 50;
 /** Drops this soon after connect are the replayed snapshot, not a clock problem. */
 const SNAPSHOT_GRACE_MS = 5_000;
 
-/** Coinbase reports the resting (maker) order's side; volume is colored by the aggressor. */
-const TAKER_SIDE = { buy: 'sell', sell: 'buy' };
-
 /**
  * @param {{to: (room: string) => {emit: (event: string, payload: any) => void}}} io - realtime bus
  * @param {{DATA_DIR: string, now?: () => number, createTradeFeed?: Function, createIndexClient?: Function, createIndexHistory?: Function, logger?: any}} deps
@@ -104,7 +101,7 @@ const createBtcFeedService = (io, {
   };
 
   const handleTrade = (trade) => {
-    const result = bars.addTrade({ ...trade, side: TAKER_SIDE[trade.side] });
+    const result = bars.addTrade(trade);
     if (result === 'accepted') {
       acceptedSinceConnect = true;
       return;
