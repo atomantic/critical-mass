@@ -56,6 +56,7 @@ const runStartBlock = ({ stopping = false, host, allowRemote = true } = {}) => {
     updownService: { start: () => { started.push('updown.start'); return Promise.resolve(); } },
     sentinelService: { start: recorder('sentinel.start') },
     arbitrageService: { start: recorder('arbitrage.start') },
+    btcFeedService: { start: recorder('btcFeed.start') },
     rescheduleBackupTimer: recorder('rescheduleBackupTimer'),
     getGlobalConfig: () => ({ schedulerInterval: 30000 }),
     checkAndRunIntervalTrade: recorder('checkAndRunIntervalTrade'),
@@ -77,7 +78,7 @@ describe('gateway startup order', () => {
     await settle();
     assert.deepEqual(exits, []);
     assert.equal(started[0], 'notifier.start', 'the notifier subscribes before any producer can emit');
-    for (const name of ['ipc.connect:coinbase', 'ipc.connect:gemini', 'candleCache.seedAll', 'updown.start', 'sentinel.start', 'arbitrage.start',
+    for (const name of ['ipc.connect:coinbase', 'ipc.connect:gemini', 'candleCache.seedAll', 'updown.start', 'sentinel.start', 'arbitrage.start', 'btcFeed.start',
       'interval:60000', 'rescheduleBackupTimer', 'interval:30000', 'checkAndRunIntervalTrade']) {
       assert.ok(started.includes(name), `${name} starts after the bind`);
     }

@@ -353,3 +353,35 @@ describe('in-place backup hold', () => {
     assert.deepEqual(events, ['release:eth', 'start-market:SOL-USDC', 'resume-buffers']);
   });
 });
+
+describe('gateway backup writers', () => {
+  // The production runBackup from server.js, with every service faked (wider
+  // coverage of the same block: manual-backup-quiescence.test.js).
+  const source = fs.readFileSync(require.resolve('../server'), 'utf8');
+  const start = source.indexOf('const runBackup = ');
+  const block = source.slice(start, source.indexOf('\n});', start) + '\n});'.length);
+  const makeRunBackup = (events) => {
+    const service = { getStatus: () => ({ running: false }), stop: () => {}, start: () => {} };
+    return new Function('deps', `const { performBackup, exchangeIPCMap, getConfiguredExchanges, drainPendingWrites, SCORECARD_JOURNAL_WRITE_LABEL, updownService, sentinelService, arbitrageService, btcFeedService, createContextLogger } = deps;\n${block}\nreturn runBackup;`)({
+      performBackup, exchangeIPCMap: { coinbase: ipc() }, getConfiguredExchanges: () => ['coinbase'], drainPendingWrites, SCORECARD_JOURNAL_WRITE_LABEL: 'journal',
+      updownService: service, sentinelService: service, arbitrageService: service, createContextLogger: () => logger,
+      btcFeedService: { pauseHistory: async () => { events.push('pause'); }, resumeHistory: () => { events.push('resume'); } },
+    });
+  };
+  for (const fails of [false, true]) {
+    it(`pauses BTC index history around a full archive that ${fails ? 'fails' : 'succeeds'}`, async () => {
+      const events = [];
+      await makeRunBackup(events)('full archive', () => {
+        events.push('copy');
+        if (fails) throw new Error('disk full');
+        return { success: true };
+      });
+      assert.deepEqual(events, ['pause', 'copy', 'resume']);
+    });
+  }
+  it('leaves BTC index history running during a fund-state snapshot', async () => {
+    const events = [];
+    await makeRunBackup(events)('fund state', () => { events.push('copy'); return { success: true }; }, { stopGatewayWriters: false });
+    assert.deepEqual(events, ['copy']);
+  });
+});

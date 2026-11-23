@@ -36,10 +36,10 @@ const settingsLogger = (route) => createContextLogger({
 
 /**
  * @param {import('express').Express} app
- * @param {{notifier: Object, exchangeIPCMap: Object, rescheduleBackupTimer: Function, runBackup: Function, updownService?: Object, sentinelService?: Object, arbitrageService?: Object, upDipPaper?: Object, upDipShadow?: Object, candleCache?: Object, getBackupSchedulerStatus?: Function, createRecoveryPoint?: Function, checkRestorePreconditions?: Function}} deps
+ * @param {{notifier: Object, exchangeIPCMap: Object, rescheduleBackupTimer: Function, runBackup: Function, updownService?: Object, sentinelService?: Object, arbitrageService?: Object, upDipPaper?: Object, upDipShadow?: Object, btcFeedService?: any, candleCache?: Object, getBackupSchedulerStatus?: Function, createRecoveryPoint?: Function, checkRestorePreconditions?: Function}} deps
  */
 module.exports = (app, deps) => {
-  const { notifier, exchangeIPCMap, rescheduleBackupTimer, updownService, sentinelService, arbitrageService, upDipPaper, upDipShadow, candleCache, runBackup, getBackupSchedulerStatus } = deps;
+  const { notifier, exchangeIPCMap, rescheduleBackupTimer, updownService, sentinelService, arbitrageService, upDipPaper, upDipShadow, btcFeedService, candleCache, runBackup, getBackupSchedulerStatus } = deps;
   // Both restore paths archive the live data (writers already stopped) before
   // replacing it, so a wrong restore can be undone from the Backups page.
   // Not pruned here: the next scheduled backup applies the retention count.
@@ -86,6 +86,12 @@ module.exports = (app, deps) => {
         book.start();
       },
     }),
+    // Append-only files: hold new lines while the directory is replaced.
+    btcFeedService && {
+      name: 'BTC index history',
+      stop: () => btcFeedService.pauseHistory(),
+      resume: () => btcFeedService.resumeHistory(),
+    },
   ].filter(Boolean);
 
   // ============ Aggressiveness Presets ============
