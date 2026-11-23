@@ -176,5 +176,14 @@ stated gap after the paper entry and from each other):
 | 60 min | **test** | 37 | 89.2% | **−$1,369** | −$37.0 | 4 |
 
 Signals can overlap in time, so these are not independent trades. The panel cautions on
-an ENTER while the paper book is holding. The 4% exit applies only to the paper position;
-nothing tracks the operator's actual contract.
+an ENTER while the paper book is holding. The paper book's 4% exit applies only to its own position.
+
+## Operator contract
+
+`src/updown/up-dip-held.js` applies the same exit rule to a contract the operator enters
+by hand (floor, range, contracts, total cost with fees) on `/updown`:
+`PUT` / `DELETE /api/updown/up-dip/held`, reported as `held` on `GET /api/updown/up-dip`.
+State: `data/updown/up-dip-held.json`. It answers HOLD or EXIT, never ADD; CHECK APP when
+Coinbase touched the floor or ceiling since the fill was saved (the app's index can
+differ); EXPIRED after expiry; and STALE, with no P&L, when the newest evaluated candle
+is over three minutes old. It places no orders and does not feed the paper book.

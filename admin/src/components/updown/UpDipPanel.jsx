@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { TrendingUp } from '../icons'
+import UpDipHeld from './UpDipHeld'
 import { apiGet } from '../../utils/apiClient'
 import useRealtimeRefresh from '../../hooks/useRealtimeRefresh'
 import { formatUsd } from '../../utils/format.mjs'
@@ -212,6 +213,8 @@ export default function UpDipPanel() {
           Last ENTER signal {when(lastEntry.at)} · BTC {lastEntry.btc?.toLocaleString()} · Up {k(lastEntry.contract.floor)}–{k(lastEntry.contract.ceiling)}{lastEntry.bookHeld && ' · paper book was already holding'}
         </div>
       )}
+
+      {data && data.held !== undefined && <UpDipHeld held={data.held} onChange={load} />}
 
       {hasSignal && book && (pos || book.action !== decision.action) && (
         <div data-testid="up-dip-book" className="text-2xs mb-2">
