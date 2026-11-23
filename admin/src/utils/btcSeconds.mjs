@@ -18,12 +18,14 @@ export function mergeByT(existing, incoming, cutoffT) {
   return [...byT.values()].sort((a, b) => a.t - b.t)
 }
 
-// Fixed slots ending at the one containing `nowMs`. A slot nothing traded in stays
-// null, so a stalled feed shows a growing gap instead of a frozen last candle.
+// Fixed slots ending at the one containing `nowMs`, or the newest bar if the gateway
+// clock is behind the exchange. A slot nothing traded in stays null, so a stalled feed
+// shows a growing gap instead of a frozen last candle.
 export function buildSlots({ bars, index, interval, range, nowMs }) {
   const step = interval * 1000
   const count = range / interval
-  const start = Math.floor(nowMs / step) * step - (count - 1) * step
+  const end = Math.max(nowMs, bars.at(-1)?.t ?? 0)
+  const start = Math.floor(end / step) * step - (count - 1) * step
   const slots = Array.from({ length: count }, (_, i) => ({
     chartIndex: i, t: start + i * step,
     open: null, high: null, low: null, close: null, buyVolume: 0, sellVolume: 0, indexValue: null,
@@ -61,13 +63,17 @@ export function freshness(ageMs) {
   return ageMs >= AMBER_MS ? 'amber' : 'live'
 }
 
-// Floor and ceiling to measure from: the operator's held contract, else a configured Up contract.
-export function contractBounds(held, contract) {
+// Floor and ceiling to measure from: the operator's held contract, else a configured Up
+// contract that has not expired. `held` is undefined until it has been read: show nothing
+// rather than distances from the wrong contract.
+export function contractBounds(held, contract, nowMs = 0) {
+  if (held === undefined) return null
   const action = held?.decision?.action
   if (held?.contract && action !== 'EXPIRED') {
     return { floor: held.contract.floor, ceiling: held.contract.ceiling, label: 'your contract', note: action === 'CHECK_APP' ? 'check the app' : null }
   }
-  if (contract?.direction === 'up' && contract.stop && contract.target) {
+  const expired = contract?.expiry != null && contract.expiry <= nowMs
+  if (contract?.direction === 'up' && contract.stop && contract.target && !expired) {
     return { floor: contract.stop, ceiling: contract.target, label: 'configured contract', note: null }
   }
   return null

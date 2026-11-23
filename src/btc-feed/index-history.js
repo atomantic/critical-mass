@@ -1,8 +1,9 @@
 // @ts-check
 /**
  * Append-only record of completed 1m index bars, one JSONL file per UTC day.
- * Crypto.com serves no usable index history, so this is the only copy. A minute
- * still open at shutdown is never written; a failed append costs that minute only.
+ * Crypto.com serves no usable index history, so this is the only copy. A first
+ * minute joined part-way and a minute still open at shutdown are never written; a
+ * failed append costs that minute only.
  */
 
 const fs = require('fs');
@@ -11,6 +12,8 @@ const { trackPendingWrite } = require('../pending-writes');
 
 const MINUTE_MS = 60_000;
 const MAX_QUEUED = 1440;
+/** The index ticks about once a second: a first value later than this missed the open. */
+const MAX_FIRST_DELAY_MS = 2000;
 
 const defaultAppend = (file, line) => trackPendingWrite('btc-index-history', async () => {
   await fs.promises.mkdir(path.dirname(file), { recursive: true });
@@ -24,6 +27,7 @@ const createIndexHistory = ({ dir, logger, append = defaultAppend }) => {
   /** @type {{t: number, open: number, high: number, low: number, close: number, samples: number} | null} */
   let current = null;
   const queue = [];
+  let partial = false;
   let paused = false;
   /** @type {Promise<void> | null} */
   let writing = null;
@@ -56,10 +60,11 @@ const createIndexHistory = ({ dir, logger, append = defaultAppend }) => {
       current.samples++;
       return;
     }
-    if (current) {
+    if (current && !partial) {
       queue.push(current);
       if (queue.length > MAX_QUEUED) queue.shift();
     }
+    partial = !current && timestamp - t > MAX_FIRST_DELAY_MS;
     current = { t, open: value, high: value, low: value, close: value, samples: 1 };
     pump();
   };

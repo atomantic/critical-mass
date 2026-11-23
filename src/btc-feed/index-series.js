@@ -8,11 +8,12 @@ const floorSecond = (ms) => Math.floor(ms / SECOND_MS) * SECOND_MS;
  * @param {{now?: () => number, retentionSeconds?: number, maxAgeMs?: number, maxFutureMs?: number}} [options]
  */
 const createIndexSeries = ({ now = Date.now, retentionSeconds = 3600, maxAgeMs = 10_000, maxFutureMs = 5_000 } = {}) => {
-  /** @type {Map<number, {value: number, timestamp: number}>} */
+  /** @type {Map<number, number>} second -> latest value */
   const bySecond = new Map();
   const changed = new Set();
   /** @type {number | null} */
   let lastAcceptedAt = null;
+  let newest = -Infinity;
 
   const evict = (at) => {
     const cutoff = at - retentionSeconds * SECOND_MS;
@@ -26,12 +27,13 @@ const createIndexSeries = ({ now = Date.now, retentionSeconds = 3600, maxAgeMs =
     const at = now();
     if (!Number.isFinite(value) || value <= 0 || !Number.isFinite(timestamp)) return false;
     if (at - timestamp > maxAgeMs || timestamp - at > maxFutureMs) return false;
+    // A repeated or older value is not news: it must not keep a stalled index looking live.
+    if (timestamp <= newest) return false;
+    newest = timestamp;
     lastAcceptedAt = at;
     const t = floorSecond(timestamp);
-    const existing = bySecond.get(t);
-    if (existing && existing.timestamp >= timestamp) return true;
     evict(at);
-    bySecond.set(t, { value, timestamp });
+    bySecond.set(t, value);
     changed.add(t);
     return true;
   };
@@ -39,7 +41,7 @@ const createIndexSeries = ({ now = Date.now, retentionSeconds = 3600, maxAgeMs =
   const read = (keep) => [...bySecond]
     .filter(([t]) => keep(t))
     .sort(([a], [b]) => a - b)
-    .map(([t, { value }]) => ({ t, value }));
+    .map(([t, value]) => ({ t, value }));
 
   /** @param {number} seconds */
   const getValues = (seconds) => {

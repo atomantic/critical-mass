@@ -19,7 +19,10 @@ vi.mock('../src/lib/realtime', () => ({ getRealtimeClient: () => socket }))
 
 const api = vi.hoisted(() => ({ calls: [] }))
 vi.mock('../src/utils/apiClient', () => ({
-  apiGet: (url) => new Promise((resolve) => { api.calls.push({ url, resolve }) }),
+  apiGet: (url, { signal } = {}) => new Promise((resolve, reject) => {
+    api.calls.push({ url, resolve, signal })
+    signal?.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })))
+  }),
 }))
 
 const T0 = 1_800_000_000_000
@@ -71,6 +74,53 @@ it('keeps an update that arrives while the read is pending over an older REST ba
   await push({ bars: [bar(0, 200)] })
   await reply(0, { bars: [bar(-1, 100), bar(0, 150)] })
   expect(result.current.bars.map(b => b.close)).toEqual([100, 200])
+})
+
+it('ages an update from when it was received, however late the read replies', async () => {
+  const { result } = renderHook(() => useBtcSeconds(300))
+  await act(async () => { vi.advanceTimersByTime(1000) })
+  await push({ bars: [bar(1, 200)], status: status({ now: T0 + 1000, coinbase: { connected: true, lastEventAt: T0 + 900 } }) })
+  await act(async () => { vi.advanceTimersByTime(8000) })
+  await reply(0, { status: status({ now: T0 + 500, coinbase: { connected: true, lastEventAt: T0 + 400 } }) })
+  expect(result.current.ages.coinbase).toBeGreaterThanOrEqual(8000)
+})
+
+it('counts a slow reply against the age instead of treating it as instant', async () => {
+  const { result } = renderHook(() => useBtcSeconds(300))
+  await act(async () => { vi.advanceTimersByTime(6000) })
+  await reply(0)
+  expect(result.current.ages.coinbase).toBeGreaterThanOrEqual(6000)
+})
+
+it('shows updates while a read is still pending', async () => {
+  const { result } = renderHook(() => useBtcSeconds(300))
+  await push({ bars: [bar(0, 200)] })
+  expect(result.current.bars.map(b => b.close)).toEqual([200])
+})
+
+it('gives up on a hung read after 10s and retries 5s later', async () => {
+  const { result } = renderHook(() => useBtcSeconds(300))
+  await act(async () => { vi.advanceTimersByTime(9_999) })
+  expect(result.current.error).toBe(null)
+  await act(async () => { vi.advanceTimersByTime(1) })
+  expect(result.current.error).toMatch(/timed out/i)
+  expect(api.calls).toHaveLength(1)
+  await act(async () => { vi.advanceTimersByTime(5_000) })
+  expect(api.calls).toHaveLength(2)
+  await reply(1, { bars: [bar(0, 7)] })
+  expect(result.current.error).toBe(null)
+  expect(result.current.bars).toHaveLength(1)
+})
+
+it('retries a failed read and stops retrying after unmount', async () => {
+  const { unmount } = renderHook(() => useBtcSeconds(300))
+  await act(async () => { api.calls[0].resolve({ ok: false, data: null, error: 'gateway down' }) })
+  await act(async () => { vi.advanceTimersByTime(5_000) })
+  expect(api.calls).toHaveLength(2)
+  await act(async () => { api.calls[1].resolve({ ok: false, data: null, error: 'gateway down' }) })
+  unmount()
+  await act(async () => { vi.advanceTimersByTime(60_000) })
+  expect(api.calls).toHaveLength(2)
 })
 
 it('re-reads after a realtime reconnect', async () => {

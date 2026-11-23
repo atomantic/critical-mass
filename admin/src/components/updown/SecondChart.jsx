@@ -43,9 +43,9 @@ function priceDomain(slots) {
   return [min - pad, max + pad]
 }
 
-// The operator's hand-entered contract, shared with the Up Dip panel.
+// The operator's hand-entered contract, shared with the Up Dip panel. Undefined until read.
 function useHeldContract() {
-  const [held, setHeld] = useState(null)
+  const [held, setHeld] = useState(undefined)
   const load = useCallback(async () => {
     const res = await apiGet('/api/updown/up-dip')
     if (res.ok) setHeld(res.data?.held ?? null)
@@ -74,7 +74,7 @@ export default function SecondChart({ contract }) {
   const indexValue = indexStale ? null : index.at(-1)?.value ?? null
   const moves = priceMoves(bars, { stale })
   const gap = stale || price === null || indexValue === null ? null : price - indexValue
-  const bounds = contractBounds(held, contract)
+  const bounds = contractBounds(held, contract, nowMs ?? 0)
   const distance = (level) => (indexValue === null ? null : level - indexValue)
 
   // The clock ticks twice a second; slots only need to move when a slot boundary passes.

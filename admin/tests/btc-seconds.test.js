@@ -48,6 +48,12 @@ describe('buildSlots', () => {
     expect(slots.at(-5).close).toBe(100)
   })
 
+  it('still shows the newest bars when the gateway clock is behind the exchange', () => {
+    const slots = buildSlots({ bars: [bar(0), bar(4)], index: [], interval: 1, range: 300, nowMs: at(0) })
+    expect(slots.at(-1)).toMatchObject({ t: at(4), close: 100 })
+    expect(slots.at(-5)).toMatchObject({ t: at(0), close: 100 })
+  })
+
   it('numbers slots and ignores data outside the range', () => {
     const slots = buildSlots({ bars: [bar(-400), bar(0)], index: [{ t: at(-400), value: 1 }], interval: 1, range: 300, nowMs: at(0) })
     expect(slots.map(s => s.chartIndex)).toEqual(Array.from({ length: 300 }, (_, i) => i))
@@ -79,6 +85,13 @@ describe('contractBounds', () => {
 
   it('prefers the held contract', () => {
     expect(contractBounds(held('HOLD'), configured)).toEqual({ floor: 60600, ceiling: 62600, label: 'your contract', note: null })
+  })
+  it('shows nothing until the held contract is known', () => {
+    expect(contractBounds(undefined, configured)).toBeNull()
+  })
+  it('ignores a configured contract that has expired', () => {
+    expect(contractBounds(null, { ...configured, expiry: T0 }, T0)).toBeNull()
+    expect(contractBounds(null, { ...configured, expiry: T0 + 1 }, T0)).not.toBeNull()
   })
   it('asks to check the app after a suspected knock-out', () => {
     expect(contractBounds(held('CHECK_APP'), configured)).toMatchObject({ floor: 60600, note: 'check the app' })

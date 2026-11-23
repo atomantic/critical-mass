@@ -1,9 +1,11 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { getRealtimeClient } from '../lib/realtime'
 import { apiGet } from '../utils/apiClient'
 import { mergeByT } from '../utils/btcSeconds.mjs'
 
 const CLOCK_INTERVAL_MS = 500
+const READ_TIMEOUT_MS = 10_000
+const RETRY_MS = 5_000
 const EMPTY = { bars: [], index: [], status: null, receivedAt: 0 }
 
 // Live BTC 1s bars and index values for the last `rangeSeconds`.
@@ -15,7 +17,6 @@ export default function useBtcSeconds(rangeSeconds) {
   const [data, setData] = useState(EMPTY)
   const [error, setError] = useState(null)
   const [elapsedAt, setElapsedAt] = useState(() => performance.now())
-  const bufferRef = useRef(null)
 
   useEffect(() => {
     const timer = setInterval(() => setElapsedAt(performance.now()), CLOCK_INTERVAL_MS)
@@ -25,40 +26,58 @@ export default function useBtcSeconds(rangeSeconds) {
   useEffect(() => {
     const socket = getRealtimeClient()
     let request = 0
+    let retryTimer = null
+    let abortRead = null
+    // Seconds pushed since the pending read began: newer than that read's snapshot.
+    let pushed = { bars: new Set(), index: new Set() }
 
-    const apply = (update) => {
-      const receivedAt = performance.now()
-      setElapsedAt(receivedAt)
+    const apply = ({ bars, index, status }, receivedAt, isRead = false) => {
+      setElapsedAt(performance.now())
       setData((prev) => {
-        const cutoff = update.status.now - rangeSeconds * 1000
-        return {
-          bars: mergeByT(prev.bars, update.bars, cutoff),
-          index: mergeByT(prev.index, update.index, cutoff),
-          status: update.status,
-          receivedAt,
-        }
+        // A read overtaken by a push must not put an older clock back.
+        const newer = !isRead || !prev.status || status.now >= prev.status.now
+        const current = newer ? { status, receivedAt } : { status: prev.status, receivedAt: prev.receivedAt }
+        const cutoff = current.status.now - rangeSeconds * 1000
+        return { bars: mergeByT(prev.bars, bars, cutoff), index: mergeByT(prev.index, index, cutoff), ...current }
       })
     }
     const onUpdate = (update) => {
       if (!update?.status || !Array.isArray(update.bars) || !Array.isArray(update.index)) return
-      // Events during a read are newer than its snapshot: hold them and apply them on top.
-      if (bufferRef.current) bufferRef.current.push(update)
-      else apply(update)
+      for (const { t } of update.bars) pushed.bars.add(t)
+      for (const { t } of update.index) pushed.index.add(t)
+      apply(update, performance.now())
     }
     const read = async () => {
       const mine = ++request
-      // A read that overtakes another keeps what that one had buffered.
-      const buffer = (bufferRef.current ??= [])
-      const res = await apiGet(`/api/btc-feed/seconds?seconds=${rangeSeconds}`)
+      clearTimeout(retryTimer)
+      abortRead?.abort()
+      const controller = new AbortController()
+      abortRead = controller
+      const timeout = setTimeout(() => controller.abort(), READ_TIMEOUT_MS)
+      pushed = { bars: new Set(), index: new Set() }
+      // Stamped at the request: however long the reply takes counts towards the age.
+      const requestedAt = performance.now()
+      let res
+      try {
+        res = await apiGet(`/api/btc-feed/seconds?seconds=${rangeSeconds}`, { signal: controller.signal })
+      } catch {
+        res = { ok: false, error: 'request timed out' }
+      } finally {
+        clearTimeout(timeout)
+      }
       if (mine !== request) return
-      bufferRef.current = null
       if (res.ok && res.data?.status) {
         setError(null)
-        apply(res.data)
+        const { bars, index, status } = res.data
+        apply({
+          bars: bars.filter(({ t }) => !pushed.bars.has(t)),
+          index: index.filter(({ t }) => !pushed.index.has(t)),
+          status,
+        }, requestedAt, true)
       } else {
         setError(res.error || 'BTC feed unavailable')
+        retryTimer = setTimeout(read, RETRY_MS)
       }
-      buffer.forEach(apply)
     }
 
     socket.on('btc-feed:update', onUpdate)
@@ -67,7 +86,8 @@ export default function useBtcSeconds(rangeSeconds) {
     read()
     return () => {
       request = -1
-      bufferRef.current = null
+      clearTimeout(retryTimer)
+      abortRead?.abort()
       socket.unsubscribe('btc-feed')
       socket.off('btc-feed:update', onUpdate)
       socket.off('connect', read)

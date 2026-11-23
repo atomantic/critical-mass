@@ -75,8 +75,17 @@ describe('index series', () => {
   it('keeps the latest value in each second', () => {
     const { series } = setup();
     assert.equal(series.add({ value: 101, timestamp: BASE + 800 }), true);
-    assert.equal(series.add({ value: 100, timestamp: BASE + 100 }), true);
+    assert.equal(series.add({ value: 100, timestamp: BASE + 100 }), false);
     assert.deepEqual(series.getValues(60), [{ t: BASE, value: 101 }]);
+  });
+
+  it('does not count a repeated or older value as a new event', () => {
+    const { series, setNow } = setup();
+    series.add({ value: 100, timestamp: BASE + 500 });
+    setNow(BASE + 6000);
+    assert.equal(series.add({ value: 100, timestamp: BASE + 500 }), false);
+    assert.equal(series.add({ value: 99, timestamp: BASE - 1000 }), false);
+    assert.equal(series.getLastAcceptedAt(), BASE);
   });
 
   it('rejects late, future and malformed values', () => {
@@ -127,6 +136,21 @@ describe('index history', () => {
     history.add({ value: 20, timestamp: BASE + MINUTE });
     await settle();
     assert.deepEqual(lines, [['index-2026-11-23.jsonl', { t: BASE, open: 10, high: 12, low: 9, close: 11, samples: 4 }]]);
+  });
+
+  it('never writes a first minute that started part-way through', async () => {
+    const { history, lines } = setup();
+    for (let s = 45; s < 180; s++) history.add({ value: s, timestamp: BASE + s * 1000 });
+    await settle();
+    assert.deepEqual(lines.map(([, bar]) => [bar.t, bar.samples]), [[BASE + MINUTE, 60]]);
+  });
+
+  it('keeps a first minute whose first value is at most 2s in', async () => {
+    const { history, lines } = setup();
+    history.add({ value: 1, timestamp: BASE + 2000 });
+    history.add({ value: 2, timestamp: BASE + MINUTE });
+    await settle();
+    assert.deepEqual(lines.map(([, bar]) => bar.t), [BASE]);
   });
 
   it('splits files at UTC midnight', async () => {

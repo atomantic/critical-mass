@@ -4,8 +4,8 @@ import SecondChart from '../src/components/updown/SecondChart.jsx'
 
 const feed = vi.hoisted(() => ({ current: null, ranges: [] }))
 vi.mock('../src/hooks/useBtcSeconds', () => ({ default: (range) => { feed.ranges.push(range); return feed.current } }))
-const api = vi.hoisted(() => ({ held: null }))
-vi.mock('../src/utils/apiClient', () => ({ apiGet: async () => ({ ok: true, data: { success: true, held: api.held } }) }))
+const api = vi.hoisted(() => ({ held: null, ok: true }))
+vi.mock('../src/utils/apiClient', () => ({ apiGet: async () => (api.ok ? { ok: true, data: { success: true, held: api.held } } : { ok: false, data: null }) }))
 vi.mock('../src/hooks/useRealtimeRefresh', () => ({ default: () => {} }))
 
 const T0 = 1_800_000_000_000
@@ -28,6 +28,7 @@ const text = (id) => screen.getByTestId(id).textContent
 beforeEach(() => {
   feed.ranges.length = 0
   api.held = null
+  api.ok = true
   vi.spyOn(Element.prototype, 'clientWidth', 'get').mockReturnValue(800)
   vi.spyOn(Element.prototype, 'clientHeight', 'get').mockReturnValue(260)
 })
@@ -132,6 +133,12 @@ describe('readouts', () => {
   it('falls back to a configured Up contract', async () => {
     await show({}, { contract: { direction: 'up', stop: 60210, target: 62210 } })
     expect(text('second-bounds')).toBe('floor −$1,000 · ceiling +$1,000 (configured contract)')
+  })
+
+  it('does not show the configured contract when the held one could not be read', async () => {
+    api.ok = false
+    await show({}, { contract: { direction: 'up', stop: 60210, target: 62210 } })
+    expect(screen.queryByTestId('second-bounds')).toBeNull()
   })
 
   it('shows no bounds without a contract', async () => {

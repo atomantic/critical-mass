@@ -98,6 +98,11 @@ describe('real disposable browser fixture', () => {
     const { startBrowserFixture } = require('../scripts/lib/perf-browser-fixture');
     const fixture = await startBrowserFixture();
     try {
+      // A closed loopback port that is not an engine's: the gateway's preload must refuse it.
+      const probe = require('node:child_process').spawnSync(process.execPath, ['--require', './perf-preload.cjs', '-e',
+        "try { new WebSocket('ws://127.0.0.1:9'); console.log('opened'); } catch (err) { console.log(err.message); } process.exit()"],
+      { cwd: fixture.dir, env: { PATH: process.env.PATH }, encoding: 'utf8' });
+      assert.match(probe.stdout, /fixture outbound WebSocket disabled/);
       const anonymous = await fetch(`${fixture.baseUrl}/api/auth/session`).then(response => response.json());
       assert.equal(anonymous.authenticated, false);
       assert.equal(anonymous.bootstrapRequired, false);
