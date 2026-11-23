@@ -110,6 +110,14 @@ it('reports a failed read and keeps existing bars', async () => {
   expect(result.current.error).toBe(null)
 })
 
+it('keeps updates buffered by a read that a failed reconnect read overtook', async () => {
+  const { result } = renderHook(() => useBtcSeconds(300))
+  await push({ bars: [bar(0, 200)] })
+  await act(async () => { socket.fire('connect') })
+  await act(async () => { api.calls[1].resolve({ ok: false, data: null, error: 'gateway down' }) })
+  expect(result.current.bars.map(b => b.close)).toEqual([200])
+})
+
 it('ignores a malformed update', async () => {
   const { result } = renderHook(() => useBtcSeconds(300))
   await reply(0, { bars: [bar(0, 5)] })
