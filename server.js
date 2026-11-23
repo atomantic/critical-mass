@@ -58,6 +58,8 @@ const { createUpDipHeld } = require('./src/updown/up-dip-held');
 const { DAILY_TREND_PARAMS, createDailyTrendEntryFilter } = require('./src/updown/up-dip-trend-filter');
 const { JOURNAL_WRITE_LABEL: SCORECARD_JOURNAL_WRITE_LABEL } = require('./src/updown/scorecard');
 const { createCandleCache } = require('./src/candle-cache');
+const { createBtcFeedService } = require('./src/btc-feed/btc-feed-service');
+const { acceptsBtcTick } = require('./src/btc-tick-filter');
 const { createSentinelService } = require('./src/sentinel/sentinel-service');
 const { getSentinelConfig, updateSentinelConfig, getArbitrageConfig, updateArbitrageConfig } = require('./src/config-utils');
 const { createArbitrageService } = require('./src/arbitrage/arbitrage-service');
@@ -118,8 +120,8 @@ const LISTEN_HOSTS = resolveListenHosts(process.env.HOST, undefined, { allowRemo
 const CORS_ORIGINS = (process.env.CORS_ORIGINS || `http://localhost:${PORT},http://localhost:5571`).split(',').map(s => s.trim());
 
 // Rooms a client may subscribe to: engine events forwarded over IPC with a
-// room, and the UpDown, Sentinel and Arbitrage feeds.
-const REALTIME_ROOMS = ['coinbase', 'gemini', 'cryptocom', 'updown', 'sentinel', 'arbitrage'];
+// room, and the UpDown, Sentinel, Arbitrage and BTC 1s feeds.
+const REALTIME_ROOMS = ['coinbase', 'gemini', 'cryptocom', 'updown', 'sentinel', 'arbitrage', 'btc-feed'];
 
 // Admin realtime bus (src/realtime-bus.js). Upgrades are refused while the
 // gateway drains and need an operator session or bearer password from this
@@ -163,6 +165,7 @@ const gatewayShutdown = createGatewayShutdown({
         .map(([serviceName, service]) => [serviceName, () => service.stop()]),
       ['UpDown paper book', () => upDipPaper.stop()],
       ['UpDown shadow book', () => upDipShadow.stop()],
+      ['BTC feed', () => btcFeedService.stop()],
       ['log streams', () => activeLogStreams.stopAll()],
     ]) {
       try {
@@ -242,14 +245,14 @@ const runBackup = (kind, create, { stopGatewayWriters = true } = {}) => performB
   configuredExchanges: getConfiguredExchanges().filter((name) => exchangeIPCMap[name]),
   drainPendingWrites: stopGatewayWriters ? drainPendingWrites
     : (timeoutMs) => drainPendingWrites(timeoutMs, (entry) => entry.label !== SCORECARD_JOURNAL_WRITE_LABEL),
-  gatewayWriters: stopGatewayWriters ? [['UpDown', updownService], ['Sentinel', sentinelService], ['Arbitrage', arbitrageService]].map(([name, service]) => {
+  gatewayWriters: stopGatewayWriters ? [...[['UpDown', updownService], ['Sentinel', sentinelService], ['Arbitrage', arbitrageService]].map(([name, service]) => {
     const wasRunning = service.getStatus().running;
     return {
       name,
       stop: () => service.stop(),
       resume: () => wasRunning ? service.start() : undefined,
     };
-  }) : [],
+  }), { name: 'BTC index history', stop: () => btcFeedService.pauseHistory(), resume: () => btcFeedService.resumeHistory() }] : [],
   logger: createContextLogger({ module: 'backup-coordinator' }),
 });
 
@@ -350,11 +353,11 @@ const candleCache = createCandleCache();
 // BTC-USDC + ETH-USDC) we must accept ticks from a single canonical pair —
 // otherwise ETH and BTC ticks interleave into one OHLC series (garbage candles,
 // fake volatility) and drive the BTC UpDown predictor. Use the exchange's
-// default pair as that canonical series (issue #110 M3).
+// default pair as that canonical series (issue #110 M3), and only when it is
+// BTC: the cache is seeded with BTC, so a CRO default must not feed it.
 ipcEventListeners.push((name, msg) => {
   if (msg.channel === IPC_CHANNELS.REGIME_STATUS) {
-    const pair = msg.payload?.pair;
-    if (pair && pair !== getDefaultPair(name)) return;
+    if (!acceptsBtcTick(name, msg.payload?.pair, getDefaultPair)) return;
     const market = msg.payload?.status?.market || msg.payload?.market;
     if (market?.lastPrice) {
       const price = parseFloat(market.lastPrice);
@@ -412,8 +415,7 @@ upDipShadow.start();
 // UpDown predictor with its own asset's price (issue #110 M3).
 ipcEventListeners.push((name, msg) => {
   if (name === 'coinbase' && msg.channel === IPC_CHANNELS.REGIME_STATUS) {
-    const pair = msg.payload?.pair;
-    if (pair && pair !== getDefaultPair('coinbase')) return;
+    if (!acceptsBtcTick(name, msg.payload?.pair, getDefaultPair)) return;
     const market = msg.payload?.status?.market || msg.payload?.market;
     if (market?.lastPrice) {
       const price = parseFloat(market.lastPrice);
@@ -432,6 +434,11 @@ const sentinelService = createSentinelService(io, { readJSON, writeJSON, DATA_DI
 
 const arbitrageService = createArbitrageService(io, { readJSON, writeJSON, DATA_DIR, getArbitrageConfig });
 
+// ============ BTC 1s Feed ============
+// Public Coinbase trades and the Crypto.com BTC index; no keys, no orders.
+
+const btcFeedService = createBtcFeedService(io, { DATA_DIR });
+
 // ============ Route Modules ============
 
 const sharedDeps = { trackBackgroundWork: gatewayShutdown.track, io, parseTSV, calculateCostBasis, getNextTradeInfo, readJSON, writeJSON, DATA_DIR, notifier, exchangeIPCMap, rescheduleBackupTimer };
@@ -439,8 +446,9 @@ const sharedDeps = { trackBackgroundWork: gatewayShutdown.track, io, parseTSV, c
 require('./src/routes/sentinel-routes')(routes, { ...sharedDeps, sentinelService, getSentinelConfig, updateSentinelConfig });
 require('./src/routes/arbitrage-routes')(routes, { arbitrageService, getArbitrageConfig, updateArbitrageConfig });
 require('./src/routes/ai-routes')(routes, sharedDeps);
-require('./src/routes/settings-routes')(routes, { ...sharedDeps, updownService, sentinelService, arbitrageService, upDipPaper, upDipShadow, candleCache, runBackup, getBackupSchedulerStatus: () => backupScheduler.getStatus() });
+require('./src/routes/settings-routes')(routes, { ...sharedDeps, updownService, sentinelService, arbitrageService, upDipPaper, upDipShadow, btcFeedService, candleCache, runBackup, getBackupSchedulerStatus: () => backupScheduler.getStatus() });
 require('./src/routes/candle-routes')(routes, { candleCache });
+require('./src/routes/btc-feed-routes')(routes, { btcFeedService });
 require('./src/routes/updown-routes')(routes, { ...sharedDeps, updownService, candleCache, upDipPaper, upDipShadow, upDipHeld });
 require('./src/routes/exchange-routes')(routes, sharedDeps);
 require('./src/routes/regime-routes')(routes, sharedDeps);
@@ -679,6 +687,7 @@ const startGatewayServices = () => {
   gatewayShutdown.track(updownService.start()).catch((err) => log('ERROR', `UpDown startup failed: ${err.message}`));
   sentinelService.start();
   arbitrageService.start();
+  btcFeedService.start();
 
   exchangeRefreshTimer = setInterval(() => { for (const e of getConfiguredExchanges()) KNOWN_EXCHANGES.add(e); }, 60_000);
 

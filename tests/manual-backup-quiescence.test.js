@@ -69,6 +69,7 @@ const setup = (t, { disconnected = false, resumeFails = false, createFails = fal
     drainPendingWrites: (_timeoutMs, matches) => drainPendingWrites(100, matches),
     SCORECARD_JOURNAL_WRITE_LABEL: JOURNAL_WRITE_LABEL,
     updownService: service('updown', true), sentinelService: service('sentinel', false), arbitrageService: service('arbitrage', true),
+    btcFeedService: { pauseHistory: async () => {}, resumeHistory() {} },
     createContextLogger: () => logger,
     // Capture the scheduler's kinds so tests run the server's own fund-state job.
     createBackupScheduler: (options) => options,

@@ -15,6 +15,7 @@ vi.mock('../src/components/updown/TimeframeGrid', () => panel('TimeframeGrid'))
 vi.mock('../src/components/updown/SignalPanel', () => panel('SignalPanel'))
 vi.mock('../src/components/updown/TradeHistory', () => panel('TradeHistory'))
 vi.mock('../src/components/updown/PriceChart', () => panel('PriceChart'))
+vi.mock('../src/components/updown/SecondChart', () => panel('SecondChart'))
 vi.mock('../src/components/updown/SignalBanner', () => panel('SignalBanner'))
 vi.mock('../src/components/updown/ScorecardPanel', () => panel('ScorecardPanel'))
 vi.mock('../src/components/updown/ContractSetup', () => panel('ContractSetup'))
@@ -28,7 +29,7 @@ it('mounts every dashboard panel once, in column order, and links to the analysi
   render(<BrowserRouter><UpDownDashboard /></BrowserRouter>)
   await screen.findByText('UpDown BTC Perp Longs')
   const order = screen.getAllByTestId('panel').map(el => el.textContent)
-  const expected = ['TimeframeGrid', 'SignalPanel', 'TradeHistory', 'PriceChart', 'SignalBanner', 'ScorecardPanel', 'ContractSetup', 'PositionTracker']
+  const expected = ['TimeframeGrid', 'SignalPanel', 'TradeHistory', 'SecondChart', 'PriceChart', 'SignalBanner', 'ScorecardPanel', 'ContractSetup', 'PositionTracker']
   expect(order.filter(name => expected.includes(name))).toEqual(expected)
   expect(screen.getByRole('link', { name: /Analysis/ }).getAttribute('href')).toBe('/updown/analysis')
 })

@@ -5,6 +5,7 @@ import { Play, Square, RotateCcw, Volume2, VolumeX, BarChart3 } from '../icons'
 import { useUpDownSocket } from '../../hooks/useUpDownSocket'
 
 import PriceChart from './PriceChart'
+import SecondChart from './SecondChart'
 import ContractSetup from './ContractSetup'
 import PositionTracker from './PositionTracker'
 import SignalPanel from './SignalPanel'
@@ -324,6 +325,7 @@ export default function UpDownDashboard() {
           <TradeHistory />
         </div>
         <div className="lg:col-span-2 flex flex-col gap-4">
+          <SecondChart contract={status?.contract} />
           <PriceChart
             tick={tick}
             indicators={indicators}

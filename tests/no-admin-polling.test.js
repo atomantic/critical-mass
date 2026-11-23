@@ -16,6 +16,7 @@ const UI_ONLY_INTERVALS = new Map([
   ['components/Dashboard.jsx', ['updateCountdown']], // next-trade countdown
   ['components/regime/LiveStatusBar.jsx', ['() => setNow(Date.now())']], // elapsed-time clock
   ['components/updown/Dashboard.jsx', ['() => setClock(n => n + 1)']], // stale-price clock
+  ['hooks/useBtcSeconds.js', ['() => setElapsedAt(performance.now())']], // feed-age clock
   ['hooks/useChartDataBuffer.js', ['flush']], // batches already-received ticks
   ['hooks/useCandleData.js', ['syncChart']], // renders already-received candles
 ])

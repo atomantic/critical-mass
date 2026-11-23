@@ -539,6 +539,14 @@ describe('settings route is wired to the quiescence gate', () => {
     assert.deepEqual(order, ['paper:stop', 'shadow:stop', 'shadow:reload', 'shadow:start', 'paper:reload', 'paper:start']);
   });
 
+  it('holds BTC index history while the archive is applied, even when applying fails', async () => {
+    const order = [];
+    const invoke = setup(okIPC(), [], { extraDeps: { btcFeedService: { pauseHistory: async () => { order.push('pause'); }, resumeHistory: () => { order.push('resume'); } } } });
+    const res = await invoke();
+    assert.equal(res.statusCode, 500, 'this fixture has no archive to apply');
+    assert.deepEqual(order, ['pause', 'resume']);
+  });
+
   it('refuses a missing archive before stopping any engine', async () => {
     const channels = [];
     const recoveryCalls = [];

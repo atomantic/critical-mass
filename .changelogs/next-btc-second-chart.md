@@ -1,0 +1,3 @@
+- **1-second BTC chart** at the top of UpDown: true candles at 1s/5s/15s/30s with buy and sell volume, 10s/30s/60s moves, the Crypto.com BTC index (labeled a proxy until confirmed as the contract index), and the distance from your contract's floor and ceiling. A stalled feed shows a gap and a stale badge rather than a frozen price.
+- The gateway now opens public Coinbase and Crypto.com market sockets for this chart. They use no API keys, place no orders, and run whichever funds are open. 1-minute index bars are kept in `data/btc-feed/`.
+- **Fixed:** a Crypto.com or Coinbase default fund that is not BTC no longer feeds its prices into the BTC candle cache or the BTC UpDown predictor.

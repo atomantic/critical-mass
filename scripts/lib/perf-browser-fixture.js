@@ -97,7 +97,7 @@ async function startBrowserFixture() {
       engine.perfProxy = createRealtimeProxy(engine);
     }
     // Seeding public candles and starting prediction workers are outside this
-    // scenario. Block outbound HTTP as well, so new startup work fails closed.
+    // scenario. Block outbound HTTP and WebSockets as well, so new startup work fails closed.
     fs.writeFileSync(path.join(dir, 'perf-preload.cjs'), `
       const cache = require('./src/candle-cache');
       const original = cache.createCandleCache;
@@ -105,15 +105,26 @@ async function startBrowserFixture() {
       const updown = require('./src/updown/updown-service');
       const create = updown.createUpDownService;
       updown.createUpDownService = (...args) => ({ ...create(...args), start: async () => {} });
+      const feed = require('./src/btc-feed/btc-feed-service');
+      const createFeed = feed.createBtcFeedService;
+      feed.createBtcFeedService = (...args) => ({ ...createFeed(...args), start() {} });
       global.fetch = async () => { throw new Error('fixture outbound fetch disabled'); };
+      const ipcPorts = () => ['COINBASE_IPC_PORT', 'GEMINI_IPC_PORT', 'CRYPTOCOM_IPC_PORT'].map(key => process.env[key]);
+      const NativeWebSocket = globalThis.WebSocket;
+      globalThis.WebSocket = class extends NativeWebSocket {
+        constructor(url, ...args) {
+          const { hostname, port } = new URL(url);
+          if (hostname !== '127.0.0.1' || !ipcPorts().includes(port)) throw new Error('fixture outbound WebSocket disabled');
+          super(url, ...args);
+        }
+      };
       for (const name of ['http', 'https']) {
         const transport = require(name);
         for (const method of ['request', 'get']) {
           const original = transport[method];
           transport[method] = (options, ...args) => {
             const host = options?.hostname || options?.host;
-            const ports = ['COINBASE_IPC_PORT', 'GEMINI_IPC_PORT', 'CRYPTOCOM_IPC_PORT'].map(key => process.env[key]);
-            if (host !== '127.0.0.1' || !ports.includes(String(options.port))) throw new Error('fixture outbound HTTP disabled');
+            if (host !== '127.0.0.1' || !ipcPorts().includes(String(options.port))) throw new Error('fixture outbound HTTP disabled');
             return original(options, ...args);
           };
         }
