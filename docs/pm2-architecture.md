@@ -95,8 +95,8 @@ disconnected, and 1–30 second exponential backoff.
 
 The gateway itself opens two public market sockets, without keys and whatever
 funds are open: Coinbase `BTC-USD` trades and the Crypto.com `BTCUSD-INDEX`.
-Trades become 1s bars held in memory for an hour (Coinbase reports the maker's
-side; volume is stored by aggressor). Only an accepted trade or value counts as
+Trades become 1s bars held in memory for an hour, with volume by aggressor (the
+Coinbase feed converts the maker side it receives). Only an accepted trade or value counts as
 liveness: a source silent for 30 seconds is replaced, at most once a minute.
 `GET /api/btc-feed/seconds` and the `btc-feed` room serve the UpDown 1s chart.
 Completed 1m index bars are appended to `data/btc-feed/index-YYYY-MM-DD.jsonl`

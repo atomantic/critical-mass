@@ -519,39 +519,28 @@ describe('Edge cases', () => {
     assert.equal(mode, 'HARVEST');
   });
 
-  it('handles negative trade imbalance amplifying downward momentum', () => {
-    const config = createTestConfig({ momentumMult: 1.0 });
-    const det = createRegimeDetector('test', config);
-    // lastPrice < vwap -> direction down, tradeImbalance < 0 -> amplified
-    // base magnitude = |99800 - 100000| = 200
-    // imbalanceFactor = 1 + 0.5*0.8 = 1.4
-    // adjustedMagnitude = 200 * 1.4 = 280 > 100 -> CAUTION
-    const mode = det.classify(createMarketState({
-      realizedVol: 0.5,
-      volBaseline: 0.5,
-      lastPrice: 99800,
-      vwap: 100000,
-      tradeImbalance: -0.8,
-      atr1m: 100,
-    }));
-    assert.equal(mode, 'CAUTION');
-  });
-
-  it('trade imbalance does NOT amplify when direction and imbalance disagree', () => {
-    const config = createTestConfig({ momentumMult: 1.0 });
-    const det = createRegimeDetector('test', config);
-    // lastPrice > vwap -> direction up, tradeImbalance < 0 -> no amplification
-    // base magnitude = |100050 - 100000| = 50 < 100 -> stays HARVEST
-    const mode = det.classify(createMarketState({
-      realizedVol: 0.5,
-      volBaseline: 0.5,
-      lastPrice: 100050,
-      vwap: 100000,
-      tradeImbalance: -0.8,
-      atr1m: 100,
-    }));
-    assert.equal(mode, 'HARVEST');
-  });
+  // 8 bps from VWAP against a 10 bps threshold: only the 1.4x amplification
+  // (11.2 bps) reaches CAUTION, so each case fails if the imbalance sign flips.
+  // Positive imbalance = taker buying.
+  for (const [name, lastPrice, tradeImbalance, expected] of [
+    ['taker buying amplifies an up move', 100080, 0.8, 'CAUTION'],
+    ['taker selling does not amplify an up move', 100080, -0.8, 'HARVEST'],
+    ['taker selling amplifies a down move', 99920, -0.8, 'CAUTION'],
+    ['taker buying does not amplify a down move', 99920, 0.8, 'HARVEST'],
+  ]) {
+    it(name, () => {
+      const det = createRegimeDetector('test', createTestConfig({ momentumMult: 1.0 }));
+      const mode = det.classify(createMarketState({
+        realizedVol: 0.5,
+        volBaseline: 0.5,
+        lastPrice,
+        vwap: 100000,
+        tradeImbalance,
+        atr1m: 100,
+      }));
+      assert.equal(mode, expected);
+    });
+  }
 });
 
 // ============================================================================

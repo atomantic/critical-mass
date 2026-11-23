@@ -68,14 +68,14 @@ describe('BTC feed sources', () => {
     assert.equal(trades[0].connects, 1);
   });
 
-  it('counts a maker BUY as aggressive selling and a maker SELL as aggressive buying', (t) => {
+  it('counts volume by the taker side the feed reports', (t) => {
     const { service, trades, trade, live } = setup(t);
     live();
     trade(trades[0], { side: 'buy', size: 2 });
     trade(trades[0], { side: 'sell', size: 5 });
     const [bar] = service.getWindow(60).bars;
-    assert.equal(bar.sellVolume, 2);
-    assert.equal(bar.buyVolume, 5);
+    assert.equal(bar.buyVolume, 2);
+    assert.equal(bar.sellVolume, 5);
   });
 
   it('rejects a trade whose side is neither buy nor sell', (t) => {
@@ -97,7 +97,7 @@ describe('BTC feed sources', () => {
       events: [{ type: 'update', trades: [{ trade_id: '1', product_id: 'BTC-USD', price: '100', size: '3', side: 'BUY', time: new Date().toISOString() }] }],
     }));
     const [bar] = service.getWindow(60).bars;
-    assert.equal(bar.sellVolume, 3, 'Coinbase sends the maker side; if the shared feed now sends the taker side, remove the inversion in btc-feed-service');
+    assert.equal(bar.sellVolume, 3, 'Coinbase sends the maker side: exactly one layer (websocket-feed) must invert it');
     assert.equal(bar.buyVolume, 0);
   });
 

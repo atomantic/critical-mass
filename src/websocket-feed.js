@@ -29,7 +29,7 @@ const { createContextLogger } = require('./logger');
  * @property {string} [apiSecret] - API secret (private key, optional for public-only mode)
  * @property {boolean} [publicOnly] - If true, only subscribe to public channels (ticker, market_trades)
  * @property {Function} [onTicker] - Ticker update callback
- * @property {Function} [onTrade] - Trade callback
+ * @property {Function} [onTrade] - Trade callback; `side` is the taker (aggressor) side on every exchange
  * @property {Function} [onOrderUpdate] - Order update callback
  * @property {Function} [onConnect] - Connection established callback
  * @property {Function} [onDisconnect] - Disconnection callback
@@ -37,6 +37,10 @@ const { createContextLogger } = require('./logger');
  */
 
 const COINBASE_WS_URL = 'wss://advanced-trade-ws.coinbase.com';
+
+// market_trades reports the resting (maker) order's side. Every feed's onTrade
+// reports the taker's: a maker SELL is aggressive buying.
+const TAKER_SIDE = new Map([['buy', 'sell'], ['sell', 'buy']]);
 
 // User-channel recovery (issue #1382): a failed user subscription is retried on
 // the same socket with capped exponential backoff; after MAX_USER_RETRIES failed
@@ -333,13 +337,15 @@ const createWebSocketFeed = (exchange, config) => {
         // Guard against a malformed trade with no side — trade.side.toLowerCase()
         // would otherwise throw synchronously inside the ws 'message' listener,
         // becoming an uncaughtException with no global handler (issue #110 M2).
-        if (typeof trade.side !== 'string' || !trade.side) continue;
+        if (typeof trade.side !== 'string') continue;
+        const side = TAKER_SIDE.get(trade.side.toLowerCase());
+        if (!side) continue;
 
         const tradeData = {
           tradeId: trade.trade_id,
           price: parseFloat(trade.price),
           size: parseFloat(trade.size),
-          side: trade.side.toLowerCase(),
+          side,
           timestamp: new Date(trade.time).getTime(),
         };
 
