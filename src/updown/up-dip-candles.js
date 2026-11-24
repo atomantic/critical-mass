@@ -297,4 +297,4 @@ const createUpDipCandles = ({ subscribeIndex, DATA_DIR = '', fetchCandles = fetc
   };
 };
 
-module.exports = { createUpDipCandles };
+module.exports = { createUpDipCandles, fetchBtcUsd };
