@@ -78,7 +78,7 @@ describe('shadow paper book', () => {
   const run = (dailyCandles, statePath) => {
     const all = path1m(SUN - 600 * MIN, 520, priceAt);
     let n = 0;
-    const book = createUpDipPaper({
+    const book = createUpDipPaper({ getHalfSpread: () => 0,
       getCandles: (tf) => (tf === '1d' ? dailyCandles : n ? (tfAt(all, n - 1)[tf] || []) : []),
       statePath,
       writeJSON: (p, d) => fs.writeFileSync(p, JSON.stringify(d)),
@@ -117,7 +117,7 @@ describe('shadow paper book', () => {
     const all = path1m(SUN - 600 * MIN, 520, priceAt);
     let n = 0;
     let dailyCandles = daily(50, 65000);
-    const book = createUpDipPaper({
+    const book = createUpDipPaper({ getHalfSpread: () => 0,
       getCandles: (tf) => (tf === '1d' ? dailyCandles : n ? (tfAt(all, n - 1)[tf] || []) : []),
       statePath: path.join(dir, 'shadow.json'),
       writeJSON: () => {},
@@ -135,7 +135,7 @@ describe('shadow paper book', () => {
   });
   it('the base book (no entryFilter) exposes no filter field', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'up-dip-shadow-'));
-    const base = createUpDipPaper({ getCandles: () => [], statePath: path.join(dir, 'b.json'), writeJSON: () => {} });
+    const base = createUpDipPaper({ getHalfSpread: () => 0, getCandles: () => [], statePath: path.join(dir, 'b.json'), writeJSON: () => {} });
     assert.equal('filter' in base.getStatus(), false);
     fs.rmSync(dir, { recursive: true, force: true });
   });

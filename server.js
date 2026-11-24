@@ -55,6 +55,8 @@ const { maintenanceGuard, isMaintenanceActive } = require('./src/restore-mainten
 const { createUpDownService } = require('./src/updown/updown-service');
 const { createUpDipPaper } = require('./src/updown/up-dip-paper');
 const { createUpDipHeld } = require('./src/updown/up-dip-held');
+const { createUpDipCandles } = require('./src/updown/up-dip-candles');
+const { createAppQuotes } = require('./src/updown/app-quotes');
 const { DAILY_TREND_PARAMS, createDailyTrendEntryFilter } = require('./src/updown/up-dip-trend-filter');
 const { JOURNAL_WRITE_LABEL: SCORECARD_JOURNAL_WRITE_LABEL } = require('./src/updown/scorecard');
 const { createCandleCache } = require('./src/candle-cache');
@@ -165,6 +167,7 @@ const gatewayShutdown = createGatewayShutdown({
         .map(([serviceName, service]) => [serviceName, () => service.stop()]),
       ['UpDown paper book', () => upDipPaper.stop()],
       ['UpDown shadow book', () => upDipShadow.stop()],
+      ['Up dip candles', () => upDipCandles.stop()],
       ['BTC feed', () => btcFeedService.stop()],
       ['log streams', () => activeLogStreams.stopAll()],
     ]) {
@@ -367,14 +370,36 @@ ipcEventListeners.push((name, msg) => {
   }
 });
 
+// ============ BTC 1s Feed ============
+// Public Coinbase trades and the Crypto.com BTC index; no keys, no orders.
+
+const btcFeedService = createBtcFeedService(io, { DATA_DIR });
+
 // ============ UpDown Service ============
 
 const updownService = createUpDownService(io, { exchangeIPCMap, readJSON, writeJSON, DATA_DIR, candleCache });
 
-// Paper-only Up dip recommendations (no order paths); fed by the Coinbase candle cache.
-const getUpDipCandles = (tf) => (candleCache.isSeeded('coinbase') ? candleCache.getCandles('coinbase', tf) : []);
+// Paper-only Up dip recommendations (no order paths): Crypto.com index candles, the app's
+// spread and listed contracts, with Coinbase as a second witness for bound touches.
+const upDipLogger = createContextLogger({ module: 'up-dip' });
+const upDipCandles = createUpDipCandles({ subscribeIndex: btcFeedService.subscribeIndex, DATA_DIR, logger: upDipLogger });
+const appQuotes = createAppQuotes({
+  statePath: path.join(DATA_DIR, 'updown', 'app-quotes.json'),
+  readJSON,
+  writeJSON,
+  getLatest: btcFeedService.getLatest,
+  logger: upDipLogger,
+});
+const getUpDipHalfSpread = (range) => appQuotes.halfSpread(range).value;
+const getCoinbaseCandles = (tf) => (candleCache.isSeeded('coinbase') ? candleCache.getCandles('coinbase', tf) : []);
+const getCoinbaseMinute = (timestamp) => getCoinbaseCandles('1m').find((c) => c.timestamp === timestamp) ?? null;
+const upDipArchiveDir = path.join(DATA_DIR, 'updown', 'archive');
 const upDipPaper = createUpDipPaper({
-  getCandles: getUpDipCandles,
+  getCandles: upDipCandles.getCandles,
+  getHalfSpread: getUpDipHalfSpread,
+  pick: appQuotes.pick,
+  getCoinbaseBar: getCoinbaseMinute,
+  archiveDir: upDipArchiveDir,
   statePath: path.join(DATA_DIR, 'updown', 'up-dip-paper.json'),
   backtestPath: path.join(DATA_DIR, 'updown', 'backtest', 'up-dip-report.json'),
   writeJSON,
@@ -384,7 +409,7 @@ const upDipPaper = createUpDipPaper({
 upDipPaper.start();
 // The operator's own contract, entered by hand: exit advice only, no order paths.
 const upDipHeld = createUpDipHeld({
-  getCandles: getUpDipCandles,
+  getCandles: getCoinbaseCandles,
   statePath: path.join(DATA_DIR, 'updown', 'up-dip-held.json'),
   readJSON,
   writeJSON,
@@ -397,7 +422,11 @@ const upDipHeld = createUpDipHeld({
 const shadowMaxBelowRaw = process.env.UPDOWN_SHADOW_MAX_BELOW_SMA_PCT?.trim();
 const shadowMaxBelowPct = shadowMaxBelowRaw ? Number(shadowMaxBelowRaw) : NaN;
 const upDipShadow = createUpDipPaper({
-  getCandles: getUpDipCandles,
+  getCandles: upDipCandles.getCandles,
+  getHalfSpread: getUpDipHalfSpread,
+  pick: appQuotes.pick,
+  getCoinbaseBar: getCoinbaseMinute,
+  archiveDir: upDipArchiveDir,
   statePath: path.join(DATA_DIR, 'updown', 'up-dip-paper-shadow.json'),
   writeJSON,
   logger: createContextLogger({ module: 'up-dip-shadow' }),
@@ -434,11 +463,6 @@ const sentinelService = createSentinelService(io, { readJSON, writeJSON, DATA_DI
 
 const arbitrageService = createArbitrageService(io, { readJSON, writeJSON, DATA_DIR, getArbitrageConfig });
 
-// ============ BTC 1s Feed ============
-// Public Coinbase trades and the Crypto.com BTC index; no keys, no orders.
-
-const btcFeedService = createBtcFeedService(io, { DATA_DIR });
-
 // ============ Route Modules ============
 
 const sharedDeps = { trackBackgroundWork: gatewayShutdown.track, io, parseTSV, calculateCostBasis, getNextTradeInfo, readJSON, writeJSON, DATA_DIR, notifier, exchangeIPCMap, rescheduleBackupTimer };
@@ -449,7 +473,7 @@ require('./src/routes/ai-routes')(routes, sharedDeps);
 require('./src/routes/settings-routes')(routes, { ...sharedDeps, updownService, sentinelService, arbitrageService, upDipPaper, upDipShadow, btcFeedService, candleCache, runBackup, getBackupSchedulerStatus: () => backupScheduler.getStatus() });
 require('./src/routes/candle-routes')(routes, { candleCache });
 require('./src/routes/btc-feed-routes')(routes, { btcFeedService });
-require('./src/routes/updown-routes')(routes, { ...sharedDeps, updownService, candleCache, upDipPaper, upDipShadow, upDipHeld });
+require('./src/routes/updown-routes')(routes, { ...sharedDeps, updownService, candleCache, upDipPaper, upDipShadow, upDipHeld, appQuotes });
 require('./src/routes/exchange-routes')(routes, sharedDeps);
 require('./src/routes/regime-routes')(routes, sharedDeps);
 require('./src/routes/keys-routes')(routes, sharedDeps);
@@ -688,6 +712,7 @@ const startGatewayServices = () => {
   sentinelService.start();
   arbitrageService.start();
   btcFeedService.start();
+  upDipCandles.start();
 
   exchangeRefreshTimer = setInterval(() => { for (const e of getConfiguredExchanges()) KNOWN_EXCHANGES.add(e); }, 60_000);
 

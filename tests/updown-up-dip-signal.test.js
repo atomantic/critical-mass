@@ -44,9 +44,9 @@ describe('up-dip market signal', () => {
 
   const run = (seed, { entryFilter, dailyClose = 65000, to = 160 } = {}) => {
     const statePath = path.join(dir, 'p.json');
-    if (seed) fs.writeFileSync(statePath, JSON.stringify({ lastBarTs: SUN + 60 * MIN, startedAt: SUN, ...seed }));
+    if (seed) fs.writeFileSync(statePath, JSON.stringify({ pricing: { spread: true, source: 'cryptocom-index' }, lastBarTs: SUN + 60 * MIN, startedAt: SUN, ...seed }));
     let n = 62;
-    const paper = createUpDipPaper({
+    const paper = createUpDipPaper({ getHalfSpread: () => 0,
       getCandles: (tf) => (tf === '1d' ? daily(dailyClose) : tfs(candles(n))[tf] || []),
       statePath, entryFilter, writeJSON: (p, d) => fs.writeFileSync(p, JSON.stringify(d)),
     });
@@ -84,7 +84,7 @@ describe('up-dip market signal', () => {
     const end = seen.at(-1);
     assert.notEqual(end.latest.signal.action, 'ENTER');
     assert.deepEqual(end.lastEntrySignal, { at: hit.latest.at, btc: hit.latest.features.price, contract: hit.latest.signal.contract, bookHeld: true });
-    const reloaded = createUpDipPaper({ getCandles: () => [], statePath, writeJSON: () => {} });
+    const reloaded = createUpDipPaper({ getHalfSpread: () => 0, getCandles: () => [], statePath, writeJSON: () => {} });
     assert.deepEqual(reloaded.getStatus().lastEntrySignal, end.lastEntrySignal);
   });
 

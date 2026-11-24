@@ -112,7 +112,7 @@ describe('createUpDipPaper', () => {
     const statePath = path.join(dir, 'paper.json');
     const all = path1m(SUN - 600 * MIN, 520, priceAt);
     let n = 0;
-    const paper = createUpDipPaper({
+    const paper = createUpDipPaper({ getHalfSpread: () => 0,
       getCandles: (tf) => (n ? (tfAt(all, n - 1)[tf] || []) : []),
       statePath,
       writeJSON: (p, d) => fs.writeFileSync(p, JSON.stringify(d)),
@@ -128,7 +128,7 @@ describe('createUpDipPaper', () => {
     assert.ok(status.events.some(e => e.action === 'FILLED_ENTER'));
     assert.ok(status.summary.cycles >= 1 && status.summary.pnl > 0);
     assert.equal(paper.step(), false, 'no new bar → no work');
-    const reloaded = createUpDipPaper({ getCandles: () => [], statePath, writeJSON: () => {} });
+    const reloaded = createUpDipPaper({ getHalfSpread: () => 0, getCandles: () => [], statePath, writeJSON: () => {} });
     assert.equal(reloaded.getStatus().summary.cycles, status.summary.cycles);
     fs.rmSync(dir, { recursive: true, force: true });
   });
