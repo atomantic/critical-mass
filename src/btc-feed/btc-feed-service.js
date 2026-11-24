@@ -2,7 +2,8 @@
 /**
  * Keyless BTC market feed for the gateway: 1s bars from Coinbase BTC-USD trades
  * and the Crypto.com BTC index. Public data only, independent of which funds are
- * open. It places no orders and feeds no signal.
+ * open. It places no orders; the Up dip paper books read the index through
+ * subscribeIndex.
  */
 
 const path = require('path');
@@ -42,6 +43,8 @@ const createBtcFeedService = (io, {
   let statusChanged = false;
   /** @type {NodeJS.Timeout[]} */
   let timers = [];
+  /** @type {Set<(sample: {value: number, timestamp: number}) => void>} */
+  const indexSubscribers = new Set();
   let connectedAt = 0;
   let droppedSinceConnect = 0;
   let acceptedSinceConnect = false;
@@ -117,6 +120,13 @@ const createBtcFeedService = (io, {
     } catch (err) {
       logger.warn(`⚠️ [btc-feed] Index history rejected a value: ${err.message}`, { error: err.message });
     }
+    for (const notify of indexSubscribers) {
+      try {
+        notify(sample);
+      } catch (err) {
+        logger.warn(`⚠️ [btc-feed] Index subscriber failed: ${err.message}`, { error: err.message });
+      }
+    }
   };
 
   const coinbase = createSource({
@@ -176,7 +186,21 @@ const createBtcFeedService = (io, {
   /** @param {number} seconds */
   const getWindow = (seconds) => ({ bars: bars.getBars(seconds), index: index.getValues(seconds), status: getStatus() });
 
-  return { start, stop, getStatus, getWindow, pauseHistory: () => history.pause(), resumeHistory: () => history.resume() };
+  /** Accepted index values as they arrive. @returns {() => void} unsubscribe */
+  const subscribeIndex = (fn) => {
+    indexSubscribers.add(fn);
+    return () => { indexSubscribers.delete(fn); };
+  };
+
+  const latest = (value, at) => (value === undefined || at === null ? null : { value, at });
+
+  /** The last accepted price of each source and when it arrived, however old. */
+  const getLatest = () => ({
+    coinbase: latest(bars.getLastPrice(), bars.getLastAcceptedAt()),
+    index: latest(index.getLastValue(), index.getLastAcceptedAt()),
+  });
+
+  return { start, stop, getStatus, getWindow, subscribeIndex, getLatest, pauseHistory: () => history.pause(), resumeHistory: () => history.resume() };
 };
 
 module.exports = { createBtcFeedService };

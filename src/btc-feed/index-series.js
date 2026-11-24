@@ -14,6 +14,8 @@ const createIndexSeries = ({ now = Date.now, retentionSeconds = 3600, maxAgeMs =
   /** @type {number | null} */
   let lastAcceptedAt = null;
   let newest = -Infinity;
+  /** @type {number | undefined} */
+  let lastValue;
 
   const evict = (at) => {
     const cutoff = at - retentionSeconds * SECOND_MS;
@@ -30,6 +32,7 @@ const createIndexSeries = ({ now = Date.now, retentionSeconds = 3600, maxAgeMs =
     // A repeated or older value is not news: it must not keep a stalled index looking live.
     if (timestamp <= newest) return false;
     newest = timestamp;
+    lastValue = value;
     lastAcceptedAt = at;
     const t = floorSecond(timestamp);
     evict(at);
@@ -58,7 +61,7 @@ const createIndexSeries = ({ now = Date.now, retentionSeconds = 3600, maxAgeMs =
     return out;
   };
 
-  return { add, getValues, drainChanged, getLastAcceptedAt: () => lastAcceptedAt };
+  return { add, getValues, drainChanged, getLastAcceptedAt: () => lastAcceptedAt, getLastValue: () => lastValue };
 };
 
 module.exports = { createIndexSeries };
