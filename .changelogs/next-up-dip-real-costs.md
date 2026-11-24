@@ -1,0 +1,5 @@
+- **Up dip paper book with the app's real costs.** Paper trades, your contract's P&L and the backtests now include the bid-ask spread the Crypto.com app charges. Record it from an Up screenshot or by typing it in; without a quote in 24 hours, $35 a side applies on $2,000 ranges. The shipped rule lost money out of sample once it is included, and the panel says so.
+- **Crypto.com prices** drive the Up dip books, and the rule only suggests contracts the app lists. That needs one recorded quote a week; without it the paper book stands aside.
+- **Your contract** now warns when either Coinbase or the Crypto.com index touched a bound, and the 1-second chart shows your distance from both.
+- **Action needed:** the existing Up dip paper book was priced without the spread, so it is frozen until you reset it. With the gateway stopped, run `node scripts/reset-up-dip-paper.js --apply`. It is archived first, and its result stays visible.
+- Changed: a candle gap no longer drops a pending paper exit.

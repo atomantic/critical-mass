@@ -1,4 +1,5 @@
 import Button from '../ui/Button'
+import { ScreenshotQuote } from './AppQuoteForm'
 import { useState, useEffect, useRef, useCallback, useId } from 'react'
 import { FileText, Save, Camera, Upload, Check, X, Loader2 } from '../icons'
 import { createRequestOwner } from '../../utils/requestOwner.mjs'
@@ -709,6 +710,7 @@ export default function ContractSetup({ initialContract }) {
                 </div>
               )}
             </div>
+            {preview.screenType === 'select' && preview.direction === 'Up' && <ScreenshotQuote extracted={preview} />}
             <div className="flex gap-2 pt-1">
               <Button
                 onClick={applyPreview}

@@ -2,14 +2,14 @@ const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const os = require('os');
 
-const setup = ({ appQuotes, io } = {}) => {
+const setup = ({ appQuotes, io, upDipCandles } = {}) => {
   const handlers = {};
   const reg = (m) => (route, h) => { handlers[`${m} ${route}`] = h; };
   const emitted = [];
   require('../src/routes/updown-routes')({ get: reg('GET'), put: reg('PUT'), patch: reg('PATCH'), post: reg('POST'), delete: reg('DELETE') }, {
     updownService: { getTradeContext: () => ({}) }, candleCache: { getAllCandles: () => [] },
     readJSON: () => ({ trades: [], nextId: 1 }), writeJSON: () => {}, DATA_DIR: os.tmpdir(),
-    upDipPaper: { getStatus: () => ({ latest: null }) }, appQuotes,
+    upDipPaper: { getStatus: () => ({ latest: null }) }, appQuotes, upDipCandles,
     io: io === undefined ? { to: (room) => ({ emit: (event) => emitted.push(`${room}:${event}`) }) } : io,
   });
   const call = (key, body) => {
@@ -70,5 +70,11 @@ describe('GET /api/updown/up-dip', () => {
   it('reports quotes when running and omits them otherwise', () => {
     assert.deepEqual(setup({ appQuotes: fake() }).call('GET /api/updown/up-dip').body.quotes, { listingSeen: true });
     assert.equal('quotes' in setup().call('GET /api/updown/up-dip').body, false);
+  });
+
+  it('reports candle status when running and omits it otherwise', () => {
+    const status = { ready: true, waitingFor: null };
+    assert.deepEqual(setup({ upDipCandles: { getStatus: () => status } }).call('GET /api/updown/up-dip').body.candles, status);
+    assert.equal('candles' in setup().call('GET /api/updown/up-dip').body, false);
   });
 });

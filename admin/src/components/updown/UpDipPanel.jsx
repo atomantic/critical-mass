@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback } from 'react'
 import { TrendingUp } from '../icons'
 import UpDipHeld from './UpDipHeld'
+import AppQuoteForm from './AppQuoteForm'
 import { apiGet } from '../../utils/apiClient'
 import useRealtimeRefresh from '../../hooks/useRealtimeRefresh'
-import { formatUsd } from '../../utils/format.mjs'
+import { formatSpread, formatUsd } from '../../utils/format.mjs'
 import { signedPrefix } from '../../utils/pnlFormat.mjs'
 
 // Paper-only: shows what the Up dip setup would do and how its paper book is
@@ -24,6 +25,54 @@ const signedUsd = (v) => (v == null ? '---' : `${signedPrefix(v)}${formatUsd(v)}
 const pnlColor = (v) => (v > 0 ? 'text-green-400' : v < 0 ? 'text-red-400' : 'text-gray-400')
 const when = (ms) => (ms ? new Date(ms).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '---')
 const k = (v) => `${(v / 1000).toFixed(1)}k`
+const FEE_PER_SIDE = 1.99
+/** Dollars a $2,000 contract moves per BTC dollar. */
+const SLOPE = 0.5
+const age = (ms) => (ms < 3_600_000 ? `${Math.max(1, Math.round(ms / 60_000))}m` : `${Math.round(ms / 3_600_000)}h`)
+const LISTING_LABEL = { legacy: ', any $100 floor', grid: ', listed floors only' }
+
+function SourceGap({ label, gap }) {
+  return <span>{label} {signedUsd(gap.median)}, 90% within {usd(gap.p90)}</span>
+}
+
+// What the app charges, whether its listings are known, and how its price compares.
+function Costs({ quotes }) {
+  const spread = quotes.spread[2000]
+  const roundTrip = 2 * (spread.value * SLOPE + FEE_PER_SIDE)
+  const last = quotes.last?.range === 2000 && spread.source === 'quote' ? quotes.last : null
+  const { n, coinbase, index } = quotes.comparison
+  return (
+    <div data-testid="up-dip-costs" className="text-2xs text-gray-300 mb-2 space-y-0.5">
+      <div>
+        Spread {formatSpread(spread.value)} a side ({spread.source === 'quote' ? `your quote, ${age(spread.ageMs)} old` : 'default: no quote in 24h'})
+        {' · '}Round trip {usd(roundTrip)} a contract{last && ` (${((100 * roundTrip) / (SLOPE * (last.up - last.floor) + FEE_PER_SIDE)).toFixed(1)}% of cost)`}
+      </div>
+      {!quotes.listingSeen && <div className="text-amber-300">No contract seen this week: record a quote to paper-trade</div>}
+      <div className="text-gray-400">
+        App price against: {coinbase || index ? <>
+          {coinbase && <SourceGap label="Coinbase" gap={coinbase} />}{coinbase && index && ' · '}{index && <SourceGap label="Crypto.com index" gap={index} />}
+          {' '}(late uploads are noisy)
+        </> : `not enough yet (${n}/10)`}
+      </div>
+    </div>
+  )
+}
+
+function ArchivedBook({ archived }) {
+  if (!archived) return null
+  if (archived.unreadable) return <div data-testid="up-dip-archived" className="text-2xs text-gray-400 mt-1">Previous book could not be read and was archived as it was</div>
+  const { openPosition } = archived
+  const open = openPosition ? (openPosition.pnl == null ? ', open position unpriced' : `, open ${signedUsd(openPosition.pnl)} at archive`) : ''
+  return (
+    <div data-testid="up-dip-archived" className="text-2xs text-gray-400 mt-1">
+      {`Previous book${archived.pricing?.spread ? '' : ' (no spread)'}: ${archived.closedCycles} closed, ${signedUsd(archived.pnl)}${open}`}
+    </div>
+  )
+}
+
+function NeedsReset({ command }) {
+  return <div role="alert" className="text-xs text-amber-300 border border-amber-700 rounded-sm px-2 py-1 mb-2">Needs reset: run {command}</div>
+}
 
 function BacktestLine({ label, s }) {
   if (!s) return null
@@ -55,7 +104,7 @@ function CyclesTable({ cycles }) {
             <tr key={`${c.openedAt}-${c.closedAt}`} className="border-b border-gray-700/50">
               <td className="py-0.5 whitespace-nowrap">{when(c.closedAt)}</td>
               <td className="text-right font-mono">{c.entryBtc?.toLocaleString()}→{c.exitBtc?.toLocaleString()}</td>
-              <td className="text-right">{REASON_LABEL[c.reason] || c.reason}</td>
+              <td className="text-right">{`${REASON_LABEL[c.reason] || c.reason}${c.coinbaseTouched === false ? ' · index only' : ''}`}</td>
               <td className={`text-right font-mono ${pnlColor(c.pnl)}`}>{signedUsd(c.pnl)}</td>
             </tr>
           ))}
@@ -77,6 +126,7 @@ function ShadowBook({ book }) {
         <span className="text-2xs uppercase tracking-wide text-purple-300 border border-purple-700 rounded-sm px-1.5 py-0.5 text-right">Shadow · paper only · daily-trend filter</span>
       </div>
       <div className="text-2xs text-amber-300/80 mb-2">This filter was found after seeing held-out results and is under live test.</div>
+      {book.needsReset && <NeedsReset command="scripts/reset-up-dip-paper.js --book shadow" />}
 
       {f && (
         <div className={`text-xs rounded-sm px-2 py-1 mb-2 border ${f.blocking ? 'border-amber-700 bg-amber-900/20' : 'border-gray-700 bg-gray-900'}`}>
@@ -182,6 +232,9 @@ export default function UpDipPanel() {
 
       {error && <div role="alert" className="text-xs text-red-400 mb-2">{error}</div>}
       {!data && !error && <div className="text-xs text-gray-400 py-2">Loading…</div>}
+      {data?.needsReset && <NeedsReset command="scripts/reset-up-dip-paper.js" />}
+      {data?.candles && !data.candles.ready && <div className="text-xs text-amber-300 mb-2">Waiting for candle history</div>}
+      {data?.candles?.ready && data.candles.waitingFor && <div className="text-xs text-amber-300 mb-2">Waiting for index data since {when(data.candles.waitingFor)}</div>}
 
       {decision && (
         <div data-testid="up-dip-signal" className={`border rounded-sm px-2 py-1.5 mb-2 ${ACTION_STYLE[decision.action] || ACTION_STYLE.STAND_ASIDE}`}>
@@ -213,6 +266,9 @@ export default function UpDipPanel() {
           Last ENTER signal {when(lastEntry.at)} · BTC {lastEntry.btc?.toLocaleString()} · Up {k(lastEntry.contract.floor)}–{k(lastEntry.contract.ceiling)}{lastEntry.bookHeld && ' · paper book was already holding'}
         </div>
       )}
+
+      {data?.quotes && <Costs quotes={data.quotes} />}
+      {data?.quotes && <AppQuoteForm onRecorded={load} />}
 
       {data && data.held !== undefined && <UpDipHeld held={data.held} onChange={load} />}
 
@@ -254,12 +310,14 @@ export default function UpDipPanel() {
 
       {data?.backtest && (
         <div className="text-2xs border-t border-gray-700 pt-1.5 space-y-0.5">
-          <div className="text-gray-400">Backtest, all dips (same rules, fees, knock-outs):</div>
+          <div className="text-gray-400">Backtest, all dips (same rules, fees, knock-outs, {data.backtest.spread > 0 ? `spread ${formatSpread(data.backtest.spread)} a side` : 'no spread'}{LISTING_LABEL[data.backtest.listing] ?? ''}):</div>
           <BacktestLine label={`Train to ${data.backtest.split?.slice(0, 10)}`} s={data.backtest.train} />
           <BacktestLine label="Held out after" s={data.backtest.test} />
-          <div className="text-amber-300/80">High win rate, rare full-cost floor knock-outs; not robust out of sample. Watch, don&apos;t trade it.</div>
+          <div className="text-amber-300/80">High win rate, rare full-cost floor knock-outs.</div>
         </div>
       )}
+      {data && <div className="text-2xs text-amber-300/80 mt-1">This rule lost money out of sample after costs. Watch, don&apos;t trade it.</div>}
+      <ArchivedBook archived={data?.archived} />
       {data?.startedAt && <div className="text-2xs text-gray-400 mt-1">Paper tracking since {when(data.startedAt)}{s?.gaps > 0 && <span className="text-amber-300/80"> · {s.gaps} candle gap{s.gaps === 1 ? '' : 's'} (restart outage, bars missed)</span>}</div>}
     </div>
     {data?.shadow && <ShadowBook book={data.shadow} />}

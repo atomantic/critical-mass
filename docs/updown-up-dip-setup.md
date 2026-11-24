@@ -2,8 +2,8 @@
 
 `src/updown/up-dip-setup.js` turns the operator's manual Crypto.com UpDown method
 into explicit ENTER / ADD / EXIT / HOLD / STAND_ASIDE recommendations. It is Up-only
-and **paper-only**: `src/updown/up-dip-paper.js` keeps a simulated book on the
-gateway's Coinbase candles and `/updown` shows it (Up Dip Setup panel). No code path
+and **paper-only**: `src/updown/up-dip-paper.js` keeps a simulated book on
+Crypto.com index candles and `/updown` shows it (Up Dip Setup panel). No code path
 places, modifies or cancels an order.
 
 ## Data
@@ -12,8 +12,48 @@ places, modifies or cancels an order.
   1 loss, +$3,638.08. Imported into the trade log by
   `scripts/import-updown-app-history.js` (dry run by default).
 - Candles: Coinbase BTC-USD 1m, Jan 15 – Nov 16 2026 (439k bars), fetched from the
-  public market endpoint by `scripts/fetch-updown-candles.js`. The app prices off
-  Crypto.com's index; the basis between the two is not modeled.
+  public market endpoint by `scripts/fetch-updown-candles.js`. The backtests use these; the
+  live book uses Crypto.com (see Live data below).
+
+## Costs: the app's spread
+
+The app quotes Up and Down either side of the market. On $2000 ranges two screenshots
+(2026-11-23, 14:58 and 14:59) both showed a $98 gap, $49 a side. Across 124 recorded fills
+(Feb-Nov 2026), buys were a median $34 above Coinbase's price and sells $35 below, stable
+under clock shifts of up to a minute; eight $500-range fills showed about $0. A $2000
+contract moves $0.50 per BTC dollar, so $35 a side costs $17.50 a contract each way on top of
+the fee. The operator's recorded trades already include it.
+
+`src/updown/app-pricing.js` charges it when opening and closing, in the paper books, the
+operator's contract and the backtests. Knock-outs and expiry settle without it. An open
+position closes at the larger of its entry spread and the current one. Shipped rule, out of
+sample (May-Nov): +$791 with no spread, −$6,342 at $35, −$7,980 at $49.
+
+`src/updown/app-quotes.js` keeps quotes the operator confirms (`data/updown/app-quotes.json`):
+from an Up select screenshot in Contract Setup, or typed in on the Up Dip panel. Nothing is
+recorded without **Record quote**. The newest quote for a range applies for 24 hours, then $35
+a side ($2000) or $0 ($500). Checks catch misread digits (centering on the shown price, Max
+Loss, the week's grid, distance from Coinbase); an older screenshot needs the time it was taken.
+
+**Listed contracts.** $2000 floors use one $400 grid per expiry week (all 13 weeks traded),
+offset differently each week. One quote for the current expiry teaches it; the rule then picks
+the grid floor nearest `price − floorOffset`, between $300 and $1,900 below price. With no
+quote for the week it stands aside: at least one a week is needed to paper-trade.
+
+**Not established:** which price the app knocks out on, that Down is the Up close price, and
+why the spread varies. Each quote stores Coinbase and the index beside the app's shown price;
+the panel compares them from ten quotes. Nothing switches automatically.
+
+## Live data
+
+`src/updown/up-dip-candles.js` builds 1m bars from the `BTCUSD-INDEX` values the gateway already
+streams (at least 30 in the minute), seeded from Crypto.com `BTC_USD` candles and any recorded
+index minutes. A thinner minute uses its `BTC_USD` candle, flagged as a substitute, or after two
+minutes is left out as a gap. A substitute feeds the indicators and can fill a pending EXIT. It
+opens nothing, and knocks out only if Coinbase touched the same bound in that minute. A gap
+drops a pending ENTER or ADD and keeps a pending EXIT. The book settles on these bars
+(provisional); a bound only one source touched is recorded as `TOUCH_MISMATCH`, and a
+knock-out stores `coinbaseTouched`.
 
 ## Contract model (verified on every app fill)
 
@@ -40,6 +80,9 @@ oversold prints. Exits are recoveries above the 1m EMA. 20 of 51 entries had few
 than 3 days to expiry; the only loss was entered ~11h before expiry.
 
 ## Backtest (`scripts/backtest-up-dip.js`)
+
+The tables below predate the spread (`--spread 0` reproduces them). `--spread` defaults to 35;
+`--listing grid` limits floors to the weeks whose grid is known.
 
 Decide at each 1m close, fill at the next 1m open, formula + fees, knock-outs on the
 bar's high/low (floor first when both), expiry settlement. Every dip in the period
@@ -181,9 +224,24 @@ an ENTER while the paper book is holding. The paper book's 4% exit applies only 
 ## Operator contract
 
 `src/updown/up-dip-held.js` applies the same exit rule to a contract the operator enters
-by hand (floor, range, contracts, total cost with fees) on `/updown`:
+by hand (floor, range, contracts, total cost with fees) on `/updown`, valued at what closing
+would pay after the spread:
 `PUT` / `DELETE /api/updown/up-dip/held`, reported as `held` on `GET /api/updown/up-dip`.
 State: `data/updown/up-dip-held.json`. It answers HOLD or EXIT, never ADD; CHECK APP when
-Coinbase touched the floor or ceiling since the fill was saved (the app's index can
-differ); EXPIRED after expiry; and STALE, with no P&L, when the newest evaluated candle
+Coinbase or the Crypto.com index touched the floor or ceiling since the fill was saved, naming
+which (an index touch is remembered); EXPIRED after expiry; and STALE, with no P&L, when the newest evaluated candle
 is over three minutes old. It places no orders and does not feed the paper book.
+
+## Resetting a paper book
+
+A book records how it was priced. One that traded under other pricing, or that cannot be read,
+is frozen: it still evaluates the market, so the contract panel keeps its advice, but it trades
+and writes nothing. With the gateway stopped (UPGRADE.md):
+
+```sh
+node scripts/reset-up-dip-paper.js            # dry run
+node scripts/reset-up-dip-paper.js --apply    # archive to data/updown/archive/, then start empty
+```
+
+`--book shadow` selects the shadow book. The archive keeps the whole state; the panel shows its
+result in one line, including any position open at the time.

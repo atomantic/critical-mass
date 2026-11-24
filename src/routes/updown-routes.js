@@ -144,7 +144,7 @@ const parseExpiryToMs = (value) => {
 
 /**
  * @param {import('express').Express} app
- * @param {{updownService: Object, upDipHeld?: any, appQuotes?: any, io?: any, readJSON: Function, DATA_DIR: string, validateEndpointUrl?: Function, safeFetch?: Function, allowedAiOrigins?: Set<string>}} deps
+ * @param {{updownService: Object, upDipHeld?: any, appQuotes?: any, upDipCandles?: any, io?: any, readJSON: Function, DATA_DIR: string, validateEndpointUrl?: Function, safeFetch?: Function, allowedAiOrigins?: Set<string>}} deps
  */
 module.exports = (app, deps) => {
   const {
@@ -154,6 +154,7 @@ module.exports = (app, deps) => {
     upDipShadow = null,
     upDipHeld = null,
     appQuotes = null,
+    upDipCandles = null,
     io = null,
     readJSON,
     writeJSON,
@@ -519,7 +520,8 @@ module.exports = (app, deps) => {
       // held: the operator's own contract (null when none is tracked; absent when not running).
       ...(upDipHeld ? { held: upDipHeld.getStatus(paper.latest) } : {}),
       // quotes: the app's spread in force, listing and source comparison.
-      ...(appQuotes ? { quotes: appQuotes.getStatus() } : {}) });
+      ...(appQuotes ? { quotes: appQuotes.getStatus() } : {}),
+      ...(upDipCandles ? { candles: upDipCandles.getStatus() } : {}) });
   });
 
   // An app quote the operator confirmed. `preview: true` only checks it.

@@ -21,6 +21,9 @@ export function formatUsd(value, { compact = false, decimals = 2 } = {}) {
   }).format(value + 0) // + 0 normalizes -0 to 0
 }
 
+// A half-spread in BTC dollars: whole dollars stay whole.
+export const formatSpread = (value) => formatUsd(value, { decimals: Number.isInteger(value) ? 0 : 2 })
+
 // "12.34%" — nullish/NaN-ish input renders as 0.
 export const formatPercent = (n, decimals = 2) => `${(n || 0).toFixed(decimals)}%`
 
