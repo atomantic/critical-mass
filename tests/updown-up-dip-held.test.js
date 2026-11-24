@@ -13,17 +13,19 @@ const EXPIRY = Date.parse('2026-11-28T09:00:00Z');
 const BUY = { floor: 59800, ceiling: 61800, contracts: 1, cost: 751.99 };
 const latest = (price, over = {}) => ({ at: NOW, features: { price, vs1m: 0.1, vs1h: 0, green1m: true, dropPct: 0, vs15m: 0, rsi1m: 50, ...over } });
 
-let dir, statePath, clock, candles;
+let dir, statePath, clock, candles, indexCandles, spread;
 const readJSON = (p, d) => (fs.existsSync(p) ? JSON.parse(fs.readFileSync(p, 'utf8')) : d);
 const make = () => createUpDipHeld({
   statePath, readJSON, writeJSON: (p, d) => fs.writeFileSync(p, JSON.stringify(d)),
-  getCandles: (tf) => candles[tf] || [], clock: () => clock,
+  getCandles: (tf) => indexCandles[tf] || [], getCoinbaseCandles: (tf) => candles[tf] || [], getHalfSpread: () => spread, clock: () => clock,
 });
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'up-dip-held-'));
   statePath = path.join(dir, 'held.json');
   clock = NOW;
   candles = {};
+  indexCandles = {};
+  spread = 0;
 });
 afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
 
@@ -45,6 +47,82 @@ describe('operator-held Up contract', () => {
     const out = held.getStatus(latest(61375));
     assert.equal(out.decision.action, 'EXIT');
     assert.equal(out.pnl, 33.52);
+  });
+
+  it('closes at what the app would pay, not at the market', () => {
+    const held = make();
+    held.set(BUY);
+    spread = 35;
+    const s = held.getStatus(latest(61375));
+    assert.equal(s.decision.action, 'HOLD');
+    assert.equal(s.pnl, 16.02);
+    assert.equal(s.pnlBeforeSpread, 33.52);
+    assert.equal(s.halfSpread, 35);
+    assert.equal(held.getStatus(latest(61404)).decision.action, 'EXIT');
+  });
+
+  it('asks for the spread of its own range', () => {
+    const asked = [];
+    const held = createUpDipHeld({ statePath, readJSON, writeJSON: (p, d) => fs.writeFileSync(p, JSON.stringify(d)), getCandles: () => [], getCoinbaseCandles: () => [], getHalfSpread: (range) => { asked.push(range); return 0; }, clock: () => clock });
+    held.set({ floor: 61000, ceiling: 61500, contracts: 1, cost: 301.99 });
+    held.getStatus(latest(61300));
+    assert.ok(asked.length && asked.every((r) => r === 500));
+  });
+
+  it('refuses to be built without a spread source', () => {
+    assert.throws(() => createUpDipHeld({ statePath, readJSON, writeJSON: () => {}, getCandles: () => [] }), TypeError);
+  });
+
+  it('names which source touched a bound', () => {
+    const held = make();
+    held.set(BUY);
+    clock = NOW + 60 * MIN;
+    const l = { ...latest(61300), at: clock };
+    const low = { timestamp: NOW + 4 * MIN, low: 59790, high: 61300 };
+    const reason = () => held.getStatus(l).decision.reasons[0];
+    candles = { '1m': [low] };
+    assert.equal(reason(), 'Coinbase touched the floor since this fill: the app may have knocked it out');
+    indexCandles = { '1m': [low] };
+    assert.match(reason(), /^Both touched the floor/);
+    candles = {};
+    assert.match(reason(), /^Crypto\.com index touched the floor/);
+  });
+
+  it('ignores an index substitute and index higher timeframes', () => {
+    const held = make();
+    held.set(BUY);
+    clock = NOW + 60 * MIN;
+    const low = { timestamp: NOW + 4 * MIN, low: 59790, high: 61300 };
+    indexCandles = { '1m': [{ ...low, substitute: true }], '15m': [low], '1h': [low] };
+    assert.equal(held.getStatus({ ...latest(61300), at: clock }).decision.action, 'HOLD');
+  });
+
+  it('remembers an index touch after it leaves the candle buffer and across a restart', () => {
+    const held = make();
+    held.set(BUY);
+    clock = NOW + 10 * MIN;
+    indexCandles = { '1m': [{ timestamp: NOW + 4 * MIN, low: 59790, high: 61300 }] };
+    held.observe();
+    indexCandles = { '1m': [] };
+    clock = NOW + 240 * MIN;
+    assert.match(make().getStatus({ ...latest(61300), at: clock }).decision.reasons[0], /^Crypto\.com index touched the floor/);
+  });
+
+  it('observing writes only when there is something new, and nothing without a contract', () => {
+    let writes = 0;
+    const held = createUpDipHeld({ statePath, readJSON, writeJSON: (p, d) => { writes++; fs.writeFileSync(p, JSON.stringify(d)); }, getCandles: (tf) => indexCandles[tf] || [], getCoinbaseCandles: () => [], getHalfSpread: () => 0, clock: () => clock });
+    held.observe();
+    assert.equal(writes, 0);
+    held.set(BUY);
+    held.observe();
+    assert.equal(writes, 1);
+    clock = NOW + 10 * MIN;
+    indexCandles = { '1m': [{ timestamp: NOW + 4 * MIN, low: 59790, high: 61300 }] };
+    held.observe();
+    held.observe();
+    assert.equal(writes, 2);
+    held.set(BUY);
+    assert.equal(JSON.parse(fs.readFileSync(statePath, 'utf8')).held.indexTouched, undefined, 'a new fill starts clean');
   });
 
   it('waits for price back above the 1m EMA before EXIT', () => {

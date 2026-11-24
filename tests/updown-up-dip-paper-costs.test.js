@@ -333,6 +333,13 @@ describe('gateway wiring', () => {
       for (const part of ['getCandles: upDipCandles.getCandles', 'getHalfSpread: getUpDipHalfSpread', 'pick: appQuotes.pick', 'getCoinbaseBar: getCoinbaseMinute']) assert.ok(text.includes(part), `${name}: ${part}`);
     });
   }
+  it('the operator contract checks both sources and is observed on every new minute', () => {
+    const i = source.indexOf('const upDipHeld = createUpDipHeld({');
+    const text = source.slice(i, source.indexOf('\n});', i));
+    for (const part of ['getCandles: upDipCandles.getCandles', 'getCoinbaseCandles', 'getHalfSpread: getUpDipHalfSpread']) assert.ok(text.includes(part), part);
+    assert.ok(i < source.indexOf('const upDipPaper = '), 'created before the book whose changes it observes');
+    assert.match(block('upDipPaper'), /upDipHeld\.observe\(\)/);
+  });
   it('never falls back to a constant spread', () => {
     assert.match(source, /const getUpDipHalfSpread = \(range\) => appQuotes\.halfSpread\(range\)\.value;/);
   });

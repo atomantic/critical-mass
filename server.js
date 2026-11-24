@@ -394,6 +394,16 @@ const getUpDipHalfSpread = (range) => appQuotes.halfSpread(range).value;
 const getCoinbaseCandles = (tf) => (candleCache.isSeeded('coinbase') ? candleCache.getCandles('coinbase', tf) : []);
 const getCoinbaseMinute = (timestamp) => getCoinbaseCandles('1m').find((c) => c.timestamp === timestamp) ?? null;
 const upDipArchiveDir = path.join(DATA_DIR, 'updown', 'archive');
+// The operator's own contract, entered by hand: exit advice only, no order paths.
+const upDipHeld = createUpDipHeld({
+  getCandles: upDipCandles.getCandles,
+  getCoinbaseCandles,
+  getHalfSpread: getUpDipHalfSpread,
+  statePath: path.join(DATA_DIR, 'updown', 'up-dip-held.json'),
+  readJSON,
+  writeJSON,
+  onChange: () => io.to('updown').emit('updown:up-dip', {}),
+});
 const upDipPaper = createUpDipPaper({
   getCandles: upDipCandles.getCandles,
   getHalfSpread: getUpDipHalfSpread,
@@ -404,17 +414,12 @@ const upDipPaper = createUpDipPaper({
   backtestPath: path.join(DATA_DIR, 'updown', 'backtest', 'up-dip-report.json'),
   writeJSON,
   logger: createContextLogger({ module: 'up-dip-paper' }),
-  onChange: () => io.to('updown').emit('updown:up-dip', {}),
+  onChange: () => {
+    upDipHeld.observe();
+    io.to('updown').emit('updown:up-dip', {});
+  },
 });
 upDipPaper.start();
-// The operator's own contract, entered by hand: exit advice only, no order paths.
-const upDipHeld = createUpDipHeld({
-  getCandles: getCoinbaseCandles,
-  statePath: path.join(DATA_DIR, 'updown', 'up-dip-held.json'),
-  readJSON,
-  writeJSON,
-  onChange: () => io.to('updown').emit('updown:up-dip', {}),
-});
 // SHADOW paper book: same rule plus the daily-trend stand-aside filter (chosen after
 // seeing held-out results, so it is under live test). Separate state file; the base
 // book above is untouched. UPDOWN_SHADOW_MAX_BELOW_SMA_PCT overrides the 4% default
