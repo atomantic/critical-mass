@@ -32,15 +32,14 @@ const age = (ms) => (ms < 3_600_000 ? `${Math.max(1, Math.round(ms / 60_000))}m`
 const LISTING_LABEL = { legacy: ', any $100 floor', grid: ', listed floors only' }
 
 function SourceGap({ label, gap }) {
-  return <span>{label} {signedUsd(gap.median)}, 90% within {usd(gap.p90)}</span>
+  return <span>{label} {gap.median == null ? `not enough yet (${gap.n}/10)` : `${signedUsd(gap.median)}, 90% within ${usd(gap.p90)}`}</span>
 }
 
 // What the app charges, whether its listings are known, and how its price compares.
 function Costs({ quotes }) {
   const spread = quotes.spread[2000]
   const roundTrip = 2 * (spread.value * SLOPE + FEE_PER_SIDE)
-  const last = quotes.last?.range === 2000 && spread.source === 'quote' ? quotes.last : null
-  const { n, coinbase, index } = quotes.comparison
+  const { last, comparison: { coinbase, index } } = quotes
   return (
     <div data-testid="up-dip-costs" className="text-2xs text-gray-300 mb-2 space-y-0.5">
       <div>
@@ -49,10 +48,7 @@ function Costs({ quotes }) {
       </div>
       {!quotes.listingSeen && <div className="text-amber-300">No contract seen this week: record a quote to paper-trade</div>}
       <div className="text-gray-400">
-        App price against: {coinbase || index ? <>
-          {coinbase && <SourceGap label="Coinbase" gap={coinbase} />}{coinbase && index && ' · '}{index && <SourceGap label="Crypto.com index" gap={index} />}
-          {' '}(late uploads are noisy)
-        </> : `not enough yet (${n}/10)`}
+        App price against: <SourceGap label="Coinbase" gap={coinbase} /> · <SourceGap label="Crypto.com index" gap={index} /> (late uploads are noisy)
       </div>
     </div>
   )
@@ -104,7 +100,7 @@ function CyclesTable({ cycles }) {
             <tr key={`${c.openedAt}-${c.closedAt}`} className="border-b border-gray-700/50">
               <td className="py-0.5 whitespace-nowrap">{when(c.closedAt)}</td>
               <td className="text-right font-mono">{c.entryBtc?.toLocaleString()}→{c.exitBtc?.toLocaleString()}</td>
-              <td className="text-right">{`${REASON_LABEL[c.reason] || c.reason}${c.coinbaseTouched === false ? ' · index only' : ''}`}</td>
+              <td className="text-right">{`${REASON_LABEL[c.reason] || c.reason}${c.uncertain ? ' · assumed' : c.coinbaseTouched === false ? ' · index only' : ''}`}</td>
               <td className={`text-right font-mono ${pnlColor(c.pnl)}`}>{signedUsd(c.pnl)}</td>
             </tr>
           ))}
@@ -187,6 +183,7 @@ function ShadowBook({ book }) {
       )}
 
       <CyclesTable cycles={book.cycles} />
+      <ArchivedBook archived={book.archived} />
       {book.startedAt && <div className="text-2xs text-gray-400 mt-1">Shadow tracking since {when(book.startedAt)}</div>}
     </div>
   )
@@ -268,7 +265,7 @@ export default function UpDipPanel() {
       )}
 
       {data?.quotes && <Costs quotes={data.quotes} />}
-      {data?.quotes && <AppQuoteForm onRecorded={load} />}
+      {data?.quotes && <AppQuoteForm last={data.quotes.lastRecorded} onRecorded={load} />}
 
       {data && data.held !== undefined && <UpDipHeld held={data.held} onChange={load} />}
 

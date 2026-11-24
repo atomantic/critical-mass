@@ -78,6 +78,11 @@ describe('recording a quote', () => {
 });
 
 describe('refusing a quote', () => {
+  it('for a $2,000 range with no spread', () => fail({ ...MANUAL, up: 61119, down: 61118 }, /spread/i));
+  it('for a contract that has expired by now', () => {
+    clock = EXPIRY + HOUR;
+    fail({ ...MANUAL, capturedAt: EXPIRY - HOUR, expiry: EXPIRY }, /expired/i);
+  });
   it('whose Down price was misread', () => fail({ ...SHOT1, down: 60974 }, /not centered/i));
   it('whose Up price does not match Max Loss', () => fail({ ...SHOT1, maxLoss: '-$468.00' }, /max loss/i));
   it('from a screenshot with no Max Loss', () => fail({ ...SHOT1, maxLoss: undefined }, /max loss/i));
@@ -141,6 +146,12 @@ describe('spread in force', () => {
     quotes.record(MANUAL);
     assert.equal(quotes.halfSpread(500).value, 10);
   });
+  it('ignores a quote from the future after the clock is set back', () => {
+    const quotes = make();
+    quotes.record(MANUAL);
+    clock = NOW - 2 * HOUR;
+    assert.equal(quotes.halfSpread(2000).source, 'default');
+  });
   it('uses the newest captured time, not the newest recorded', () => {
     const quotes = make();
     quotes.record(MANUAL);
@@ -191,14 +202,46 @@ describe('status', () => {
   it('compares sources only from ten quotes', () => {
     const quotes = make();
     for (let i = 0; i < 9; i++) { clock = NOW + i * 60_000; latest = { coinbase: { value: 61120 + i, at: clock }, index: null }; quotes.record(MANUAL); }
-    assert.deepEqual(quotes.getStatus().comparison, { n: 9, coinbase: null, index: null });
+    assert.deepEqual(quotes.getStatus().comparison, { coinbase: { n: 9 }, index: { n: 0 } });
     clock = NOW + 9 * 60_000; latest = { coinbase: { value: 61129, at: clock }, index: null };
     quotes.record(MANUAL);
-    const { n, coinbase, index } = quotes.getStatus().comparison;
-    assert.equal(n, 10);
-    assert.deepEqual(coinbase, { median: -5.31, p90: 10.31 });
-    assert.equal(index, null);
+    assert.deepEqual(quotes.getStatus().comparison, { coinbase: { n: 10, median: -5.31, p90: 10.31 }, index: { n: 0 } });
   });
+  it('does not count quotes that had nothing to compare with', () => {
+    const quotes = make();
+    for (let i = 0; i < 12; i++) quotes.record({ ...MANUAL, capturedAt: NOW - (2 + i) * 60_000 });
+    assert.deepEqual(quotes.getStatus().comparison, { coinbase: { n: 0 }, index: { n: 0 } });
+  });
+  it('reports the newest $2,000 quote as the one costs are shown for, and the last one recorded for removal', () => {
+    const quotes = make();
+    quotes.record(MANUAL);
+    clock = NOW + 60_000; latest.coinbase.at = clock;
+    quotes.record({ source: 'manual', range: 500, shown: 61140, up: 61140, down: 61140, floor: 60900 });
+    const s = quotes.getStatus();
+    assert.equal(s.last.range, 2000);
+    assert.equal(s.lastRecorded.range, 500);
+  });
+});
+
+describe('removing a mistaken quote', () => {
+  it('frees the week\'s grid', () => {
+    const quotes = make();
+    const wrong = quotes.record({ ...MANUAL, floor: 60300 }).quote;
+    assert.match(quotes.record(MANUAL).error, /grid.*remove/i);
+    assert.deepEqual(quotes.remove(wrong.recordedAt), {});
+    assert.equal(quotes.record(MANUAL).quote.floor, 60200);
+    assert.equal(quotes.pick(61138, NOW, UP_DIP_PARAMS).floor, 59800);
+  });
+  it('refuses when that quote is no longer the last recorded', () => {
+    const quotes = make();
+    const first = quotes.record(MANUAL).quote;
+    clock = NOW + 60_000; latest.coinbase.at = clock;
+    quotes.record({ ...MANUAL, up: 61173 });
+    assert.match(quotes.remove(first.recordedAt).error, /last/i);
+    assert.match(quotes.remove('x').error, /last/i);
+    assert.equal(JSON.parse(fs.readFileSync(statePath, 'utf8')).quotes.length, 2);
+  });
+  it('refuses when there is nothing to remove', () => assert.match(make().remove(1).error, /last/i));
 });
 
 describe('an unreadable file', () => {

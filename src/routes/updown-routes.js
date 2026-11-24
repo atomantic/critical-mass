@@ -534,6 +534,14 @@ module.exports = (app, deps) => {
     res.json({ success: true, quote });
   });
 
+  app.delete('/api/updown/app-quotes/:recordedAt', (req, res) => {
+    if (!appQuotes) return res.status(503).json({ success: false, error: 'App quotes not running' });
+    const { error } = appQuotes.remove(Number(req.params.recordedAt));
+    if (error) return res.status(409).json({ success: false, error });
+    io?.to('updown').emit('updown:up-dip', {});
+    res.json({ success: true });
+  });
+
   app.put('/api/updown/up-dip/held', (req, res) => {
     if (!upDipHeld) return res.status(503).json({ success: false, error: 'Up dip contract tracker not running' });
     const { error } = upDipHeld.set(req.body);

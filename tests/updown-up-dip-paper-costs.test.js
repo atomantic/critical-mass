@@ -21,7 +21,6 @@ const read = () => JSON.parse(fs.readFileSync(file, 'utf8'));
 const seed = (extra, stamp = STAMP) => fs.writeFileSync(file, JSON.stringify({ lastBarTs: T0, startedAt: T0, ...stamp, ...extra }));
 const make = (over = {}) => createUpDipPaper({
   getCandles: (tf) => (tf === '1m' ? candles : []),
-  getCoinbaseBar: (ts) => coinbase[ts] ?? null,
   getHalfSpread: () => spread,
   pick: () => pickResult,
   statePath: file, archiveDir: path.join(dir, 'archive'),
@@ -29,9 +28,10 @@ const make = (over = {}) => createUpDipPaper({
   logger: { warn: (m) => logs.push(m), error: (m) => logs.push(m) },
   ...over,
 });
-const step = (bars, over) => { candles = bars; const paper = make(over); paper.step(); return paper.getStatus(); };
+const witnessed = (bars) => bars.map((b) => ({ ...b, coinbase: coinbase[b.timestamp] ?? null }));
+const step = (bars, over) => { candles = witnessed(bars); const paper = make(over); paper.step(); return paper.getStatus(); };
 /** A Coinbase bar touching nothing unless told otherwise. */
-const cb = (i, over = {}) => { coinbase[T0 + i * MIN] = { timestamp: T0 + i * MIN, open: 64000, high: 64050, low: 63950, close: 64000, ...over }; };
+const cb = (i, over = {}) => { coinbase[T0 + i * MIN] = { high: 64050, low: 63950, complete: true, ...over }; };
 
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'up-dip-costs-'));
@@ -178,6 +178,46 @@ describe('gaps', () => {
   });
 });
 
+describe('a gap across expiry', () => {
+  const expired = { ...CONTRACT, expiry: T0 + 10 * MIN };
+  it('settles before a later price can fill a kept EXIT', () => {
+    seed({ position: position({ contract: expired }), pending: { action: 'EXIT' } });
+    const s = step([bar(0), bar(50, { open: 64800, high: 64850, low: 64750, close: 64800 })]);
+    assert.equal(s.cycles.length, 1);
+    assert.deepEqual([s.cycles[0].reason, s.cycles[0].uncertain], ['expiry', true]);
+    assert.equal(s.pending, null);
+  });
+  it('settles before a later price can knock it out', () => {
+    for (const over of [{ high: 65001 }, { low: 62990 }]) {
+      seed({ position: position({ contract: expired }) });
+      cb(50, over);
+      assert.equal(step([bar(0), bar(50, over)]).cycles[0].reason, 'expiry');
+    }
+  });
+  it('uses the last price before the gap when that is nearer expiry', () => {
+    seed({ position: position({ contract: expired }), lastClose: 64100, lastBarTs: T0 + 8 * MIN });
+    near(step([bar(8), bar(50, { open: 64800 })]).cycles[0].proceeds, 0.5 * (64100 - 63000) - 1.99);
+  });
+  it('is not used when the bars run up to expiry', () => {
+    seed({ position: position({ contract: { ...CONTRACT, expiry: T0 + 2 * MIN } }) });
+    assert.equal(step([bar(0), bar(1)]).cycles[0].uncertain, undefined);
+  });
+});
+
+describe('indicators after an outage', () => {
+  const run = (bars) => { candles = witnessed(bars); const paper = make(); paper.step(); return paper.getStatus().latest; };
+  it('are withheld while the last hour has a large hole', () => {
+    const bars = [...Array.from({ length: 60 }, (_, i) => bar(i)), ...Array.from({ length: 40 }, (_, i) => bar(540 + i, { open: 63000, close: 63000, high: 63050, low: 62950 }))];
+    const latest = run(bars);
+    assert.equal(latest.features, null);
+    assert.match(latest.signal.reasons[0], /not enough candle history/);
+  });
+  it('tolerate a few missing minutes', () => {
+    assert.ok(run([...Array.from({ length: 60 }, (_, i) => bar(i)), ...Array.from({ length: 30 }, (_, i) => bar(65 + i))]).features);
+    assert.equal(run([...Array.from({ length: 60 }, (_, i) => bar(i)), ...Array.from({ length: 30 }, (_, i) => bar(66 + i))]).features, null);
+  });
+});
+
 describe('substitute bars', () => {
   const sub = (i, over = {}) => bar(i, { substitute: true, ...over });
 
@@ -190,9 +230,25 @@ describe('substitute bars', () => {
     assert.deepEqual([e.bound, e.touched], ['floor', 'BTC_USD']);
   });
 
-  it('do not knock out when Coinbase is unknown', () => {
+  it('take a floor touch as the loss, flagged, when Coinbase stayed unknown', () => {
     seed({ position: position() });
-    assert.ok(step([bar(0), sub(1, { low: 62990 })]).position);
+    const [cycle] = step([bar(0), sub(1, { low: 62990 })]).cycles;
+    assert.deepEqual([cycle.reason, cycle.proceeds, cycle.coinbaseTouched, cycle.uncertain], ['knock_out_floor', 0, null, true]);
+  });
+
+  it('do not take a ceiling touch as the gain when Coinbase stayed unknown', () => {
+    seed({ position: position() });
+    assert.ok(step([bar(0), sub(1, { high: 65001 })]).position);
+  });
+
+  it('treat part of a Coinbase minute as unknown unless it touched', () => {
+    seed({ position: position() });
+    cb(1, { complete: false });
+    assert.equal(step([bar(0), sub(1, { low: 62990 })]).cycles[0].uncertain, true);
+    seed({ position: position() });
+    cb(1, { complete: false, high: 65001 });
+    const [cycle] = step([bar(0), sub(1, { high: 65001 })]).cycles;
+    assert.deepEqual([cycle.reason, cycle.coinbaseTouched, cycle.uncertain], ['knock_out_ceiling', true, undefined]);
   });
 
   it('knock out when Coinbase touched the same bound', () => {
@@ -247,8 +303,8 @@ describe('touches seen by only one source', () => {
     const s = step([bar(0), bar(1), bar(2), bar(3)]);
     assert.ok(s.position);
     assert.equal(s.events.filter((e) => e.action === 'TOUCH_MISMATCH').length, 1);
-    candles = [bar(0), bar(1), bar(2), bar(3), bar(4)];
     cb(4, { low: 62999 });
+    candles = witnessed([bar(0), bar(1), bar(2), bar(3), bar(4)]);
     const again = make();
     again.step();
     assert.equal(again.getStatus().events.filter((e) => e.action === 'TOUCH_MISMATCH').length, 1, 'nor again after a restart');
@@ -328,9 +384,9 @@ describe('gateway wiring', () => {
   const source = fs.readFileSync(require.resolve('../server'), 'utf8');
   const block = (name) => { const i = source.indexOf(`const ${name} = createUpDipPaper({`); return source.slice(i, source.indexOf('\n});', i)); };
   for (const name of ['upDipPaper', 'upDipShadow']) {
-    it(`${name} uses the index candles, the app's spread and listing, and Coinbase as a second witness`, () => {
+    it(`${name} uses the index candles and the app's spread and listing`, () => {
       const text = block(name);
-      for (const part of ['getCandles: upDipCandles.getCandles', 'getHalfSpread: getUpDipHalfSpread', 'pick: appQuotes.pick', 'getCoinbaseBar: getCoinbaseMinute']) assert.ok(text.includes(part), `${name}: ${part}`);
+      for (const part of ['getCandles: upDipCandles.getCandles', 'getHalfSpread: getUpDipHalfSpread', 'pick: appQuotes.pick']) assert.ok(text.includes(part), `${name}: ${part}`);
     });
   }
   it('the operator contract checks both sources and is observed on every new minute', () => {
@@ -339,6 +395,9 @@ describe('gateway wiring', () => {
     for (const part of ['getCandles: upDipCandles.getCandles', 'getCoinbaseCandles', 'getHalfSpread: getUpDipHalfSpread']) assert.ok(text.includes(part), part);
     assert.ok(i < source.indexOf('const upDipPaper = '), 'created before the book whose changes it observes');
     assert.match(block('upDipPaper'), /upDipHeld\.observe\(\)/);
+  });
+  it('the candles carry Coinbase as a second witness', () => {
+    assert.match(source, /createUpDipCandles\(\{[^}]*getCoinbaseMinute: btcFeedService\.getCoinbaseMinute/);
   });
   it('never falls back to a constant spread', () => {
     assert.match(source, /const getUpDipHalfSpread = \(range\) => appQuotes\.halfSpread\(range\)\.value;/);

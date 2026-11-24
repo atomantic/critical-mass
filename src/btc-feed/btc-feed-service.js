@@ -200,7 +200,17 @@ const createBtcFeedService = (io, {
     index: latest(index.getLastValue(), index.getLastAcceptedAt()),
   });
 
-  return { start, stop, getStatus, getWindow, subscribeIndex, getLatest, pauseHistory: () => history.pause(), resumeHistory: () => history.resume() };
+  /**
+   * Coinbase's extremes in one minute, or null when nothing was seen. `complete` only
+   * if every second is covered: a partial minute can prove a touch, not rule one out.
+   */
+  const getCoinbaseMinute = (timestamp) => {
+    const seconds = bars.getBars(Math.ceil((now() - timestamp) / 1000) + 1).filter((b) => b.t >= timestamp && b.t < timestamp + 60_000);
+    if (!seconds.length) return null;
+    return { low: Math.min(...seconds.map((b) => b.low)), high: Math.max(...seconds.map((b) => b.high)), complete: seconds.length === 60 };
+  };
+
+  return { start, stop, getStatus, getWindow, subscribeIndex, getLatest, getCoinbaseMinute, pauseHistory: () => history.pause(), resumeHistory: () => history.resume() };
 };
 
 module.exports = { createBtcFeedService };

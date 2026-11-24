@@ -3,8 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import AppQuoteForm, { ScreenshotQuote } from '../src/components/updown/AppQuoteForm.jsx'
 
-const api = vi.hoisted(() => ({ post: vi.fn() }))
-vi.mock('../src/utils/apiClient', () => ({ apiPost: api.post, describeMutationFailure: (res, fallback) => res.data?.error || fallback }))
+const api = vi.hoisted(() => ({ post: vi.fn(), del: vi.fn() }))
+vi.mock('../src/utils/apiClient', () => ({ apiPost: api.post, apiDelete: api.del, describeMutationFailure: (res, fallback) => res.data?.error || fallback }))
 
 const NOW = Date.parse('2026-11-23T22:59:30Z')
 const extracted = { screenType: 'select', direction: 'Up', range: 2000, currentPrice: 61118.69, upPrice: 61172, downPrice: 61074, target: 62200, stop: 60200, maxLoss: '-$486.00', expiryMs: NOW + 4 * 86_400_000 }
@@ -110,5 +110,28 @@ describe('manual quote', () => {
     fireEvent.click(record())
     expect((await screen.findByRole('alert')).textContent).toContain('between Down and Up')
     expect(screen.getByLabelText(/^up/i).value).toBe('61172')
+  })
+})
+
+describe('removing the last quote', () => {
+  const last = { recordedAt: 123, range: 2000, up: 61172, down: 61074, floor: 60300 }
+  it('names it and removes it', async () => {
+    api.del.mockResolvedValue({ ok: true, data: { success: true } })
+    const onRecorded = vi.fn()
+    render(<AppQuoteForm last={last} onRecorded={onRecorded} />)
+    expect(screen.getByText(/last: up 61,172, down 61,074, floor 60,300/i)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /remove last quote/i }))
+    await waitFor(() => expect(onRecorded).toHaveBeenCalled())
+    expect(api.del).toHaveBeenCalledWith('/api/updown/app-quotes/123')
+  })
+  it('shows why it could not be removed', async () => {
+    api.del.mockResolvedValue(bad('a newer quote was recorded'))
+    render(<AppQuoteForm last={last} onRecorded={() => {}} />)
+    fireEvent.click(screen.getByRole('button', { name: /remove last quote/i }))
+    expect((await screen.findByRole('alert')).textContent).toContain('a newer quote was recorded')
+  })
+  it('offers nothing to remove without one', () => {
+    render(<AppQuoteForm last={null} onRecorded={() => {}} />)
+    expect(screen.queryByRole('button', { name: /remove last quote/i })).toBeNull()
   })
 })

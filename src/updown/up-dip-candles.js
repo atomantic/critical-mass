@@ -9,6 +9,13 @@
  * otherwise its BTC_USD candle stands in, flagged `substitute` so the books can
  * refuse to act on it; if neither arrives it is left out, a visible gap. Later
  * minutes wait, because the books never revisit a bar.
+ *
+ * Every 1m bar carries `coinbase`, the extremes Coinbase saw in that minute, as a
+ * second witness for bound touches: from the gateway's own 1s bars, else requested
+ * for a substitute, which waits up to two minutes for it. Null means unknown.
+ *
+ * After a gap the buffers are filled in again from the exchange so the indicators
+ * do not read old prices as recent; a book that already stepped past ignores them.
  */
 
 const fs = require('fs');
@@ -34,9 +41,11 @@ const GIVE_UP_MS = 120_000;
 const POLL_MS = 1_000;
 const MAX_FETCH = 300;
 const CANDLE_URL = 'https://api.crypto.com/exchange/v1/public/get-candlestick?instrument_name=BTC_USD';
+const COINBASE_URL = 'https://api.coinbase.com/api/v3/brokerage/market/products/BTC-USD/candles?granularity=ONE_MINUTE';
 
 /**
- * @typedef {{timestamp: number, open: number, high: number, low: number, close: number, volume: number, substitute?: boolean}} Candle
+ * @typedef {{low: number, high: number, complete: boolean}} Witness what Coinbase saw; a "no" counts only if complete
+ * @typedef {{timestamp: number, open: number, high: number, low: number, close: number, volume: number, substitute?: boolean, coinbase?: Witness | null}} Candle
  */
 
 /** Crypto.com BTC_USD candles, oldest first; empty on any failure. */
@@ -48,6 +57,17 @@ const fetchBtcUsd = async (tf, count) => {
     .map((c) => ({ timestamp: c.t, open: parseFloat(c.o), high: parseFloat(c.h), low: parseFloat(c.l), close: parseFloat(c.c), volume: parseFloat(c.v) }))
     .filter((c) => [c.timestamp, c.open, c.high, c.low, c.close].every(Number.isFinite))
     .sort((a, b) => a.timestamp - b.timestamp);
+};
+
+/** Coinbase BTC-USD 1m extremes for minutes from..to inclusive; empty on any failure. */
+const fetchCoinbaseMinutes = async (from, to) => {
+  const start = Math.max(from, to - (MAX_FETCH - 1) * MINUTE_MS);
+  const res = await fetch(`${COINBASE_URL}&start=${start / 1000}&end=${to / 1000}&limit=${MAX_FETCH}`, { signal: AbortSignal.timeout(CANDLE_FETCH_TIMEOUT_MS) });
+  const data = res.ok ? (await res.json())?.candles : null;
+  if (!Array.isArray(data)) return [];
+  return data
+    .map((c) => ({ timestamp: Number(c.start) * 1000, low: parseFloat(c.low), high: parseFloat(c.high) }))
+    .filter((c) => [c.timestamp, c.low, c.high].every(Number.isFinite));
 };
 
 /** Recorded 1m index bars since `from` (see src/btc-feed/index-history.js). */
@@ -69,9 +89,11 @@ const readRecorded = (dir, from, to) => {
 /**
  * @param {{subscribeIndex: (fn: (s: {value: number, timestamp: number}) => void) => () => void, DATA_DIR?: string,
  *   readIndexMinutes?: (from: number) => Array<{t: number, open: number, high: number, low: number, close: number, samples: number}>,
- *   fetchCandles?: (tf: string, count: number) => Promise<Candle[]>, clock?: () => number, logger: {info: Function, warn: Function}}} deps
+ *   fetchCandles?: (tf: string, count: number) => Promise<Candle[]>,
+ *   fetchCoinbase?: (from: number, to: number) => Promise<Array<{timestamp: number, low: number, high: number}>>,
+ *   getCoinbaseMinute?: (timestamp: number) => Witness | null, clock?: () => number, logger: {info: Function, warn: Function}}} deps
  */
-const createUpDipCandles = ({ subscribeIndex, DATA_DIR = '', fetchCandles = fetchBtcUsd, clock = Date.now, logger,
+const createUpDipCandles = ({ subscribeIndex, DATA_DIR = '', fetchCandles = fetchBtcUsd, fetchCoinbase = fetchCoinbaseMinutes, getCoinbaseMinute = () => null, clock = Date.now, logger,
   readIndexMinutes = (from) => readRecorded(path.join(DATA_DIR, 'btc-feed'), from, clock()) }) => {
   /** @type {Record<string, Candle[]>} completed bars, oldest first */
   let bars = {};
@@ -87,6 +109,11 @@ const createUpDipCandles = ({ subscribeIndex, DATA_DIR = '', fetchCandles = fetc
   /** Next minute to finalize. */
   let next = 0;
   let lastSeedAt = -Infinity;
+  let firstSeedAt = /** @type {number | null} */ (null);
+  /** Whether a gap has left the buffers with holes. */
+  let holes = false;
+  /** @type {Map<number, Candle>} BTC_USD candles fetched for minutes still waiting */
+  const standIns = new Map();
   let lastFetchAt = -Infinity;
   /** When the current run of unanswered fetches began. */
   let stalledSince = /** @type {number | null} */ (null);
@@ -146,53 +173,95 @@ const createUpDipCandles = ({ subscribeIndex, DATA_DIR = '', fetchCandles = fetc
     }
   };
 
-  const finalize = (bar) => {
+  const finalize = (bar, { progress = true } = {}) => {
     keep('1m', bar);
     rollUp(bar);
     live.delete(bar.timestamp);
+    standIns.delete(bar.timestamp);
     next = bar.timestamp + MINUTE_MS;
-    stalledSince = null;
+    // Giving up on a source is not progress: the next minute must not wait afresh.
+    if (progress) stalledSince = null;
+  };
+
+  /** @param {() => Promise<any[]>} request */
+  const quietly = async (request) => {
+    try {
+      return await request();
+    } catch (err) {
+      logger.warn(`⚠️ 🕯️ Up dip candle request failed: ${err.message}`, { action: 'up-dip-fetch', error: err.message });
+      return [];
+    }
+  };
+
+  /** Coinbase's extremes by minute, for minutes that had ended when asked. */
+  const witnesses = async (from, to) => {
+    const asked = clock();
+    const bars = await quietly(() => fetchCoinbase(from, to));
+    return new Map(bars.filter((c) => c.timestamp + MINUTE_MS <= asked)
+      .map((c) => /** @type {[number, Witness]} */ ([c.timestamp, { low: c.low, high: c.high, complete: true }])));
+  };
+
+  /** Fetch every timeframe not yet held. Returns whether all are. */
+  const fetchSeeds = async (mine) => {
+    for (const tf of TFS) {
+      if (seeds[tf]) continue;
+      const at = clock();
+      const fetched = await quietly(() => fetchCandles(tf, TIMEFRAMES[tf][1]));
+      if (mine !== generation) return false;
+      if (fetched.length) seeds[tf] = { candles: fetched, at };
+    }
+    return TFS.every((tf) => seeds[tf]);
+  };
+
+  /** Completed 1m seeds as substitutes, with recorded index minutes in their place. */
+  const seededMinutes = (witness) => {
+    const { candles, at } = seeds['1m'];
+    const minutes = candles.filter((c) => c.timestamp + MINUTE_MS <= at).slice(-TIMEFRAMES['1m'][1]);
+    let recorded = [];
+    try {
+      recorded = minutes.length ? readIndexMinutes(minutes[0].timestamp) : [];
+    } catch (err) {
+      logger.warn(`⚠️ 🕯️ Recorded index minutes could not be read: ${err.message}`, { action: 'up-dip-seed', error: err.message });
+    }
+    const byTime = new Map(recorded.filter((m) => m.samples >= MIN_VALUES).map((m) => /** @type {[number, any]} */ ([m.t, m])));
+    return minutes.map((c) => {
+      const m = byTime.get(c.timestamp);
+      const coinbase = witness.get(c.timestamp) ?? null;
+      return m ? { timestamp: c.timestamp, open: m.open, high: m.high, low: m.low, close: m.close, volume: 0, coinbase } : { ...c, substitute: true, coinbase };
+    });
+  };
+
+  const seedHigher = () => {
+    for (const tf of TFS) {
+      if (tf === '1m') continue;
+      const [span, max] = TIMEFRAMES[tf];
+      const { candles, at } = seeds[tf];
+      bars[tf] = candles.filter((c) => c.timestamp + span <= at).slice(-max).map((c) => ({ ...c }));
+      const partial = candles.find((c) => c.timestamp <= at && c.timestamp + span > at);
+      open[tf] = partial ? { ...partial } : null;
+    }
+  };
+
+  const witnessSeeds = () => {
+    const { candles, at } = seeds['1m'];
+    return witnesses(candles[0].timestamp, Math.floor(at / MINUTE_MS) * MINUTE_MS - MINUTE_MS);
   };
 
   /** Seed every timeframe, then switch to live minutes. */
   const seed = async (mine) => {
     if (clock() - lastSeedAt < SEED_RETRY_MS) return;
     lastSeedAt = clock();
-    for (const tf of TFS) {
-      if (seeds[tf]) continue;
-      const at = clock();
-      const fetched = await fetchCandles(tf, TIMEFRAMES[tf][1]).catch((err) => {
-        logger.warn(`⚠️ 🕯️ Up dip ${tf} candles could not be fetched: ${err.message}`, { action: 'up-dip-seed', timeframe: tf, error: err.message });
-        return [];
-      });
-      if (mine !== generation) return;
-      if (fetched.length) seeds[tf] = { candles: fetched, at };
-    }
-    if (!TFS.every((tf) => seeds[tf])) return;
-
-    bars = {};
-    open = {};
-    for (const tf of TFS) {
-      const [span, max] = TIMEFRAMES[tf];
-      const { candles, at } = seeds[tf];
-      const done = candles.filter((c) => c.timestamp + span <= at);
-      bars[tf] = done.slice(-max).map((c) => (tf === '1m' ? { ...c, substitute: true } : { ...c }));
-      const partial = candles.find((c) => c.timestamp <= at && c.timestamp + span > at);
-      if (tf !== '1m') open[tf] = partial ? { ...partial } : null;
-    }
-    const minutes = bars['1m'];
+    if (!await fetchSeeds(mine)) return;
+    firstSeedAt ??= clock();
+    const witness = await witnessSeeds();
+    if (mine !== generation) return;
+    // A replayed bound touch needs Coinbase's word, so wait for it a while.
+    if (!witness.size && clock() - firstSeedAt < GIVE_UP_MS) return;
+    const minutes = seededMinutes(witness);
     if (!minutes.length) return;
-    let recorded = [];
-    try {
-      recorded = readIndexMinutes(minutes[0].timestamp);
-    } catch (err) {
-      logger.warn(`⚠️ 🕯️ Recorded index minutes could not be read: ${err.message}`, { action: 'up-dip-seed', error: err.message });
-    }
-    const byTime = new Map(recorded.filter((m) => m.samples >= MIN_VALUES).map((m) => /** @type {[number, any]} */ ([m.t, m])));
-    bars['1m'] = minutes.map((c) => {
-      const m = byTime.get(c.timestamp);
-      return m ? { timestamp: c.timestamp, open: m.open, high: m.high, low: m.low, close: m.close, volume: 0 } : c;
-    });
+    bars = { '1m': minutes };
+    open = {};
+    seedHigher();
     next = minutes[minutes.length - 1].timestamp + MINUTE_MS;
     for (const t of live.keys()) if (t < next) live.delete(t);
     seeds = {};
@@ -200,45 +269,82 @@ const createUpDipCandles = ({ subscribeIndex, DATA_DIR = '', fetchCandles = fetc
     logger.info(`ℹ️ 🕯️ Up dip candles ready from ${new Date(next).toISOString()}`, { action: 'up-dip-seed', next });
   };
 
+  /** Fill holes a gap left behind, for the indicators. Live bars are kept. */
+  const backfill = async (mine) => {
+    if (clock() - lastSeedAt < SEED_RETRY_MS) return;
+    lastSeedAt = clock();
+    seeds = {};
+    if (!await fetchSeeds(mine)) return;
+    const witness = await witnessSeeds();
+    if (mine !== generation) return;
+    const have = new Map(bars['1m'].map((c) => [c.timestamp, c]));
+    for (const c of seededMinutes(witness)) {
+      if (c.timestamp < next && !have.has(c.timestamp)) have.set(c.timestamp, c);
+    }
+    bars['1m'] = [...have.values()].sort((x, y) => x.timestamp - y.timestamp).slice(-TIMEFRAMES['1m'][1]);
+    seedHigher();
+    seeds = {};
+    holes = bars['1m'].some((c, i, all) => i > 0 && c.timestamp - all[i - 1].timestamp > MINUTE_MS);
+  };
+
   /** Finalize every minute the index covers. Returns whether one is still missing. */
   const finalizeIndexMinutes = () => {
     while (clock() >= next + MINUTE_MS + FINALIZE_DELAY_MS) {
       const m = live.get(next);
       if (!m || m.n < MIN_VALUES) return true;
-      finalize({ timestamp: next, open: m.open, high: m.high, low: m.low, close: m.close, volume: 0 });
+      finalize({ timestamp: next, open: m.open, high: m.high, low: m.low, close: m.close, volume: 0, coinbase: getCoinbaseMinute(next) });
     }
     return false;
+  };
+
+  /** Whether the waiting minute is old enough, and has been asked for long enough, to give up on. */
+  const overdue = () => {
+    const at = clock();
+    stalledSince ??= at;
+    return at - (next + MINUTE_MS + FINALIZE_DELAY_MS) >= GIVE_UP_MS && at - stalledSince >= GIVE_UP_MS;
+  };
+
+  const skipTo = (timestamp) => {
+    const missing = Math.round((timestamp - next) / MINUTE_MS);
+    gaps += missing;
+    holes = true;
+    logger.warn(`⚠️ 🕯️ Up dip minutes from ${new Date(next).toISOString()} have no index or BTC_USD data: ${missing} left out`, { action: 'up-dip-gap', minute: next, missing });
+    for (let t = next; t < timestamp; t += MINUTE_MS) live.delete(t);
+    next = timestamp;
   };
 
   const fillFromExchange = async (mine) => {
     const now = clock();
     stalledSince ??= now;
+    let witness = new Map();
     if (now - lastFetchAt >= FETCH_INTERVAL_MS) {
       lastFetchAt = now;
       const behind = Math.ceil((now - next) / MINUTE_MS);
-      const fetched = await fetchCandles('1m', behind + 2).catch(() => []);
+      const [fetched, coinbase] = await Promise.all([
+        quietly(() => fetchCandles('1m', behind + 2)),
+        witnesses(next, Math.floor(now / MINUTE_MS) * MINUTE_MS - MINUTE_MS),
+      ]);
       if (mine !== generation) return;
+      witness = coinbase;
       // A candle fetched before its minute ended is unfinished, however long the fetch took.
-      const byTime = new Map(fetched
-        .filter((c) => c.timestamp + MINUTE_MS + FINALIZE_DELAY_MS <= now)
-        .map((c) => /** @type {[number, Candle]} */ ([c.timestamp, c])));
-      // Index minutes and stand-ins interleave, so settle them together, in order.
-      while (finalizeIndexMinutes()) {
-        const c = byTime.get(next);
-        if (!c) break;
-        substitutes++;
-        finalize({ ...c, substitute: true });
-      }
+      for (const c of fetched) if (c.timestamp >= next && c.timestamp + MINUTE_MS + FINALIZE_DELAY_MS <= now) standIns.set(c.timestamp, c);
+      // A longer outage than one request covers: nothing older can be had, so keep what can.
+      const oldest = fetched[0]?.timestamp;
+      if (behind + 2 > MAX_FETCH && oldest > next && standIns.has(oldest)) skipTo(oldest);
     }
-    // Still missing: give up on a minute once it is old enough and has been asked for long enough.
+    // Index minutes and stand-ins interleave, so settle them together, in order.
     while (finalizeIndexMinutes()) {
-      const at = clock();
-      stalledSince ??= at;
-      if (at - (next + MINUTE_MS + FINALIZE_DELAY_MS) < GIVE_UP_MS || at - stalledSince < GIVE_UP_MS) return;
-      gaps++;
-      logger.warn(`⚠️ 🕯️ Up dip minute ${new Date(next).toISOString()} has no index or BTC_USD data: left out`, { action: 'up-dip-gap', minute: next });
-      live.delete(next);
-      next += MINUTE_MS;
+      const c = standIns.get(next);
+      const seen = getCoinbaseMinute(next);
+      const coinbase = seen?.complete ? seen : witness.get(next) ?? seen ?? null;
+      if (c && (coinbase?.complete || overdue())) {
+        substitutes++;
+        finalize({ ...c, substitute: true, coinbase }, { progress: Boolean(coinbase?.complete) });
+      } else if (!c && overdue()) {
+        skipTo(next + MINUTE_MS);
+      } else {
+        return;
+      }
     }
   };
 
@@ -247,6 +353,8 @@ const createUpDipCandles = ({ subscribeIndex, DATA_DIR = '', fetchCandles = fetc
     if (!ready) await seed(mine);
     if (mine !== generation || !ready) return;
     if (finalizeIndexMinutes()) await fillFromExchange(mine);
+    if (mine !== generation || !ready) return;
+    if (holes && clock() < next + MINUTE_MS + FINALIZE_DELAY_MS) await backfill(mine);
   };
 
   /** Advance once; calls made while one is running share it. */
@@ -279,7 +387,10 @@ const createUpDipCandles = ({ subscribeIndex, DATA_DIR = '', fetchCandles = fetc
     live.clear();
     bars = {};
     seeds = {};
+    standIns.clear();
+    holes = false;
     stalledSince = null;
+    firstSeedAt = null;
     lastSeedAt = -Infinity;
     lastFetchAt = -Infinity;
   };

@@ -11,8 +11,10 @@
  *
  * Candles come from up-dip-candles.js. A bar flagged `substitute` is not built from
  * the index: it feeds the indicators and can fill a pending EXIT, but opens nothing
- * and knocks out only when Coinbase touched the same bound. A missing minute is a
- * gap: it drops a pending ENTER or ADD and keeps a pending EXIT.
+ * and knocks out only when Coinbase touched the same bound. If Coinbase stayed
+ * unknown, a floor touch is taken as the loss and a ceiling touch is not taken as the
+ * gain. A missing minute is a gap: it drops a pending ENTER or ADD and keeps a pending
+ * EXIT, unless the contract expired inside it.
  *
  * State lives in its own file (default data/updown/up-dip-paper.json), stamped with
  * how it was priced. A book that traded under other pricing, or that cannot be read,
@@ -39,12 +41,14 @@ const MINUTE_MS = 60_000;
 const MAX_CYCLES = 500;
 const MAX_EVENTS = 200;
 const TFS = ['1m', '5m', '15m', '1h', '1d'];
+/** Minutes the indicator hour may be missing before its old bars would read as recent. */
+const MAX_MISSING_MINUTES = 5;
 /** How this build prices a book. A book stamped otherwise is not continued. */
 const PRICING = Object.freeze({ spread: true, source: 'cryptocom-index' });
 
 const r2 = (n) => Math.round(n * 100) / 100;
 
-const emptyState = () => ({ pricing: { ...PRICING }, position: null, pending: null, lastExitAt: null, lastBarTs: 0, cycles: [], events: [], latest: null, lastEntrySignal: null, startedAt: null, totals: null, gaps: 0 });
+const emptyState = () => ({ pricing: { ...PRICING }, position: null, pending: null, lastExitAt: null, lastBarTs: 0, lastClose: null, cycles: [], events: [], latest: null, lastEntrySignal: null, startedAt: null, totals: null, gaps: 0 });
 
 /** Whether anything in this book was priced. */
 const hasTraded = (state) => Boolean(state.cycles?.length || state.position || state.pending || state.totals?.cycles);
@@ -64,13 +68,13 @@ const readArchived = (archiveDir, statePath) => {
 /**
  * @param {{getCandles: (tf: string) => any[], statePath: string,
  *   getHalfSpread: (range: number) => number, pick?: typeof pickContract | ((price: number, now: number, params: any) => any),
- *   getCoinbaseBar?: (timestamp: number) => {low: number, high: number} | null, archiveDir?: string,
+ *   archiveDir?: string,
  *   writeJSON: (p: string, d: any) => void, backtestPath?: string,
  *   params?: typeof UP_DIP_PARAMS, logger?: {warn: Function}, onChange?: () => void,
  *   entryFilter?: (input: {tf: Record<string, any[]>, features: any, decision: any}) => {decision: any, filter: any},
  *   label?: string}} deps
  */
-const createUpDipPaper = ({ getCandles, statePath, getHalfSpread, pick = pickContract, getCoinbaseBar = () => null, archiveDir, writeJSON, backtestPath, params = UP_DIP_PARAMS, logger, onChange, entryFilter, label = 'up-dip paper' }) => {
+const createUpDipPaper = ({ getCandles, statePath, getHalfSpread, pick = pickContract, archiveDir, writeJSON, backtestPath, params = UP_DIP_PARAMS, logger, onChange, entryFilter, label = 'up-dip paper' }) => {
   if (typeof getHalfSpread !== 'function') throw new TypeError(`${label} needs getHalfSpread`);
   /** @type {any} */
   let state = emptyState();
@@ -168,17 +172,31 @@ const createUpDipPaper = ({ getCandles, statePath, getHalfSpread, pick = pickCon
     }
   };
 
+  /** A contract that expired inside a gap settles there: later prices cannot fill or knock it out. */
+  const settleExpiredInGap = (bar, previous) => {
+    const p = state.position;
+    if (!p || bar.timestamp < p.contract.expiry) return;
+    const { expiry } = p.contract;
+    // The price at expiry was missed, so use the nearer side of the gap.
+    const before = state.lastClose !== null && expiry - (previous + MINUTE_MS) <= bar.timestamp - expiry;
+    const btc = before ? state.lastClose : bar.open;
+    closePosition(expiry, p.contracts * (contractValue(btc, p.contract) - FEE_PER_CONTRACT), 'expiry', btc, { uncertain: true });
+    if (state.pending?.action !== 'ENTER') state.pending = null;
+  };
+
   /** Knock-outs and expiry for the open position on one bar. */
   const settle = (bar) => {
     const p = state.position;
     if (!p) return;
     const now = bar.timestamp + MINUTE_MS;
-    const coinbase = getCoinbaseBar(bar.timestamp);
+    const { coinbase } = bar;
     const touched = (b, bound) => (bound === 'floor' ? b.low <= p.contract.floor : b.high >= p.contract.ceiling);
     // Floor first: when a bar spans both, assume the loss.
     for (const bound of /** @type {const} */ (['floor', 'ceiling'])) {
       const own = touched(bar, bound);
-      const other = coinbase ? touched(coinbase, bound) : null;
+      // Part of a Coinbase minute can prove a touch but not rule one out.
+      const seen = coinbase ? touched(coinbase, bound) : null;
+      const other = seen === false && !coinbase.complete ? null : seen;
       if (own !== (other ?? false)) {
         const source = own ? (bar.substitute ? 'BTC_USD' : 'Crypto.com index') : 'Coinbase';
         const key = `${bound}:${source}`;
@@ -189,8 +207,9 @@ const createUpDipPaper = ({ getCandles, statePath, getHalfSpread, pick = pickCon
           event({ at: now, action: 'TOUCH_MISMATCH', bound, touched: source, coinbaseKnown: other !== null });
         }
       }
-      if (!own || (bar.substitute && other !== true)) continue;
-      if (bound === 'floor') closePosition(now, 0, 'knock_out_floor', p.contract.floor, { coinbaseTouched: other });
+      const assumed = bar.substitute && other === null && bound === 'floor';
+      if (!own || (bar.substitute && other !== true && !assumed)) continue;
+      if (bound === 'floor') closePosition(now, 0, 'knock_out_floor', p.contract.floor, { coinbaseTouched: other, ...(assumed ? { uncertain: true } : {}) });
       else closePosition(now, p.contracts * (p.contract.maxPayout - FEE_PER_CONTRACT), 'knock_out_ceiling', p.contract.ceiling, { coinbaseTouched: other });
       return;
     }
@@ -200,7 +219,10 @@ const createUpDipPaper = ({ getCandles, statePath, getHalfSpread, pick = pickCon
   /** Evaluate the rule on the newest bar: the book's own decision and the flat-market signal. */
   const evaluate = (tf, last) => {
     const now = last.timestamp + MINUTE_MS;
-    const features = computeUpDipFeatures(tf, params);
+    // The rule's windows count bars, so across a large hole old prices would read as the last hour.
+    const hour = tf['1m'].slice(-params.dropWindowMin);
+    const missing = (last.timestamp - hour[0].timestamp) / MINUTE_MS + 1 - hour.length;
+    const features = missing > MAX_MISSING_MINUTES ? null : computeUpDipFeatures(tf, params);
     const halfSpread = getHalfSpread(params.range);
     const gate = (raw) => {
       const opens = raw.action === 'ENTER' || raw.action === 'ADD';
@@ -237,10 +259,14 @@ const createUpDipPaper = ({ getCandles, statePath, getHalfSpread, pick = pickCon
     // fills, knock-outs and expiry in a restart gap are priced on their own bars.
     const halfSpread = getHalfSpread(params.range);
     for (const bar of m1.filter(c => c.timestamp > state.lastBarTs)) {
-      if (state.lastBarTs > 0 && bar.timestamp - state.lastBarTs > MINUTE_MS) recordGap(bar, state.lastBarTs);
+      if (state.lastBarTs > 0 && bar.timestamp - state.lastBarTs > MINUTE_MS) {
+        settleExpiredInGap(bar, state.lastBarTs);
+        recordGap(bar, state.lastBarTs);
+      }
       fillPending(bar, halfSpread);
       settle(bar);
       state.lastBarTs = bar.timestamp;
+      state.lastClose = bar.close;
     }
     // Decide on the newest bar with the full buffers.
     const result = evaluate(tf, last);

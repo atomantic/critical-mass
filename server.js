@@ -382,7 +382,7 @@ const updownService = createUpDownService(io, { exchangeIPCMap, readJSON, writeJ
 // Paper-only Up dip recommendations (no order paths): Crypto.com index candles, the app's
 // spread and listed contracts, with Coinbase as a second witness for bound touches.
 const upDipLogger = createContextLogger({ module: 'up-dip' });
-const upDipCandles = createUpDipCandles({ subscribeIndex: btcFeedService.subscribeIndex, DATA_DIR, logger: upDipLogger });
+const upDipCandles = createUpDipCandles({ subscribeIndex: btcFeedService.subscribeIndex, getCoinbaseMinute: btcFeedService.getCoinbaseMinute, DATA_DIR, logger: upDipLogger });
 const appQuotes = createAppQuotes({
   statePath: path.join(DATA_DIR, 'updown', 'app-quotes.json'),
   readJSON,
@@ -392,7 +392,6 @@ const appQuotes = createAppQuotes({
 });
 const getUpDipHalfSpread = (range) => appQuotes.halfSpread(range).value;
 const getCoinbaseCandles = (tf) => (candleCache.isSeeded('coinbase') ? candleCache.getCandles('coinbase', tf) : []);
-const getCoinbaseMinute = (timestamp) => getCoinbaseCandles('1m').find((c) => c.timestamp === timestamp) ?? null;
 const upDipArchiveDir = path.join(DATA_DIR, 'updown', 'archive');
 // The operator's own contract, entered by hand: exit advice only, no order paths.
 const upDipHeld = createUpDipHeld({
@@ -408,7 +407,6 @@ const upDipPaper = createUpDipPaper({
   getCandles: upDipCandles.getCandles,
   getHalfSpread: getUpDipHalfSpread,
   pick: appQuotes.pick,
-  getCoinbaseBar: getCoinbaseMinute,
   archiveDir: upDipArchiveDir,
   statePath: path.join(DATA_DIR, 'updown', 'up-dip-paper.json'),
   backtestPath: path.join(DATA_DIR, 'updown', 'backtest', 'up-dip-report.json'),
@@ -430,7 +428,6 @@ const upDipShadow = createUpDipPaper({
   getCandles: upDipCandles.getCandles,
   getHalfSpread: getUpDipHalfSpread,
   pick: appQuotes.pick,
-  getCoinbaseBar: getCoinbaseMinute,
   archiveDir: upDipArchiveDir,
   statePath: path.join(DATA_DIR, 'updown', 'up-dip-paper-shadow.json'),
   writeJSON,

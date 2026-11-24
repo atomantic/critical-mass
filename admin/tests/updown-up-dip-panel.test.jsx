@@ -67,7 +67,7 @@ describe('real costs', () => {
   const HOUR = 3_600_000
   const quotes = (over = {}) => ({
     spread: { 2000: { value: 49, source: 'quote', capturedAt: AT, ageMs: 3 * HOUR }, 500: { value: 0, source: 'default', capturedAt: null, ageMs: null } },
-    listingSeen: true, last: { range: 2000, up: 61172, floor: 60200 }, comparison: { n: 3, coinbase: null, index: null }, ...over,
+    listingSeen: true, last: { range: 2000, up: 61172, floor: 60200 }, lastRecorded: null, comparison: { coinbase: { n: 3 }, index: { n: 1 } }, ...over,
   })
   const show = async (over) => { api.body = body(over); const view = render(<UpDipPanel />); await screen.findByTestId('up-dip-signal'); return view }
   const costs = () => screen.getByTestId('up-dip-costs').textContent
@@ -84,6 +84,9 @@ describe('real costs', () => {
     expect(costs()).toContain('Spread $35 a side (default: no quote in 24h)')
     expect(costs()).toContain('Round trip $38.98 a contract')
     expect(costs()).not.toContain('% of cost')
+    cleanup()
+    await show({ quotes: quotes({ spread: { 2000: { value: 35, source: 'default', capturedAt: null, ageMs: null }, 500: { value: 0 } } }) })
+    expect(costs()).toContain('Round trip $38.98 a contract (8.0% of cost)')
   })
 
   it('asks for a quote when no contract has been seen this week', async () => {
@@ -96,9 +99,10 @@ describe('real costs', () => {
 
   it('compares the app price with both sources only from ten quotes', async () => {
     await show({ quotes: quotes() })
-    expect(costs()).toContain('not enough yet (3/10)')
+    expect(costs()).toContain('Coinbase not enough yet (3/10)')
+    expect(costs()).toContain('Crypto.com index not enough yet (1/10)')
     cleanup()
-    await show({ quotes: quotes({ comparison: { n: 12, coinbase: { median: -4.31, p90: 10.2 }, index: { median: 6, p90: 22 } } }) })
+    await show({ quotes: quotes({ comparison: { coinbase: { n: 12, median: -4.31, p90: 10.2 }, index: { n: 12, median: 6, p90: 22 } } }) })
     expect(costs()).toContain('Coinbase -$4.31, 90% within $10.20')
     expect(costs()).toContain('Crypto.com index +$6.00, 90% within $22.00')
     expect(costs()).toContain('late uploads are noisy')
@@ -136,6 +140,16 @@ describe('real costs', () => {
     cleanup()
     await show({ archived: { unreadable: true } })
     expect(screen.getByTestId('up-dip-archived').textContent).toContain('could not be read')
+  })
+
+  it('shows the shadow book archive too', async () => {
+    await show({ shadow: { summary: null, archived: { pricing: null, closedCycles: 3, pnl: -12, openPosition: null } } })
+    expect(screen.getByTestId('up-dip-archived').textContent).toContain('3 closed, -$12.00')
+  })
+
+  it('marks a knock-out that was assumed', async () => {
+    await show({ cycles: [{ openedAt: AT, closedAt: AT + 1, reason: 'knock_out_floor', entryBtc: 1, exitBtc: 2, pnl: -700, coinbaseTouched: null, uncertain: true }] })
+    expect(screen.getByText(/KO floor · assumed/)).toBeTruthy()
   })
 
   it('says when a book needs a reset, and which', async () => {

@@ -711,6 +711,7 @@ export default function ContractSetup({ initialContract }) {
               )}
             </div>
             {preview.screenType === 'select' && preview.direction === 'Up' && <ScreenshotQuote extracted={preview} />}
+            {preview.screenType === 'select' && preview.direction === 'Down' && <div className="text-xs text-gray-400">To record the spread, select Up in the app and take the screenshot again.</div>}
             <div className="flex gap-2 pt-1">
               <Button
                 onClick={applyPreview}

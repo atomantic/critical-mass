@@ -11,7 +11,7 @@ const TF_MS = { '1m': MIN, '5m': 5 * MIN, '15m': 15 * MIN, '1h': 60 * MIN, '1d':
 /** 12:10:20 on a UTC day, so 12:10 is in progress and the 5m bucket 12:10-12:14 has just begun. */
 const M10 = Date.UTC(2026, 10, 23, 12, 10);
 
-let clock, seeds, fetches, substitutes, recorded, push, unsubscribed, candles, failing;
+let clock, seeds, fetches, substitutes, recorded, push, unsubscribed, candles, failing, coinbase, coinbaseFetches, minuteWitness;
 
 const seedFor = (tf) => {
   const step = TF_MS[tf];
@@ -29,6 +29,8 @@ const make = (over = {}) => {
       if (seeds[tf]) { const s = seeds[tf]; delete seeds[tf]; return s; }
       return substitutes;
     },
+    fetchCoinbase: async (from, to) => { coinbaseFetches.push([from, to, clock]); return coinbase(from, to); },
+    getCoinbaseMinute: (ts) => minuteWitness(ts),
     clock: () => clock, logger: { info() {}, warn() {} }, ...over,
   });
   return candles;
@@ -56,6 +58,10 @@ beforeEach(() => {
   recorded = [];
   unsubscribed = 0;
   failing = new Set();
+  coinbaseFetches = [];
+  // Coinbase REST answers every minute asked for; the 1s feed has seen nothing.
+  coinbase = (from, to) => Array.from({ length: Math.floor((to - from) / MIN) + 1 }, (_, i) => ({ timestamp: from + i * MIN, low: 1, high: 999 }));
+  minuteWitness = () => null;
   push = () => {};
 });
 afterEach(() => candles?.stop());
@@ -109,7 +115,7 @@ describe('seeding', () => {
     ];
     await ready();
     const [a, b] = candles.getCandles('1m').slice(-2);
-    assert.deepEqual(a, { timestamp: M10 - 2 * MIN, open: 1, high: 2, low: 0.5, close: 1.5, volume: 0 });
+    assert.deepEqual(a, { timestamp: M10 - 2 * MIN, open: 1, high: 2, low: 0.5, close: 1.5, volume: 0, coinbase: { low: 1, high: 999, complete: true } });
     assert.equal(b.close, 100);
     assert.equal(b.substitute, true);
   });
@@ -131,7 +137,7 @@ describe('live minutes', () => {
     await at(M10 + MIN + 1_999);
     assert.equal(last().timestamp, M10 - MIN, 'late values are still allowed for');
     await at(M10 + MIN + 2_000);
-    assert.deepEqual(last(), { timestamp: M10, open: 100, high: 105, low: 95, close: 102, volume: 0 });
+    assert.deepEqual(last(), { timestamp: M10, open: 100, high: 105, low: 95, close: 102, volume: 0, coinbase: null });
     assert.deepEqual(fetches, []);
   });
 
@@ -150,7 +156,7 @@ describe('live minutes', () => {
     minute(M10 + MIN, 29);
     substitutes = [{ timestamp: M10 + MIN, open: 200, high: 201, low: 199, close: 200, volume: 3 }];
     await at(M10 + 2 * MIN + 2_000);
-    assert.deepEqual(last(), { timestamp: M10 + MIN, open: 200, high: 201, low: 199, close: 200, volume: 3, substitute: true });
+    assert.deepEqual(last(), { timestamp: M10 + MIN, open: 200, high: 201, low: 199, close: 200, volume: 3, substitute: true, coinbase: { low: 1, high: 999, complete: true } });
     assert.equal(candles.getStatus().substitutes, 1);
   });
 
@@ -228,6 +234,129 @@ describe('live minutes', () => {
     assert.equal(candles.getStatus().gaps, 0);
     await at(wake + 120_000);
     assert.ok(candles.getStatus().gaps >= 45);
+  });
+});
+
+describe('the Coinbase witness', () => {
+  const sub = (i) => ({ timestamp: M10 + i * MIN, open: 50, high: 60, low: 40, close: 50, volume: 1 });
+
+  it('comes from the 1s feed on an index bar, with no request', async () => {
+    await ready();
+    coinbaseFetches.length = 0;
+    minuteWitness = (ts) => ({ low: 5, high: 6, complete: ts === M10 });
+    minute(M10, 60);
+    await at(M10 + MIN + 2_000);
+    assert.deepEqual(last().coinbase, { low: 5, high: 6, complete: true });
+    assert.deepEqual(coinbaseFetches, []);
+  });
+
+  it('is fetched for seeded substitutes', async () => {
+    await ready();
+    assert.ok(candles.getCandles('1m').every((c) => c.coinbase.complete === true));
+  });
+
+  it('holds seeding for two minutes when Coinbase does not answer, then goes on without it', async () => {
+    coinbase = () => [];
+    make();
+    candles.start({ timer: false });
+    const t0 = clock;
+    for (let s = 0; s < 120; s += 10) { await at(t0 + s * 1000); assert.equal(candles.isReady(), false, `at ${s}s`); }
+    await at(t0 + 120_000);
+    assert.equal(candles.isReady(), true);
+    assert.equal(last().coinbase, null);
+  });
+
+  it('holds a live substitute until it is known', async () => {
+    await ready();
+    substitutes = [sub(0)];
+    coinbase = () => [];
+    await at(M10 + MIN + 2_000);
+    assert.equal(last().timestamp, M10 - MIN);
+    coinbase = (from) => [{ timestamp: from, low: 33, high: 44 }];
+    await at(M10 + MIN + 22_000);
+    assert.deepEqual(last().coinbase, { low: 33, high: 44, complete: true });
+  });
+
+  it('gives up after two minutes and says so, without losing the minute', async () => {
+    await ready();
+    substitutes = [sub(0)];
+    coinbase = () => [];
+    for (let s = 2; s <= 122; s += 10) await at(M10 + MIN + s * 1000);
+    const bar = candles.getCandles('1m').find((c) => c.timestamp === M10);
+    assert.deepEqual([bar.substitute, bar.coinbase], [true, null]);
+  });
+
+  it('does not fall ever further behind while Coinbase stays down', async () => {
+    await ready();
+    coinbase = () => [];
+    substitutes = Array.from({ length: 30 }, (_, i) => sub(i));
+    for (let s = 2; s <= 20 * 60; s += 10) await at(M10 + MIN + s * 1000);
+    assert.ok(last().timestamp >= M10 + 16 * MIN, new Date(last().timestamp).toISOString());
+  });
+
+  it('uses a complete 1s minute instead of waiting for a request', async () => {
+    await ready();
+    substitutes = [sub(0)];
+    coinbase = () => [];
+    minuteWitness = () => ({ low: 7, high: 8, complete: true });
+    await at(M10 + MIN + 2_000);
+    assert.deepEqual(last().coinbase, { low: 7, high: 8, complete: true });
+  });
+
+  it('survives a request that throws', async () => {
+    await ready();
+    substitutes = [sub(0)];
+    coinbase = () => { throw new Error('network'); };
+    await at(M10 + MIN + 2_000);
+    assert.equal(candles.isReady(), true);
+  });
+});
+
+describe('long outages', () => {
+  const flat = (i) => ({ timestamp: M10 + i * MIN, open: 50, high: 60, low: 40, close: 50, volume: 1 });
+
+  it('longer than one request skip to the oldest candle available and keep the rest', async () => {
+    await ready();
+    substitutes = Array.from({ length: 300 }, (_, i) => flat(60 + i)); // minutes 60..359 of a 360-minute sleep
+    await at(M10 + 360 * MIN + 10_000);
+    assert.equal(candles.getStatus().gaps, 60);
+    assert.equal(last().timestamp, M10 + 359 * MIN);
+  });
+
+  it('a minute the exchange omitted inside a normal request is still waited for', async () => {
+    await ready();
+    substitutes = [flat(1), flat(2)];
+    await at(M10 + 3 * MIN + 2_000);
+    assert.equal(candles.getStatus().gaps, 0);
+    assert.equal(last().timestamp, M10 - MIN);
+  });
+
+  it('are backfilled for the indicators once the exchange answers', async () => {
+    await ready();
+    const down = M10 + MIN + 2_000;
+    for (let s = 0; s <= 30 * 60; s += 30) await at(down + s * 1000);
+    const holes = candles.getStatus().gaps;
+    assert.ok(holes > 20);
+    for (const tf of Object.keys(TF_MS)) if (tf !== '1m') seeds[tf] = seedFor(tf).map((c) => ({ ...c, close: 77 }));
+    substitutes = Array.from({ length: 180 }, (_, i) => flat(i - 140));
+    const back = Math.floor(clock / MIN) * MIN;
+    for (let i = 0; i < 3; i++) { minute(back + i * MIN, 60); await at(back + (i + 1) * MIN + 2_000); }
+    const times = candles.getCandles('1m').map((c) => c.timestamp);
+    for (let i = 1; i < times.length; i++) assert.equal(times[i] - times[i - 1], MIN, new Date(times[i]).toISOString());
+    assert.equal(candles.getCandles('5m').at(-1).close, 77, 'higher timeframes are refreshed too');
+    assert.equal(candles.getCandles('1m').find((c) => c.timestamp === M10 + 5 * MIN).substitute, true);
+  });
+
+  it('keep index bars when backfilling around them', async () => {
+    await ready();
+    minute(M10 + MIN, 60, { close: 123 });
+    for (let s = 2; s <= 130; s += 4) await at(M10 + MIN + s * 1000);
+    substitutes = Array.from({ length: 180 }, (_, i) => flat(i - 170));
+    for (const tf of Object.keys(TF_MS)) if (tf !== '1m') seeds[tf] = seedFor(tf);
+    minute(M10 + 3 * MIN, 60);
+    for (let s = 0; s <= 60; s += 5) await at(M10 + 4 * MIN + s * 1000);
+    const bar = candles.getCandles('1m').find((c) => c.timestamp === M10 + MIN);
+    assert.deepEqual([bar.close, bar.substitute], [123, undefined]);
   });
 });
 

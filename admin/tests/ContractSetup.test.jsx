@@ -736,7 +736,13 @@ describe('ContractSetup app quote', () => {
     expect(posts[0].preview).toBe(true)
   })
 
-  it.each([['a Down screen', { ...select, direction: 'Down' }], ['a position screen', { screenType: 'position', entryPrice: 5 }], ['an order screen', { screenType: 'order', contractPrice: 5 }]])('does not offer it from %s', async (_name, extracted) => {
+  it('asks for an Up screen when Down is selected', async () => {
+    const posts = await upload({ ...select, direction: 'Down' })
+    expect(screen.getByText(/select Up in the app and take the screenshot again/i)).toBeTruthy()
+    expect(posts).toHaveLength(0)
+  })
+
+  it.each([['a position screen', { screenType: 'position', entryPrice: 5 }], ['an order screen', { screenType: 'order', contractPrice: 5 }]])('does not offer it from %s', async (_name, extracted) => {
     const posts = await upload(extracted)
     expect(screen.queryByRole('button', { name: /record quote/i })).toBeNull()
     expect(posts).toHaveLength(0)

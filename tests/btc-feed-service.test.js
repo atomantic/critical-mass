@@ -384,3 +384,25 @@ describe('BTC feed lifecycle', () => {
     assert.equal(trades.length + indexes.length, 0);
   });
 });
+
+describe('BTC feed Coinbase minute', () => {
+  it('reports the extremes of a minute, and whether every second was seen', (t) => {
+    const { service, trades, trade, live, tick } = setup(t);
+    live(); // T0 + 1s
+    const start = Math.ceil((T0 + 1000) / 60_000) * 60_000;
+    while (Date.now() < start) { trade(trades[0]); tick(1000); } // a silent feed would be replaced
+    for (let s = 0; s < 60; s++) { trade(trades[0], { price: s === 30 ? 90 : s === 40 ? 120 : 100 }); tick(1000); }
+    assert.deepEqual(service.getCoinbaseMinute(start), { low: 90, high: 120, complete: true });
+  });
+
+  it('is incomplete when seconds are missing, and null when nothing was seen', (t) => {
+    const { service, trades, trade, live, tick } = setup(t);
+    live();
+    const start = Math.ceil((T0 + 1000) / 60_000) * 60_000;
+    while (Date.now() < start) { trade(trades[0]); tick(1000); } // a silent feed would be replaced
+    for (let s = 0; s < 30; s++) { trade(trades[0]); tick(1000); }
+    tick(40_000);
+    assert.equal(service.getCoinbaseMinute(start).complete, false);
+    assert.equal(service.getCoinbaseMinute(start - 3_600_000), null);
+  });
+});

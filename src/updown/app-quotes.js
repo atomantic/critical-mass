@@ -23,6 +23,8 @@ const RANGES = [2000, 500];
 const DEFAULT_HALF_SPREAD = { 2000: 35, 500: 0 };
 const QUOTE_FRESH_MS = DAY_MS;
 const MAX_HALF_SPREAD = 200;
+/** Every $2000 quote seen had a spread; a smaller one is a misread and would hide the cost. */
+const MIN_HALF_SPREAD = { 2000: 5, 500: 0 };
 /** Every $2000 floor traded sits on one $400 grid per expiry week. */
 const FLOOR_GRID = 400;
 const MIN_FLOOR_DISTANCE = 300;
@@ -49,10 +51,10 @@ const quantile = (sorted, q) => sorted[Math.min(sorted.length - 1, Math.floor(so
 /** How far the app's shown price sat from a source: typical signed gap and 90th percentile size. */
 const compare = (quotes, source) => {
   const gaps = quotes.filter((q) => Number.isFinite(q[source])).map((q) => q.shown - q[source]);
-  if (gaps.length < MIN_COMPARED) return null;
+  if (gaps.length < MIN_COMPARED) return { n: gaps.length };
   const sorted = [...gaps].sort((a, b) => a - b);
   const sizes = gaps.map(Math.abs).sort((a, b) => a - b);
-  return { median: round2(quantile(sorted, 0.5)), p90: round2(quantile(sizes, 0.9)) };
+  return { n: gaps.length, median: round2(quantile(sorted, 0.5)), p90: round2(quantile(sizes, 0.9)) };
 };
 
 /**
@@ -109,6 +111,7 @@ const createAppQuotes = ({ statePath, readJSON, writeJSON, getLatest, clock = Da
     if (floor % 100 !== 0) return { error: 'floor must be a multiple of 100' };
     if (!(down <= shown && shown <= up)) return { error: 'the shown price must be between Down and Up' };
     const halfSpread = round2((up - down) / 2);
+    if (halfSpread < MIN_HALF_SPREAD[range]) return { error: `a spread of ${halfSpread} a side is too small for a ${range} range: check Up and Down` };
     if (halfSpread > MAX_HALF_SPREAD) return { error: `a spread of ${halfSpread} a side is implausible: check Up and Down` };
     if (!(floor < down && up < ceiling)) return { error: 'Up and Down are outside the contract' };
     const gap = up - down;
@@ -132,10 +135,10 @@ const createAppQuotes = ({ statePath, readJSON, writeJSON, getLatest, clock = Da
     }
     const expiry = input.expiry == null ? nextExpiryMs(capturedAt) : snapExpiry(parseFiniteNumber(input.expiry));
     if (!expiry) return { error: 'expiry must be within 12 hours of a Saturday 04:00 New York settlement' };
-    if (expiry <= capturedAt) return { error: 'this contract had already expired when captured' };
+    if (expiry <= capturedAt || expiry <= now) return { error: 'this contract has already expired' };
     if (range === 2000) {
       const other = quotes.find((q) => q.range === 2000 && q.expiry === expiry && (q.floor - floor) % FLOOR_GRID !== 0);
-      if (other) return { error: `floor ${floor} is off this week's $${FLOOR_GRID} grid (${other.floor} was recorded): check Stop` };
+      if (other) return { error: `floor ${floor} is off this week's $${FLOOR_GRID} grid (${other.floor} was recorded): check Stop, or remove that quote if it was the mistake` };
     }
     return { quote: {
       capturedAt, recordedAt: now, source: fromScreenshot ? 'screenshot' : 'manual', range, shown, up, down, floor, ceiling, expiry, halfSpread,
@@ -160,12 +163,22 @@ const createAppQuotes = ({ statePath, readJSON, writeJSON, getLatest, clock = Da
     return result;
   };
 
+  /** Remove the last recorded quote, named by its recorded time so a newer one is never taken. */
+  const remove = (recordedAt) => {
+    const quotes = read();
+    const last = quotes[quotes.length - 1];
+    if (!last || last.recordedAt !== parseFiniteNumber(recordedAt)) return { error: 'that is not the last recorded quote' };
+    writeJSON(statePath, { quotes: quotes.slice(0, -1) });
+    return {};
+  };
+
   const newest = (quotes) => quotes.reduce((best, q) => (!best || q.capturedAt >= best.capturedAt ? q : best), /** @type {AppQuote|null} */ (null));
 
   const spreadFrom = (quotes, range, now) => {
     const quote = newest(quotes.filter((q) => q.range === range));
     const ageMs = quote ? now - quote.capturedAt : Infinity;
-    if (quote && ageMs < QUOTE_FRESH_MS) return { value: quote.halfSpread, source: /** @type {const} */ ('quote'), capturedAt: quote.capturedAt, ageMs };
+    // A clock set back must not leave a quote from its future in force.
+    if (quote && ageMs < QUOTE_FRESH_MS && ageMs >= -LIVE_CAPTURE_MS) return { value: quote.halfSpread, source: /** @type {const} */ ('quote'), capturedAt: quote.capturedAt, ageMs };
     return { value: DEFAULT_HALF_SPREAD[range], source: /** @type {const} */ ('default'), capturedAt: null, ageMs: null };
   };
 
@@ -190,12 +203,13 @@ const createAppQuotes = ({ statePath, readJSON, writeJSON, getLatest, clock = Da
     return {
       spread: { 2000: spreadFrom(quotes, 2000, now), 500: spreadFrom(quotes, 500, now) },
       listingSeen: listing(quotes, nextExpiryMs(now)) !== null,
-      comparison: { n: quotes.length, coinbase: compare(quotes, 'coinbase'), index: compare(quotes, 'index') },
-      last: newest(quotes),
+      comparison: { coinbase: compare(quotes, 'coinbase'), index: compare(quotes, 'index') },
+      last: newest(quotes.filter((q) => q.range === 2000)),
+      lastRecorded: quotes[quotes.length - 1] ?? null,
     };
   };
 
-  return { check, record, halfSpread, pick, getStatus };
+  return { check, record, remove, halfSpread, pick, getStatus };
 };
 
 module.exports = { createAppQuotes, pickOnGrid, DEFAULT_HALF_SPREAD };

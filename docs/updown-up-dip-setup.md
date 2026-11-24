@@ -33,7 +33,9 @@ sample (May-Nov): +$791 with no spread, −$6,342 at $35, −$7,980 at $49.
 from an Up select screenshot in Contract Setup, or typed in on the Up Dip panel. Nothing is
 recorded without **Record quote**. The newest quote for a range applies for 24 hours, then $35
 a side ($2000) or $0 ($500). Checks catch misread digits (centering on the shown price, Max
-Loss, the week's grid, distance from Coinbase); an older screenshot needs the time it was taken.
+Loss, the week's grid, distance from Coinbase, a $2000 spread under $5); an older screenshot needs
+the time it was taken. **Remove last quote** takes back a mistake, such as a wrong first floor that
+would otherwise set the week's grid.
 
 **Listed contracts.** $2000 floors use one $400 grid per expiry week (all 13 weeks traded),
 offset differently each week. One quote for the current expiry teaches it; the rule then picks
@@ -50,8 +52,13 @@ the panel compares them from ten quotes. Nothing switches automatically.
 streams (at least 30 in the minute), seeded from Crypto.com `BTC_USD` candles and any recorded
 index minutes. A thinner minute uses its `BTC_USD` candle, flagged as a substitute, or after two
 minutes is left out as a gap. A substitute feeds the indicators and can fill a pending EXIT. It
-opens nothing, and knocks out only if Coinbase touched the same bound in that minute. A gap
-drops a pending ENTER or ADD and keeps a pending EXIT. The book settles on these bars
+opens nothing, and knocks out only if Coinbase touched the same bound in that minute. The
+Coinbase witness is the gateway's own 1s bars when they cover the whole minute, else a request
+the substitute waits up to two minutes for. If Coinbase stays unknown, a floor touch is taken
+as the loss and a ceiling touch is not taken as the gain; such a cycle is marked `uncertain`. A gap
+drops a pending ENTER or ADD and keeps a pending EXIT, unless the contract expired inside it:
+then it settles there, also `uncertain`. After a gap the candle buffers are filled in again for the
+indicators, and the rule gives no advice while more than five minutes of its last hour are missing. The book settles on these bars
 (provisional); a bound only one source touched is recorded as `TOUCH_MISMATCH`, and a
 knock-out stores `coinbaseTouched`.
 

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import Button from '../ui/Button'
-import { apiPost, describeMutationFailure } from '../../utils/apiClient'
+import { apiDelete, apiPost, describeMutationFailure } from '../../utils/apiClient'
 import { formatSpread } from '../../utils/format.mjs'
 
 // Quotes the operator confirms from the Crypto.com app. They set the spread and the
@@ -76,8 +76,10 @@ export function ScreenshotQuote({ extracted }) {
 
 const EMPTY = { range: '2000', shown: '', up: '', down: '', floor: '', captured: '', expiry: '' }
 
-/** The same numbers typed in from the app. */
-export default function AppQuoteForm({ onRecorded }) {
+const n = (value) => value.toLocaleString('en-US')
+
+/** The same numbers typed in from the app, and a way to take back the last quote. */
+export default function AppQuoteForm({ last = null, onRecorded }) {
   const [form, setForm] = useState(EMPTY)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -105,6 +107,16 @@ export default function AppQuoteForm({ onRecorded }) {
     }
   }
 
+  const remove = async () => {
+    setSaving(true)
+    setError('')
+    setDone(null)
+    const res = await apiDelete(`${URL}/${last.recordedAt}`)
+    setSaving(false)
+    if (res.ok) onRecorded()
+    else setError(describeMutationFailure(res, 'Could not remove the quote'))
+  }
+
   return (
     <details className="text-xs mb-2">
       <summary className="cursor-pointer text-gray-400">Record an app quote</summary>
@@ -119,6 +131,12 @@ export default function AppQuoteForm({ onRecorded }) {
         {error && <div role="alert" className="text-red-400 col-span-2">{error}</div>}
         {done && <div className="text-gray-200 col-span-2">Spread {formatSpread(done.halfSpread)} a side recorded</div>}
         <Button onClick={save} disabled={saving} variant="primary" size="sm" className="col-span-2">Record quote</Button>
+        {last && (
+          <div className="col-span-2 flex flex-wrap justify-between items-center gap-1.5 text-2xs text-gray-400">
+            <span>{`Last: Up ${n(last.up)}, Down ${n(last.down)}, floor ${n(last.floor)}`}</span>
+            <Button onClick={remove} disabled={saving} variant="soft-danger" size="sm">Remove last quote</Button>
+          </div>
+        )}
       </div>
     </details>
   )
