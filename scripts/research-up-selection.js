@@ -147,7 +147,7 @@ function standalone(candles, features, i, params) {
     if (c.low <= contract.floor) return { outcome: 'ko', pnl: -pos.cost, closedAt: now }
     if (c.high >= contract.ceiling) return { outcome: 'win', pnl: contract.maxPayout - FEE_PER_CONTRACT - pos.cost, closedAt: now }
     if (now >= contract.expiry) { const pnl = contractValue(c.close, contract) - FEE_PER_CONTRACT - pos.cost; return { outcome: pnl > 0 ? 'win' : 'loss', pnl, closedAt: now } }
-    const d = decideUpDip({ features: features[j], position: pos, now, params })
+    const d = decideUpDip({ features: features[j], position: pos, now, halfSpread: 0, params })
     if (d.action === 'EXIT' && candles[j + 1]) {
       const pnl = contractValue(candles[j + 1].open, contract) - FEE_PER_CONTRACT - pos.cost
       return { outcome: pnl > 0 ? 'win' : 'loss', pnl, closedAt: candles[j + 1].timestamp }
@@ -165,7 +165,7 @@ const makeDecide = ({ filter = null, cols = null, fadeExit = false } = {}) => (i
     return Number.isFinite(v) && (op === '<=' ? v <= t : v >= t)
   })) return { action: 'STAND_ASIDE', reasons: ['filtered'] }
   if (fadeExit && input.position && input.features) {
-    const m = markPosition(input.position, input.features.price)
+    const m = markPosition(input.position, input.features.price, 0)
     if (m.pnlPct >= input.params.minGainPct) return input.features.green1m ? { action: 'HOLD', reasons: ['riding 1m momentum'] } : { action: 'EXIT', reasons: ['1m momentum faded'] }
     if (d.action === 'EXIT') return { action: 'HOLD', reasons: ['below target'] }
   }
@@ -194,7 +194,7 @@ function main(argv) {
   for (let i = iFrom; i < iTo - 1; i++) {
     const hourKey = Math.floor(candles[i].timestamp / 3_600_000)
     if (hourKey === lastHour) continue
-    if (decideUpDip({ features: features[i], position: null, now: candles[i].timestamp + MIN, params }).action !== 'ENTER') continue
+    if (decideUpDip({ features: features[i], position: null, now: candles[i].timestamp + MIN, halfSpread: 0, params }).action !== 'ENTER') continue
     lastHour = hourKey
     const res = standalone(candles, features, i, params)
     if (!res) continue

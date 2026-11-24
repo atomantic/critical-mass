@@ -132,8 +132,8 @@ const createUpDipPaper = ({ getCandles, statePath, writeJSON, backtestPath, para
     const now = last.timestamp + MINUTE_MS;
     const features = computeUpDipFeatures(tf, params);
     const gate = (raw) => (entryFilter ? entryFilter({ tf, features, decision: raw }) : { decision: raw, filter: null });
-    const { decision, filter } = gate(decideUpDip({ features, position: state.position, now, lastExitAt: state.lastExitAt, params }));
-    const { decision: signal } = gate(decideUpDip({ features, position: null, now, params }));
+    const { decision, filter } = gate(decideUpDip({ features, position: state.position, now, halfSpread: 0, lastExitAt: state.lastExitAt, params }));
+    const { decision: signal } = gate(decideUpDip({ features, position: null, now, halfSpread: 0, params }));
     const prev = state.latest?.decision?.action;
     state.latest = { at: now, decision, signal, features, ...(entryFilter ? { filter } : {}) };
     // ENTER is usually a one-bar window; keep the last one so it can still be seen afterwards.
@@ -172,7 +172,7 @@ const createUpDipPaper = ({ getCandles, statePath, writeJSON, backtestPath, para
       lastEntrySignal: state.lastEntrySignal,
       pending: state.pending ? { action: state.pending.action } : null,
       position: state.position ? { ...state.position, cost: r2(state.position.cost),
-        ...(price ? { markBtc: price, pnl: r2(markPosition(state.position, price).pnl) } : {}) } : null,
+        ...(price ? { markBtc: price, pnl: r2(markPosition(state.position, price, 0).pnl) } : {}) } : null,
       summary: { cycles: t.cycles, wins: t.wins, losses: t.losses, pnl: t.pnl, worst: t.worst, gaps: state.gaps || 0 },
       cycles: cycles.slice(-50).reverse(),
       events: state.events.slice(-30).reverse(),

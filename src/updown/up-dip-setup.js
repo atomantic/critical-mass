@@ -33,7 +33,8 @@
  * `decideUpDip` is pure. Nothing here places orders.
  */
 
-const { contractValue, FEE_PER_CONTRACT, maxPayoutForRange, expiryMs } = require('./app-order-history');
+const { FEE_PER_CONTRACT, maxPayoutForRange, expiryMs } = require('./app-order-history');
+const { requireHalfSpread, entryCost, exitProceeds, effectiveHalfSpread } = require('./app-pricing');
 
 const MINUTE_MS = 60_000;
 const DAY_MS = 86_400_000;
@@ -142,17 +143,19 @@ const computeUpDipFeatures = (tf, params = UP_DIP_PARAMS) => {
 };
 
 /**
- * Mark a position at `price` with fees for closing now.
- * @param {{contract: {floor: number, ceiling: number, maxPayout?: number}, contracts: number, cost: number}} pos
+ * Mark a position at `price`: what closing now would pay after the spread and fees.
+ * @param {{contract: {floor: number, ceiling: number, maxPayout?: number}, contracts: number, cost: number, halfSpread?: number}} pos
+ * @param {number} price
+ * @param {number} halfSpread BTC dollars a side
  */
-const markPosition = (pos, price) => {
-  const proceeds = pos.contracts * (contractValue(price, pos.contract) - FEE_PER_CONTRACT);
+const markPosition = (pos, price, halfSpread) => {
+  const proceeds = exitProceeds(price, pos.contract, effectiveHalfSpread(pos, halfSpread), pos.contracts);
   return { proceeds, pnl: proceeds - pos.cost, pnlPct: ((proceeds - pos.cost) / pos.cost) * 100 };
 };
 
 /**
  * @typedef {{contract: ReturnType<typeof pickContract>, contracts: number, cost: number,
- *   lastFillPrice: number, openedAt: number}} UpDipPosition
+ *   lastFillPrice: number, openedAt: number, halfSpread?: number}} UpDipPosition
  * @typedef {{action: 'ENTER'|'ADD'|'EXIT'|'HOLD'|'STAND_ASIDE', reasons: string[],
  *   contract?: ReturnType<typeof pickContract>, size?: number,
  *   expected?: {costUsd: number, targetPnlUsd: number, targetBtc: number, floorLossUsd: number, pnlNowUsd?: number}}} UpDipDecision
@@ -160,10 +163,13 @@ const markPosition = (pos, price) => {
 
 /**
  * @param {{features: ReturnType<typeof computeUpDipFeatures>, position: UpDipPosition|null,
- *   now: number, lastExitAt?: number|null, params?: typeof UP_DIP_PARAMS}} input
+ *   now: number, halfSpread: number, lastExitAt?: number|null, params?: typeof UP_DIP_PARAMS,
+ *   pick?: (price: number, now: number, params: typeof UP_DIP_PARAMS) => ReturnType<typeof pickContract>|null}} input
+ *   `halfSpread` is the app's spread a side in BTC dollars; `pick` chooses a listed contract (null: none known)
  * @returns {UpDipDecision}
  */
-const decideUpDip = ({ features: f, position, now, lastExitAt = null, params = UP_DIP_PARAMS }) => {
+const decideUpDip = ({ features: f, position, now, halfSpread, lastExitAt = null, params = UP_DIP_PARAMS, pick = pickContract }) => {
+  requireHalfSpread(halfSpread);
   if (!f) return { action: position ? 'HOLD' : 'STAND_ASIDE', reasons: ['not enough candle history'] };
   const fmt = (n) => n == null ? 'n/a' : n.toFixed(2);
   const dipReasons = [];
@@ -177,7 +183,7 @@ const decideUpDip = ({ features: f, position, now, lastExitAt = null, params = U
   const breakdown = f.vs1h != null && f.vs1h < -params.maxBelow1hPct;
 
   if (position) {
-    const m = markPosition(position, f.price);
+    const m = markPosition(position, f.price, halfSpread);
     const daysLeft = (position.contract.expiry - now) / DAY_MS;
     const recovered = f.vs1m != null && f.vs1m > 0;
     const pnlNowUsd = Math.round(m.pnl * 100) / 100;
@@ -190,18 +196,17 @@ const decideUpDip = ({ features: f, position, now, lastExitAt = null, params = U
     const addGap = ((position.lastFillPrice - f.price) / position.lastFillPrice) * 100;
     if (position.contracts < params.maxContracts && daysLeft >= params.minDaysToAdd && !breakdown && f.green1m && addGap >= params.addStepPct) {
       const contract = position.contract;
-      const add = contractValue(f.price, contract) + FEE_PER_CONTRACT;
+      const add = entryCost(f.price, contract, halfSpread);
       return { action: 'ADD', size: 1, contract, reasons: [`${fmt(addGap)}% below last fill`, '1m bar turned up'],
-        expected: { costUsd: Math.round(add * 100) / 100, ...targetFor({ ...position, contracts: position.contracts + 1, cost: position.cost + add }, params), pnlNowUsd } };
+        expected: { costUsd: Math.round(add * 100) / 100, ...targetFor({ ...position, contracts: position.contracts + 1, cost: position.cost + add }, params, halfSpread), pnlNowUsd } };
     }
     const why = [`P&L ${pnlNowUsd >= 0 ? '+' : ''}${pnlNowUsd} (${fmt(m.pnlPct)}%)`, `${daysLeft.toFixed(1)} days to expiry`];
     if (m.pnlPct >= params.minGainPct && !recovered) why.push('at target but price still below 1m EMA');
     if (breakdown) why.push(`1h trend breaking down (${fmt(f.vs1h)}% vs 1h EMA) — no adds; Up only, never Down`);
-    return { action: 'HOLD', reasons: why, expected: { costUsd: position.cost, ...targetFor(position, params), pnlNowUsd } };
+    return { action: 'HOLD', reasons: why, expected: { costUsd: position.cost, ...targetFor(position, params, halfSpread), pnlNowUsd } };
   }
 
-  const contract = pickContract(f.price, now, params);
-  const daysLeft = (contract.expiry - now) / DAY_MS;
+  const daysLeft = (nextExpiryMs(now) - now) / DAY_MS;
   if (daysLeft < params.minDaysToEnter) {
     return { action: 'STAND_ASIDE', reasons: [`${daysLeft.toFixed(1)} days to expiry (< ${params.minDaysToEnter}) — too late in the week`] };
   }
@@ -210,19 +215,26 @@ const decideUpDip = ({ features: f, position, now, lastExitAt = null, params = U
     return { action: 'STAND_ASIDE', reasons: [`cooling down after exit (${params.cooldownMin} min)`] };
   }
   if (!isDip) return { action: 'STAND_ASIDE', reasons: ['no dip setup', ...dipBlocks] };
-  const cost = contractValue(f.price, contract) + FEE_PER_CONTRACT;
+  const contract = pick(f.price, now, params);
+  if (!contract) return { action: 'STAND_ASIDE', reasons: ['no listed contract seen this week'] };
+  const cost = entryCost(f.price, contract, halfSpread);
   return { action: 'ENTER', size: 1, contract, reasons: dipReasons,
-    expected: { costUsd: Math.round(cost * 100) / 100, ...targetFor({ contract, contracts: 1, cost }, params) } };
+    expected: { costUsd: Math.round(cost * 100) / 100, ...targetFor({ contract, contracts: 1, cost }, params, halfSpread) } };
 };
 
 /** BTC price and P&L at which the exit target is met, plus the floor knock-out loss. */
-const targetFor = (pos, params) => {
+const targetFor = (pos, params, halfSpread) => {
   const c = pos.contract;
-  const slope = (c.maxPayout ?? maxPayoutForRange(c.ceiling - c.floor)) / (c.ceiling - c.floor);
-  // contracts × (slope × (btc − floor) − fee) = cost × (1 + gain)
+  const maxPayout = c.maxPayout ?? maxPayoutForRange(c.ceiling - c.floor);
+  const slope = maxPayout / (c.ceiling - c.floor);
+  const h = effectiveHalfSpread(pos, halfSpread);
+  // contracts × (slope × (btc − h − floor) − fee) = cost × (1 + gain)
   const needed = pos.cost * (1 + params.minGainPct / 100);
-  const targetBtc = Math.min(c.ceiling, c.floor + (needed / pos.contracts + FEE_PER_CONTRACT) / slope);
-  const atTarget = markPosition(pos, targetBtc).pnl;
+  const targetBtc = Math.min(c.ceiling, c.floor + h + (needed / pos.contracts + FEE_PER_CONTRACT) / slope);
+  // Reaching the ceiling settles at the full payout: no spread.
+  const atTarget = targetBtc >= c.ceiling
+    ? pos.contracts * (maxPayout - FEE_PER_CONTRACT) - pos.cost
+    : markPosition(pos, targetBtc, halfSpread).pnl;
   return { targetBtc: Math.round(targetBtc), targetPnlUsd: Math.round(atTarget * 100) / 100, floorLossUsd: -Math.round(pos.cost * 100) / 100 };
 };
 

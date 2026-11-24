@@ -77,7 +77,7 @@ const createUpDipHeld = ({ statePath, readJSON, writeJSON, getCandles, clock = D
     const bound = touched(held);
     if (bound) return { action: 'CHECK_APP', reasons: [`Coinbase touched the ${bound} since this fill: the app may have knocked it out`] };
     if (!latest?.features || now - latest.at > STALE_MS) return { action: 'STALE', reasons: ['no fresh candles: no exit advice'] };
-    return decideUpDip({ features: latest.features, position: held, now, params: PARAMS });
+    return decideUpDip({ features: latest.features, position: held, now, halfSpread: 0, params: PARAMS });
   };
 
   /** @param {any} latest the paper book's latest evaluation ({at, features}) */
@@ -86,7 +86,7 @@ const createUpDipHeld = ({ statePath, readJSON, writeJSON, getCandles, clock = D
     if (!held) return null;
     const decision = decide(held, latest, clock());
     const live = decision.action === 'HOLD' || decision.action === 'EXIT';
-    return { ...held, decision, pnl: live ? round2(markPosition(held, latest.features.price).pnl) : null };
+    return { ...held, decision, pnl: live ? round2(markPosition(held, latest.features.price, 0).pnl) : null };
   };
 
   /** @returns {{error?: string}} */

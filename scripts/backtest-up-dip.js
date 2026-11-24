@@ -86,10 +86,10 @@ function simulate(candles, features, from, to, params, { decide = decideUpDip } 
       else if (c.high >= pos.contract.ceiling) close(now, pos.contracts * (pos.contract.maxPayout - FEE_PER_CONTRACT), 'knock_out_ceiling', pos.contract.ceiling)
       else if (now >= pos.contract.expiry) close(now, pos.contracts * (contractValue(c.close, pos.contract) - FEE_PER_CONTRACT), 'expiry', c.close)
     }
-    const mtm = realized + (pos ? markPosition(pos, c.close).pnl : 0)
+    const mtm = realized + (pos ? markPosition(pos, c.close, 0).pnl : 0)
     peak = Math.max(peak, mtm)
     maxDd = Math.max(maxDd, peak - mtm)
-    const d = decide({ features: features[i], position: pos, now, lastExitAt, params }, i)
+    const d = decide({ features: features[i], position: pos, now, halfSpread: 0, lastExitAt, params }, i)
     if (d.action === 'ENTER' || d.action === 'ADD' || d.action === 'EXIT') pending = d
   }
   if (pos) { const c = candles[to - 1]; close(c.timestamp + MINUTE_MS, pos.contracts * (contractValue(c.close, pos.contract) - FEE_PER_CONTRACT), 'end_of_period', c.close) }
@@ -104,7 +104,7 @@ function signalAgreement(candles, features, adamEntries, params, windowMs = 30 *
     let lo = 0, hi = candles.length - 1
     while (lo < hi) { const m = (lo + hi) >> 1; if (candles[m].timestamp < a - windowMs) lo = m + 1; else hi = m }
     for (let i = lo; i < candles.length && candles[i].timestamp <= a + windowMs; i++) {
-      if (decideUpDip({ features: features[i], position: null, now: candles[i].timestamp + MINUTE_MS, params }).action === 'ENTER') { hits++; break }
+      if (decideUpDip({ features: features[i], position: null, now: candles[i].timestamp + MINUTE_MS, halfSpread: 0, params }).action === 'ENTER') { hits++; break }
     }
   }
   return hits

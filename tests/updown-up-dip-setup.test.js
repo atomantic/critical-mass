@@ -28,37 +28,37 @@ describe('expiry and contract choice', () => {
 
 describe('decideUpDip', () => {
   it('ENTERs on the turn after a dip with expected P&L after fees', () => {
-    const d = decideUpDip({ features: dipFeatures(), position: null, now: SUN });
+    const d = decideUpDip({ features: dipFeatures(), position: null, now: SUN, halfSpread: 0 });
     assert.equal(d.action, 'ENTER');
     assert.equal(d.contract.floor, 63200);
     assert.ok(d.expected.targetPnlUsd > 0 && d.expected.targetBtc > 64700);
     assert.equal(d.expected.floorLossUsd, -d.expected.costUsd);
   });
   it('STANDS ASIDE late in the week, on breakdowns, without a dip — never Down', () => {
-    assert.match(decideUpDip({ features: dipFeatures(), position: null, now: FRI }).reasons[0], /too late in the week/);
-    assert.equal(decideUpDip({ features: dipFeatures({ vs1h: -3 }), position: null, now: SUN }).action, 'STAND_ASIDE');
-    const noDip = decideUpDip({ features: dipFeatures({ dropPct: 0.1 }), position: null, now: SUN });
+    assert.match(decideUpDip({ features: dipFeatures(), position: null, now: FRI, halfSpread: 0 }).reasons[0], /too late in the week/);
+    assert.equal(decideUpDip({ features: dipFeatures({ vs1h: -3 }), position: null, now: SUN, halfSpread: 0 }).action, 'STAND_ASIDE');
+    const noDip = decideUpDip({ features: dipFeatures({ dropPct: 0.1 }), position: null, now: SUN, halfSpread: 0 });
     assert.equal(noDip.action, 'STAND_ASIDE');
     for (const f of [dipFeatures({ vs1h: -5 }), dipFeatures({ green1m: false })]) {
-      assert.ok(['STAND_ASIDE', 'HOLD', 'EXIT', 'ENTER', 'ADD'].includes(decideUpDip({ features: f, position: null, now: SUN }).action));
+      assert.ok(['STAND_ASIDE', 'HOLD', 'EXIT', 'ENTER', 'ADD'].includes(decideUpDip({ features: f, position: null, now: SUN, halfSpread: 0 }).action));
     }
   });
   const position = { contract: pickContract(64700, SUN), contracts: 1, cost: 0, lastFillPrice: 64700, openedAt: SUN };
   position.cost = 1000 * (64700 - position.contract.floor) / 2000 + 1.99;
   it('EXITs once up minGainPct after fees and back above the 1m EMA, else HOLDs', () => {
     const up = 64700 + 120;
-    assert.equal(decideUpDip({ features: dipFeatures({ price: up, vs1m: 0.05 }), position, now: SUN }).action, 'EXIT');
-    assert.equal(decideUpDip({ features: dipFeatures({ price: up, vs1m: -0.05 }), position, now: SUN }).action, 'HOLD');
-    assert.equal(decideUpDip({ features: dipFeatures({ price: 64710, vs1m: 0.05 }), position, now: SUN }).action, 'HOLD');
+    assert.equal(decideUpDip({ features: dipFeatures({ price: up, vs1m: 0.05 }), position, now: SUN, halfSpread: 0 }).action, 'EXIT');
+    assert.equal(decideUpDip({ features: dipFeatures({ price: up, vs1m: -0.05 }), position, now: SUN, halfSpread: 0 }).action, 'HOLD');
+    assert.equal(decideUpDip({ features: dipFeatures({ price: 64710, vs1m: 0.05 }), position, now: SUN, halfSpread: 0 }).action, 'HOLD');
   });
   it('ADDs on a further dip only when maxContracts allows', () => {
     const f = dipFeatures({ price: 64400, vs1m: -0.3 });
-    assert.equal(decideUpDip({ features: f, position, now: SUN }).action, 'HOLD');
-    const d = decideUpDip({ features: f, position, now: SUN, params: { ...UP_DIP_PARAMS, maxContracts: 5 } });
+    assert.equal(decideUpDip({ features: f, position, now: SUN, halfSpread: 0 }).action, 'HOLD');
+    const d = decideUpDip({ features: f, position, now: SUN, halfSpread: 0, params: { ...UP_DIP_PARAMS, maxContracts: 5 } });
     assert.equal(d.action, 'ADD');
   });
   it('takes a risk exit when configured', () => {
-    const d = decideUpDip({ features: dipFeatures({ price: 64000 }), position, now: SUN, params: { ...UP_DIP_PARAMS, maxLossPct: 30 } });
+    const d = decideUpDip({ features: dipFeatures({ price: 64000 }), position, now: SUN, halfSpread: 0, params: { ...UP_DIP_PARAMS, maxLossPct: 30 } });
     assert.equal(d.action, 'EXIT');
     assert.match(d.reasons[0], /risk exit/);
   });
