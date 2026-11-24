@@ -56,6 +56,21 @@ const compare = (quotes, source) => {
 };
 
 /**
+ * The contract on the week's grid (through `seenFloor`) nearest the planned distance
+ * below `price`, or null when none is within the listed distances.
+ */
+const pickOnGrid = (price, seenFloor, expiry, params) => {
+  const planned = price - params.floorOffset;
+  let best = null;
+  const first = seenFloor + Math.ceil((price - MAX_FLOOR_DISTANCE - seenFloor) / FLOOR_GRID) * FLOOR_GRID;
+  for (let floor = first; floor <= price - MIN_FLOOR_DISTANCE; floor += FLOOR_GRID) {
+    if (best === null || Math.abs(floor - planned) < Math.abs(best - planned)) best = floor;
+  }
+  if (best === null) return null;
+  return { floor: best, ceiling: best + params.range, range: params.range, maxPayout: maxPayoutForRange(params.range), expiry, expiryDate: new Date(expiry).toISOString().slice(0, 10) };
+};
+
+/**
  * @typedef {{capturedAt: number, recordedAt: number, source: 'screenshot'|'manual', range: number, shown: number,
  *   up: number, down: number, floor: number, ceiling: number, expiry: number, halfSpread: number,
  *   coinbase: number|null, index: number|null}} AppQuote
@@ -166,15 +181,7 @@ const createAppQuotes = ({ statePath, readJSON, writeJSON, getLatest, clock = Da
   const pick = (price, now, params) => {
     const expiry = nextExpiryMs(now);
     const seen = listing(read(), expiry);
-    if (!seen) return null;
-    const planned = price - params.floorOffset;
-    let best = null;
-    const first = seen.floor + Math.ceil((price - MAX_FLOOR_DISTANCE - seen.floor) / FLOOR_GRID) * FLOOR_GRID;
-    for (let floor = first; floor <= price - MIN_FLOOR_DISTANCE; floor += FLOOR_GRID) {
-      if (best === null || Math.abs(floor - planned) < Math.abs(best - planned)) best = floor;
-    }
-    if (best === null) return null;
-    return { floor: best, ceiling: best + params.range, range: params.range, maxPayout: maxPayoutForRange(params.range), expiry, expiryDate: new Date(expiry).toISOString().slice(0, 10) };
+    return seen ? pickOnGrid(price, seen.floor, expiry, params) : null;
   };
 
   const getStatus = () => {
@@ -191,4 +198,4 @@ const createAppQuotes = ({ statePath, readJSON, writeJSON, getLatest, clock = Da
   return { check, record, halfSpread, pick, getStatus };
 };
 
-module.exports = { createAppQuotes };
+module.exports = { createAppQuotes, pickOnGrid, DEFAULT_HALF_SPREAD };

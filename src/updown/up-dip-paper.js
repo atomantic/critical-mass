@@ -265,7 +265,7 @@ const createUpDipPaper = ({ getCandles, statePath, getHalfSpread, pick = pickCon
       const r = JSON.parse(fs.readFileSync(backtestPath, 'utf8'));
       const pick = (s) => s && ({ cycles: s.cycles, winRate: s.winRate, pnl: s.pnl, worst: s.worst, maxDrawdown: s.maxDrawdown,
         adamEntries: s.adamEntries, adamEntriesWithSignal: s.adamEntriesWithSignal });
-      return { from: r.from, split: r.split, to: r.to, train: pick(r.defaults?.train), test: pick(r.defaults?.test) };
+      return { from: r.from, split: r.split, to: r.to, spread: r.spread ?? null, listing: r.listing ?? null, train: pick(r.defaults?.train), test: pick(r.defaults?.test) };
     } catch { return null; }
   };
 

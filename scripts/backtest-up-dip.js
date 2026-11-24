@@ -6,7 +6,7 @@
  * report to stdout (and optionally writes it with --out). Never trades.
  *
  * Simulation: decide at each 1m close, fill at the next 1m open, price contracts
- * with the verified formula plus $1.99/contract/side, knock out at floor (0) or
+ * with the verified formula, the app's spread and $1.99/contract/side, knock out at floor (0) or
  * ceiling (max payout − fee) on the bar's low/high (floor assumed first when a bar
  * touches both), settle at the expiry minute's close. Evaluates every dip in the
  * period, not only the operator's trades.
@@ -14,10 +14,17 @@
  * Usage:
  *   node scripts/backtest-up-dip.js --candles data/updown/backtest/btc-usd-1m.json
  *     --orders data/updown/import/order-history.jsonl [--split 2026-05-01] [--grid] [--out FILE]
+ *     [--spread 35] [--listing legacy|grid]
+ *
+ * --spread is BTC dollars a side on $2000 ranges (0 reproduces results from before costs).
+ * --listing legacy rounds floors to $100; grid uses the $400 grid of the weeks in --orders
+ * and takes no entries in any other week.
  */
 const fs = require('fs')
-const { UP_DIP_PARAMS, computeUpDipFeatures, decideUpDip, markPosition } = require('../src/updown/up-dip-setup')
-const { contractValue, FEE_PER_CONTRACT, parseOrderHistory, deriveCycles } = require('../src/updown/app-order-history')
+const { UP_DIP_PARAMS, computeUpDipFeatures, decideUpDip, markPosition, nextExpiryMs, pickContract } = require('../src/updown/up-dip-setup')
+const { contractValue, FEE_PER_CONTRACT, expiryMs, parseOrderHistory, deriveCycles } = require('../src/updown/app-order-history')
+const { entryCost, exitProceeds } = require('../src/updown/app-pricing')
+const { pickOnGrid, DEFAULT_HALF_SPREAD } = require('../src/updown/app-quotes')
 
 const MINUTE_MS = 60_000
 const TF = { '5m': 5, '15m': 15, '1h': 60, '1d': 1440 }
@@ -47,11 +54,28 @@ function buildFeatures(candles, params) {
   return out
 }
 
+/** Contract choice limited to the $400 grid of weeks with a $2000 order; null elsewhere. */
+const gridPicker = (orders) => {
+  const floors = new Map(orders.filter(o => o.range[1] - o.range[0] === 2000).map(o => [expiryMs(o.expiry), o.range[0]]))
+  return (price, now, params) => {
+    const expiry = nextExpiryMs(now)
+    return floors.has(expiry) ? pickOnGrid(price, floors.get(expiry), expiry, params) : null
+  }
+}
+
+/** Command-line spread in BTC dollars a side. */
+const parseSpread = (raw) => {
+  const spread = raw === undefined ? DEFAULT_HALF_SPREAD[2000] : Number(raw)
+  if (!(Number.isFinite(spread) && spread >= 0)) throw new Error('--spread must be a number of at least 0')
+  return spread
+}
+
 /**
  * Run the strategy over candles[from..to). `decide` defaults to decideUpDip;
- * research variants wrap it (it also receives the bar index).
+ * research variants wrap it (it also receives the bar index). `halfSpread` is BTC
+ * dollars a side; `pick` chooses the contract.
  */
-function simulate(candles, features, from, to, params, { decide = decideUpDip } = {}) {
+function simulate(candles, features, from, to, params, { decide = decideUpDip, halfSpread = DEFAULT_HALF_SPREAD[params.range], pick = pickContract } = {}) {
   let pos = null, lastExitAt = null, pending = null
   const cycles = [], fills = []
   let realized = 0, peak = 0, maxDd = 0
@@ -67,13 +91,13 @@ function simulate(candles, features, from, to, params, { decide = decideUpDip } 
     const c = candles[i]
     if (pending) {
       const px = c.open
-      if (pending.action === 'EXIT' && pos) close(c.timestamp, pos.contracts * (contractValue(px, pos.contract) - FEE_PER_CONTRACT), 'exit', px)
-      else if (pending.action === 'ENTER' && !pos && px > pending.contract.floor && px < pending.contract.ceiling) {
-        const cost = contractValue(px, pending.contract) + FEE_PER_CONTRACT
+      if (pending.action === 'EXIT' && pos) close(c.timestamp, exitProceeds(px, pos.contract, halfSpread, pos.contracts), 'exit', px)
+      else if (pending.action === 'ENTER' && !pos && px > pending.contract.floor && px + halfSpread < pending.contract.ceiling) {
+        const cost = entryCost(px, pending.contract, halfSpread)
         pos = { contract: pending.contract, contracts: 1, cost, lastFillPrice: px, entryPrice: px, openedAt: c.timestamp }
         fills.push({ at: c.timestamp, side: 'enter', price: px })
       } else if (pending.action === 'ADD' && pos && px > pos.contract.floor) {
-        pos.cost += contractValue(px, pos.contract) + FEE_PER_CONTRACT
+        pos.cost += entryCost(px, pos.contract, halfSpread)
         pos.contracts++
         pos.lastFillPrice = px
         fills.push({ at: c.timestamp, side: 'add', price: px })
@@ -86,13 +110,13 @@ function simulate(candles, features, from, to, params, { decide = decideUpDip } 
       else if (c.high >= pos.contract.ceiling) close(now, pos.contracts * (pos.contract.maxPayout - FEE_PER_CONTRACT), 'knock_out_ceiling', pos.contract.ceiling)
       else if (now >= pos.contract.expiry) close(now, pos.contracts * (contractValue(c.close, pos.contract) - FEE_PER_CONTRACT), 'expiry', c.close)
     }
-    const mtm = realized + (pos ? markPosition(pos, c.close, 0).pnl : 0)
+    const mtm = realized + (pos ? markPosition(pos, c.close, halfSpread).pnl : 0)
     peak = Math.max(peak, mtm)
     maxDd = Math.max(maxDd, peak - mtm)
-    const d = decide({ features: features[i], position: pos, now, halfSpread: 0, lastExitAt, params }, i)
+    const d = decide({ features: features[i], position: pos, now, halfSpread, lastExitAt, params, pick }, i)
     if (d.action === 'ENTER' || d.action === 'ADD' || d.action === 'EXIT') pending = d
   }
-  if (pos) { const c = candles[to - 1]; close(c.timestamp + MINUTE_MS, pos.contracts * (contractValue(c.close, pos.contract) - FEE_PER_CONTRACT), 'end_of_period', c.close) }
+  if (pos) { const c = candles[to - 1]; close(c.timestamp + MINUTE_MS, exitProceeds(c.close, pos.contract, halfSpread, pos.contracts), 'end_of_period', c.close) }
   return { cycles, fills, maxDrawdown: maxDd }
 }
 
@@ -162,7 +186,12 @@ function labelTrades(candles, features, cycles) {
 function main(argv) {
   const arg = (name, def) => { const i = argv.indexOf(`--${name}`); return i >= 0 ? argv[i + 1] : def }
   const candles = JSON.parse(fs.readFileSync(arg('candles'), 'utf8'))
-  const cycles = deriveCycles(parseOrderHistory(fs.readFileSync(arg('orders'), 'utf8')))
+  const orders = parseOrderHistory(fs.readFileSync(arg('orders'), 'utf8'))
+  const cycles = deriveCycles(orders)
+  const spread = parseSpread(arg('spread'))
+  const listing = arg('listing', 'legacy')
+  if (!['legacy', 'grid'].includes(listing)) throw new Error('--listing must be legacy or grid')
+  const options = { halfSpread: spread, pick: listing === 'grid' ? gridPicker(orders) : pickContract }
   const split = Date.parse(arg('split', '2026-05-01T00:00:00Z'))
   const evalFrom = Date.parse(arg('from', '2026-02-15T00:00:00Z'))
   const evalTo = Date.parse(arg('to', '2026-11-16T00:00:00Z'))
@@ -172,12 +201,12 @@ function main(argv) {
   const adamFirstBuys = cycles.map(c => Date.parse(c.entryTime))
   const inRange = (a, b) => adamFirstBuys.filter(t => t >= candles[a]?.timestamp && t < (candles[b]?.timestamp ?? Infinity))
 
-  const report = { candles: candles.length, from: new Date(candles[iFrom].timestamp).toISOString(), split: new Date(split).toISOString(),
+  const report = { spread, listing, candles: candles.length, from: new Date(candles[iFrom].timestamp).toISOString(), split: new Date(split).toISOString(),
     to: new Date(candles[iTo - 1].timestamp).toISOString(), labels: labelTrades(candles, features, cycles).stats }
 
   const run = (params) => ({
-    train: { ...summarize(simulate(candles, features, iFrom, iSplit, params), inRange(iFrom, iSplit)), adamEntriesWithSignal: signalAgreement(candles, features, inRange(iFrom, iSplit), params) },
-    test: { ...summarize(simulate(candles, features, iSplit, iTo, params), inRange(iSplit, iTo)), adamEntriesWithSignal: signalAgreement(candles, features, inRange(iSplit, iTo), params) },
+    train: { ...summarize(simulate(candles, features, iFrom, iSplit, params, options), inRange(iFrom, iSplit)), adamEntriesWithSignal: signalAgreement(candles, features, inRange(iFrom, iSplit), params) },
+    test: { ...summarize(simulate(candles, features, iSplit, iTo, params, options), inRange(iSplit, iTo)), adamEntriesWithSignal: signalAgreement(candles, features, inRange(iSplit, iTo), params) },
   })
   if (argv.includes('--grid')) {
     // Selection uses TRAIN only; test numbers are reported for the train-selected params.
@@ -186,7 +215,7 @@ function main(argv) {
       for (const maxContracts of [1, 3, 5]) for (const maxLossPct of [15, 30, Infinity]) {
         const knobs = { minDropPct, minGainPct, minDaysToEnter, maxContracts, maxLossPct }
         const params = { ...UP_DIP_PARAMS, ...knobs }
-        grid.push({ params: knobs, train: summarize(simulate(candles, features, iFrom, iSplit, params), inRange(iFrom, iSplit)), full: params })
+        grid.push({ params: knobs, train: summarize(simulate(candles, features, iFrom, iSplit, params, options), inRange(iFrom, iSplit)), full: params })
       }
     // Rank by train P&L per unit of drawdown.
     grid.sort((a, b) => (b.train.pnl / Math.max(1, b.train.maxDrawdown)) - (a.train.pnl / Math.max(1, a.train.maxDrawdown)))
@@ -200,7 +229,7 @@ function main(argv) {
   for (let m = new Date(evalFrom); m < new Date(evalTo); m = new Date(Date.UTC(m.getUTCFullYear(), m.getUTCMonth() + 1, 1))) {
     const a = at(Date.UTC(m.getUTCFullYear(), m.getUTCMonth(), 1)), b = at(Date.UTC(m.getUTCFullYear(), m.getUTCMonth() + 1, 1))
     if (b - a < 1440) continue
-    const s = summarize(simulate(candles, features, a, b, UP_DIP_PARAMS), inRange(a, b))
+    const s = summarize(simulate(candles, features, a, b, UP_DIP_PARAMS, options), inRange(a, b))
     months.push({ month: m.toISOString().slice(0, 7), cycles: s.cycles, winRate: s.winRate, pnl: s.pnl, worst: s.worst, maxDrawdown: s.maxDrawdown, adamEntries: s.adamEntries, caught: s.adamEntriesCaught })
   }
   report.monthly = months
@@ -212,4 +241,4 @@ function main(argv) {
 if (require.main === module) {
   try { main(process.argv.slice(2)) } catch (err) { console.error(err.stack); process.exitCode = 1 }
 }
-module.exports = { buildFeatures, simulate, summarize, labelTrades, signalAgreement }
+module.exports = { buildFeatures, simulate, summarize, labelTrades, signalAgreement, gridPicker, parseSpread }

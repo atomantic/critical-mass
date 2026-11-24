@@ -18,7 +18,8 @@
 const fs = require('fs')
 const { UP_DIP_PARAMS, decideUpDip, markPosition, pickContract, nextExpiryMs } = require('../src/updown/up-dip-setup')
 const { contractValue, FEE_PER_CONTRACT, parseOrderHistory, deriveCycles } = require('../src/updown/app-order-history')
-const { buildFeatures, simulate, summarize } = require('./backtest-up-dip')
+const { entryCost, exitProceeds } = require('../src/updown/app-pricing')
+const { buildFeatures, simulate, summarize, parseSpread } = require('./backtest-up-dip')
 
 const MIN = 60_000
 const DAY = 86_400_000
@@ -135,21 +136,21 @@ function auc(a, b) {
 const median = (arr) => { const s = arr.filter(Number.isFinite).sort((x, y) => x - y); return s.length ? s[Math.floor(s.length / 2)] : null }
 
 /** Trade one contract from a signal at bar i (fill i+1 open) to its exit, KO or expiry. */
-function standalone(candles, features, i, params) {
+function standalone(candles, features, i, params, halfSpread) {
   const fillBar = candles[i + 1]
   if (!fillBar) return null
   const contract = pickContract(candles[i].close, candles[i].timestamp + MIN, params)
   const px = fillBar.open
-  if (px <= contract.floor || px >= contract.ceiling) return null
-  const pos = { contract, contracts: 1, cost: contractValue(px, contract) + FEE_PER_CONTRACT, lastFillPrice: px, openedAt: fillBar.timestamp }
+  if (px <= contract.floor || px + halfSpread >= contract.ceiling) return null
+  const pos = { contract, contracts: 1, cost: entryCost(px, contract, halfSpread), lastFillPrice: px, openedAt: fillBar.timestamp }
   for (let j = i + 1; j < candles.length; j++) {
     const c = candles[j], now = c.timestamp + MIN
     if (c.low <= contract.floor) return { outcome: 'ko', pnl: -pos.cost, closedAt: now }
     if (c.high >= contract.ceiling) return { outcome: 'win', pnl: contract.maxPayout - FEE_PER_CONTRACT - pos.cost, closedAt: now }
     if (now >= contract.expiry) { const pnl = contractValue(c.close, contract) - FEE_PER_CONTRACT - pos.cost; return { outcome: pnl > 0 ? 'win' : 'loss', pnl, closedAt: now } }
-    const d = decideUpDip({ features: features[j], position: pos, now, halfSpread: 0, params })
+    const d = decideUpDip({ features: features[j], position: pos, now, halfSpread, params })
     if (d.action === 'EXIT' && candles[j + 1]) {
-      const pnl = contractValue(candles[j + 1].open, contract) - FEE_PER_CONTRACT - pos.cost
+      const pnl = exitProceeds(candles[j + 1].open, contract, halfSpread) - pos.cost
       return { outcome: pnl > 0 ? 'win' : 'loss', pnl, closedAt: candles[j + 1].timestamp }
     }
   }
@@ -165,7 +166,7 @@ const makeDecide = ({ filter = null, cols = null, fadeExit = false } = {}) => (i
     return Number.isFinite(v) && (op === '<=' ? v <= t : v >= t)
   })) return { action: 'STAND_ASIDE', reasons: ['filtered'] }
   if (fadeExit && input.position && input.features) {
-    const m = markPosition(input.position, input.features.price, 0)
+    const m = markPosition(input.position, input.features.price, input.halfSpread)
     if (m.pnlPct >= input.params.minGainPct) return input.features.green1m ? { action: 'HOLD', reasons: ['riding 1m momentum'] } : { action: 'EXIT', reasons: ['1m momentum faded'] }
     if (d.action === 'EXIT') return { action: 'HOLD', reasons: ['below target'] }
   }
@@ -177,6 +178,7 @@ function main(argv) {
   const candles = JSON.parse(fs.readFileSync(arg('candles'), 'utf8'))
   const cycles = deriveCycles(parseOrderHistory(fs.readFileSync(arg('orders'), 'utf8')))
   const params = UP_DIP_PARAMS
+  const halfSpread = parseSpread(arg('spread'))
   const features = buildFeatures(candles, params)
   const cols = buildExtended(candles)
   const idxAt = (ms) => { let lo = 0, hi = candles.length - 1; while (lo < hi) { const m = (lo + hi + 1) >> 1; if (candles[m].timestamp + MIN <= ms) lo = m; else hi = m - 1 } return lo }
@@ -194,9 +196,9 @@ function main(argv) {
   for (let i = iFrom; i < iTo - 1; i++) {
     const hourKey = Math.floor(candles[i].timestamp / 3_600_000)
     if (hourKey === lastHour) continue
-    if (decideUpDip({ features: features[i], position: null, now: candles[i].timestamp + MIN, halfSpread: 0, params }).action !== 'ENTER') continue
+    if (decideUpDip({ features: features[i], position: null, now: candles[i].timestamp + MIN, halfSpread, params }).action !== 'ENTER') continue
     lastHour = hourKey
-    const res = standalone(candles, features, i, params)
+    const res = standalone(candles, features, i, params, halfSpread)
     if (!res) continue
     const contract = pickContract(candles[i].close, candles[i].timestamp + MIN, params)
     signals.push({ i, outcome: res.outcome, pnl: res.pnl, ...rowAt(cols, candles, i, contract.floor) })
@@ -218,6 +220,7 @@ function main(argv) {
 
   const wins = signals.filter(s => s.outcome === 'win'), kos = signals.filter(s => s.outcome === 'ko')
   const report = {
+    spread: halfSpread,
     counts: { adam: adam.length, signals: signals.length, signalsTrain: signals.filter(s => isTrain(s.i)).length,
       wins: wins.length, kos: kos.length, otherLosses: signals.filter(s => s.outcome === 'loss').length,
       kosTrain: kos.filter(s => isTrain(s.i)).length, random: random.length },
@@ -239,8 +242,8 @@ function main(argv) {
     const adamTrain = cycles.map(c => Date.parse(c.entryTime)).filter(t => t < candles[iSplit].timestamp)
     const adamTest = cycles.map(c => Date.parse(c.entryTime)).filter(t => t >= candles[iSplit].timestamp)
     return {
-      train: summarize(simulate(candles, features, iFrom, iSplit, p, { decide }), adamTrain),
-      test: summarize(simulate(candles, features, iSplit, iTo, p, { decide }), adamTest),
+      train: summarize(simulate(candles, features, iFrom, iSplit, p, { decide, halfSpread }), adamTrain),
+      test: summarize(simulate(candles, features, iSplit, iTo, p, { decide, halfSpread }), adamTest),
     }
   }
   const score = (s) => s.pnl / Math.max(500, s.maxDrawdown)
@@ -274,7 +277,7 @@ function main(argv) {
   const takes = (filter) => cycles.filter(c => {
     const a = idxAt(Date.parse(c.entryTime))
     for (let i = Math.max(0, a - 30); i <= Math.min(candles.length - 2, a + 30); i++) {
-      const d = makeDecide({ filter, cols })({ features: features[i], position: null, now: candles[i].timestamp + MIN, params }, i)
+      const d = makeDecide({ filter, cols })({ features: features[i], position: null, now: candles[i].timestamp + MIN, halfSpread, params }, i)
       if (d.action === 'ENTER') return true
     }
     return false
