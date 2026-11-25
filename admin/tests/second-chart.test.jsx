@@ -106,22 +106,22 @@ describe('readouts', () => {
     api.held = held()
     await show({ ages: { coinbase: 400, index: 11_000 } })
     expect(text('second-index')).toBe('Index --- (proxy) gap ---')
-    expect(text('second-bounds')).toBe('floor --- · ceiling --- (your contract)')
+    expect(text('second-bounds')).toBe('floor index --- / Coinbase −$596 · ceiling index --- / Coinbase +$1,404 (your contract)')
     expect(text('second-freshness')).toContain('live')
     expect(text('second-moves')).toContain('10s −$38')
   })
 
-  it('blanks the gap but keeps bounds when only Coinbase is stale', async () => {
+  it('blanks the gap and the Coinbase distances when only Coinbase is stale', async () => {
     api.held = held()
     await show({ ages: { coinbase: 11_000, index: 900 } })
     expect(text('second-index')).toBe('Index $61,210 (proxy) gap ---')
-    expect(text('second-bounds')).toBe('floor −$603 · ceiling +$1,397 (your contract)')
+    expect(text('second-bounds')).toBe('floor index −$603 / Coinbase --- · ceiling index +$1,397 / Coinbase --- (your contract)')
   })
 
-  it('measures the held contract from the index', async () => {
+  it('measures the held contract from both sources', async () => {
     api.held = held()
     await show()
-    expect(text('second-bounds')).toBe('floor −$603 · ceiling +$1,397 (your contract)')
+    expect(text('second-bounds')).toBe('floor index −$603 / Coinbase −$596 · ceiling index +$1,397 / Coinbase +$1,404 (your contract)')
   })
 
   it('asks to check the app after a suspected knock-out', async () => {
@@ -132,7 +132,8 @@ describe('readouts', () => {
 
   it('falls back to a configured Up contract', async () => {
     await show({}, { contract: { direction: 'up', stop: 60210, target: 62210 } })
-    expect(text('second-bounds')).toBe('floor −$1,000 · ceiling +$1,000 (configured contract)')
+    expect(text('second-bounds')).toContain('floor index −$1,000')
+    expect(text('second-bounds')).toContain('(configured contract)')
   })
 
   it('does not show the configured contract when the held one could not be read', async () => {

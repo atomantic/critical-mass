@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import Button from '../ui/Button'
 import { apiPut, apiDelete, describeMutationFailure } from '../../utils/apiClient'
-import { formatUsd } from '../../utils/format.mjs'
+import { formatSpread, formatUsd } from '../../utils/format.mjs'
 import { pnlColorClass, signedPrefix } from '../../utils/pnlFormat.mjs'
 
 // The operator's own contract, typed in from the app, with the Up dip exit rule
@@ -51,6 +51,7 @@ export default function UpDipHeld({ held, onChange }) {
               <span className={`font-mono ${pnlColorClass(held.pnl)}`}>{held.pnl == null ? '---' : `${signedPrefix(held.pnl)}${formatUsd(held.pnl)}`}</span>
             </div>
             {held.decision.reasons?.[0] && <div className="text-2xs text-gray-300">{held.decision.reasons[0]}</div>}
+            {held.halfSpread > 0 && held.pnlBeforeSpread != null && <div className="text-2xs text-gray-400">{signedPrefix(held.pnlBeforeSpread)}{formatUsd(held.pnlBeforeSpread)} before the {formatSpread(held.halfSpread)} spread</div>}
           </div>
           <div className="flex justify-between items-center">
             <span className="text-2xs text-gray-400">Up {k(held.contract.floor)}–{k(held.contract.ceiling)} ×{held.contracts} · cost {formatUsd(held.cost)} · exp {held.contract.expiryDate}</span>

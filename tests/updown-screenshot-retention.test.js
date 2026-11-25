@@ -129,3 +129,20 @@ describe('POST /api/updown/screenshot transient storage (issue #286)', () => {
     }
   });
 });
+
+describe('app quotes', () => {
+  it('reading a screenshot never records a quote', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-shot-quote-'));
+    const refuse = () => assert.fail('a quote is recorded only when the operator confirms it');
+    const handler = registerRoute(dir, {
+      appQuotes: { record: refuse, check: refuse },
+      safeFetch: async () => responseWithContent('{"screenType":"select","direction":"Up","range":2000,"currentPrice":61118.69,"upPrice":61172,"downPrice":61074,"target":62200,"stop":60200,"maxLoss":"-$486.00"}'),
+    });
+    const res = createRes();
+    await handler(createReq(), res);
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.body.extracted.upPrice, 61172);
+    assert.deepEqual(fs.readdirSync(dir), []);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+});

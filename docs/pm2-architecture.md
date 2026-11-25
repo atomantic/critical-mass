@@ -100,8 +100,9 @@ Coinbase feed converts the maker side it receives). Only an accepted trade or va
 liveness: a source silent for 30 seconds is replaced, at most once a minute.
 `GET /api/btc-feed/seconds` and the `btc-feed` room serve the UpDown 1s chart.
 Completed 1m index bars are appended to `data/btc-feed/index-YYYY-MM-DD.jsonl`
-(UTC, not pruned); full backups and restores pause that writer. Nothing in the
-feed reaches a signal, paper book, engine or order.
+(UTC, not pruned); full backups and restores pause that writer. The Up dip paper
+books and contract panel read the index; nothing in the feed reaches the composite
+signal, an engine or an order.
 
 ## Engine Processes (`engines/`)
 

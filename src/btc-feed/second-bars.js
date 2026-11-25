@@ -145,7 +145,7 @@ const createSecondBars = ({ now = Date.now, retentionSeconds = 3600, maxTradeAge
     return read(from, to);
   };
 
-  return { markConnected, markDisconnected, addTrade, getBars, drainChanged, getLastAcceptedAt: () => lastAcceptedAt };
+  return { markConnected, markDisconnected, addTrade, getBars, drainChanged, getLastAcceptedAt: () => lastAcceptedAt, getLastPrice: () => entries[entries.length - 1]?.bar.close };
 };
 
 module.exports = { createSecondBars };

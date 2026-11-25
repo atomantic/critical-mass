@@ -707,3 +707,44 @@ describe('ContractSetup draft revision and server readback transitions', () => {
     expect(screen.getByLabelText(/Target/).value).toBe('200000')
   })
 })
+
+describe('ContractSetup app quote', () => {
+  beforeEach(() => {
+    const values = new Map([['updown-screenshot-provider', 'provider-a'], ['updown-screenshot-model', 'model-a']])
+    vi.stubGlobal('localStorage', { getItem: key => values.get(key) || null, setItem: (key, value) => values.set(key, value) })
+  })
+  afterEach(() => { cleanup(); vi.unstubAllGlobals() })
+
+  const upload = async (extracted) => {
+    const posts = []
+    vi.stubGlobal('fetch', vi.fn(async (url, options = {}) => {
+      if (url === '/api/updown/providers') return { ok: true, status: 200, json: async () => ({ success: true, providers: [{ id: 'provider-a', models: ['model-a'] }] }) }
+      if (url === '/api/updown/app-quotes') { posts.push(JSON.parse(options.body)); return { ok: true, status: 200, json: async () => ({ success: true, quote: { halfSpread: 49 } }) } }
+      return { ok: true, status: 200, json: async () => ({ success: true, extracted }) }
+    }))
+    render(<ContractSetup />)
+    fireEvent.change(document.querySelector('input[type="file"]'), { target: { files: [new File(['x'], 'x.png', { type: 'image/png' })] } })
+    await screen.findByText('Extracted Values')
+    return posts
+  }
+  const select = { screenType: 'select', direction: 'Up', range: 2000, currentPrice: 61118.69, upPrice: 61172, downPrice: 61074, target: 62200, stop: 60200, maxLoss: '-$486.00' }
+
+  it('offers to record a quote from an Up select screen, without recording it', async () => {
+    const posts = await upload(select)
+    expect(await screen.findByText(/spread \$49 a side/i)).toBeTruthy()
+    expect(posts).toHaveLength(1)
+    expect(posts[0].preview).toBe(true)
+  })
+
+  it('asks for an Up screen when Down is selected', async () => {
+    const posts = await upload({ ...select, direction: 'Down' })
+    expect(screen.getByText(/select Up in the app and take the screenshot again/i)).toBeTruthy()
+    expect(posts).toHaveLength(0)
+  })
+
+  it.each([['a position screen', { screenType: 'position', entryPrice: 5 }], ['an order screen', { screenType: 'order', contractPrice: 5 }]])('does not offer it from %s', async (_name, extracted) => {
+    const posts = await upload(extracted)
+    expect(screen.queryByRole('button', { name: /record quote/i })).toBeNull()
+    expect(posts).toHaveLength(0)
+  })
+})

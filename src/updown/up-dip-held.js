@@ -6,9 +6,10 @@
  * exit rule applied to it. The paper book (up-dip-paper.js) only follows its own
  * simulated entry, so it cannot say when to close a real one.
  *
- * Advice only: there is no exchange or app client here. P&L uses the verified app
- * formula on Coinbase candles; the app prices off Crypto.com's index, so a floor or
- * ceiling touch on Coinbase is reported as "check the app", not as a settlement.
+ * Advice only: there is no exchange or app client here. P&L is what closing now would
+ * pay after the app's spread; the entered cost is the operator's real one. Which price
+ * the app knocks out on is not established, so a floor or ceiling touch on either
+ * Coinbase or the Crypto.com index is reported as "check the app", not a settlement.
  * ADD is never recommended (docs/updown-up-dip-setup.md: repeat entries lost money
  * on held-out data).
  *
@@ -25,7 +26,8 @@ const MINUTE_MS = 60_000;
 const STALE_MS = 3 * MINUTE_MS;
 /** Only these ranges' payouts were verified against app fills. */
 const RANGES = [500, 2000];
-const TOUCH_TFS = ['1m', '15m', '1h'];
+const COINBASE_TOUCH_TFS = ['1m', '15m', '1h'];
+const BOUNDS = /** @type {const} */ (['floor', 'ceiling']);
 /** No ADD advice, whatever the paper book's maxContracts is. */
 const PARAMS = /** @type {any} */ (Object.freeze({ ...UP_DIP_PARAMS, maxContracts: 0 }));
 
@@ -59,25 +61,47 @@ const parseHeld = (body, now) => {
 
 /**
  * @param {{statePath: string, readJSON: (p: string, d: any) => any, writeJSON: (p: string, d: any) => void,
- *   getCandles: (tf: string) => any[], clock?: () => number, onChange?: () => void}} deps
+ *   getCandles: (tf: string) => any[], getCoinbaseCandles?: (tf: string) => any[], getHalfSpread: (range: number) => number,
+ *   clock?: () => number, onChange?: () => void}} deps  `getCandles` is the Crypto.com index source
  */
-const createUpDipHeld = ({ statePath, readJSON, writeJSON, getCandles, clock = Date.now, onChange }) => {
+const createUpDipHeld = ({ statePath, readJSON, writeJSON, getCandles, getCoinbaseCandles = () => [], getHalfSpread, clock = Date.now, onChange }) => {
+  if (typeof getHalfSpread !== 'function') throw new TypeError('the operator contract needs getHalfSpread');
   const read = () => readJSON(statePath, null)?.held ?? null;
   const write = (held) => { writeJSON(statePath, { held }); onChange?.(); };
 
+  /** The first bound these bars touched since the fill, floor before ceiling. */
+  const touchedBy = (held, bars) => {
+    const since = bars.filter(c => c.timestamp >= held.openedAt);
+    return BOUNDS.find(bound => since.some(c => (bound === 'floor' ? c.low <= held.contract.floor : c.high >= held.contract.ceiling))) ?? null;
+  };
+  // Higher index timeframes and substitutes are built from BTC_USD trades, whose wicks
+  // the index never saw, so only its own 1m bars count.
+  const indexTouch = (held) => held.indexTouched ?? touchedBy(held, (getCandles('1m') || []).filter(c => !c.substitute));
+
+  /** Which bound was touched, and by whom. */
   const touched = (held) => {
-    const bars = TOUCH_TFS.flatMap(tf => getCandles(tf) || []).filter(c => c.timestamp >= held.openedAt);
-    if (bars.some(c => c.low <= held.contract.floor)) return 'floor';
-    if (bars.some(c => c.high >= held.contract.ceiling)) return 'ceiling';
-    return null;
+    const coinbase = touchedBy(held, COINBASE_TOUCH_TFS.flatMap(tf => getCoinbaseCandles(tf) || []));
+    const index = indexTouch(held);
+    const bound = BOUNDS.find(b => b === coinbase || b === index);
+    if (!bound) return null;
+    const both = coinbase === bound && index === bound;
+    return { bound, source: both ? 'Both' : coinbase === bound ? 'Coinbase' : 'Crypto.com index' };
+  };
+
+  /** Remember an index touch: its 1m buffer holds only three hours. */
+  const observe = () => {
+    const held = read();
+    if (!held || held.indexTouched || clock() >= held.contract.expiry) return;
+    const bound = indexTouch(held);
+    if (bound) write({ ...held, indexTouched: bound });
   };
 
   const decide = (held, latest, now) => {
     if (now >= held.contract.expiry) return { action: 'EXPIRED', reasons: ['contract has expired: clear it'] };
-    const bound = touched(held);
-    if (bound) return { action: 'CHECK_APP', reasons: [`Coinbase touched the ${bound} since this fill: the app may have knocked it out`] };
+    const touch = touched(held);
+    if (touch) return { action: 'CHECK_APP', reasons: [`${touch.source} touched the ${touch.bound} since this fill: the app may have knocked it out`] };
     if (!latest?.features || now - latest.at > STALE_MS) return { action: 'STALE', reasons: ['no fresh candles: no exit advice'] };
-    return decideUpDip({ features: latest.features, position: held, now, params: PARAMS });
+    return decideUpDip({ features: latest.features, position: held, now, halfSpread: getHalfSpread(held.contract.range), params: PARAMS });
   };
 
   /** @param {any} latest the paper book's latest evaluation ({at, features}) */
@@ -86,7 +110,9 @@ const createUpDipHeld = ({ statePath, readJSON, writeJSON, getCandles, clock = D
     if (!held) return null;
     const decision = decide(held, latest, clock());
     const live = decision.action === 'HOLD' || decision.action === 'EXIT';
-    return { ...held, decision, pnl: live ? round2(markPosition(held, latest.features.price).pnl) : null };
+    const halfSpread = getHalfSpread(held.contract.range);
+    const pnl = (h) => (live ? round2(markPosition(held, latest.features.price, h).pnl) : null);
+    return { ...held, decision, halfSpread, pnl: pnl(halfSpread), pnlBeforeSpread: pnl(0) };
   };
 
   /** @returns {{error?: string}} */
@@ -97,7 +123,7 @@ const createUpDipHeld = ({ statePath, readJSON, writeJSON, getCandles, clock = D
     return {};
   };
 
-  return { getStatus, set, clear: () => write(null) };
+  return { getStatus, set, observe, clear: () => write(null) };
 };
 
 module.exports = { createUpDipHeld };

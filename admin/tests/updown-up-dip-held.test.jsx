@@ -47,3 +47,15 @@ it('shows no P&L while candles are stale', () => {
   render(<UpDipHeld held={{ ...held, pnl: null, decision: { action: 'STALE', reasons: ['no fresh candles'] } }} onChange={() => {}} />)
   expect(screen.getByTestId('up-dip-held').textContent).toContain('---')
 })
+
+it('shows what closing would pay after the spread, and the figure before it', () => {
+  render(<UpDipHeld held={{ ...held, pnl: 16.02, pnlBeforeSpread: 33.52, halfSpread: 35 }} onChange={() => {}} />)
+  const text = screen.getByTestId('up-dip-held').textContent
+  expect(text).toContain('+$16.02')
+  expect(text).toContain('+$33.52 before the $35 spread')
+})
+
+it('says nothing about a spread it was not given', () => {
+  render(<UpDipHeld held={held} onChange={() => {}} />)
+  expect(screen.getByTestId('up-dip-held').textContent).not.toContain('spread')
+})

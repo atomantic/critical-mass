@@ -144,7 +144,7 @@ const parseExpiryToMs = (value) => {
 
 /**
  * @param {import('express').Express} app
- * @param {{updownService: Object, upDipHeld?: Object, readJSON: Function, DATA_DIR: string, validateEndpointUrl?: Function, safeFetch?: Function, allowedAiOrigins?: Set<string>}} deps
+ * @param {{updownService: Object, upDipHeld?: any, appQuotes?: any, upDipCandles?: any, io?: any, readJSON: Function, DATA_DIR: string, validateEndpointUrl?: Function, safeFetch?: Function, allowedAiOrigins?: Set<string>}} deps
  */
 module.exports = (app, deps) => {
   const {
@@ -153,6 +153,9 @@ module.exports = (app, deps) => {
     upDipPaper = null,
     upDipShadow = null,
     upDipHeld = null,
+    appQuotes = null,
+    upDipCandles = null,
+    io = null,
     readJSON,
     writeJSON,
     DATA_DIR,
@@ -515,7 +518,28 @@ module.exports = (app, deps) => {
     const paper = upDipPaper.getStatus();
     res.json({ success: true, ...paper, shadow: upDipShadow ? upDipShadow.getStatus() : null,
       // held: the operator's own contract (null when none is tracked; absent when not running).
-      ...(upDipHeld ? { held: upDipHeld.getStatus(paper.latest) } : {}) });
+      ...(upDipHeld ? { held: upDipHeld.getStatus(paper.latest) } : {}),
+      // quotes: the app's spread in force, listing and source comparison.
+      ...(appQuotes ? { quotes: appQuotes.getStatus() } : {}),
+      ...(upDipCandles ? { candles: upDipCandles.getStatus() } : {}) });
+  });
+
+  // An app quote the operator confirmed. `preview: true` only checks it.
+  app.post('/api/updown/app-quotes', (req, res) => {
+    if (!appQuotes) return res.status(503).json({ success: false, error: 'App quotes not running' });
+    const { preview, ...input } = req.body || {};
+    const { error, quote } = preview === true ? appQuotes.check(input) : appQuotes.record(input);
+    if (error) return res.status(400).json({ success: false, error });
+    if (preview !== true) io?.to('updown').emit('updown:up-dip', {});
+    res.json({ success: true, quote });
+  });
+
+  app.delete('/api/updown/app-quotes/:recordedAt', (req, res) => {
+    if (!appQuotes) return res.status(503).json({ success: false, error: 'App quotes not running' });
+    const { error } = appQuotes.remove(Number(req.params.recordedAt));
+    if (error) return res.status(409).json({ success: false, error });
+    io?.to('updown').emit('updown:up-dip', {});
+    res.json({ success: true });
   });
 
   app.put('/api/updown/up-dip/held', (req, res) => {

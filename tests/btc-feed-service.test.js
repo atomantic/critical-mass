@@ -126,6 +126,51 @@ describe('BTC feed sources', () => {
   });
 });
 
+describe('BTC feed consumers', () => {
+  it('hands accepted index values, and only those, to subscribers', (t) => {
+    const { service, indexes, index, live } = setup(t);
+    const seen = [];
+    const unsubscribe = service.subscribeIndex((sample) => seen.push(sample));
+    live();
+    index(indexes[0], 61234.5);
+    index(indexes[0], 100, Date.now() - 60_000);
+    assert.deepEqual(seen, [{ value: 61234.5, timestamp: T0 + 1000 }]);
+    unsubscribe();
+    index(indexes[0], 61235, Date.now() + 1);
+    assert.equal(seen.length, 1);
+  });
+
+  it('contains a subscriber that throws', (t) => {
+    const { service, indexes, index, live, historySamples, logs } = setup(t);
+    const seen = [];
+    service.subscribeIndex(() => { throw new Error('consumer bug'); });
+    service.subscribeIndex((sample) => seen.push(sample.value));
+    live();
+    index(indexes[0], 5);
+    assert.deepEqual(seen, [5]);
+    assert.equal(historySamples.length, 1);
+    assert.match(logs.warn[0], /consumer bug/);
+  });
+
+  it('reports the latest accepted price of each source', (t) => {
+    const { service, trades, indexes, trade, index, live, tick } = setup(t);
+    assert.deepEqual(service.getLatest(), { coinbase: null, index: null });
+    live();
+    trade(trades[0], { price: 101 });
+    index(indexes[0], 99);
+    tick(400);
+    assert.deepEqual(service.getLatest(), { coinbase: { value: 101, at: T0 + 1000 }, index: { value: 99, at: T0 + 1000 } });
+  });
+
+  it('keeps reporting the age of an old price rather than forgetting it', (t) => {
+    const { service, trades, trade, live, tick } = setup(t);
+    live();
+    trade(trades[0], { price: 101 });
+    tick(120_000);
+    assert.deepEqual(service.getLatest().coinbase, { value: 101, at: T0 + 1000 });
+  });
+});
+
 describe('BTC feed emission', () => {
   it('batches changes into one update per 250ms', (t) => {
     const { trades, trade, live, tick, emitted } = setup(t);
@@ -337,5 +382,27 @@ describe('BTC feed lifecycle', () => {
   it('opens nothing before start', (t) => {
     const { trades, indexes } = setup(t, { deps: { DATA_DIR: os.tmpdir() } });
     assert.equal(trades.length + indexes.length, 0);
+  });
+});
+
+describe('BTC feed Coinbase minute', () => {
+  it('reports the extremes of a minute, and whether every second was seen', (t) => {
+    const { service, trades, trade, live, tick } = setup(t);
+    live(); // T0 + 1s
+    const start = Math.ceil((T0 + 1000) / 60_000) * 60_000;
+    while (Date.now() < start) { trade(trades[0]); tick(1000); } // a silent feed would be replaced
+    for (let s = 0; s < 60; s++) { trade(trades[0], { price: s === 30 ? 90 : s === 40 ? 120 : 100 }); tick(1000); }
+    assert.deepEqual(service.getCoinbaseMinute(start), { low: 90, high: 120, complete: true });
+  });
+
+  it('is incomplete when seconds are missing, and null when nothing was seen', (t) => {
+    const { service, trades, trade, live, tick } = setup(t);
+    live();
+    const start = Math.ceil((T0 + 1000) / 60_000) * 60_000;
+    while (Date.now() < start) { trade(trades[0]); tick(1000); } // a silent feed would be replaced
+    for (let s = 0; s < 30; s++) { trade(trades[0]); tick(1000); }
+    tick(40_000);
+    assert.equal(service.getCoinbaseMinute(start).complete, false);
+    assert.equal(service.getCoinbaseMinute(start - 3_600_000), null);
   });
 });

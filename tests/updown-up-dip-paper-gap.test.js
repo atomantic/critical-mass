@@ -14,8 +14,8 @@ const CONTRACT = { floor: 63000, ceiling: 65000, range: 2000, maxPayout: 1000, e
 const bar = (i, over = {}) => ({ timestamp: T0 + i * MIN, open: 64000, high: 64050, low: 63950, close: 64000, volume: 1, ...over });
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'up-dip-gap-'));
 const position = () => ({ contract: CONTRACT, contracts: 1, cost: 500, lastFillPrice: 64000, entryPrice: 64000, openedAt: T0 });
-const seed = (file, extra) => fs.writeFileSync(file, JSON.stringify({ lastBarTs: T0, startedAt: T0, ...extra }));
-const make = (dir, candles, name = 'p.json') => createUpDipPaper({
+const seed = (file, extra) => fs.writeFileSync(file, JSON.stringify({ pricing: { spread: true, source: 'cryptocom-index' }, lastBarTs: T0, startedAt: T0, ...extra }));
+const make = (dir, candles, name = 'p.json') => createUpDipPaper({ getHalfSpread: () => 0,
   getCandles: (tf) => (tf === '1m' ? candles : []),
   statePath: path.join(dir, name),
   writeJSON: (p, d) => fs.writeFileSync(p, JSON.stringify(d)),
@@ -39,7 +39,7 @@ describe('up-dip paper restart replay', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  it('records a visible GAP marker and drops a stale pending fill when the buffer lost bars', () => {
+  it('records a visible GAP marker and keeps a pending EXIT when the buffer lost bars', () => {
     const dir = tmp();
     const file = path.join(dir, 'p.json');
     seed(file, { pending: { action: 'EXIT' }, position: position() });
@@ -50,10 +50,12 @@ describe('up-dip paper restart replay', () => {
     const gap = st.events.find(e => e.action === 'GAP');
     assert.ok(gap, 'GAP event recorded');
     assert.equal(gap.missingBars, 49);
-    assert.equal(gap.droppedPending, 'EXIT');
+    assert.equal(gap.droppedPending, null);
+    assert.equal(gap.keptPending, 'EXIT');
     assert.equal(st.summary.gaps, 1);
-    assert.equal(st.cycles.length, 0, 'stale EXIT is not priced at a late bar');
-    assert.ok(st.position);
+    assert.equal(st.cycles[0].reason, 'exit', 'an exit is filled late rather than lost');
+    assert.equal(st.cycles[0].closedAt, T0 + 50 * MIN);
+    assert.equal(st.position, null);
     fs.rmSync(dir, { recursive: true, force: true });
   });
 });

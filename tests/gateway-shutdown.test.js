@@ -73,9 +73,9 @@ describe('gateway shutdown owns admitted work', () => {
     // which never stops it, so shutdown must still persist it.
     for (const [maintenance, running, expected] of [
       // The paper books never persist on stop, so they always stop.
-      [true, false, ['paper', 'shadow', 'btcFeed', 'logs']],
-      [true, true, ['updown', 'sentinel', 'arbitrage', 'paper', 'shadow', 'btcFeed', 'logs']],
-      [false, false, ['updown', 'sentinel', 'arbitrage', 'paper', 'shadow', 'btcFeed', 'logs']],
+      [true, false, ['paper', 'shadow', 'candles', 'btcFeed', 'logs']],
+      [true, true, ['updown', 'sentinel', 'arbitrage', 'paper', 'shadow', 'candles', 'btcFeed', 'logs']],
+      [false, false, ['updown', 'sentinel', 'arbitrage', 'paper', 'shadow', 'candles', 'btcFeed', 'logs']],
     ]) {
       const calls = [];
       const context = vm.createContext({
@@ -85,6 +85,7 @@ describe('gateway shutdown owns admitted work', () => {
         arbitrageService: { getStatus: () => ({ running }), stop: () => calls.push('arbitrage') },
         upDipPaper: { stop: () => calls.push('paper') },
         upDipShadow: { stop: () => calls.push('shadow') },
+        upDipCandles: { stop: () => calls.push('candles') },
         btcFeedService: { stop: () => calls.push('btcFeed') },
         activeLogStreams: { stopAll: () => calls.push('logs') },
       });

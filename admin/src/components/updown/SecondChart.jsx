@@ -75,7 +75,8 @@ export default function SecondChart({ contract }) {
   const moves = priceMoves(bars, { stale })
   const gap = stale || price === null || indexValue === null ? null : price - indexValue
   const bounds = contractBounds(held, contract, nowMs ?? 0)
-  const distance = (level) => (indexValue === null ? null : level - indexValue)
+  // Which price the app knocks out on is not established, so both are shown.
+  const distances = (level) => `index ${signed(indexValue === null ? null : level - indexValue)} / Coinbase ${signed(stale || price === null ? null : level - price)}`
 
   // The clock ticks twice a second; slots only need to move when a slot boundary passes.
   const slotNow = nowMs === null ? null : Math.floor(nowMs / 1000) * 1000
@@ -145,7 +146,7 @@ export default function SecondChart({ contract }) {
 
       {bounds && (
         <div data-testid="second-bounds" className="mt-2 text-xs font-mono text-gray-300">
-          floor {signed(distance(bounds.floor))} · ceiling {signed(distance(bounds.ceiling))} ({bounds.label}){bounds.note && ` — ${bounds.note}`}
+          floor {distances(bounds.floor)} · ceiling {distances(bounds.ceiling)} ({bounds.label}){bounds.note && ` — ${bounds.note}`}
         </div>
       )}
     </section>
