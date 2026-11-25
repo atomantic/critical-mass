@@ -108,6 +108,17 @@ const createPerpBook = (initial = {}) => {
   }
 
   /**
+   * The action for a published type given this book. A same-side repeat fills
+   * nothing, so it is HOLD rather than the OPEN/ADD it would otherwise read as.
+   * @param {string} type
+   * @returns {'OPEN'|'ADD'|'HOLD'|'CLOSE'}
+   */
+  const actionFor = (type) => {
+    const action = resolveAction(type, isLong())
+    return action !== 'CLOSE' && signalSide(type) === lastSide ? 'HOLD' : action
+  }
+
+  /**
    * Apply a published engine type at `price`. Same-side repeats do not fill.
    * @param {string} type - BUY / STRONG_BUY / NEUTRAL / SELL / STRONG_SELL / NO_TRADE_ZONE
    * @param {number} price
@@ -115,11 +126,10 @@ const createPerpBook = (initial = {}) => {
    * @returns {{action: 'OPEN'|'ADD'|'HOLD'|'CLOSE', fill: Object|null, trade: Object|null}}
    */
   const applySignal = (type, price, ts = Date.now()) => {
-    const action = resolveAction(type, isLong())
+    const action = actionFor(type)
     // CLOSE must flatten even if lastSide is already HOLD (BUY faded to NEUTRAL).
     if (action === 'CLOSE') return applyFill(action, price, ts)
-    const side = signalSide(type)
-    if (side === lastSide) {
+    if (signalSide(type) === lastSide) {
       return { action, fill: null, trade: null }
     }
     return applyFill(action, price, ts)
@@ -219,6 +229,7 @@ const createPerpBook = (initial = {}) => {
   })
 
   return {
+    actionFor,
     applySignal,
     applyFill,
     snapshot,

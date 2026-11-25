@@ -5,6 +5,7 @@ const os = require('os');
 const path = require('path');
 
 const { createUpDipPaper } = require('../src/updown/up-dip-paper');
+const { UP_DIP_PARAMS } = require('../src/updown/up-dip-setup');
 
 const MIN = 60_000;
 const T0 = Date.parse('2026-11-16T12:00:00Z');
@@ -112,12 +113,37 @@ describe('a book from before real costs', () => {
     assert.equal(s.needsReset, true);
     assert.equal(s.summary.cycles, 14);
     assert.ok(s.position, 'the open position is not knocked out');
+    assert.equal(s.position.pnl, undefined, 'no bar of its own was saved, so there is nothing to mark it at');
+    assert.equal(s.frozenAt, T0 + MIN);
     assert.equal(s.latest.at, bars[79].timestamp + MIN);
     assert.ok(s.latest.features);
     assert.equal(s.latest.signal.action, 'STAND_ASIDE');
     assert.match(s.latest.decision.reasons[0], /reset/);
     assert.equal(changes, 11, 'the panel keeps refreshing');
     assert.equal(paper.step(), false, 'no new bar, no work');
+  });
+
+  it('marks its open position where it stopped, not at the live price it cannot act on', () => {
+    const latest = { at: bar(0).timestamp + MIN, features: { price: 64000 } };
+    seed({ position: position({ halfSpread: undefined }), lastBarTs: bar(0).timestamp, latest, totals: { cycles: 0, wins: 0, losses: 0, pnl: 0, worst: null } }, {});
+    const paper = make();
+    const before = paper.getStatus();
+    candles = Array.from({ length: 80 }, (_, i) => bar(i + 1, { low: 60000, close: 63000 }));
+    paper.step();
+    const s = paper.getStatus();
+    assert.equal(s.latest.features.price, 63000, 'the market view is live');
+    assert.equal(s.position.markBtc, 64000);
+    assert.equal(s.position.pnl, before.position.pnl);
+    assert.equal(s.frozenAt, bar(0).timestamp + MIN);
+  });
+
+  it('is never reported as holding when the market signals an entry', () => {
+    seed({ position: position() }, {});
+    const params = { ...UP_DIP_PARAMS, minDropPct: -100, maxVs15mPct: 100, turnBandPct: 100, maxRsi1m: 101, minDaysToEnter: 0, maxBelow1hPct: 100 };
+    candles = Array.from({ length: 80 }, (_, i) => bar(i, { open: 63990 + i / 10, close: 64000 + i / 10 }));
+    const paper = make({ params, pick: () => CONTRACT, getCandles: () => candles });
+    paper.step();
+    assert.equal(paper.getStatus().lastEntrySignal?.bookHeld, false);
   });
 
   for (const [name, extra] of [['a cycle', { cycles: cycles.slice(0, 1) }], ['a position', { position: position() }], ['a pending fill', { pending: { action: 'ENTER' } }], ['totals only', { totals: { cycles: 3, wins: 3, losses: 0, pnl: 9, worst: 1 } }]]) {

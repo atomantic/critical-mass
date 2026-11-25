@@ -14,7 +14,7 @@ const { createScorecard } = require('./scorecard');
 const { createPerpBook } = require('./perp-book');
 const { UPDOWN_STATE_FORMAT_VERSION } = require('../persisted-payload-validation');
 const { PERP_CONTRACT_SIZE_BTC, calculatePerpPnl } = require('./perp-contract');
-const { resolveAction, labelHistoryActions } = require('./signal-actions');
+const { labelHistoryActions } = require('./signal-actions');
 const { createContextLogger } = require('../logger');
 const { quarantineIfUnreadable } = require('../state-file-quarantine');
 
@@ -383,7 +383,7 @@ const createUpDownService = (io, deps) => {
     // repeats (BUY staying BUY) do not pyramid; a new BUY after HOLD adds.
     const fillResult = lastPrice > 0
       ? perpBook.applySignal(result.type, lastPrice, result.timestamp)
-      : { action: resolveAction(result.type, perpBook.isLong()), fill: null, trade: null };
+      : { action: perpBook.actionFor(result.type), fill: null, trade: null };
     const action = fillResult.action;
     const perpSnap = perpBook.snapshot(lastPrice);
     if (fillResult.fill) {
@@ -593,7 +593,7 @@ const createUpDownService = (io, deps) => {
       latestSignal,
       signalHistory: signalHistory.slice(-100),
       scorecard: scorecard.getMetrics(),
-      action: latestSignal?.action || resolveAction(latestSignal?.type, perpBook.isLong()),
+      action: latestSignal?.action || perpBook.actionFor(latestSignal?.type),
       perp: perpSnap,
       candleCounts: {
         '1m': candleCache.getCandles('coinbase', '1m').length,
@@ -663,7 +663,7 @@ const createUpDownService = (io, deps) => {
     lastPrice: isFreshPrice(lastPrice, lastTickAt) ? lastPrice : null,
     latestSignal: lastSignalResult ? {
       type: lastSignalResult.type,
-      action: resolveAction(lastSignalResult.type, perpBook.isLong()),
+      action: perpBook.actionFor(lastSignalResult.type),
       score: lastSignalResult.score,
       confidence: lastSignalResult.confidence,
       timestamp: lastSignalResult.timestamp,

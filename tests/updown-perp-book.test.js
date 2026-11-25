@@ -90,11 +90,12 @@ describe('perp book paper-trades 0.01 BTC per contract and flattens on Close', (
     assert.equal(book.contracts(), 1)
 
     const still = book.applySignal('BUY', 101_000, 2)
-    assert.equal(still.action, 'ADD')
+    assert.equal(still.action, 'HOLD', 'nothing is bought, so it must not read as ADD')
     assert.equal(still.fill, null, 'continuous BUY does not add another contract')
     assert.equal(book.contracts(), 1)
 
     const strong = book.applySignal('STRONG_BUY', 102_000, 3)
+    assert.equal(strong.action, 'HOLD')
     assert.equal(strong.fill, null, 'BUY→STRONG_BUY is the same side')
     assert.equal(book.contracts(), 1)
   })

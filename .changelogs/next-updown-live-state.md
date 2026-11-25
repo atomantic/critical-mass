@@ -1,0 +1,4 @@
+- **Fixed:** the UpDown banner and Signal panel showed ADD the whole time a paper long was open, though the book never buys again on a repeated signal. They now show HOLD, and repeated signals are no longer labeled or charted as adds.
+- **Fixed:** a frozen Up dip paper book ("Needs reset") kept moving its open position's P&L with the live price although it no longer settles knock-outs or expiry. It now shows the value from when it stopped, and says so.
+- **Fixed:** an expired contract's target and stop no longer flatten the 5m chart.
+- **Fixed:** while the price feed is stale, the Signal panel and banner no longer show the last score and strength beside CALCULATING.

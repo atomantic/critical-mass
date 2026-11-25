@@ -237,7 +237,7 @@ const createUpDipPaper = ({ getCandles, statePath, getHalfSpread, pick = pickCon
       latest: { at: now, decision: book.decision, signal, features, ...(entryFilter ? { filter: book.filter } : {}) } };
   };
   // ENTER is usually a one-bar window; keep the last one so it can still be seen afterwards.
-  const entrySignal = ({ now, features, signal }) => (signal.action === 'ENTER' ? { at: now, btc: features.price, contract: signal.contract, bookHeld: !!state.position } : null);
+  const entrySignal = ({ now, features, signal }) => (signal.action === 'ENTER' ? { at: now, btc: features.price, contract: signal.contract, bookHeld: !needsReset && !!state.position } : null);
 
   /** Process every completed 1m bar since the last step. Returns true when there was one. */
   const step = () => {
@@ -297,7 +297,8 @@ const createUpDipPaper = ({ getCandles, statePath, getHalfSpread, pick = pickCon
 
   const getStatus = () => {
     const { latest, lastEntrySignal } = needsReset ? frozen : state;
-    const price = latest?.features?.price;
+    // A frozen book settles nothing, so a live mark could show a contract recovering from a knock-out.
+    const price = (needsReset ? state.latest : latest)?.features?.price;
     const cycles = state.cycles;
     const t = state.totals;
     // A frozen book keeps the pricing it was recorded with, which had no spread.
@@ -306,6 +307,7 @@ const createUpDipPaper = ({ getCandles, statePath, getHalfSpread, pick = pickCon
       paperOnly: true,
       params,
       needsReset,
+      frozenAt: needsReset && state.lastBarTs ? state.lastBarTs + MINUTE_MS : null,
       pricing: state.pricing,
       archived,
       ...(entryFilter ? { filter: latest?.filter ?? null } : {}),

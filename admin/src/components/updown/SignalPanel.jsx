@@ -58,7 +58,7 @@ export default function SignalPanel({ signal, indicators, position }) {
   // Show loading state until live indicators arrive to avoid displaying stale signals
   const liveReady = !!indicators?.type || !!indicators?.timeframes
   const type = liveReady ? (indicators?.type || signal?.type || 'NEUTRAL') : null
-  const liveScore = indicators?.score ?? signal?.score
+  const liveScore = liveReady ? indicators?.score ?? signal?.score : null
   const liveConfidence = indicators?.confidence ?? signal?.confidence
   const held = indicators?.perp || signal?.perp || position
   const action = liveReady

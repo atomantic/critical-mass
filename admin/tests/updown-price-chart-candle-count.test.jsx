@@ -65,3 +65,20 @@ describe('PriceChart candle-count interaction', () => {
     expect(chart5m.getAttribute('data-max-buckets-override')).toBe('null')
   })
 })
+
+describe('PriceChart contract levels', () => {
+  const linesOn5m = (contract) => {
+    render(<PriceChart contract={{ target: 69300, stop: 67300, ...contract }} />)
+    return lastProps.instances.filter(p => p.defaultInterval === '5m').at(-1).referenceLines
+  }
+
+  it('drops the levels of an expired contract, which would flatten the candles', () => {
+    expect(linesOn5m({ expiry: Date.now() - 1000 })).toEqual([])
+  })
+
+  it('keeps them for a live contract or one without an expiry', () => {
+    expect(linesOn5m({ expiry: Date.now() + 60_000 })).toHaveLength(2)
+    cleanup()
+    expect(linesOn5m({ expiry: null })).toHaveLength(2)
+  })
+})

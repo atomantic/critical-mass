@@ -343,7 +343,8 @@ describe('UpDown cycle history and side-effect characterization', () => {
 
     const repeated = cycle({ type: 'BUY', score: 30, confidence: 0.5 })
     assert.deepEqual(repeated.map(c => c.name), ['weights:0', 'weights:1', 'compute', 'updown:indicators'])
-    assert.equal(repeated.at(-1).payload.action, 'ADD')
+    assert.equal(repeated.at(-1).payload.action, 'HOLD')
+    assert.equal(service.getTradeContext().latestSignal.action, 'HOLD')
     assert.equal(service.getStatus().perp.contracts, 1, 'same-side repeats must not fill')
     assert.deepEqual(service.getStatus().signalHistory, [row])
   })
