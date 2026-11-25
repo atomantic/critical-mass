@@ -152,6 +152,12 @@ describe('real costs', () => {
     expect(screen.getByText(/KO floor · assumed/)).toBeTruthy()
   })
 
+  it('says a frozen book position stopped being tracked, without the holding caution', async () => {
+    await show({ needsReset: true, frozenAt: AT, position: held })
+    expect(screen.getByText(/paper position · frozen/i)).toBeTruthy()
+    expect(screen.queryByText(/earlier paper entry is still open/i)).toBeNull()
+  })
+
   it('says when a book needs a reset, and which', async () => {
     await show({ needsReset: true, shadow: { needsReset: true, summary: null } })
     expect(screen.getByText(/needs reset: run scripts\/reset-up-dip-paper\.js$/i)).toBeTruthy()

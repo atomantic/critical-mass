@@ -156,7 +156,7 @@ function ShadowBook({ book }) {
 
       {pos && (
         <div className="bg-gray-900 rounded-sm px-2 py-1.5 mb-2 text-xs flex justify-between">
-          <span>Up {k(pos.contract.floor)}–{k(pos.contract.ceiling)} ×{pos.contracts} @ {pos.entryPrice?.toLocaleString()}</span>
+          <span>Up {k(pos.contract.floor)}–{k(pos.contract.ceiling)} ×{pos.contracts} @ {pos.entryPrice?.toLocaleString()}{book.needsReset && ` · frozen ${when(book.frozenAt)}`}</span>
           <span className={`font-mono ${pnlColor(pos.pnl)}`}>{signedUsd(pos.pnl)}</span>
         </div>
       )}
@@ -252,7 +252,7 @@ export default function UpDipPanel() {
           <ul className="text-2xs mt-1 text-gray-300 list-disc pl-4">
             {decision.reasons.map((r, i) => <li key={i}>{r}</li>)}
           </ul>
-          {hasSignal && decision.action === 'ENTER' && pos && (
+          {hasSignal && decision.action === 'ENTER' && pos && !data.needsReset && (
             <div className="text-2xs mt-1 text-amber-300">An earlier paper entry is still open. In the held-out backtest, repeat signals an hour or more into an open trade lost money.</div>
           )}
         </div>
@@ -277,7 +277,7 @@ export default function UpDipPanel() {
 
       {pos && (
         <div className="bg-gray-900 rounded-sm px-2 py-1.5 mb-2 text-xs">
-          <div className="text-gray-400 text-2xs">Paper position</div>
+          <div className="text-gray-400 text-2xs">Paper position{data.needsReset && ` · frozen ${when(data.frozenAt)}, no longer tracked`}</div>
           <div className="flex justify-between">
             <span>Up {k(pos.contract.floor)}–{k(pos.contract.ceiling)} ×{pos.contracts} @ {pos.entryPrice?.toLocaleString()}</span>
             <span className={`font-mono ${pnlColor(pos.pnl)}`}>{signedUsd(pos.pnl)}</span>

@@ -165,10 +165,10 @@ describe('signal-actions — unified UpDown action resolution', () => {
         { id: 'c', type: 'BUY', timestamp: 2000 },
       ])
       // Processing order (sorted by timestamp): SELL(1000) → BUY(2000) → BUY(3000)
-      // result[0] = entry at original index 0 (t=3000, type BUY) → processed third when long → ADD
+      // result[0] = entry at original index 0 (t=3000, type BUY) → processed third when long → HOLD (no fill)
       // result[1] = entry at original index 1 (t=1000, type SELL) → processed first when flat → HOLD
       // result[2] = entry at original index 2 (t=2000, type BUY) → processed second when flat → OPEN
-      assert.equal(result[0].action, 'ADD')
+      assert.equal(result[0].action, 'HOLD')
       assert.equal(result[1].action, 'HOLD')
       assert.equal(result[2].action, 'OPEN')
     })
@@ -182,7 +182,7 @@ describe('signal-actions — unified UpDown action resolution', () => {
       assert.equal(result[1].action, 'OPEN') // BUY when flat
     })
 
-    it('tracks position state: BUY opens, next BUY adds, SELL closes', () => {
+    it('tracks position state: BUY opens, the next BUY fills nothing, SELL closes', () => {
       const result = labelHistoryActions([
         { id: 1, type: 'BUY', timestamp: 1000 },
         { id: 2, type: 'BUY', timestamp: 2000 },
@@ -190,7 +190,7 @@ describe('signal-actions — unified UpDown action resolution', () => {
         { id: 4, type: 'BUY', timestamp: 4000 },
       ])
       assert.equal(result[0].action, 'OPEN') // first BUY
-      assert.equal(result[1].action, 'ADD') // second BUY while long
+      assert.equal(result[1].action, 'HOLD') // repeat BUY: the book buys nothing
       assert.equal(result[2].action, 'CLOSE') // SELL while long
       assert.equal(result[3].action, 'OPEN') // BUY when flat again
     })

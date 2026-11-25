@@ -48,8 +48,11 @@ const CANDLE_COUNT_OPTIONS = [
 
 export default function PriceChart({ tick, indicators, weeklyTrend, dailySMA, contract, signalAnnotations }) {
   const [candleCount, setCandleCount] = useState(null)
+  // Levels of an expired contract can sit far from price and flatten the candles.
+  const expired = contract?.expiry != null && contract.expiry <= Date.now()
   const referenceLines = useMemo(() => {
     const lines = []
+    if (expired) return lines
     if (contract?.target) {
       lines.push({
         y: contract.target,
@@ -69,7 +72,7 @@ export default function PriceChart({ tick, indicators, weeklyTrend, dailySMA, co
       })
     }
     return lines
-  }, [contract?.target, contract?.stop])
+  }, [contract?.target, contract?.stop, expired])
 
   const dailySMALines = useMemo(() => {
     const lines = []
