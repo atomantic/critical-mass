@@ -479,7 +479,7 @@ require('./src/routes/ai-routes')(routes, sharedDeps);
 require('./src/routes/settings-routes')(routes, { ...sharedDeps, updownService, sentinelService, arbitrageService, upDipPaper, upDipShadow, btcFeedService, candleCache, runBackup, getBackupSchedulerStatus: () => backupScheduler.getStatus() });
 require('./src/routes/candle-routes')(routes, { candleCache });
 require('./src/routes/btc-feed-routes')(routes, { btcFeedService });
-require('./src/routes/updown-routes')(routes, { ...sharedDeps, updownService, candleCache, upDipPaper, upDipShadow, upDipHeld, appQuotes, upDipCandles });
+require('./src/routes/updown-routes')(routes, { ...sharedDeps, updownService, upDipPaper, upDipShadow, upDipHeld, appQuotes, upDipCandles });
 require('./src/routes/exchange-routes')(routes, sharedDeps);
 require('./src/routes/regime-routes')(routes, sharedDeps);
 require('./src/routes/keys-routes')(routes, sharedDeps);

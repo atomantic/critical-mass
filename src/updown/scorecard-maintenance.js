@@ -71,8 +71,9 @@ const withScorecardLock = async (directory, operation, { timeoutMs = DEFAULT_LOC
 }
 
 const appendScorecardRecord = async (directory, file, record, options) => {
-  const line = JSON.stringify(record) + '\n'
-  await withScorecardLock(directory, () => fs.promises.appendFile(file, line, { mode: 0o600 }), options)
+  const rows = Array.isArray(record) ? record : [record]
+  const lines = rows.map(row => JSON.stringify(row) + '\n').join('')
+  await withScorecardLock(directory, () => fs.promises.appendFile(file, lines, { mode: 0o600 }), options)
 }
 
 const validateJsonl = (content) => {

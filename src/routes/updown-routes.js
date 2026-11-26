@@ -149,7 +149,6 @@ const parseExpiryToMs = (value) => {
 module.exports = (app, deps) => {
   const {
     updownService,
-    candleCache,
     upDipPaper = null,
     upDipShadow = null,
     upDipHeld = null,
@@ -497,13 +496,6 @@ module.exports = (app, deps) => {
         }
       });
     }, 500);
-  });
-
-  app.get('/api/updown/candles', (req, res) => {
-    res.json({
-      success: true,
-      candles: candleCache.getAllCandles('cryptocom'),
-    });
   });
 
   app.get('/api/updown/signals', (req, res) => {

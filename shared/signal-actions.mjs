@@ -79,7 +79,7 @@ export const resolveActionLabel = (type, held = null) => {
  * Relabel a chronological-or-not history of engine types as Open/Add/Hold/Close
  * using a virtual long/flat book. A BUY after OPEN (no CLOSE yet) is HOLD: the book
  * buys nothing on a same-side repeat. An entry that records only `action: 'ADD'` keeps it.
- * @param {Array<{type?: string, action?: string, timestamp?: number}>} entries
+ * @param {Array<{type?: string, action?: string, timestamp?: number, filled?: boolean}>} entries
  * @returns {Array<Object>} new array, original objects not mutated
  */
 export const labelHistoryActions = (entries) => {
@@ -93,9 +93,12 @@ export const labelHistoryActions = (entries) => {
     const type = e?.type
       || (e?.action === 'CLOSE' ? 'SELL' : e?.action === 'HOLD' ? 'NEUTRAL' : (e?.action === 'OPEN' || e?.action === 'ADD') ? 'BUY' : 'NEUTRAL')
     const resolved = resolveAction(type, long)
-    const action = resolved === 'ADD' && e?.type ? 'HOLD' : resolved
-    if (action === 'OPEN' || action === 'ADD') long = true
-    else if (action === 'CLOSE') long = false
+    const action = typeof e?.filled === 'boolean' ? e.action
+      : resolved === 'ADD' && e?.type ? 'HOLD' : resolved
+    if (e?.filled !== false) {
+      if (action === 'OPEN' || action === 'ADD') long = true
+      else if (action === 'CLOSE') long = false
+    }
     byIndex[i] = { ...e, action }
   }
   return byIndex

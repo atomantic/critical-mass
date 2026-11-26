@@ -34,7 +34,7 @@
 const fs = require('fs');
 const path = require('path');
 const { UP_DIP_PARAMS, computeUpDipFeatures, decideUpDip, markPosition, pickContract } = require('./up-dip-setup');
-const { contractValue, FEE_PER_CONTRACT } = require('./app-order-history');
+const { settlementProceeds } = require('./app-order-history');
 const { entryCost, exitProceeds, effectiveHalfSpread } = require('./app-pricing');
 
 const MINUTE_MS = 60_000;
@@ -180,7 +180,7 @@ const createUpDipPaper = ({ getCandles, statePath, getHalfSpread, pick = pickCon
     // The price at expiry was missed, so use the nearer side of the gap.
     const before = state.lastClose !== null && expiry - (previous + MINUTE_MS) <= bar.timestamp - expiry;
     const btc = before ? state.lastClose : bar.open;
-    closePosition(expiry, p.contracts * (contractValue(btc, p.contract) - FEE_PER_CONTRACT), 'expiry', btc, { uncertain: true });
+    closePosition(expiry, settlementProceeds(btc, p.contract, p.contracts), 'expiry', btc, { uncertain: true });
     if (state.pending?.action !== 'ENTER') state.pending = null;
   };
 
@@ -210,10 +210,10 @@ const createUpDipPaper = ({ getCandles, statePath, getHalfSpread, pick = pickCon
       const assumed = bar.substitute && other === null && bound === 'floor';
       if (!own || (bar.substitute && other !== true && !assumed)) continue;
       if (bound === 'floor') closePosition(now, 0, 'knock_out_floor', p.contract.floor, { coinbaseTouched: other, ...(assumed ? { uncertain: true } : {}) });
-      else closePosition(now, p.contracts * (p.contract.maxPayout - FEE_PER_CONTRACT), 'knock_out_ceiling', p.contract.ceiling, { coinbaseTouched: other });
+      else closePosition(now, settlementProceeds(p.contract.ceiling, p.contract, p.contracts), 'knock_out_ceiling', p.contract.ceiling, { coinbaseTouched: other });
       return;
     }
-    if (now >= p.contract.expiry) closePosition(now, p.contracts * (contractValue(bar.close, p.contract) - FEE_PER_CONTRACT), 'expiry', bar.close);
+    if (now >= p.contract.expiry) closePosition(now, settlementProceeds(bar.close, p.contract, p.contracts), 'expiry', bar.close);
   };
 
   /** Evaluate the rule on the newest bar: the book's own decision and the flat-market signal. */
