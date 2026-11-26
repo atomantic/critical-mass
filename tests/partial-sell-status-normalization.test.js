@@ -22,6 +22,7 @@ const crypto = require('crypto');
 const { createCoinbaseAdapter } = require('../src/adapters/coinbase/api');
 const { createGeminiAdapter } = require('../src/adapters/gemini/api');
 const { cancelPartialFillOrder } = require('../src/regime-engine');
+const { useVirtualClock } = require('./virtual-clock');
 
 const PRODUCT_ID = 'BTC-USD';
 const ORDER_ID = 'tp-partial-1';
@@ -218,25 +219,29 @@ describe('#316 partial-sell freeze — Coinbase status normalization', () => {
 });
 
 describe('#316 partial-sell freeze — Gemini status normalization', () => {
-  it('retains tracking while the partially filled sell is still live', async () => {
-    const result = await freeze(geminiFixture({
+  const freezeGemini = (t, fixture) => {
+    const clock = useVirtualClock(t);
+    return clock.run(freeze(geminiFixture(fixture)));
+  };
+  it('retains tracking while the partially filled sell is still live', async t => {
+    const result = await freezeGemini(t, {
       order: geminiOrder({ is_live: true }),
       openOrders: [geminiOpenOrder()],
-    }));
+    });
     assert.equal(result.cancelled, false);
   });
 
-  it('confirms a cancelled partial and preserves its executed amount', async () => {
-    const result = await freeze(geminiFixture({ order: geminiOrder({ is_cancelled: true }) }));
+  it('confirms a cancelled partial and preserves its executed amount', async t => {
+    const result = await freezeGemini(t, { order: geminiOrder({ is_cancelled: true }) });
     assert.equal(result.cancelled, true);
     assert.equal(result.order.status, 'CANCELLED');
     assert.equal(result.order.filledSize, 0.003);
   });
 
-  it('confirms the cancel/fully-filled race', async () => {
-    const result = await freeze(geminiFixture({
+  it('confirms the cancel/fully-filled race', async t => {
+    const result = await freezeGemini(t, {
       order: geminiOrder({ executed_amount: '0.009' }),
-    }));
+    });
     assert.equal(result.cancelled, true);
     assert.equal(result.order.status, 'FILLED');
     assert.equal(result.order.filledSize, 0.009);
@@ -246,30 +251,30 @@ describe('#316 partial-sell freeze — Gemini status normalization', () => {
   // to normalize to 'UNKNOWN'. 'UNKNOWN' is not terminal, so the helper could
   // never confirm it — handleOrderFill threw on every reconcile tick forever,
   // the partial fill was never ingested, and the body was never reprotected.
-  it('treats an off-book, not-explicitly-cancelled order as terminal (not UNKNOWN)', async () => {
-    const result = await freeze(geminiFixture({
+  it('treats an off-book, not-explicitly-cancelled order as terminal (not UNKNOWN)', async t => {
+    const result = await freezeGemini(t, {
       order: geminiOrder({ is_live: false, is_cancelled: false }),
-    }));
+    });
     assert.equal(result.cancelled, true);
     assert.equal(result.order.status, 'EXPIRED');
     assert.equal(result.order.filledSize, 0.003);
   });
 
-  it('still defers to the open-order snapshot when an off-book read is stale', async () => {
-    const result = await freeze(geminiFixture({
+  it('still defers to the open-order snapshot when an off-book read is stale', async t => {
+    const result = await freezeGemini(t, {
       order: geminiOrder({ is_live: false, is_cancelled: false }),
       openOrders: [geminiOpenOrder()],
-    }));
+    });
     assert.equal(result.cancelled, false);
   });
 
   // Regression: `executed_amount >= original_amount` read as `0 >= 0` when the
   // size fields were missing, reporting a FILLED order with filledSize 0 — a
   // false terminal fill the reconcile loop would have acted on.
-  it('does not report FILLED when the size fields are missing', async () => {
-    const result = await freeze(geminiFixture({
+  it('does not report FILLED when the size fields are missing', async t => {
+    const result = await freezeGemini(t, {
       order: geminiOrder({ original_amount: undefined, executed_amount: undefined }),
-    }));
+    });
     assert.equal(result.order.status, 'EXPIRED');
     assert.equal(result.order.filledSize, 0);
   });
@@ -277,31 +282,32 @@ describe('#316 partial-sell freeze — Gemini status normalization', () => {
   // An off-book verdict needs positive evidence. A payload that carries no
   // usable is_live flag tells us nothing, so it must NOT be reported terminal —
   // the caller retains tracking and retries rather than acting on a guess.
-  it('reports UNKNOWN — not a terminal status — when is_live is absent', async () => {
-    const result = await freeze(geminiFixture({
+  it('reports UNKNOWN — not a terminal status — when is_live is absent', async t => {
+    const result = await freezeGemini(t, {
       order: geminiOrder({ is_live: undefined, is_cancelled: undefined }),
-    }));
+    });
     assert.equal(result.order, undefined);
     assert.equal(result.cancelled, false);
   });
 
-  it('confirms terminal status even when the cancel request itself failed', async () => {
-    const result = await freeze(geminiFixture({
+  it('confirms terminal status even when the cancel request itself failed', async t => {
+    const result = await freezeGemini(t, {
       order: geminiOrder({ is_cancelled: true }),
       cancelThrows: true,
-    }));
+    });
     assert.equal(result.cancelled, true);
     assert.equal(result.error, undefined);
   });
 
-  it('retains tracking when the open-order lookup fails outright', async () => {
+  it('retains tracking when the open-order lookup fails outright', async t => {
     global.fetch = async (url) => {
       const { pathname } = new URL(url);
       if (pathname === '/v1/order/cancel') return json({ is_cancelled: true });
       if (pathname === '/v1/order/status') return json(geminiOrder({ is_cancelled: true }));
       throw new Error('gemini /v1/orders unavailable');
     };
-    const result = await freeze(createGeminiAdapter(geminiKeysPath));
+    const clock = useVirtualClock(t);
+    const result = await clock.run(freeze(createGeminiAdapter(geminiKeysPath)));
     assert.equal(result.cancelled, false);
     assert.match(result.error.message, /unavailable/);
   });

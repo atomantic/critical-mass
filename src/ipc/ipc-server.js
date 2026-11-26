@@ -345,8 +345,8 @@ const createIPCServer = (port, name, options = {}) => {
    * Broadcast an event to all connected gateway clients
    * @param {string} channel - Event channel name
    * @param {*} payload - Event data
-   * @param {Object} [options] - Additional message options (room, exchange)
-   * @param {boolean} [options.hold] - Keep the event for the next subscribing gateway when none is connected
+   * @param {{room?: string, exchange?: string, pair?: string, hold?: boolean}} [options] - Additional message options
+   * `hold` keeps the event for the next subscribing gateway when none is connected.
    */
   const broadcast = (channel, payload, options = {}) => {
     const msg = createMessage(MSG_TYPE.EVENT, channel, payload, options);

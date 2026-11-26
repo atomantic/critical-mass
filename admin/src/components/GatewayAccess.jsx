@@ -1,9 +1,11 @@
 import Button from './ui/Button'
+import ConfirmDialog from './ui/ConfirmDialog'
 import { useEffect, useState } from 'react'
 import { Link } from '../lib/router'
+import { pauseRealtimeClient } from '../lib/realtime'
 import { KeyRound, ScrollText } from './icons'
 import { apiDelete, apiGet, apiPut, apiRequest } from '../utils/apiClient'
-import { useNotify } from './Toast'
+import { useNotify } from './useToast'
 
 export default function GatewayAccess() {
   const [required, setRequired] = useState(null)
@@ -12,7 +14,9 @@ export default function GatewayAccess() {
   const [confirm, setConfirm] = useState('')
   const [currentPassword, setCurrentPassword] = useState('')
   const [saving, setSaving] = useState(false)
-  const [clearing, setClearing] = useState(false)
+  const [resetOpen, setResetOpen] = useState(false)
+  const [resetting, setResetting] = useState(false)
+  const [resetError, setResetError] = useState('')
   // Form validation stays inline next to the form; request results are toasts.
   const [validationError, setValidationError] = useState(null)
   const notify = useNotify()
@@ -36,7 +40,7 @@ export default function GatewayAccess() {
     }
     setSaving(true)
     try {
-      const result = await apiPut('/api/auth/password', { password, currentPassword }, { allowEmpty: true })
+      const result = await apiPut('/api/auth/password', { password, currentPassword }, { notifyUnauthorized: false })
       if (result.ok) {
         setRequired(true)
         setPassword('')
@@ -51,19 +55,21 @@ export default function GatewayAccess() {
     }
   }
 
-  const handleClear = async () => {
-    setClearing(true)
-    try {
-      // apiDelete carries no body, so send the confirmation through the shared request helper.
-      const result = await apiRequest('DELETE', '/api/auth/password', { body: { password: currentPassword }, allowEmpty: true })
-      if (result.ok) {
-        notify('success', 'Password removed. The gateway will ask you to create a new one when the page reloads.')
-        setTimeout(() => window.location.reload(), 1500)
-      } else {
-        notify('error', result.error || 'Could not remove password')
-      }
-    } finally {
-      setClearing(false)
+  const handleReset = async () => {
+    setResetting(true)
+    setResetError('')
+    // apiDelete carries no body, so send the current password with apiRequest.
+    const result = await apiRequest('DELETE', '/api/auth/password', {
+      body: { password: currentPassword },
+      notifyUnauthorized: false,
+    })
+    if (result.ok) {
+      pauseRealtimeClient()
+      notify('success', 'Password reset. Create a new operator password when the page reloads.')
+      setTimeout(() => window.location.reload(), 1500)
+    } else {
+      setResetError(result.error || 'Could not reset password')
+      setResetting(false)
     }
   }
 
@@ -160,11 +166,11 @@ export default function GatewayAccess() {
             </Button>
             <Button
               type="button"
-              onClick={handleClear}
-              disabled={clearing || !currentPassword}
+              onClick={() => { setResetError(''); setResetOpen(true) }}
+              disabled={saving || !currentPassword}
               variant="secondary" size="compact"
             >
-              {clearing ? '...' : 'Remove password'}
+              Reset password
             </Button>
             <Button
               type="button"
@@ -178,6 +184,19 @@ export default function GatewayAccess() {
         </>
         )}
       </div>
+
+      {resetOpen && (
+        <ConfirmDialog
+          title="Reset operator password?"
+          description="This clears the current password and signs out all browsers. Create a new password from the gateway host before using the gateway again. A gateway with remote listeners shuts down and needs to restart for setup."
+          confirmLabel="Reset password"
+          busy={resetting}
+          busyLabel="Resetting…"
+          error={resetError}
+          onConfirm={handleReset}
+          onClose={() => setResetOpen(false)}
+        />
+      )}
 
       <Link
         to="/gateway/logs"

@@ -6,10 +6,11 @@
  * baseline (`typecheck-baseline.json`, `{ "<posix path>": <count> }`).
  *
  * Fails when a file has more errors than its baseline, or a file missing from
- * the baseline (a clean file) has any. Never fails because errors went down;
- * it prints a reminder to lower the baseline instead.
+ * the baseline (a clean file) has any. With --strict-ratchet it also fails
+ * when counts improve until the baseline is lowered.
  *
  *   npm run typecheck                 check against the baseline
+ *   npm run typecheck -- --strict-ratchet    require exact counts (CI)
  *   npm run typecheck -- --update     lower the baseline (never raises a count,
  *                                     never adds a file; creates it if absent)
  *   npm run typecheck -- --update --force
@@ -175,11 +176,12 @@ function main(argv) {
     console.error('Fix them; do not raise the baseline. If a baselined file was only renamed or split, run `npm run typecheck -- --update --force` and review the baseline diff so no real regression rides along.');
     return 1;
   }
-  console.log(`typecheck: ok (${total} errors in ${files} files, none worse than baseline).`);
   if (improvements.length > 0) {
     console.log(`typecheck: ${improvements.length} file(s) improved. Lower the baseline with: npm run typecheck -- --update`);
     for (const i of improvements) console.log(`  ${i.file}: ${i.from} -> ${i.to}`);
+    if (argv.includes('--strict-ratchet')) return 1;
   }
+  console.log(`typecheck: ok (${total} errors in ${files} files, none worse than baseline).`);
   return 0;
 }
 

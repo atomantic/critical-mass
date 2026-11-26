@@ -92,17 +92,20 @@ describe('browser audit evidence', () => {
 
 
 describe('real disposable browser fixture', () => {
+  const options = { fills: 300, buildUi: false };
   it('enrolls privately and serves all scenario reads from valid fund ledgers', async () => {
     const fs = require('node:fs');
     const path = require('node:path');
     const { startBrowserFixture } = require('../scripts/lib/perf-browser-fixture');
-    const fixture = await startBrowserFixture();
+    const fixture = await startBrowserFixture(options);
     try {
       // A closed loopback port that is not an engine's: the gateway's preload must refuse it.
       const probe = require('node:child_process').spawnSync(process.execPath, ['--require', './perf-preload.cjs', '-e',
         "try { new WebSocket('ws://127.0.0.1:9'); console.log('opened'); } catch (err) { console.log(err.message); } process.exit()"],
       { cwd: fixture.dir, env: { PATH: process.env.PATH }, encoding: 'utf8' });
       assert.match(probe.stdout, /fixture outbound WebSocket disabled/);
+      const html = await fetch(fixture.baseUrl).then(response => response.text());
+      assert.match(html, /<title>Synthetic audit fixture<\/title>/);
       const anonymous = await fetch(`${fixture.baseUrl}/api/auth/session`).then(response => response.json());
       assert.equal(anonymous.authenticated, false);
       assert.equal(anonymous.bootstrapRequired, false);
@@ -114,7 +117,7 @@ describe('real disposable browser fixture', () => {
       const cookie = login.headers.get('set-cookie').split(';')[0];
       for (const [exchange, pair] of fixture.funds) {
         const rows = JSON.parse(fs.readFileSync(path.join(fixture.dir, 'data', exchange, pair, 'fill-ledger.json')));
-        assert.equal(rows.length, 30000);
+        assert.equal(rows.length, options.fills);
         assert.equal(new Set(rows.map(row => row.tradeId)).size, rows.length);
         assert.ok(rows.every(row => typeof row.tradeId === 'string' && row.tradeId && Number.isFinite(row.timestamp)));
         for (const route of ['fills?paged=true&limit=100', 'fills/cycles?', 'status?', 'open-orders?', 'manual-trades?']) {
@@ -151,7 +154,7 @@ describe('real disposable browser fixture', () => {
       }
       return read.call(this, file, ...args);
     });
-    await assert.rejects(startBrowserFixture(), /synthetic bootstrap read failure/);
+    await assert.rejects(startBrowserFixture(options), /synthetic bootstrap read failure/);
     assert.ok(dir);
     assert.equal(fs.existsSync(dir), false);
   });

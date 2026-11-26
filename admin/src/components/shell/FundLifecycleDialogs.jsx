@@ -1,5 +1,6 @@
 import ConfirmDialog from '../ui/ConfirmDialog'
 import AddFundModal from '../AddFundModal'
+import findFund from '../../utils/findFund'
 
 // Fund lifecycle confirmation dialogs (close, reopen, reset dry-run) and the
 // Add Fund modal, in the DOM order the shell has always used.
@@ -51,24 +52,25 @@ export default function FundLifecycleDialogs({
         </ConfirmDialog>
       )}
 
-      {/* Add Fund modal (triggered from ExchangeSelector dropdown) */}
+      {/* Add Fund modal (triggered from Overview or ExchangeSelector) */}
       <AddFundModal
         open={addFundDialogOpen}
         onClose={() => setAddFundDialogOpen(false)}
         exchanges={exchanges}
         onCreated={async ({ exchange, pair }) => {
-          const refreshed = await fetchExchanges()
-          navigate(`/${exchange}/${pair}/config`)
+          const funds = await fetchExchanges()
+          const fundAvailable = funds && findFund(funds, exchange, pair)
+          if (fundAvailable) navigate(`/${exchange}/${pair}/config`)
           addToast({
             type: 'success',
             title: `Fund created: ${exchange}/${pair}`,
             message: 'Review the config, then press Start in the fund header to begin trading.',
           })
-          if (!refreshed) {
+          if (!fundAvailable) {
             addToast({
               type: 'warning',
               title: 'Fund list not refreshed',
-              message: `${exchange}/${pair} was created, but the fund list could not be reloaded. Do not create it again; use Refresh Exchanges.`,
+              message: `${exchange}/${pair} was created, but the fund list does not show it yet. Reload the page before making more changes.`,
             })
           }
         }}

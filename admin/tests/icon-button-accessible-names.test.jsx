@@ -2,7 +2,8 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { BrowserRouter } from '../src/lib/router'
 import ScorecardAnalysis from '../src/components/updown/ScorecardAnalysis'
-import { ToastProvider, useToast } from '../src/components/Toast'
+import { ToastProvider } from '../src/components/Toast'
+import { useToast } from '../src/components/useToast'
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 

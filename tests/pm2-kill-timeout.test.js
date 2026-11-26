@@ -50,7 +50,7 @@ describe('PM2 kill_timeout ordering', () => {
     assert.match(entrypoint, /trap stop_stack TERM INT/);
     assert.match(entrypoint, /node \/app\/scripts\/pm2-stack\.js stop/);
     assert.ok(entrypoint.indexOf('pm2-stack.js stop') < entrypoint.indexOf('kill -TERM "$PM2_PID"'));
-    assert.match(read('Dockerfile'), /COPY scripts\/pm2-stack\.js/);
+    assert.match(read('Dockerfile'), /COPY --chown=1000:1000 scripts\/pm2-stack\.js/);
     assert.match(read('.dockerignore'), /^!scripts\/pm2-stack\.js$/m);
   });
 

@@ -61,9 +61,8 @@ limits; see [Simulation endpoint limits](docs/simulation-limits.md).
 
 ## Requirements
 
-- Node.js 22.12.0 or newer to run Critical Mass. Production accounting synchronously loads shared ESM modules, and the locked admin build toolchain also requires Node 22.12 or newer on the Node 22 line. Running the admin test suite (jsdom 31) needs Node 22.22.2+, 24.15+ or 26+; `npm ci --prefix admin --engine-strict` refuses older versions.
+- Node.js 26 or newer for the gateway, engines and admin tooling. CI and the Docker image use Node.js 26.
 - PM2 available on your `PATH` for the production commands below (installed separately from the project dependencies)
-- `lsof` for the native npm startup port checks
 - `zip` and `unzip` for creating, listing, and restoring full backup archives
 - Exchange API key with View and Trade permissions
 
@@ -85,9 +84,11 @@ Development uses the Node major pinned in `.nvmrc` (`26`). Run `nvm use` (or `fn
 
 ### Operator authentication
 
-The gateway starts in a fail-closed bootstrap state until the first operator password is enrolled. With no password or bootstrap credential, it binds loopback-only and generates a one-time owner-only secret at `data/operator-bootstrap-secret`; open the local admin UI and create the password there, entering that secret (a loopback connection alone is not trusted, because a same-host reverse proxy that adds no headers looks identical to a local browser; set `OPERATOR_TRUST_LOOPBACK_BOOTSTRAP=true` only when no reverse proxy is in front). The file is deleted on enrollment. Then restart the gateway to enable its default Tailscale listener. To bootstrap over Tailscale or another non-loopback listener, set a one-time `OPERATOR_BOOTSTRAP_SECRET` of at least 32 bytes (for example, `openssl rand -hex 32`) and enter it in the setup screen. The secret is accepted only before first enrollment and is never returned by the API or written to logs.
+The gateway starts in a fail-closed bootstrap state until the first operator password is enrolled. With no password or bootstrap credential, it binds loopback-only and generates a one-time owner-only secret at `data/operator-bootstrap-secret`. Enter that secret when creating a password in the local admin UI. The file is deleted on enrollment. Then restart the gateway to enable its default Tailscale listener. To bootstrap over Tailscale or another non-loopback listener, set a one-time `OPERATOR_BOOTSTRAP_SECRET` of at least 32 bytes (for example, `openssl rand -hex 32`) and enter it in the setup screen. The secret is accepted only for enrollment and is never returned by the API or written to logs.
 
-The password is stored as a scrypt hash in `data/operator-auth.json`. After sign-in, a signed HttpOnly, SameSite=Strict browser session is renewed on each visit and remains valid for 30 days; HTTPS sessions are also Secure. Changing or removing the password invalidates existing sessions. Removing the password restarts the gateway in fail-closed bootstrap mode so stale non-loopback listeners do not remain open. With `OPERATOR_TRUST_LOOPBACK_BOOTSTRAP=true`, a local reverse proxy must send `X-Forwarded-For` with the real client address (requests carrying `Forwarded`, `Via`, `X-Real-IP`, other `X-Forwarded-*` markers, or an empty `X-Forwarded-For` are never treated as local). A proxy that adds no headers at all cannot be told apart from a local browser, so in that mode configure it to set `X-Forwarded-For` (nginx: `proxy_set_header X-Forwarded-For $remote_addr;`). By default (flag unset) loopback is not trusted and enrollment needs the generated secret or `OPERATOR_BOOTSTRAP_SECRET`.
+The password is stored as a scrypt hash in `data/operator-auth.json`. After sign-in, a signed HttpOnly, SameSite=Strict browser session is renewed on each visit and remains valid for 30 days. HTTPS sessions are also Secure. Changing or resetting the password invalidates existing sessions and disconnects realtime clients. **Gateway → Gateway access → Reset password** clears the password after confirmation and returns the gateway to fail-closed setup. A loopback-only gateway stays running and, by default, writes a fresh owner-only bootstrap secret. A gateway with remote listeners shuts down so it can restart in bootstrap mode.
+
+For a direct local connection, opt in to setup without the secret with `OPERATOR_TRUST_LOOPBACK_BOOTSTRAP=true`. A same-host proxy that omits forwarding headers looks like a direct local connection, so keep the default secret-based setup with such a proxy. In opt-in mode a proxy must send `X-Forwarded-For` with the real client address (nginx: `proxy_set_header X-Forwarded-For $remote_addr;`). Without a usable `X-Forwarded-For` chain, proxy markers such as `Forwarded`, `Via` or `X-Real-IP` disqualify the request from local bootstrap.
 
 Sign-in attempts are throttled per peer (5 failures per minute); successful sign-ins do not count. Behind a reverse proxy or published Docker port every client shares one socket address, so set `OPERATOR_TRUST_PROXY=true` to key the budget on the last `X-Forwarded-For` hop (the address your trusted proxy wrote; earlier hops are client-controlled).
 
@@ -113,7 +114,7 @@ start:
 ```bash
 sudo ./scripts/prepare-docker-storage.sh
 docker compose up -d --build
-# With alpine:3.20 and node:22-alpine already cached:
+# With alpine:3.20 and node:26-alpine already cached:
 npm run test:docker-storage
 ```
 
@@ -252,12 +253,12 @@ Restart after changing settings. For PM2, use `npm start` to recreate the
 processes with fresh values. `npm run pm2:start` and `npm run pm2:restart` use the
 same sequence: stop and confirm the gateway first while engines remain available
 for its drain, then stop the engines and development UI, recreate the processes,
-and save the PM2 list only after all five report online. Engines are launched
+and save the PM2 list only after all four report online. Engines are launched
 before the gateway; this does not wait for fund initialization or migration, so
 follow [UPGRADE.md](UPGRADE.md) when upgrading on-disk state. A failed stop or
 port check aborts startup; inspect the error and PM2 status before retrying.
 `npm run pm2:stop` uses the same shutdown order and keeps process registrations.
-PM2 and the combined development launcher still use their configured service ports.
+Production PM2 uses the ports in `ecosystem.config.cjs`. The development launcher accepts port overrides.
 
 Local environment files are ignored by Git and Docker. Compose/Umbrel deployments
 continue to inject environment settings through their container configuration;
@@ -288,7 +289,7 @@ pm2 delete critical-mass-coinbase critical-mass-gemini critical-mass-cryptocom
 ```
 
 Warnings:
-- Stop any production gateway/UI (`critical-mass`, `critical-mass-ui`) before running `npm run dev`; both use the same ports.
+- The production gateway and development gateway share port 5570 by default. Set `PORT` to override the development gateway port, `VITE_PORT` for Vite, and `VITE_API_PORT` if Vite should proxy to a different gateway. `npm run dev:server` and `npm run dev:ui` launch the two independently.
 - Engines auto-resume configured funds on start. Use a separate development checkout/configuration with funds disabled or `dryRun: true` so no real orders are placed.
 - See [docs/pm2-architecture.md](docs/pm2-architecture.md#development-topology) for the topology.
 
@@ -299,6 +300,8 @@ npm install -g pm2   # One-time prerequisite for a native install; Docker includ
 npm run build
 npm run pm2:start
 ```
+
+The production gateway serves the built admin UI. Use `npm run dev:ui` for Vite, or set `CRITICAL_MASS_DEV_UI=1` when explicitly starting only `critical-mass-ui` via PM2.
 
 **URLs:**
 - **API/Production UI:** http://localhost:5570
@@ -344,10 +347,12 @@ npm test -- tests/fill-ledger.test.js --test-name-pattern="holdback"
 npm run test:watch                         # re-run on change (combine with a file path)
 npm run test:changed                       # tests changed vs origin/main, plus tests that
                                            # mention a changed src/, shared/ or engines/ file
-npm run test:admin                         # admin (vitest) suite
+npm run test:admin                         # admin (Vitest) suite after npm ci --prefix admin
+npm run test:browser-smoke                  # optional React 19 smoke in local Chromium
 npm run test:all                           # backend, then admin
-npm run lint:admin                         # ESLint on admin/ (react-hooks rules; warning ceiling in admin/package.json)
-npm run typecheck                          # tsc over the // @ts-check backend files, ratcheted against typecheck-baseline.json
+npm run lint:admin                         # ESLint on admin/ with zero warnings allowed
+npm run typecheck                          # tsc over backend, engines, shared modules and tooling
+npm run typecheck -- --strict-ratchet       # CI also requires lowering stale baseline counts
 npm run check                              # test:all, lint:admin, typecheck, then the admin build
 ```
 
@@ -362,14 +367,18 @@ counts; use it only when a toolchain bump legitimately shifts counts, or when a
 baselined file was renamed or split (the new path counts as a clean file), and say so in
 the PR after checking that the baseline diff only moves the existing errors. `typescript` and `@types/node` are exact-pinned devDependencies, so the image
 (`npm ci --omit=dev`) is unaffected and the counts are the same on every machine.
-Errors inside `node_modules` are ignored. CI runs the same step in the `build` job.
+Errors inside `node_modules` are ignored. CI uses `--strict-ratchet` to reject stale baseline counts in the `build` job.
 
 File or directory arguments replace the default file list; `--test-*` and other
 options keep forwarding to `node --test`. Every launch goes through the runner,
 so tests always run against a disposable temp data root with the quiet-console,
 isolated-data-root and skip-fsync preloads and can never resolve the real
 `data/`. Do not run `node --test` directly: it refuses to start without that
-isolation. `test:changed` falls back to the full suite when nothing matches.
+isolation. The backend suite needs only the root `npm ci`. `test:changed`
+follows static relative imports from changed files to their tests, including
+imports through scripts, entry points and test helpers. It falls back to the
+full suite when a changed backend file has no known test dependency, or a
+runner-wide input such as a preload changes.
 Set `TEST_CONSOLE=1` to keep console output that the quiet-console preload
 otherwise suppresses.
 

@@ -2,7 +2,13 @@
 
 Critical Mass uses a single release branch: `main`. The Release workflow runs on pushes to `main`, reads the root `package.json` version, and publishes a matching `vX.Y.Z` tag and GitHub Release only when that tag does not already exist. After a new release is created, it invokes the reusable Docker workflow with that exact tag. Ordinary merges with an unchanged version intentionally do not publish another release or republish its image.
 
-Pull requests that touch the Docker packaging (`Dockerfile`, `docker/`, `docker-entrypoint.sh`, dependency manifests and similar) run the path-filtered **Docker check** workflow, which builds the linux/amd64 image without pushing and runs the seed-config smoke test, so a broken image is caught before a tag exists. It is deliberately not a required check, because a path-filtered required check would leave unrelated PRs pending; reviewers should look for it on Docker-related PRs.
+Pull requests that touch the Docker packaging (`Dockerfile`, `docker/`, `docker-entrypoint.sh`, dependency manifests and similar) run the path-filtered **Docker check** workflow, which builds the linux/amd64 image without pushing and runs the seed-config, storage, and stop-order smoke tests, so a broken image is caught before a tag exists. It is deliberately not a required check, because a path-filtered required check would leave unrelated PRs pending; reviewers should look for it on Docker-related PRs.
+
+The required `build (26.x)` check reports the combined results of the
+parallel backend, admin, and typecheck jobs. Docker PR checks can restore the
+default branch's amd64 release build cache and keep their own PR-scoped cache.
+Release images are built on native amd64 and arm64 runners and published as a
+single multi-platform manifest assembled from the two image digests.
 
 ## Prepare and publish
 

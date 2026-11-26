@@ -67,7 +67,7 @@ const { getSentinelConfig, updateSentinelConfig, getArbitrageConfig, updateArbit
 const { createArbitrageService } = require('./src/arbitrage/arbitrage-service');
 const { createRuntimeHealthMonitor } = require('./src/runtime-health');
 const { createOperatorAuth } = require('./src/operator-auth');
-const { resolveListenHosts, createCorsMiddleware, createSecurityHeadersMiddleware, bindGatewayListeners, watchTailscaleListeners } = require('./src/gateway-listen');
+const { isLoopbackHost, resolveListenHosts, createCorsMiddleware, createSecurityHeadersMiddleware, bindGatewayListeners, watchTailscaleListeners } = require('./src/gateway-listen');
 const { registerProcessGuards } = require('./src/process-guard');
 const { resolveIpcPort } = require('./src/ipc-port-defaults');
 const { PORTS } = require('./ecosystem.config.cjs');
@@ -112,7 +112,12 @@ const operatorAuth = createOperatorAuth({
   onPasswordChanged: () => io.disconnectSockets(),
   onSessionsRevoked: () => io.disconnectSockets(),
   onPasswordRemoved: () => {
-    setTimeout(() => gracefulShutdown('operator password removal'), 100).unref();
+    io.disconnectSockets();
+    // Late Tailscale binds are tracked before listen(), including in-flight binds.
+    const hasLateListeners = extraServers.length > LISTEN_HOSTS.length - 1;
+    if (LISTEN_HOSTS.some((host) => !isLoopbackHost(host)) || hasLateListeners) {
+      setTimeout(() => gracefulShutdown('operator password reset'), 100).unref();
+    }
   },
 });
 const ALLOW_REMOTE_LISTEN = operatorAuth.hasPassword() || operatorAuth.hasRemoteBootstrap();
@@ -675,7 +680,7 @@ const watchLateTailscale = () => {
     createServer: () => http.createServer(app),
     onExtra: attachExtraServer,
     onExtraFailed: detachExtraServer,
-    isStopping: gatewayShutdown.isStopping,
+    isStopping: () => gatewayShutdown.isStopping() || (!operatorAuth.hasPassword() && !operatorAuth.hasRemoteBootstrap()),
     log,
   });
 };

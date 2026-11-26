@@ -1,7 +1,7 @@
 import Button from './ui/Button'
 import { memo, useState, useEffect, useRef, useId } from 'react'
 import { useLogStream } from '../hooks/useLogStream'
-import { useToast } from './Toast'
+import { useToast } from './useToast'
 import { flushResultToast } from '../utils/flushResult.mjs'
 import { plural } from '../utils/plural.mjs'
 

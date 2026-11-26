@@ -99,7 +99,7 @@ const ensureLogFile = (exchange = 'coinbase', pair) => {
  */
 const formatNumber = (value, decimals = 8) => {
   if (value === null || value === undefined) return '';
-  return parseFloat(value).toFixed(decimals);
+  return parseFloat(String(value)).toFixed(decimals);
 };
 
 /**
@@ -199,7 +199,7 @@ const logSellFilled = (fillDetails, state, exchange = 'coinbase', pair) => {
  * Load transaction history from TSV
  * @param {string} [exchange] - Exchange name (default: coinbase)
  * @param {string} [pair] - Pair name; defaults to the exchange's default pair
- * @returns {TransactionRecord[]} Transaction records
+ * @returns {Partial<TransactionRecord>[]} Transaction records indexed by the TSV's headers
  */
 const loadTransactionHistory = (exchange = 'coinbase', pair) => {
   const logFile = getLogFile(exchange, pair);
@@ -218,6 +218,7 @@ const loadTransactionHistory = (exchange = 'coinbase', pair) => {
   const headers = lines[0].split('\t');
   return lines.slice(1).map(line => {
     const values = line.split('\t');
+    /** @type {Partial<TransactionRecord>} */
     const record = {};
     headers.forEach((header, i) => {
       record[header] = values[i] || '';

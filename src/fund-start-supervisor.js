@@ -14,7 +14,7 @@ const isTransientStartError = (error) => {
 /** One owner per fund across boot, manual requests, retry callbacks and stop. */
 const createFundStartSupervisor = ({
   startAttempt, fundKey, resolvePair, regimeEngines, saveRegimeRunningFlag, logger,
-  beforeStop = () => {}, beforeCancelAll = () => {},
+  beforeStop = (/** @type {string} */ _fundKey) => {}, beforeCancelAll = () => {},
   isPaused = () => refuseDuringMaintenance('regime:start'), setTimer = setTimeout, clearTimer = clearTimeout,
 }) => {
   const entries = new Map();

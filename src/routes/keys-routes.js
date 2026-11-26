@@ -93,7 +93,6 @@ module.exports = (app, deps) => {
       if (!validateCoinbaseKeys(keysData)) {
         return res.status(400).json({ success: false, error: 'Invalid Coinbase credential shape: name must be at least 10 characters and privateKey must be PEM' });
       }
-      keysData.createdAt = new Date().toISOString();
     } else {
       if (typeof body.apiKey !== 'string' || typeof body.apiSecret !== 'string') {
         return res.status(400).json({ success: false, error: 'apiKey and apiSecret are required' });
@@ -107,9 +106,9 @@ module.exports = (app, deps) => {
       if (!validateStandardExchangeKeys(keysData)) {
         return res.status(400).json({ success: false, error: 'Invalid credential shape: apiKey and apiSecret must each be at least 10 characters' });
       }
-      keysData.createdAt = new Date().toISOString();
     }
 
+    keysData = { ...keysData, createdAt: new Date().toISOString() };
     const keysPath = getExchangeKeysPath(exchange);
     writeJSON(keysPath, keysData);
     keysLogger(exchange, '/api/:exchange/keys').info(`ℹ️ 🔑 [${exchange}] API keys configured`, {
