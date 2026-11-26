@@ -75,9 +75,10 @@ const clampScoreToExistingType = (publishedType, _rawScore, boostedScore, atrRat
  * The 60s scorecard sampler has its own stabilize clock. Two interval
  * ticks can confirm BUY while the live 5s engine never published it.
  * Journal the banner type so UP precision only scores clips the operator saw.
- * @param {{type?: string}|null} scorecardResult
+ * @template {{type?: string}} T
+ * @param {T|null} scorecardResult
  * @param {string|null|undefined} liveType
- * @returns {{type?: string}|null}
+ * @returns {T|null}
  */
 const alignJournalType = (scorecardResult, liveType) => {
   if (!scorecardResult) return scorecardResult

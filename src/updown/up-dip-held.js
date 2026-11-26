@@ -20,6 +20,7 @@ const { UP_DIP_PARAMS, decideUpDip, markPosition, nextExpiryMs } = require('./up
 const { FEE_PER_CONTRACT, maxPayoutForRange } = require('./app-order-history');
 const { parseFiniteNumber } = require('./vision-client');
 const { round2 } = require('../value-guards');
+const { TIMEFRAMES } = require('../candle-aggregator');
 
 const MINUTE_MS = 60_000;
 /** The paper book evaluates every completed 1m bar; older features mean the feed stalled. */
@@ -70,17 +71,20 @@ const createUpDipHeld = ({ statePath, readJSON, writeJSON, getCandles, getCoinba
   const write = (held) => { writeJSON(statePath, { held }); onChange?.(); };
 
   /** The first bound these bars touched since the fill, floor before ceiling. */
-  const touchedBy = (held, bars) => {
-    const since = bars.filter(c => c.timestamp >= held.openedAt);
+  const touchedBy = (held, bars, tf) => {
+    // The OHLC cannot order an opening-bar touch relative to the fill. Surface
+    // it as a possible touch for the operator to verify in the app.
+    const since = bars.filter(c => c.timestamp + TIMEFRAMES[tf].intervalMs > held.openedAt);
     return BOUNDS.find(bound => since.some(c => (bound === 'floor' ? c.low <= held.contract.floor : c.high >= held.contract.ceiling))) ?? null;
   };
   // Higher index timeframes and substitutes are built from BTC_USD trades, whose wicks
   // the index never saw, so only its own 1m bars count.
-  const indexTouch = (held) => held.indexTouched ?? touchedBy(held, (getCandles('1m') || []).filter(c => !c.substitute));
+  const indexTouch = (held) => held.indexTouched ?? touchedBy(held, (getCandles('1m') || []).filter(c => !c.substitute), '1m');
 
   /** Which bound was touched, and by whom. */
   const touched = (held) => {
-    const coinbase = touchedBy(held, COINBASE_TOUCH_TFS.flatMap(tf => getCoinbaseCandles(tf) || []));
+    const coinbase = BOUNDS.find(bound => COINBASE_TOUCH_TFS.some(tf =>
+      touchedBy(held, getCoinbaseCandles(tf) || [], tf) === bound));
     const index = indexTouch(held);
     const bound = BOUNDS.find(b => b === coinbase || b === index);
     if (!bound) return null;

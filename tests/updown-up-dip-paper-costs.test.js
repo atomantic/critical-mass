@@ -358,10 +358,12 @@ describe('decisions', () => {
     return { timestamp: SUN + i * MIN, open, close, high: Math.max(open, close), low: Math.min(open, close), volume: 0 };
   });
   const m15 = Array.from({ length: 30 }, (_, i) => ({ timestamp: SUN - (30 - i) * 15 * MIN, close: 65000 }));
+  const h1 = Array.from({ length: 20 }, (_, i) => ({ timestamp: SUN - (20 - i) * 60 * MIN, close: 65000 }));
   const run = ({ mark = (b) => b, until = 160 } = {}) => {
     let n = 62;
     const bars = path1m(until).map(mark);
-    const paper = make({ getCandles: (tf) => (tf === '1m' ? bars.slice(0, n).slice(-180) : tf === '15m' ? m15 : []), pick: () => pickResult && { ...pickResult, expiry: Date.parse('2026-11-21T09:00:00Z') } });
+    const paper = make({ getCandles: (tf) => ({ '1m': bars.slice(Math.max(0, n - 180), n), '15m': m15, '1h': h1 })[tf] || [],
+      pick: () => pickResult && { ...pickResult, expiry: Date.parse('2026-11-21T09:00:00Z') } });
     const seen = [];
     for (; n <= until; n++) { paper.step(); seen.push(paper.getStatus()); }
     return seen;

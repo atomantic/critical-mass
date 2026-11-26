@@ -68,7 +68,7 @@ knock-out stores `coinbaseTouched`.
   [0, maxPayout]; maxPayout 1000 on $2000 ranges, 500 on $500 ranges; no time decay.
 - $1.99 per contract per side, already inside the app's fill amounts.
 - Floor touch → 0, ceiling touch → maxPayout − fee, otherwise settle at the
-  expiry price. Expiry: Saturday 04:00 America/New_York.
+  expiry price with proceeds floored at $0. Expiry: Saturday 04:00 America/New_York.
 - "Widest range, lowest listed floor" is modeled as floor ≈ price − $1,500
   (the operator's $2000-range entries sat a median $1,440 above the floor). That
   puts the ceiling ~$500 above entry and makes one contract a $0.50/BTC-dollar

@@ -219,6 +219,15 @@ export default function UpDipPanel() {
   return (
     <>
     <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
+      {error && <div role="alert" className="text-xs text-red-400 mb-2">{error}</div>}
+      {!data && !error && <div className="text-xs text-gray-400 py-2">Loading held contract…</div>}
+      {data?.quotes && <Costs quotes={data.quotes} />}
+      {data?.quotes && <AppQuoteForm last={data.quotes.lastRecorded} onRecorded={load} />}
+      {data && data.held !== undefined && <UpDipHeld held={data.held} onChange={load} />}
+    </div>
+    <details className="bg-gray-800 rounded-lg border border-gray-700">
+    <summary className="min-h-10 px-4 py-2.5 cursor-pointer text-sm font-semibold">Up Dip paper books</summary>
+    <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2">
           <TrendingUp size={16} className="text-green-400" />
@@ -227,8 +236,6 @@ export default function UpDipPanel() {
         <span className="text-2xs uppercase tracking-wide text-amber-300 border border-amber-700 rounded-sm px-1.5 py-0.5">Paper only</span>
       </div>
 
-      {error && <div role="alert" className="text-xs text-red-400 mb-2">{error}</div>}
-      {!data && !error && <div className="text-xs text-gray-400 py-2">Loading…</div>}
       {data?.needsReset && <NeedsReset command="scripts/reset-up-dip-paper.js" />}
       {data?.candles && !data.candles.ready && <div className="text-xs text-amber-300 mb-2">Waiting for candle history</div>}
       {data?.candles?.ready && data.candles.waitingFor && <div className="text-xs text-amber-300 mb-2">Waiting for index data since {when(data.candles.waitingFor)}</div>}
@@ -263,11 +270,6 @@ export default function UpDipPanel() {
           Last ENTER signal {when(lastEntry.at)} · BTC {lastEntry.btc?.toLocaleString()} · Up {k(lastEntry.contract.floor)}–{k(lastEntry.contract.ceiling)}{lastEntry.bookHeld && ' · paper book was already holding'}
         </div>
       )}
-
-      {data?.quotes && <Costs quotes={data.quotes} />}
-      {data?.quotes && <AppQuoteForm last={data.quotes.lastRecorded} onRecorded={load} />}
-
-      {data && data.held !== undefined && <UpDipHeld held={data.held} onChange={load} />}
 
       {hasSignal && book && (pos || book.action !== decision.action) && (
         <div data-testid="up-dip-book" className="text-2xs mb-2">
@@ -318,6 +320,7 @@ export default function UpDipPanel() {
       {data?.startedAt && <div className="text-2xs text-gray-400 mt-1">Paper tracking since {when(data.startedAt)}{s?.gaps > 0 && <span className="text-amber-300/80"> · {s.gaps} candle gap{s.gaps === 1 ? '' : 's'} (restart outage, bars missed)</span>}</div>}
     </div>
     {data?.shadow && <ShadowBook book={data.shadow} />}
+    </details>
     </>
   )
 }

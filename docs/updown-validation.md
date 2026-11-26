@@ -16,6 +16,14 @@ The initial post-warmup block trains the fixed threshold candidates 0/20/30; eac
 
 This uses BTC spot candles as a proxy for a 0.01 BTC perpetual contract. [Coinbase specifications](https://help.coinbase.com/en/derivatives/perpetual-style-futures/contract-specifications) confirm the size; [Coinbase examples](https://help.coinbase.com/en/derivatives/perpetual-style-futures/examples) distinguish trading from funding P&L. Funding, futures basis, market closures, liquidity/latency, margin/liquidation, tick momentum and adaptive live weights are not modeled. Weekly/daily slow indicators may lack warmup; seven days cannot warm a 200-hour EMA or a long daily SMA. Minute sampling is not live five-second execution parity. Net P&L includes the stated fees and slippage only. Production paper-book rounding is retained.
 
+The live paper book and `scripts/updown-pnl-snapshot.js` default to a modeled
+$0.50 per contract per side and 2 bps of adverse slippage per fill. Set
+`UPDOWN_PERP_FEE_PER_CONTRACT` and `UPDOWN_PERP_SLIPPAGE_BPS` in the gateway and
+snapshot command environments to change those assumptions. The open mark
+includes the modeled cost of closing. Funding is excluded. Existing closed
+rounds keep their original P&L. The dashboard identifies totals that include
+pre-cost rounds, and the snapshot reports `MIXED_COST_BASIS` for those books.
+
 Do not promote a threshold because aggregate P&L or hit rate looks good. Require independent unseen periods across bullish, bearish and choppy markets, sufficient completed trades, realistic fee/funding and execution sensitivity, stable drawdown/exposure, and prospective paper evaluation of the full live adaptive path. Repeatedly inspecting a holdout makes it development data. Directional observations can remain dependent despite disjoint horizons; these counts are not statistical confidence or calibrated probabilities. No candidate is automatically activated.
 
 ## Observed offline evidence (2026-09-05 audit)

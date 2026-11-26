@@ -27,7 +27,8 @@ const tfs = (m1) => {
   }
   // Enough older 15m bars for the 15m EMA20.
   const older = Array.from({ length: 30 }, (_, i) => ({ timestamp: SUN - (30 - i) * 15 * MIN, close: 65000 }));
-  return { '1m': m1.slice(-180), '15m': [...older, ...m15.slice(0, -1)] };
+  const h1 = Array.from({ length: 20 }, (_, i) => ({ timestamp: SUN - (20 - i) * 60 * MIN, close: 65000 }));
+  return { '1m': m1.slice(-180), '15m': [...older, ...m15.slice(0, -1)], '1h': h1 };
 };
 const daily = (close) => Array.from({ length: 50 }, () => ({ close }));
 

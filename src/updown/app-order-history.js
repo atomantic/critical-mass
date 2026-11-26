@@ -45,6 +45,9 @@ const buyCost = (btc, c, qty = 1) => qty * (contractValue(btc, c) + FEE_PER_CONT
 /** Proceeds of selling `qty` contracts at `btc`, fee deducted (settlement included). */
 const sellProceeds = (btc, c, qty = 1) => qty * (contractValue(btc, c) - FEE_PER_CONTRACT);
 
+/** Knock-out or expiry proceeds cannot be negative. */
+const settlementProceeds = (btc, c, qty = 1) => Math.max(0, sellProceeds(btc, c, qty));
+
 /** Expiry instant: Saturday 04:00 America/New_York of the given YYYY-MM-DD. */
 const expiryMs = (date) => {
   const [y, m, d] = date.split('-').map(Number);
@@ -173,6 +176,7 @@ module.exports = {
   contractValue,
   buyCost,
   sellProceeds,
+  settlementProceeds,
   expiryMs,
   appOrderKey,
   validateAppOrder,

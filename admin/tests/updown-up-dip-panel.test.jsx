@@ -32,6 +32,15 @@ it('headlines the market signal and labels the paper book decision separately', 
   expect(screen.getByTestId('up-dip-book').textContent).toContain('HOLD')
 })
 
+it('keeps held-contract controls visible when the paper books are collapsed', async () => {
+  api.body = body({ held: null })
+  render(<UpDipPanel />)
+  const controls = await screen.findByText('Your contract')
+  expect(controls.closest('details')).toBeNull()
+  const paper = screen.getByTestId('up-dip-signal').closest('details')
+  expect(paper.open).toBe(false)
+})
+
 it('cautions on an ENTER signal while the paper book is holding', async () => {
   api.body = body()
   render(<UpDipPanel />)

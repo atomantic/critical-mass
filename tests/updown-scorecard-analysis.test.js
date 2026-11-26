@@ -80,7 +80,7 @@ describe('shared outcome interpretation', () => {
   })
 
   it('deduplicates semantic outcomes, excludes DOWN, and keeps expiry settlements separate', () => {
-    const prediction = { type: 'prediction', id: 'p1', contract: { range: 500 } }
+    const prediction = { type: 'prediction', id: 'p1', compositeDirection: 'up', contract: { range: 500 } }
     const win = outcome('p1')
     const rows = [
       prediction, prediction, win, win,
@@ -100,6 +100,24 @@ describe('shared outcome interpretation', () => {
       total: 1, byRange: { 500: { wins: 1, losses: 0, total: 1, accuracy: 100 } },
     })
     assert.equal(JSON.stringify(rows), before)
+  })
+
+  it('buckets both trend charts by prediction time and keeps training-only samples out of headline counts', () => {
+    const rows = [
+      ...['up', 'down', 'neutral'].map(direction => ({
+        type: 'prediction', id: direction, compositeDirection: direction,
+      })),
+      outcome('up', {
+        predictionTs: '2026-09-07T09:59:00.000Z',
+        indicatorResults: { rsi: { predictions: 1, correct: 1 } },
+      }),
+      outcome('neutral', { trainingOnly: true, compositeDirection: 'neutral', compositeCorrect: null }),
+    ]
+    const analysis = buildScorecardAnalysis(rows)
+    assert.equal(analysis.summary.predictions, 1)
+    assert.equal(analysis.summary.outcomes, 1)
+    assert.equal(analysis.accuracyOverTime[0].hour, '2026-09-07T09')
+    assert.equal(analysis.indicatorAccuracyOverTime[0].hour, '2026-09-07T09')
   })
 
   it('preserves raw trends, failure patterns, exact heatmaps, weights, and 0.01-BTC paper P&L', () => {
@@ -123,7 +141,7 @@ describe('shared outcome interpretation', () => {
     assert.deepEqual(analysis.heatmap.rsi['5m'], { correct: 0, total: 3, accuracy: 0 })
     assert.deepEqual(analysis.heatmap.rsi['1m'], { correct: 0, total: 0, accuracy: null })
     assert.deepEqual(analysis.weightEvolution, [{ ts: '2026-09-07T10:00:00Z', rsi: 0.2 }])
-    assert.deepEqual(analysis.perpAnalysis, { opens: 1, adds: 1, closes: 2, wins: 1, losses: 1, winRate: 50, realizedPnl: 1 })
+    assert.deepEqual(analysis.perpAnalysis, { opens: 1, adds: 1, closes: 2, wins: 1, losses: 1, winRate: 50, realizedPnl: 1, hasLegacyRealizedPnl: true })
     assert.equal(analysis.summary.perpRealizedPnl, 1)
     assert.equal(analysis.summary.bestTimeframe, '5m')
     assert.equal(analysis.summary.bestWindow, '5m')

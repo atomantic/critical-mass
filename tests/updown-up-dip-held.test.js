@@ -88,6 +88,23 @@ describe('operator-held Up contract', () => {
     assert.match(reason(), /^Crypto\.com index touched the floor/);
   });
 
+  it('includes candles that overlap the opening fill on each source and timeframe', () => {
+    clock = NOW + 15_000;
+    const held = make();
+    held.set(BUY);
+    const low = { low: 59_790, high: 61_300 };
+    for (const [tf, interval] of [['1m', MIN], ['15m', 15 * MIN], ['1h', 60 * MIN]]) {
+      const timestamp = Math.floor(clock / interval) * interval;
+      candles = { [tf]: [{ ...low, timestamp: timestamp - interval }] };
+      assert.equal(held.getStatus(latest(61300)).decision.action, 'HOLD');
+      candles = { [tf]: [{ ...low, timestamp }] };
+      assert.match(held.getStatus(latest(61300)).decision.reasons[0], /^Coinbase touched the floor/);
+    }
+    candles = {};
+    indexCandles = { '1m': [{ ...low, timestamp: NOW }] };
+    assert.match(held.getStatus(latest(61300)).decision.reasons[0], /^Crypto\.com index touched the floor/);
+  });
+
   it('ignores an index substitute and index higher timeframes', () => {
     const held = make();
     held.set(BUY);

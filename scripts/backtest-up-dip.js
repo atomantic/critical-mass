@@ -22,7 +22,7 @@
  */
 const fs = require('fs')
 const { UP_DIP_PARAMS, computeUpDipFeatures, decideUpDip, markPosition, nextExpiryMs, pickContract } = require('../src/updown/up-dip-setup')
-const { contractValue, FEE_PER_CONTRACT, expiryMs, parseOrderHistory, deriveCycles } = require('../src/updown/app-order-history')
+const { settlementProceeds, FEE_PER_CONTRACT, expiryMs, parseOrderHistory, deriveCycles } = require('../src/updown/app-order-history')
 const { entryCost, exitProceeds } = require('../src/updown/app-pricing')
 const { pickOnGrid, DEFAULT_HALF_SPREAD } = require('../src/updown/app-quotes')
 
@@ -108,7 +108,7 @@ function simulate(candles, features, from, to, params, { decide = decideUpDip, h
     if (pos) {
       if (c.low <= pos.contract.floor) close(now, 0, 'knock_out_floor', pos.contract.floor)
       else if (c.high >= pos.contract.ceiling) close(now, pos.contracts * (pos.contract.maxPayout - FEE_PER_CONTRACT), 'knock_out_ceiling', pos.contract.ceiling)
-      else if (now >= pos.contract.expiry) close(now, pos.contracts * (contractValue(c.close, pos.contract) - FEE_PER_CONTRACT), 'expiry', c.close)
+      else if (now >= pos.contract.expiry) close(now, settlementProceeds(c.close, pos.contract, pos.contracts), 'expiry', c.close)
     }
     const mtm = realized + (pos ? markPosition(pos, c.close, halfSpread).pnl : 0)
     peak = Math.max(peak, mtm)

@@ -1,0 +1,2 @@
+- UpDown scores contract knockouts and expiry payouts, trains adaptive indicators on matching horizons, and shows perp paper P&L after modeled fees and slippage.
+- Up Dip blocks new risk without an hourly trend and checks the held contract’s opening candle. The dashboard keeps manual controls visible while folding away the paper books and alerts on consecutive fills.

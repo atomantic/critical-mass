@@ -6,7 +6,7 @@ import { formatCurrencyIntl as formatCurrency } from '../charts/chartUtils'
 import { apiPut, apiDelete, describeMutationFailure } from '../../utils/apiClient'
 import { pnlColorClass, signedPrefix } from '../../utils/pnlFormat.mjs'
 
-export default function PositionTracker({ initialPosition, currentPrice, contractPnl, priceFresh }) {
+export default function PositionTracker({ initialPosition, currentPrice, priceFresh }) {
   const [entryPrice, setEntryPrice] = useState('')
   const [amount, setAmount] = useState('')
   const [direction, setDirection] = useState('Up') // long-only perp
@@ -120,14 +120,6 @@ export default function PositionTracker({ initialPosition, currentPrice, contrac
                 {formatCurrency(pnl)} ({signedPrefix(pnlPct)}{pnlPct?.toFixed(2)}%)
               </span>
             </div>
-            {contractPnl != null && (
-              <div className="flex justify-between text-xs">
-                <span className="text-gray-400">Contract P&L</span>
-                <span className={`font-medium ${pnlColorClass(contractPnl)}`}>
-                  {formatCurrency(contractPnl)}
-                </span>
-              </div>
-            )}
           </div>
         )}
         {hasPosition && !priceFresh && (

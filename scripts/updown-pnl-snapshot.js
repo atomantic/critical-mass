@@ -24,7 +24,7 @@ const fs = require('fs')
 const path = require('path')
 const { DATA_DIR, UPDOWN_DATA_DIR } = require('../src/paths')
 const { readJSON, writeJSON } = require('../src/shared-utils')
-const { createPerpBook } = require('../src/updown/perp-book')
+const { createPerpBook, livePerpCosts } = require('../src/updown/perp-book')
 const { replaySignals, priceAt, summarize } = require('../src/updown/pnl-monitor')
 const { checkGatewayStopped } = require('../src/engine-liveness')
 
@@ -88,7 +88,8 @@ const latest = Array.isArray(state.signalHistory) && state.signalHistory.length 
   ? state.signalHistory[state.signalHistory.length - 1]
   : null
 
-let book = createPerpBook()
+const costs = livePerpCosts()
+let book = createPerpBook({}, costs)
 if (resetBook) {
   backupState()
   state.perpBook = book.serialize()
@@ -98,6 +99,7 @@ if (resetBook) {
   const { book: replayed, fills } = replaySignals(
     state.signalHistory,
     (ts) => priceAt(priceIndex, ts),
+    costs,
   )
   book = replayed
   backupState()
