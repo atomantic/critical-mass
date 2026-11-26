@@ -266,8 +266,7 @@ export default function ContractSetup({ initialContract }) {
     const p = providers?.find(p => p.id === selectedProvider)
     if (!p) return
     // Keep current model if it belongs to this provider
-    if (p.models?.includes(selectedModel)) return
-    setSelectedModel(p.defaultModel || p.models?.[0] || '')
+    setSelectedModel(model => p.models?.includes(model) ? model : p.defaultModel || p.models?.[0] || '')
   }, [selectedProvider, providers])
 
   /** PUT the contract; any failure lands in saveError beside the Save button. */

@@ -87,7 +87,7 @@ function view(name, fetchImpl, extra = {}) {
     './FailedSellPlacements': () => null,
     './DcaPlacementRecovery': Panel,
     './DcaPendingBuyRecovery': BuyPanel,
-    './Toast': { useToast: () => ({ addToast() {} }) },
+    './useToast': { useToast: () => ({ addToast() {} }) },
     './regime/useDcaConversion': { fetchConvertPreview: async () => null },
     './charts/chartUtils': { formatCurrency: String, formatPrice: String, formatAsset: String },
     '../utils/productId.mjs': { getBaseCurrency: () => 'ETH', getQuoteCurrency: () => 'USDC' },

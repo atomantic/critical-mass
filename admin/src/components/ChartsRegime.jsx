@@ -8,25 +8,14 @@ import RegimeTimeline from './charts/RegimeTimeline'
 import CumulativePnlChart from './charts/CumulativePnlChart'
 import { formatCurrency, formatPrice } from './charts/chartUtils'
 import { pairQuery as buildPairQuery } from '../utils/api'
+import { deriveFillMarker } from '../utils/regimeFillMarker.mjs'
 import { deriveRegimeCumulativePnl } from '../utils/regimeFillGroups.mjs'
 import { apiGet } from '../utils/apiClient'
 import { pnlColorClass } from '../utils/pnlFormat.mjs'
 import { EMPTY_SNAPSHOT, nextRegimeStatusSeq } from '../utils/regimeStatusSnapshot.mjs'
 import { useFundStatusFreshness } from '../hooks/useFundStatusFreshness'
 
-export function deriveFillMarker(status) {
-  if (!status) return ''
-  const pos = status.position
-  return [
-    pos?.cyclesCompleted ?? '',
-    pos?.cycleBuys ?? '',
-    pos?.realizedPnL ?? '',
-    pos?.realizedAssetPnL ?? '',
-    pos?.lastFillId ?? status.lastFillId ?? '',
-    pos?.lastFillTime ?? status.lastFillTime ?? '',
-    pos?.fillCount ?? status.fillCount ?? '',
-  ].join(':')
-}
+const EMPTY_ORDERS = []
 
 function ChartsRegime({ exchange = 'coinbase', pair, fillDebounceMs = 1500 }) {
   const pairQuery = buildPairQuery(pair)
@@ -283,7 +272,7 @@ function ChartsRegime({ exchange = 'coinbase', pair, fillDebounceMs = 1500 }) {
   const market = status?.market || {}
   const position = status?.position || {}
   const regime = status?.regime || {}
-  const dryRunFilled = status?.dryRun?.filledOrders || []
+  const dryRunFilled = status?.dryRun?.filledOrders || EMPTY_ORDERS
   const buyCount = isDryRun ? dryRunFilled.filter(f => f.side === 'buy').length : fillAggregates?.buyCount || 0
   const sellCount = isDryRun ? dryRunFilled.filter(f => f.side === 'sell').length : fillAggregates?.sellCount || 0
 

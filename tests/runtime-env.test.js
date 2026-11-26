@@ -79,6 +79,21 @@ test('PM2 captures bootstrap settings after loading .env and retains service por
   assert.equal(result.status, 0, result.stderr);
 });
 
+test('the PM2 ecosystem registers the Vite server only when explicitly enabled', t => {
+  const root = fixture(t, null);
+  const code = `
+    const { apps } = require(process.env.FIXTURE_ROOT + '/ecosystem.config.cjs');
+    process.stdout.write(JSON.stringify(apps.map(app => app.name)));
+  `;
+  const production = run(root, code);
+  const development = run(root, code, { CRITICAL_MASS_DEV_UI: '1' });
+  assert.equal(production.status, 0, production.stderr);
+  assert.equal(development.status, 0, development.stderr);
+  const productionNames = JSON.parse(production.stdout);
+  assert.equal(productionNames.length, 4);
+  assert.deepEqual(JSON.parse(development.stdout), [...productionNames, 'critical-mass-ui']);
+});
+
 test('development children inherit root settings before their environments are built', t => {
   const root = fixture(t);
   const vite = path.join(root, 'admin/node_modules/vite');
@@ -87,11 +102,13 @@ test('development children inherit root settings before their environments are b
   const result = run(root, `
     const assert = require('node:assert/strict');
     const { developmentChildren } = require(process.env.FIXTURE_ROOT + '/scripts/dev');
-    for (const child of developmentChildren()) {
+    const [server, ui] = developmentChildren();
+    for (const child of [server, ui]) {
       assert.equal(child.env.OPERATOR_BOOTSTRAP_SECRET, ${JSON.stringify(fixtureSecret)});
       assert.equal(child.env.AI_ALLOWED_ENDPOINTS, 'https://fixture.invalid');
-      assert.equal(child.env.VITE_API_PORT, '5570');
     }
+    assert.equal(server.env.PORT, '5580');
+    assert.equal(ui.env.VITE_API_PORT, '5580');
   `);
   assert.equal(result.status, 0, result.stderr);
 });

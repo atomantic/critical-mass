@@ -5,7 +5,7 @@ import { apiGet, apiPost, apiPut, apiDelete, describeMutationFailure } from '../
 import ModalDialog from './ModalDialog'
 import ConfirmDialog from './ui/ConfirmDialog'
 import Button from './ui/Button'
-import { useNotify, useToast } from './Toast'
+import { useNotify, useToast } from './useToast'
 
 const INTERVAL_OPTIONS = [
   { label: '6 hours', value: 6 * 60 * 60 * 1000 },

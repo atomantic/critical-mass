@@ -186,7 +186,7 @@ module.exports = (app, deps) => {
   app.post('/api/updown/screenshot', async (req, res) => {
     const logger = updownRouteLogger('/api/updown/screenshot');
     const { providerId, model } = req.query;
-    if (!providerId) return res.status(400).json({ success: false, error: 'providerId query param required' });
+    if (typeof providerId !== 'string' || !providerId) return res.status(400).json({ success: false, error: 'providerId query param required' });
 
     // Read raw image body, capped to avoid unbounded memory growth (issue #215-B).
     let imageBuffer;
@@ -223,7 +223,7 @@ module.exports = (app, deps) => {
       return res.status(400).json({ success: false, error: 'Provider endpoint origin is not allowlisted in AI_ALLOWED_ENDPOINTS' });
     }
 
-    const selectedModel = model || provider.defaultModel;
+    const selectedModel = typeof model === 'string' && model || provider.defaultModel;
     if (!selectedModel) return res.status(400).json({ success: false, error: `No model specified and provider has no defaultModel` });
 
     const result = await visionClient.analyzeScreenshot({
@@ -325,10 +325,10 @@ module.exports = (app, deps) => {
 
     // Validate from/to date format (YYYY-MM-DD) before parsing
     const dateFormatRegex = /^\d{4}-\d{2}-\d{2}$/;
-    if (fromParam && !dateFormatRegex.test(fromParam)) {
+    if (fromParam && (typeof fromParam !== 'string' || !dateFormatRegex.test(fromParam))) {
       return res.status(400).json({ success: false, error: 'from must be in YYYY-MM-DD format' });
     }
-    if (toParam && !dateFormatRegex.test(toParam)) {
+    if (toParam && (typeof toParam !== 'string' || !dateFormatRegex.test(toParam))) {
       return res.status(400).json({ success: false, error: 'to must be in YYYY-MM-DD format' });
     }
 

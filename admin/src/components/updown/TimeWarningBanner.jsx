@@ -1,26 +1,15 @@
 import { Clock } from '../icons'
+import { parseExpiry } from '../../utils/parseExpiry.mjs'
 import { formatCountdown } from '../../utils/countdown.mjs'
 
 // Warning zone thresholds (must match signal-engine.js)
 const WARNING_ZONE_H = 8
 const NO_TRADE_ZONE_H = 6
 
-export function getTimeColor(hoursLeft) {
+function getTimeColor(hoursLeft) {
   if (hoursLeft > WARNING_ZONE_H) return { bg: 'bg-green-500', border: 'border-green-500/30', text: 'text-green-400', label: 'Safe' }
   if (hoursLeft >= NO_TRADE_ZONE_H) return { bg: 'bg-yellow-500', border: 'border-yellow-500/30', text: 'text-yellow-400', label: 'Caution' }
   return { bg: 'bg-red-500', border: 'border-red-500/30', text: 'text-red-400', label: 'Critical', pulse: true }
-}
-
-/**
- * Parse expiry to ms timestamp.
- * @param {number | string} expiry - Unix ms timestamp or ISO 8601 date string
- * @returns {number} Epoch ms, or NaN if invalid/missing
- */
-export const parseExpiry = (expiry) => {
-  if (!expiry) return NaN
-  if (typeof expiry === 'number') return expiry
-  const ms = new Date(expiry).getTime()
-  return Number.isFinite(ms) ? ms : NaN
 }
 
 export default function TimeWarningBanner({ timeRemaining, expiry }) {

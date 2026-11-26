@@ -32,6 +32,8 @@ const createPositionSizer = (exchange, config) => {
    * @param {RegimeMode} params.regime - Current regime mode
    * @param {number} params.cycleBuys - Current cycle buy count (0-indexed)
    * @param {number} params.totalCostBasis - Current cost basis
+   * @param {number} [params.currentPrice] - Current asset price
+   * @param {number} [params.avgCostBasis] - Average cost per unit
    * @param {number} [params.bidDepthUsdc] - Bid depth in USDC (optional)
    * @param {number} [params.baselineDepth] - Baseline depth for comparison (optional)
    * @returns {{sizeUsdc: number, sizeBTC: number, factors: Object}}

@@ -65,7 +65,7 @@ const hasRunThisInterval = (lastRunId, intervalType) => {
  * Normalize config for backwards compatibility
  * Handles both old (daysToSpread) and new (intervalsToSpread) formats
  * @param {Partial<ExchangeConfig> & {daysToSpread?: number}} config - Configuration object
- * @returns {ExchangeConfig} Normalized configuration
+ * @returns {Partial<ExchangeConfig> & Pick<ExchangeConfig, 'intervalsToSpread'|'intervalType'>} Normalized configuration
  */
 const normalizeConfig = (config) => ({
   ...config,

@@ -85,7 +85,7 @@ jobs:
         run: npm ci
 
       - name: Typecheck
-        run: npm run typecheck
+        run: npm run typecheck -- --strict-ratchet
 
   build:
     # Preserve the check name configured in the main branch ruleset.

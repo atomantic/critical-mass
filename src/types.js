@@ -48,7 +48,7 @@
  * @property {boolean} dryRun - Whether to simulate trades
  * @property {number} [consolidateAfterOrders] - Auto-consolidate when pending orders exceed this count (0 = disabled)
  * @property {ConsolidateIntervalType} [consolidateInterval] - How often to run interval-based consolidation ('never', 'daily', 'weekly')
- * @property {'fixed' | 'fibonacci'} [dcaStrategy] - DCA strategy (default: 'fixed')
+ * @property {'fixed' | 'fibonacci' | 'regime'} [dcaStrategy] - DCA strategy (default: 'fixed')
  * @property {number} [fibBaseAmount] - Base amount for Fibonacci multiplier (default: 10)
  */
 
@@ -468,6 +468,15 @@
  * @property {CelestialState} [celestialState] - Aggregate celestial tracking
  * @property {boolean} [ladderActive] - Whether ladder mode is active
  * @property {number|null} [ladderPlacedAt] - Timestamp when ladder was placed
+ * @property {number|null} [engineStartTime] - Timestamp of the first engine start with capital
+ * @property {number} [initialCapital]
+ * @property {number} [originalCapital] - Legacy capital before explicit deposits were tracked
+ * @property {number} [depositedCapital] - Operator deposits, excluding profits
+ * @property {number} [_saveVersion] - Version acknowledged after a committed state write
+ * @property {'active'|'draining'|'closed'} [lifecycle]
+ * @property {number|null} [lifecycleChangedAt]
+ * @property {string|null} [lifecycleReason]
+ * @property {number|null} [lifecycleClosedCycle]
  * @property {number} [ladderLowerBound] - Current ladder lower bound price
  * @property {Array<{orderId: string, price: number, sizeUsdc: number, ladderIndex: number}>} [pendingLadderOrders] - Pending ladder orders
  */

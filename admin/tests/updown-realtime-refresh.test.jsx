@@ -30,7 +30,6 @@ vi.mock('../src/components/updown/SignalBanner', () => ({
   default: ({ position }) => <div data-testid="banner-position">{position?.entryPrice ?? 'none'}</div>,
 }))
 vi.mock('../src/components/updown/TimeWarningBanner', () => ({
-  parseExpiry: value => typeof value === 'number' ? value : NaN,
   default: ({ expiry, timeRemaining }) => (
     <div data-testid="countdown">{String(expiry)} / {String(timeRemaining ?? 'status expiry')}</div>
   ),

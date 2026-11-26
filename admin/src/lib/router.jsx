@@ -2,9 +2,9 @@
 // history-backed provider, flat <Routes>/<Route> matching, <Navigate>, <Link>,
 // useNavigate and useLocation. Export names match react-router-dom so call
 // sites only change their import path.
-import { Children, Fragment, createContext, isValidElement, useCallback, useContext, useEffect, useMemo, useState } from 'react'
-
-const RouterContext = createContext(null)
+import { Children, Fragment, isValidElement, useCallback, useEffect, useMemo, useState } from 'react'
+import { RouterContext, useRouter, useNavigate, useLocation } from './routerContext'
+import { matchPath, rankRoutes } from './routeMatching'
 
 const readLocation = () => {
   const { pathname, search, hash } = window.location
@@ -32,15 +32,6 @@ export function BrowserRouter({ children }) {
   const value = useMemo(() => ({ location, navigate }), [location, navigate])
   return <RouterContext.Provider value={value}>{children}</RouterContext.Provider>
 }
-
-function useRouter(hookName) {
-  const router = useContext(RouterContext)
-  if (!router) throw new Error(`${hookName} must be used within a <BrowserRouter>`)
-  return router
-}
-
-export const useLocation = () => useRouter('useLocation').location
-export const useNavigate = () => useRouter('useNavigate').navigate
 
 export function Navigate({ to, replace = false }) {
   const navigate = useNavigate()
@@ -83,50 +74,6 @@ export function Route() {
   return null
 }
 
-// Drops the leading slash and any trailing slashes but keeps interior empty
-// segments, so `/gateway//logs` does not collapse into `/gateway/logs`.
-const splitPath = (path) => {
-  const trimmed = path.replace(/^\//, '').replace(/\/+$/, '')
-  return trimmed ? trimmed.split('/') : []
-}
-
-const safeDecode = (segment) => {
-  try { return decodeURIComponent(segment) } catch { return segment }
-}
-
-// Mirrors react-router's computeScore so specific routes outrank params
-// regardless of declaration order (e.g. /updown/analysis beats /:exchange/:pair):
-// one point per segment, +10 static, +3 param, -2 for a splat. Ties keep
-// declaration order.
-export function scorePath(path) {
-  const segments = `/${path}`.replace(/\/+/g, '/').split('/')
-  const hasSplat = segments.includes('*')
-  return segments
-    .filter(segment => segment !== '*')
-    .reduce((score, segment) => score + (segment.startsWith(':') ? 3 : segment === '' ? 1 : 10), segments.length - (hasSplat ? 2 : 0))
-}
-
-// Static segments compare case-insensitively (react-router's default), params
-// capture one decoded segment, a trailing `*` swallows the rest, and trailing
-// slashes on the pathname are ignored.
-export function matchPath(path, pathname) {
-  const patternSegments = splitPath(path)
-  const pathSegments = splitPath(pathname).map(safeDecode)
-  const params = {}
-  for (let i = 0; i < patternSegments.length; i++) {
-    const pattern = patternSegments[i]
-    if (pattern === '*') {
-      params['*'] = pathSegments.slice(i).join('/')
-      return params
-    }
-    const segment = pathSegments[i]
-    if (!segment) return null
-    if (pattern.startsWith(':')) params[pattern.slice(1)] = segment
-    else if (pattern.toLowerCase() !== segment.toLowerCase()) return null
-  }
-  return pathSegments.length === patternSegments.length ? params : null
-}
-
 // Flattens <Route> children, descending into fragments and skipping the falsy
 // values left by conditional route groups.
 function collectRoutes(children) {
@@ -135,13 +82,6 @@ function collectRoutes(children) {
     if (child.type === Fragment) return collectRoutes(child.props.children)
     return child.type === Route ? [child.props] : []
   })
-}
-
-export function rankRoutes(routes) {
-  return routes
-    .map((route, index) => ({ route, index, score: scorePath(route.path ?? '') }))
-    .sort((a, b) => b.score - a.score || a.index - b.index)
-    .map(({ route }) => route)
 }
 
 export function Routes({ children }) {

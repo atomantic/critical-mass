@@ -5,7 +5,7 @@ import { Link } from '../lib/router'
 import { pauseRealtimeClient } from '../lib/realtime'
 import { KeyRound, ScrollText } from './icons'
 import { apiDelete, apiGet, apiPut, apiRequest } from '../utils/apiClient'
-import { useNotify } from './Toast'
+import { useNotify } from './useToast'
 
 export default function GatewayAccess() {
   const [required, setRequired] = useState(null)

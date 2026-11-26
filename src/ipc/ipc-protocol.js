@@ -74,6 +74,7 @@ const IPC_CHANNELS = Object.freeze({
 // These are request limits, not engine locks: internal fills and reconciliation
 // never acquire a slot. Unknown/new channels default to the ordinary lane.
 const IPC_REQUEST_LIMITS = Object.freeze({ ordinary: 32, control: 4 });
+/** @type {Set<string>} */
 const CONTROL_CHANNELS = new Set([
   IPC_CHANNELS.REGIME_STATUS, IPC_CHANNELS.REGIME_STOP, IPC_CHANNELS.REGIME_STOP_ALL,
   IPC_CHANNELS.ENGINE_MAINTENANCE, IPC_CHANNELS.ENGINE_BACKUP_PAUSE, IPC_CHANNELS.ENGINE_BACKUP_RESUME,

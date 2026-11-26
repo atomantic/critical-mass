@@ -6,7 +6,7 @@ import useRealtimeRefresh from '../../hooks/useRealtimeRefresh'
 import { createRequestOwner } from '../../utils/requestOwner.mjs'
 import { completePagedItems } from '../../utils/pagedList.mjs'
 import { apiGet, apiPost, apiPut, apiDelete } from '../../utils/apiClient'
-import { useNotify } from '../Toast'
+import { useNotify } from '../useToast'
 
 const TOUCH_BTN = 'min-h-11 min-w-11 shrink-0 inline-flex items-center justify-center'
 

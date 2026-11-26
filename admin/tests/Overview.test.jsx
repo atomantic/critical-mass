@@ -7,8 +7,8 @@ import { nextRegimeStatusSeq, STATUS_STALE_MS } from '../src/utils/regimeStatusS
 const fixture = vi.hoisted(() => ({ statuses: {}, snapshots: {} }))
 vi.mock('../src/lib/router', () => ({
   Link: ({ to, children, ...props }) => <a href={to} {...props}>{children}</a>,
-  useNavigate: () => vi.fn(),
 }))
+vi.mock('../src/lib/routerContext', () => ({ useNavigate: () => vi.fn() }))
 vi.mock('../src/hooks/useTradeEvents', () => ({
   useMultiRegimeStatuses: () => ({
     statuses: fixture.statuses,
