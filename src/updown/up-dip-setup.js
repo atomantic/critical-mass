@@ -35,6 +35,7 @@
 
 const { FEE_PER_CONTRACT, maxPayoutForRange, expiryMs } = require('./app-order-history');
 const { requireHalfSpread, entryCost, exitProceeds, effectiveHalfSpread } = require('./app-pricing');
+const { calculateRSI: rsi } = require('./indicators');
 
 const MINUTE_MS = 60_000;
 const DAY_MS = 86_400_000;
@@ -94,23 +95,6 @@ const ema = (values, period) => {
   let e = values.slice(0, period).reduce((a, b) => a + b, 0) / period;
   for (let i = period; i < values.length; i++) e = values[i] * k + e * (1 - k);
   return e;
-};
-
-const rsi = (closes, period) => {
-  if (closes.length <= period) return null;
-  let gain = 0, loss = 0;
-  for (let i = 1; i <= period; i++) {
-    const d = closes[i] - closes[i - 1];
-    if (d > 0) gain += d; else loss -= d;
-  }
-  gain /= period; loss /= period;
-  for (let i = period + 1; i < closes.length; i++) {
-    const d = closes[i] - closes[i - 1];
-    gain = (gain * (period - 1) + Math.max(d, 0)) / period;
-    loss = (loss * (period - 1) + Math.max(-d, 0)) / period;
-  }
-  if (loss === 0) return 100;
-  return 100 - 100 / (1 + gain / loss);
 };
 
 const pctFrom = (price, ref) => (ref ? ((price - ref) / ref) * 100 : null);
@@ -180,7 +164,8 @@ const decideUpDip = ({ features: f, position, now, halfSpread, lastExitAt = null
   const turned = f.green1m && f.vs1m != null && f.vs1m >= -params.turnBandPct;
   (turned ? dipReasons : dipBlocks).push(turned ? `1m turned up to the EMA (${fmt(f.vs1m)}%)` : `no 1m turn yet (${fmt(f.vs1m)}% vs 1m EMA${f.green1m ? '' : ', red bar'})`);
   const isDip = dipBlocks.length === 0;
-  const breakdown = f.vs1h != null && f.vs1h < -params.maxBelow1hPct;
+  const trendBlock = !Number.isFinite(f.vs1h) ? '1h trend unavailable'
+    : f.vs1h < -params.maxBelow1hPct ? `1h trend breaking down (${fmt(f.vs1h)}% vs 1h EMA)` : null;
 
   if (position) {
     const m = markPosition(position, f.price, halfSpread);
@@ -194,7 +179,7 @@ const decideUpDip = ({ features: f, position, now, halfSpread, lastExitAt = null
       return { action: 'EXIT', reasons: [`risk exit: down ${fmt(-m.pnlPct)}% of cost (limit ${params.maxLossPct}%)`], expected: { costUsd: position.cost, targetPnlUsd: pnlNowUsd, targetBtc: f.price, floorLossUsd: -position.cost, pnlNowUsd } };
     }
     const addGap = ((position.lastFillPrice - f.price) / position.lastFillPrice) * 100;
-    if (position.contracts < params.maxContracts && daysLeft >= params.minDaysToAdd && !breakdown && f.green1m && addGap >= params.addStepPct) {
+    if (position.contracts < params.maxContracts && daysLeft >= params.minDaysToAdd && !trendBlock && f.green1m && addGap >= params.addStepPct) {
       const contract = position.contract;
       const add = entryCost(f.price, contract, halfSpread);
       return { action: 'ADD', size: 1, contract, reasons: [`${fmt(addGap)}% below last fill`, '1m bar turned up'],
@@ -202,7 +187,7 @@ const decideUpDip = ({ features: f, position, now, halfSpread, lastExitAt = null
     }
     const why = [`P&L ${pnlNowUsd >= 0 ? '+' : ''}${pnlNowUsd} (${fmt(m.pnlPct)}%)`, `${daysLeft.toFixed(1)} days to expiry`];
     if (m.pnlPct >= params.minGainPct && !recovered) why.push('at target but price still below 1m EMA');
-    if (breakdown) why.push(`1h trend breaking down (${fmt(f.vs1h)}% vs 1h EMA) — no adds; Up only, never Down`);
+    if (trendBlock) why.push(`${trendBlock} — no adds`);
     return { action: 'HOLD', reasons: why, expected: { costUsd: position.cost, ...targetFor(position, params, halfSpread), pnlNowUsd } };
   }
 
@@ -210,7 +195,7 @@ const decideUpDip = ({ features: f, position, now, halfSpread, lastExitAt = null
   if (daysLeft < params.minDaysToEnter) {
     return { action: 'STAND_ASIDE', reasons: [`${daysLeft.toFixed(1)} days to expiry (< ${params.minDaysToEnter}) — too late in the week`] };
   }
-  if (breakdown) return { action: 'STAND_ASIDE', reasons: [`1h trend breaking down: ${fmt(f.vs1h)}% vs 1h EMA`] };
+  if (trendBlock) return { action: 'STAND_ASIDE', reasons: [trendBlock] };
   if (lastExitAt != null && now - lastExitAt < params.cooldownMin * MINUTE_MS) {
     return { action: 'STAND_ASIDE', reasons: [`cooling down after exit (${params.cooldownMin} min)`] };
   }

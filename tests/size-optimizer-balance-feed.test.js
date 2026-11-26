@@ -171,6 +171,36 @@ describe('issue #694 — recordCycleForSizeOptimizer feeds the real adapter bala
     assert.notEqual(sizeOptimizer.lastKnownBalance, configMaxUsdcDeployed, 'must never fall back to feeding the cap as the balance');
   });
 
+  it('adds open cost and remaining buy commitments to verified free quote on cycle close', async () => {
+    const orderId = 'balance-feed-equity';
+    const eng = makeEngine({
+      adapter: {
+        getOrder: async () => ({ status: 'FILLED', filledSize: 0.009, averageFilledPrice: 51000 }),
+        getOrderFills: async () => sellFill(orderId, 0.009, 51000),
+        getAccountBalance: async () => {
+          // New-cycle state visible by the time the detached wallet fetch settles.
+          Object.assign(eng._getPositionState(), {
+            totalCostBasis: 575, // $500 tracked in bodies and $75 of legacy open cost
+            celestialBodies: [{ id: 'open-body', tier: 'satellite', assetQty: 0.01, costBasis: 500, avgPrice: 50000 }],
+            pendingLadderOrders: [{ orderId: 'resting-ladder', sizeUsdc: 200 }],
+            pendingEntryOrders: [{ orderId: 'resting-entry', sizeUsdc: 100 }],
+          });
+          return { available: '125' };
+        },
+      },
+    });
+    setupLegacyTp(eng, orderId);
+    Object.assign(eng._getConfig(), {
+      sizeAutoManaged: true, sizeEvaluationCycles: 1, sizeMinSampleSize: 1, maxUsdcDeployed: 1000,
+    });
+
+    await eng._test.handleOrderFill({ orderId, side: 'sell', isPartialFill: false });
+    await flushAsync();
+
+    assert.equal(eng.getState().sizeOptimizer.lastKnownBalance, 1000);
+    assert.equal(eng._getConfig().maxUsdcDeployed, 900);
+  });
+
   it('an adapter with no getAccountBalance method at all does not throw and does not feed the cap back in', async () => {
     // Distinct from the "fetch throws" case above: here the adapter simply
     // never HAS the method (some test/legacy adapters), so

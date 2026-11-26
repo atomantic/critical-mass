@@ -1,15 +1,16 @@
 import Button from './ui/Button'
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { plural } from '../utils/plural.mjs'
 import { formatCurrency, formatPrice, formatAsset } from './charts/chartUtils'
 import { getBaseCurrency, getQuoteCurrency } from '../utils/productId.mjs'
 import { pairQuery as buildPairQuery } from '../utils/api'
 import { apiGet } from '../utils/apiClient'
+import { readRegimeStatus } from '../utils/readRegimeStatus'
 import { pnlColorClass, signedPrefix } from '../utils/pnlFormat.mjs'
 import useRealtimeRefresh from '../hooks/useRealtimeRefresh'
 import { useRegimeEvents } from '../hooks/useTradeEvents'
 
-function CostBasisRegime({ exchange = 'coinbase', pair }) {
+function CostBasisRegime({ exchange = 'coinbase', pair, readInitialStatus = readRegimeStatus }) {
   const [status, setStatus] = useState(null)
   const [fillAggregates, setFillAggregates] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -21,9 +22,11 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
   const pairQuery = buildPairQuery(pair)
 
   const readState = useRef(null)
-  const { status: liveStatus } = useRegimeEvents(exchange, pair)
+  const { status: liveStatus, statusSeq } = useRegimeEvents(exchange, pair)
   const liveStatusRef = useRef(liveStatus)
   liveStatusRef.current = liveStatus
+  const liveSeqRef = useRef(statusSeq)
+  liveSeqRef.current = statusSeq
 
   const fetchData = useCallback(async () => {
     const session = readState.current
@@ -31,29 +34,32 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
     // A change that lands mid-read must not be lost: read again once this one ends.
     if (session.inFlight) { session.rerun = true; return }
     session.inFlight = true
+    const getStatus = session.attempted ? readRegimeStatus : readInitialStatus
+    session.attempted = true
     const liveStatusAtStart = liveStatusRef.current
     const controller = new AbortController()
     session.controller = controller
 
-    const read = async (endpoint, name, revision) => {
+    const read = async (endpoint, name, revision, get = apiGet) => {
       const conditionalQuery = revision ? `${pairQuery ? '&' : '?'}revision=${encodeURIComponent(revision)}` : ''
-      const result = await apiGet(`/api/${exchange}/${endpoint}${pairQuery}${conditionalQuery}`, { signal: controller.signal })
+      const result = await get(`/api/${exchange}/${endpoint}${pairQuery}${conditionalQuery}`, { signal: controller.signal })
       if (!result.ok) throw new Error(result.status ? `${name} fetch failed: HTTP ${result.status}` : result.error)
-      return result.data
+      return result
     }
 
     try {
       // Settle the whole batch even when one endpoint fails, so interval ticks
       // cannot overlap a still-pending request from the failed batch.
       const results = await Promise.allSettled([
-        read('regime/status', 'Status'),
+        read('regime/status', 'Status', null, getStatus),
         read('regime/fills/cycles', 'Fill cycles', session.aggregates?.revision),
-        session.config ? Promise.resolve(session.config) : read('config', 'Config'),
+        session.config ? Promise.resolve({ data: session.config }) : read('config', 'Config'),
       ])
       if (!session.active) return
       const failure = results.find(result => result.status === 'rejected')
       if (failure) throw failure.reason
-      const [statusData, fillsData, configData] = results.map(result => result.value)
+      const { data: statusData, seq } = results[0].value
+      const [fillsData, configData] = results.slice(1).map(result => result.value.data)
 
       if (fillsData.unchanged && (!session.aggregates || fillsData.revision !== session.aggregates.revision)) {
         throw new Error('Fill cycles returned an invalid unchanged revision')
@@ -64,7 +70,8 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
       session.hasSnapshot = true
       setStatus(statusData.status)
       // A newer socket price may have arrived while this batch was in flight.
-      if (liveStatusRef.current === liveStatusAtStart || !(liveStatusRef.current?.market?.lastPrice > 0)) {
+      if (!(liveStatusRef.current?.market?.lastPrice > 0)
+        || (liveSeqRef.current ? seq > liveSeqRef.current : liveStatusRef.current === liveStatusAtStart)) {
         setCurrentPrice(statusData.status?.market?.lastPrice || 0)
       }
       if (!fillsData.unchanged) {
@@ -89,7 +96,7 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
         fetchData()
       }
     }
-  }, [exchange, pairQuery])
+  }, [exchange, pairQuery, readInitialStatus])
 
   useEffect(() => {
     const session = { active: true, inFlight: false, hasSnapshot: false, config: null, aggregates: null, controller: null }
@@ -123,6 +130,21 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
     if (livePrice > 0) setCurrentPrice(livePrice)
   }, [livePrice])
 
+  const currentFills = useMemo(() => {
+    const entries = []
+    const exits = []
+    for (const fill of fillAggregates?.detailFills ?? []) {
+      if ((fill.cycleId || 'current') !== 'current') continue
+      if (fill.side === 'buy') entries.push(fill)
+      if (fill.side === 'sell') exits.push(fill)
+    }
+    return {
+      rows: [...entries, ...exits].sort((a, b) => a.timestamp - b.timestamp),
+      hasEntries: entries.length > 0,
+    }
+  }, [fillAggregates])
+  const cycles = fillAggregates?.cycles ?? []
+
   if (error) {
     return (
       <div className="flex flex-col items-center justify-center h-64 gap-4">
@@ -149,12 +171,6 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
   const isDryRun = status?.isDryRun
   const baseCurrency = getBaseCurrency(productId)
   const quoteCurrency = getQuoteCurrency(productId || pair)
-
-  const cycles = (fillAggregates?.cycles || []).map(cycle => ({
-    ...cycle,
-    entries: (fillAggregates.detailFills || []).filter(fill => (fill.cycleId || 'current') === cycle.cycleId && fill.side === 'buy'),
-    exits: (fillAggregates.detailFills || []).filter(fill => (fill.cycleId || 'current') === cycle.cycleId && fill.side === 'sell'),
-  }))
 
   // Calculate totals
   const totalAsset = position.totalAsset || 0
@@ -347,9 +363,9 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
                   </div>
 
                   {/* Fill details (collapsed by default for completed cycles) */}
-                  {cycle.cycleId === 'current' && cycle.entries.length > 0 && (
+                  {cycle.cycleId === 'current' && currentFills.hasEntries && (
                     <div className="mt-3 pt-3 border-t border-gray-700">
-                      {cycle.entryCount + cycle.exitCount > cycle.entries.length + cycle.exits.length && <p className="text-xs text-gray-400 mb-2">Recent fill details shown; cycle totals include all fills.</p>}
+                      {cycle.entryCount + cycle.exitCount > currentFills.rows.length && <p className="text-xs text-gray-400 mb-2">Recent fill details shown; cycle totals include all fills.</p>}
                       <div className="overflow-x-auto">
                         <table className="w-full text-xs">
                           <thead>
@@ -362,9 +378,7 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
                             </tr>
                           </thead>
                           <tbody>
-                            {[...cycle.entries, ...cycle.exits]
-                              .sort((a, b) => a.timestamp - b.timestamp)
-                              .map((fill, idx) => (
+                            {currentFills.rows.map((fill, idx) => (
                                 <tr key={idx} className="border-t border-gray-700/50">
                                   <td className="py-1 text-gray-400">
                                     {new Date(fill.timestamp).toLocaleTimeString()}

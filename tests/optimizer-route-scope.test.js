@@ -2,6 +2,9 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const { SimulationRunCoordinator } = require('../src/simulation-run-coordinator');
+const { OPTIMIZER_CACHE_VERSION, resolveOptimizerFees } = require('../src/simulation-policy');
+const { DEFAULT_FEE_RATE_PER_SIDE } = require('../shared/fee-defaults.mjs');
+const config = require('../src/config-utils');
 
 const optimizerPath = require.resolve('../src/optimizer-engine');
 const { compareOptimizerResults } = require(optimizerPath);
@@ -17,7 +20,11 @@ require.cache[optimizerPath] = {
   },
 };
 delete require.cache[require.resolve('../src/routes/backtest-routes')];
+const originalGetFundConfig = config.getFundConfig;
+let getTestFundConfig = originalGetFundConfig;
+config.getFundConfig = (...args) => getTestFundConfig(...args);
 const registerBacktestRoutes = require('../src/routes/backtest-routes');
+config.getFundConfig = originalGetFundConfig;
 
 const resultFor = (productId, totalValue) => ({
   productId,
@@ -29,7 +36,13 @@ const resultFor = (productId, totalValue) => ({
 });
 
 describe('optimizer route event scoping', () => {
-  it('isolates concurrent runs by runId, exchange, and pair', async () => {
+  it('isolates concurrent runs and resolves fees by exchange and fund', async (t) => {
+    t.after(() => { getTestFundConfig = originalGetFundConfig; });
+    getTestFundConfig = (exchange, pair) => ({
+      ...originalGetFundConfig(exchange, pair),
+      ...(exchange === 'coinbase' && pair === 'BTC-USDC' ? { feeRate: 0.0025 } : {}),
+      ...(exchange === 'gemini' && pair === 'BTCUSD' ? { feeRate: 0 } : {}),
+    });
     pending.length = 0;
     let runHandler;
     const events = [];
@@ -61,6 +74,9 @@ describe('optimizer route event scoping', () => {
     // The coordinator owns the promise lifecycle and schedules the expensive
     // work after the HTTP acknowledgement is sent.
     await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(pending[0].options.fees, { feePercent: 0.25, rebatePercent: 0 });
+    assert.deepEqual(pending[1].options.fees, { feePercent: 0, rebatePercent: 0 });
+    assert.deepEqual(resolveOptimizerFees(), { feePercent: DEFAULT_FEE_RATE_PER_SIDE * 100, rebatePercent: 0 });
     pending[0].options.onProgress({ current: 1, total: 1, percentComplete: 100, latestResult: resultFor('BTC-USDC', 101).bestResult });
     pending[1].options.onProgress({ current: 1, total: 1, percentComplete: 100, latestResult: resultFor('BTCUSD', 202).bestResult });
     pending[0].resolve(resultFor('BTC-USDC', 101));
@@ -175,7 +191,31 @@ describe('optimizer route event scoping', () => {
     await new Promise(resolve => setImmediate(resolve));
   });
 
-  it('reuses a legacy cache whose unused buy amounts were persisted', () => {
+  it('ignores cache entries from the old simulation model or a previous fund rate', () => {
+    let cacheHandler;
+    let entry;
+    registerBacktestRoutes({
+      post: () => {}, delete: () => {},
+      get: (path, handler) => { if (path.endsWith('/optimizer/cache')) cacheHandler = handler; },
+    }, {
+      io: { emit: () => {} },
+      readJSON: () => entry,
+      writeJSON: () => {}, DATA_DIR: '/tmp',
+    });
+    const request = { params: { exchange: 'coinbase' }, query: { pair: 'BTC-USDC' } };
+    const current = { version: OPTIMIZER_CACHE_VERSION, cached: false, config: resolveOptimizerFees() };
+    const read = (cache) => {
+      entry = cache;
+      let result;
+      cacheHandler(request, { json(body) { result = body; } });
+      return result.cached;
+    };
+    assert.equal(read(current), true);
+    assert.equal(read({ ...current, version: undefined }), false);
+    assert.equal(read({ ...current, config: { ...current.config, feePercent: 0.25 } }), false);
+  });
+
+  it('reuses a current cache whose unused buy amounts were persisted', () => {
     pending.length = 0;
     let optimizerHandler;
     registerBacktestRoutes({
@@ -184,9 +224,12 @@ describe('optimizer route event scoping', () => {
     }, {
       io: { emit: () => {} },
       readJSON: () => ({
+        version: OPTIMIZER_CACHE_VERSION,
+        cached: false,
         fundSize: 10000,
         productId: 'BTC-USDC',
         config: {
+          ...resolveOptimizerFees(),
           intervals: ['daily'], markups: [2], periods: ['30D'],
           buyAmounts: { '5min': 1, '10min': 2, '30min': 10, '1hour': 50, '4hour': 100, daily: 500 },
         },
@@ -210,16 +253,16 @@ describe('optimizer route event scoping', () => {
 });
 
 describe('optimizer streaming ranking matches completed ranking', () => {
-  const record = (period, totalValue, underCovered) => ({
+  const record = (period, annualizedRoi, underCovered) => ({
     params: { intervalType: 'daily', sellMarkupPercent: 2, period, underCovered },
-    metrics: { totalValue },
+    metrics: { annualizedRoi, totalValue: 10_000 + annualizedRoi },
   });
-  const covered = record('30D', 11000, false);
-  const uncovered = record('1Y', 12000, true);
-  const improved = record('60D', 11500, false);
-  const tied = record('90D', 11500, false);
-  const uncoveredImproved = record('90D', 13000, true);
-  const uncoveredTied = record('60D', 13000, true);
+  const covered = record('30D', 10, false);
+  const uncovered = record('1Y', 20, true);
+  const improved = record('60D', 15, false);
+  const tied = record('90D', 15, false);
+  const uncoveredImproved = record('90D', 30, true);
+  const uncoveredTied = record('60D', 30, true);
 
   for (const { name, records, promotions } of [
     { name: 'covered result arrives first', records: [covered, uncovered], promotions: [covered] },

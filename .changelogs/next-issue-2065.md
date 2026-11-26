@@ -1,0 +1,2 @@
+- Improve admin responsiveness with a single shared Systems preview, lightweight Overview cards that load independently, and visibility-aware chart updates.
+- Share concurrent candle and fund status reads, reuse the Up Dip snapshot across its panels, and throttle background Sentinel alert refreshes.

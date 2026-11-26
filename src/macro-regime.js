@@ -137,14 +137,15 @@ const classifyMacroMode = (score, currentMode, hysteresis, thresholds) => {
   switch (currentMode) {
     case 'DECLINE':
       if (score > decline + hysteresis) {
-        return score > markup ? 'MARKUP' : (score > accumulation ? 'RANGING' : 'ACCUMULATION');
+        if (score > markup + hysteresis) return 'MARKUP';
+        return score > accumulation + hysteresis ? 'RANGING' : 'ACCUMULATION';
       }
       return 'DECLINE';
 
     case 'ACCUMULATION':
       if (score < decline - hysteresis) return 'DECLINE';
       if (score > accumulation + hysteresis) {
-        return score > markup ? 'MARKUP' : 'RANGING';
+        return score > markup + hysteresis ? 'MARKUP' : 'RANGING';
       }
       return 'ACCUMULATION';
 
@@ -156,8 +157,8 @@ const classifyMacroMode = (score, currentMode, hysteresis, thresholds) => {
 
     case 'MARKUP':
       if (score < markup - hysteresis) {
-        if (score < decline) return 'DECLINE';
-        if (score < accumulation) return 'ACCUMULATION';
+        if (score < decline - hysteresis) return 'DECLINE';
+        if (score < accumulation - hysteresis) return 'ACCUMULATION';
         return 'RANGING';
       }
       return 'MARKUP';
@@ -205,12 +206,12 @@ const createMacroRegime = (exchange, config, adapter, productId) => {
   let suggestion = null;
 
   /**
-   * Fetch hourly candles (200 most recent)
+   * Fetch 250 hours of candles to warm EMA(200) despite incomplete or missing bars.
    * @returns {Promise<Array>}
    */
   const fetchHourlyCandles = async () => {
     const now = Math.floor(Date.now() / 1000);
-    const start = now - (200 * 3600); // 200 hours ago
+    const start = now - (250 * 3600);
     return adapter.getCandles(productId, start, now, 'ONE_HOUR');
   };
 
@@ -294,11 +295,11 @@ const createMacroRegime = (exchange, config, adapter, productId) => {
     const prevMode = mode;
     score = newScore;
 
-    const hysteresis = config.macroHysteresis || 5;
+    const hysteresis = config.macroHysteresis ?? 5;
     const thresholds = {
-      decline: config.macroDeclineThreshold || -50,
-      accumulation: config.macroAccumulationThreshold || -15,
-      markup: config.macroMarkupThreshold || 35,
+      decline: config.macroDeclineThreshold ?? -50,
+      accumulation: config.macroAccumulationThreshold ?? -15,
+      markup: config.macroMarkupThreshold ?? 35,
     };
 
     mode = classifyMacroMode(score, mode, hysteresis, thresholds);
@@ -412,21 +413,21 @@ const createMacroRegime = (exchange, config, adapter, productId) => {
     switch (mode) {
       case 'ACCUMULATION':
         return {
-          sizeMult: config.macroAccumulationSizeMult || 1.3,
-          tpMult: config.macroAccumulationTpMult || 0.85,
-          offsetMult: config.macroAccumulationOffsetMult || 0.8,
+          sizeMult: config.macroAccumulationSizeMult ?? 1.3,
+          tpMult: config.macroAccumulationTpMult ?? 0.85,
+          offsetMult: config.macroAccumulationOffsetMult ?? 0.8,
         };
       case 'MARKUP':
         return {
-          sizeMult: config.macroMarkupSizeMult || 0.7,
-          tpMult: config.macroMarkupTpMult || 1.3,
-          offsetMult: config.macroMarkupOffsetMult || 1.2,
+          sizeMult: config.macroMarkupSizeMult ?? 0.7,
+          tpMult: config.macroMarkupTpMult ?? 1.3,
+          offsetMult: config.macroMarkupOffsetMult ?? 1.2,
         };
       case 'DECLINE':
         return {
-          sizeMult: config.macroDeclineSizeMult || 0.4,
-          tpMult: config.macroDeclineTpMult || 0.7,
-          offsetMult: config.macroDeclineOffsetMult || 1.5,
+          sizeMult: config.macroDeclineSizeMult ?? 0.4,
+          tpMult: config.macroDeclineTpMult ?? 0.7,
+          offsetMult: config.macroDeclineOffsetMult ?? 1.5,
         };
       default: // RANGING
         return { sizeMult: 1.0, tpMult: 1.0, offsetMult: 1.0 };

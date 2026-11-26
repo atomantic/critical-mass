@@ -27,6 +27,18 @@ describe('expiry and contract choice', () => {
 });
 
 describe('decideUpDip', () => {
+  it('blocks entries and adds with no hourly EMA while retaining exit advice', () => {
+    const features = dipFeatures({ vs1h: null });
+    const contract = pickContract(features.price, SUN);
+    const decide = (position) => decideUpDip({
+      features, position, now: SUN, halfSpread: 0, params: { ...UP_DIP_PARAMS, maxContracts: 2 },
+    });
+    assert.match(decide(null).reasons[0], /1h trend unavailable/);
+    const position = { contract, contracts: 1, lastFillPrice: features.price + 500, cost: 800 };
+    assert.equal(decide(position).action, 'HOLD');
+    assert.equal(decide({ ...position, cost: 500 }).action, 'EXIT');
+  });
+
   it('ENTERs on the turn after a dip with expected P&L after fees', () => {
     const d = decideUpDip({ features: dipFeatures(), position: null, now: SUN, halfSpread: 0 });
     assert.equal(d.action, 'ENTER');
@@ -69,7 +81,7 @@ const path1m = (start, n, priceAt) => Array.from({ length: n }, (_, i) => {
   const p = priceAt(i), q = priceAt(i + 1);
   return { timestamp: start + i * MIN, open: p, close: q, high: Math.max(p, q) + 1, low: Math.min(p, q) - 1, volume: 1 };
 });
-// Completed 15m bars from 1m candles up to index i (the live cache shape).
+// Completed 15m bars from 1m candles up to index i, plus a seeded hourly trend.
 const tfAt = (candles, i) => {
   const m15 = [];
   for (const c of candles.slice(0, i + 1)) {
@@ -79,7 +91,12 @@ const tfAt = (candles, i) => {
     else m15.push({ ...c, timestamp: t });
   }
   m15.pop(); // the bucket in progress
-  return { '1m': candles.slice(Math.max(0, i - 179), i + 1), '15m': m15 };
+  const hour = 60 * MIN;
+  const startHour = Math.floor(candles[0].timestamp / hour) * hour;
+  const h1 = Array.from({ length: 20 }, (_, n) => ({
+    ...candles[0], timestamp: startHour - (20 - n) * hour,
+  }));
+  return { '1m': candles.slice(Math.max(0, i - 179), i + 1), '15m': m15, '1h': h1 };
 };
 // 400 flat minutes first so the 15m EMA20 has 20 completed bars.
 const priceAt = (i) => (i < 400 ? 65000 : i < 430 ? 65000 - (i - 400) * 22 : 64340 + (i - 430) * 15);

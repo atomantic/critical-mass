@@ -47,7 +47,7 @@ export default function SizeOptimizerPanel({ sizeOptimizer }) {
                     <span className="text-purple-400 font-mono">{sizeOptimizer.stats?.p90StepsUsed}</span>
                   </div>
                   <div>
-                    <span className="text-gray-400">Balance:</span>{' '}
+                    <span className="text-gray-400">Fund equity:</span>{' '}
                     <span className="text-white font-mono">${sizeOptimizer.lastKnownBalance?.toLocaleString()}</span>
                   </div>
                 </div>

@@ -1,5 +1,5 @@
 import Button from '../ui/Button'
-import { useMemo, useState, useRef, useEffect, Suspense } from 'react'
+import { memo, useMemo, useState, useRef, useEffect, Suspense } from 'react'
 import { Canvas } from '@react-three/fiber'
 import { Pause, Play } from '../icons'
 import CelestialScene from './CelestialScene'
@@ -9,6 +9,7 @@ import useCanvasActive from '../../hooks/useCanvasActive'
 import { plural } from '../../utils/plural.mjs'
 
 const EMPTY_BODIES = []
+const EMPTY_ORDERS = []
 const MOTION_PAUSED_STORAGE_KEY = 'celestial-motion-paused'
 
 // Explicit operator choice wins over the OS preference; null means "follow
@@ -24,8 +25,8 @@ function readStoredMotionPreference() {
 /**
  * Card wrapper: header, 3D canvas container, and legend
  */
-const CelestialCard = ({ celestial, pendingOrders = [], currentPrice, maxUsdcDeployed, baseCurrency = 'BTC', lazyMount = false }) => {
-  const bodies = celestial?.bodies || EMPTY_BODIES
+const CelestialCard = ({ celestial, pendingOrders = EMPTY_ORDERS, maxUsdcDeployed, baseCurrency = 'BTC' }) => {
+  const bodies = celestial?.bodies ?? EMPTY_BODIES
 
   const prefersReducedMotion = useReducedMotion()
   const [explicitMotionPaused, setExplicitMotionPaused] = useState(readStoredMotionPreference)
@@ -34,9 +35,8 @@ const CelestialCard = ({ celestial, pendingOrders = [], currentPrice, maxUsdcDep
   // Stop rendering frames while the canvas is off-screen or the tab is hidden.
   // The motion toggle / reduced-motion still win: they never resume motion.
   const canvasBoxRef = useRef(null)
-  const { active: canvasActive, everInView } = useCanvasActive(canvasBoxRef)
+  const { active: canvasActive } = useCanvasActive(canvasBoxRef)
   const frameloop = motionPaused || !canvasActive ? 'demand' : 'always'
-  const mountCanvas = !lazyMount || everInView
 
   const toggleMotionPaused = () => {
     const next = !motionPaused
@@ -114,7 +114,7 @@ const CelestialCard = ({ celestial, pendingOrders = [], currentPrice, maxUsdcDep
           <div className="absolute inset-0 flex items-center justify-center text-gray-400 text-xs">
             No celestial bodies yet
           </div>
-        ) : !mountCanvas ? null : (
+        ) : (
           <Suspense fallback={
             <div className="absolute inset-0 flex items-center justify-center text-gray-400 text-xs">
               Loading 3D scene...
@@ -168,4 +168,4 @@ const CelestialCard = ({ celestial, pendingOrders = [], currentPrice, maxUsdcDep
 // hook; a hook that ran while disabled would never attach its observer.
 const CelestialVisualization = (props) => (props.celestial?.enabled ? <CelestialCard {...props} /> : null)
 
-export default CelestialVisualization
+export default memo(CelestialVisualization)

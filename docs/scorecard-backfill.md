@@ -5,6 +5,24 @@ for a dry run. It computes and validates replay records and existing daily
 history without writing anything. Add `--apply` to explicitly publish them.
 `--step 5` controls minutes between predictions.
 
+Adaptive weights learn from directional indicator scores at matching horizons
+even when the composite signal skips the trade. The live windows are 1m, 5m,
+15m and 1h. The replay uses 5m, 15m and 1h because its source file has 5m
+candles. The dashboard's prediction and accuracy totals count published Up
+calls. Legacy multi-timeframe outcome rows contribute only their matching
+timeframe to adaptive training.
+
+The live contract scorecard uses the Coinbase BTC marks supplied to UpDown as
+a proxy for the app's contract index. It records the first observed bound touch
+and closes those listing terms through expiry, or settles against a fresh
+expiry mark. It compares proceeds after the app fee with the modeled entry
+cost. Recovery can use retained journal prices and ticks
+received during startup. A feed gap can hide touches between observed marks.
+
+The retired `GET /api/updown/candles` route returned Crypto.com candles and had
+no in-repository consumers. UpDown's BTC charts use Coinbase, available through
+the shared `GET /api/candles/coinbase` route.
+
 UpDown keeps only the newest 30 daily journals (`SCORECARD_RETENTION_DAYS` in
 `src/updown/scorecard.js`) and prunes the rest at every start and daily. The
 script therefore clamps `--from` to the oldest retained UTC day (today and the

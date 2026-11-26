@@ -12,9 +12,9 @@ export default function MacroRegimePanel({ config, macro }) {
         const macroStyle = MACRO_COLORS[m.mode] || MACRO_COLORS.RANGING
         const mults = (() => {
           switch (m.mode) {
-            case 'ACCUMULATION': return { size: config.macroAccumulationSizeMult || 1.3, tp: config.macroAccumulationTpMult || 0.85, offset: config.macroAccumulationOffsetMult || 0.8 }
-            case 'MARKUP': return { size: config.macroMarkupSizeMult || 0.7, tp: config.macroMarkupTpMult || 1.3, offset: config.macroMarkupOffsetMult || 1.2 }
-            case 'DECLINE': return { size: config.macroDeclineSizeMult || 0.4, tp: config.macroDeclineTpMult || 0.7, offset: config.macroDeclineOffsetMult || 1.5 }
+            case 'ACCUMULATION': return { size: config.macroAccumulationSizeMult ?? 1.3, tp: config.macroAccumulationTpMult ?? 0.85, offset: config.macroAccumulationOffsetMult ?? 0.8 }
+            case 'MARKUP': return { size: config.macroMarkupSizeMult ?? 0.7, tp: config.macroMarkupTpMult ?? 1.3, offset: config.macroMarkupOffsetMult ?? 1.2 }
+            case 'DECLINE': return { size: config.macroDeclineSizeMult ?? 0.4, tp: config.macroDeclineTpMult ?? 0.7, offset: config.macroDeclineOffsetMult ?? 1.5 }
             default: return { size: 1.0, tp: 1.0, offset: 1.0 }
           }
         })()

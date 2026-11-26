@@ -1,0 +1,1 @@
+- UpDown now holds crossover signals for the completed candle across live and scorecard polls, uses historical candle times for replay VWAP, and confirms a sustained BUY from SELL. Momentum, ADX, Stochastic, divergence, daily trend context, tick confidence, and paper-position marks now use consistent indicator and price inputs.

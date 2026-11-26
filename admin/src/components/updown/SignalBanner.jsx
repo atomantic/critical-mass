@@ -54,7 +54,7 @@ export default function SignalBanner({ signal, indicators, timeRemaining, positi
   const trendFilter = indicators?.trendFilter
   const volatility = indicators?.volatility
   const confluence = indicators?.confluence
-  const horizonPrediction = signal?.horizonPrediction
+  const horizonPrediction = indicators?.horizonPrediction ?? signal?.horizonPrediction
   const dailySMA = indicators?.dailySMA
   const flushSetup = indicators?.flushSetup
 

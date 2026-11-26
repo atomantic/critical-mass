@@ -1,5 +1,5 @@
 import Button from '../ui/Button'
-import { useEffect, useMemo } from 'react'
+import { memo, useMemo } from 'react'
 import { BarChart3 } from '../icons'
 import useCandleData, { DEFAULT_VIEWS } from '../../hooks/useCandleData'
 import { BTC_TOOLTIP_STYLE, formatBTCPrice, AXIS_TICK, GRID } from './chartUtils'
@@ -122,10 +122,11 @@ function IndicatorSubChart({ kind, data, timeframe }) {
  * @param {number} [props.height] - main chart height (260)
  * @param {string} [props.className]
  */
-export default function BTCPriceChart({
+function BTCPriceChart({
   exchange,
   tickPrice,
   tickTimestamp,
+  subscribeTicks,
 
   views: customViews,
   defaultView = '1d',
@@ -159,10 +160,10 @@ export default function BTCPriceChart({
   const isIntervalMode = !!defaultInterval
   const hookOptions = useMemo(() => {
     if (defaultInterval) {
-      return { defaultInterval, defaultRange, signalAnnotations, maxBucketsOverride }
+      return { defaultInterval, defaultRange, signalAnnotations, maxBucketsOverride, subscribeTicks }
     }
-    return { views: customViews || DEFAULT_VIEWS, defaultView, signalAnnotations, maxBucketsOverride }
-  }, [defaultInterval, defaultRange, customViews, defaultView, signalAnnotations, maxBucketsOverride])
+    return { views: customViews || DEFAULT_VIEWS, defaultView, signalAnnotations, maxBucketsOverride, subscribeTicks }
+  }, [defaultInterval, defaultRange, customViews, defaultView, signalAnnotations, maxBucketsOverride, subscribeTicks])
 
   const {
     chartData, view, setView, isLoading, error, retry, viewConfig, views,
@@ -187,15 +188,6 @@ export default function BTCPriceChart({
     data[data.length - 1] = last
     return data
   }, [chartData, exchangeTickData, exchangeLines])
-
-  // Attach indicator data to current bucket
-  useEffect(() => {
-    if (!indicators || !indicatorTf) return
-    const tf = indicators[indicatorTf]
-    if (!tf) return
-    // This is deliberately a ref-style mutation on the Map inside useCandleData.
-    // The periodic syncChart() in the hook will pick it up.
-  }, [indicators, indicatorTf])
 
   // A unique category keeps repeated time labels (e.g. across days) aligned.
   const displayData = useMemo(() => enrichedData.map((point, chartIndex) => ({ ...point, chartIndex })), [enrichedData])
@@ -456,3 +448,5 @@ export default function BTCPriceChart({
     </div>
   )
 }
+
+export default memo(BTCPriceChart)

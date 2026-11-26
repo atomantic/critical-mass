@@ -101,12 +101,14 @@ function createView(props = {}) {
       return () => registrations.delete(id)
     }, [])
   }
+  const apiClient = apiClientStub(fetchImpl)
   const stubs = {
     react: React,
     './ui/Button': ({ children, ...props }) => React.createElement('button', props, children),
     '../hooks/useRealtimeRefresh': asHookModule(useRealtimeRefresh),
     '../hooks/useTradeEvents': { useRegimeEvents: () => ({ status: null }) },
-    '../utils/apiClient': apiClientStub(fetchImpl),
+    '../utils/apiClient': apiClient,
+    '../utils/readRegimeStatus': { readRegimeStatus: apiClient.apiGet },
     './charts/chartUtils': { formatCurrency: value => `$${value}`, formatPrice: value => `$${value}`, formatAsset: String },
     '../utils/productId.mjs': {
       getBaseCurrency: productId => productId?.split('-')[0] || 'BTC',

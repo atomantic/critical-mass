@@ -1,76 +1,83 @@
 // @ts-check
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
-
 const { createSignalEngine } = require('../../../src/updown/signal-engine');
 
-// issue #212C — the scorecard's 60s sampler and the live 5s signal cycle must NOT
-// share a signal-engine instance. createSignalEngine mutates a private `prevIndicators`
-// closure on every computeSignals() call for stoch/MACD crossover detection; if two
-// consumers call computeSignals() on the SAME instance, whichever fires first "consumes"
-// a crossover (advances prevIndicators past it) and the other sees already-post-cross
-// state, silently losing the +90 MACD crossover bonus a moment later.
-//
-// Builds a synthetic 5m close series with a clean bearish->bullish MACD crossover
-// between two candle snapshots, then drives it through the engine(s).
-
-const closesToCandles = (closes) => closes.map((c, i) => ({
-  open: c, high: c, low: c, close: c, volume: 1, timestamp: i * 300_000,
+const toCandles = (closes) => closes.map((close, i) => ({
+  open: close, high: close, low: close, close, volume: 1, timestamp: i * 300_000,
 }));
 
-const buildCrossoverCandles = () => {
-  const closes = [];
-  let price = 100;
-  for (let i = 0; i < 30; i++) closes.push(price); // flat warmup
-  for (let i = 0; i < 10; i++) { price -= 1.5; closes.push(price); } // decline (macd < signal)
-  const beforeCandles = closesToCandles(closes);
+describe('completed-bar indicator scoring', () => {
+  it('holds each crossover through 5s live and 60s scorecard polls until the next completed bar', () => {
+    const decline = Array.from({ length: 10 }, (_, i) => 100 - 1.5 * (i + 1));
+    const bars = toCandles([...Array(30).fill(100), ...decline, 85, 85, 103, 109]);
+    // Keep %K oversold as the bullish MACD cross closes. A rising close
+    // above the preceding equal lows also crosses the %D line on this bar.
+    for (const bar of bars) {
+      bar.high = 200;
+      bar.low = 85;
+    }
+    let candles = bars.slice(0, 42);
+    let now = Date.UTC(2020, 0, 1);
+    const adapter = { getCandles: tf => tf === '5m' ? candles : [] };
+    const live = createSignalEngine(adapter, { now: () => now });
+    const scorecard = createSignalEngine(adapter, { now: () => now });
+    const scores = (engine) => engine.computeSignals().timeframes['5m'].scores;
+    scores(live);
+    scores(scorecard);
 
-  const closes2 = [...closes];
-  let p2 = closes2[closes2.length - 1];
-  for (let i = 0; i < 3; i++) { p2 += 6; closes2.push(p2); } // sharp rally (macd crosses > signal)
-  const afterCandles = closesToCandles(closes2);
-
-  return { beforeCandles, afterCandles };
-};
-
-describe('signal-engine crossover state isolation (issue #212C)', () => {
-  it('a dedicated engine instance still detects a crossover after another instance already consumed it', () => {
-    const { beforeCandles, afterCandles } = buildCrossoverCandles();
-    const store = { five: beforeCandles };
-    // Only 5m carries real data; every other timeframe returns [] (harmless — computeTimeframeSignals
-    // short-circuits to zeros below length 2), keeping the fixture focused on the mechanism under test.
-    const makeAdapter = () => ({ getCandles: (tf) => (tf === '5m' ? store.five : []) });
-
-    const engineA = createSignalEngine(makeAdapter()); // stands in for the live 5s cycle
-    const engineB = createSignalEngine(makeAdapter()); // stands in for the scorecard's 60s sampler
-
-    // Seed both engines with identical pre-cross baseline state.
-    engineA.computeSignals();
-    engineB.computeSignals();
-
-    // Advance to the post-cross candle snapshot. The sampler (B) fires first.
-    store.five = afterCandles;
-    const resultB = engineB.computeSignals();
-    const resultA = engineA.computeSignals();
-
-    // Both engines independently observe the bullish MACD crossover (+90) because each
-    // has its own prevIndicators memory — this is the fix.
-    assert.equal(resultB.timeframes['5m'].scores.macd, 90, 'sampler engine detects the crossover');
-    assert.equal(resultA.timeframes['5m'].scores.macd, 90, 'live-cycle engine independently detects the same crossover');
+    candles = bars.slice(0, 43);
+    const onClose = scores(scorecard);
+    assert.equal(onClose.stochastic, 90);
+    assert.equal(onClose.macd, 90);
+    for (let offset = 0; offset < 300_000; offset += 5_000) {
+      if (offset % 60_000 === 0) assert.deepEqual(scores(scorecard), onClose);
+      assert.deepEqual(scores(live), onClose);
+      now += 5_000;
+    }
+    candles = bars;
+    const next = scores(live);
+    assert.notEqual(next.stochastic, 90);
+    assert.notEqual(next.macd, 90);
+    assert.deepEqual(scores(scorecard), next);
+    assert.deepEqual(scores(createSignalEngine(adapter)), next);
   });
 
-  it('demonstrates the bug: a SHARED engine instance loses the crossover for whichever consumer computes second', () => {
-    const { beforeCandles, afterCandles } = buildCrossoverCandles();
-    const store = { five: beforeCandles };
-    const shared = createSignalEngine({ getCandles: (tf) => (tf === '5m' ? store.five : []) });
+  it('holds the MACD continuation floor on repeated reads of a growing histogram', () => {
+    const prices = Array.from({ length: 63 }, (_, i) => 100 + i + Math.max(0, i - 60) ** 2);
+    const five = toCandles(prices);
+    const hour = toCandles(Array.from({ length: 210 }, (_, i) => 100 + i));
+    const engine = createSignalEngine({ getCandles: tf => ({ '1h': hour, '5m': five })[tf] ?? [] });
+    for (let i = 0; i < 2; i++) {
+      const result = engine.computeSignals();
+      assert.equal(result.trendFilter.trendBias, 'bullish');
+      assert.equal(result.timeframes['5m'].scores.macd, 50);
+    }
+    const neutral = createSignalEngine({ getCandles: tf => tf === '5m' ? five : [] });
+    assert.ok(neutral.computeSignals().timeframes['5m'].scores.macd < 50);
+  });
 
-    shared.computeSignals(); // baseline
+  it('scores a fully warmed zero stochastic and keeps a partial window neutral', () => {
+    const bars = toCandles(Array(16).fill(85)).map(c => ({ ...c, high: 90 }));
+    let candles = bars.slice(0, -1);
+    const engine = createSignalEngine({ getCandles: tf => tf === '5m' ? candles : [] });
+    const timeframe = () => engine.computeSignals().timeframes['5m'];
+    assert.equal(timeframe().indicators.stochastic, null);
+    assert.equal(timeframe().scores.stochastic, 0);
+    candles = bars;
+    assert.deepEqual(timeframe().indicators.stochastic, { k: 0, d: 0 });
+    assert.equal(timeframe().scores.stochastic, 60);
+  });
 
-    store.five = afterCandles;
-    const samplerResult = shared.computeSignals(); // "sampler" fires first, consumes the cross
-    const liveResult = shared.computeSignals();     // "live cycle" fires moments later, same candles
-
-    assert.equal(samplerResult.timeframes['5m'].scores.macd, 90, 'first caller sees the crossover bonus');
-    assert.notEqual(liveResult.timeframes['5m'].scores.macd, 90, 'second caller on the SAME engine misses the crossover bonus (the bug)');
+  it('keeps daily SMA context local to engines with different histories and identical last bars', () => {
+    const engine = price => {
+      const daily = toCandles([...Array(49).fill(price), 100]);
+      return createSignalEngine({ getCandles: tf => tf === '1d' ? daily : [] });
+    };
+    const live = engine(100);
+    const replay = engine(200);
+    assert.equal(live.computeSignals().dailySMA.sma50, 100);
+    assert.equal(replay.computeSignals().dailySMA.sma50, 198);
+    assert.equal(live.computeSignals().dailySMA.sma50, 100);
   });
 });

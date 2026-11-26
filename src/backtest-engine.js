@@ -503,10 +503,9 @@ const runBacktest = async (params, preFetchedPrices = null) => {
   let fibCumulativeAsset = 0;
   let fibActiveSellOrder = null;
   let fibCyclesCompleted = 0;
-  let fibTotalBuys = 0;
+  let fibBuysSold = 0;
 
   // Calculated rates
-  const sellMultiplier = 1 + (sellMarkupPercent / 100);
   const holdbackRate = holdbackPercent / 100;
 
   // Get interval config for time calculations
@@ -516,13 +515,20 @@ const runBacktest = async (params, preFetchedPrices = null) => {
   // Process each interval
   for (let i = 0; i < priceData.length; i++) {
     const interval = priceData[i];
-    const { date, high, low, close: closePrice, highOfDay: highPrice } = interval;
-    const midPrice = (high + low) / 2;
+    const { date, open: buyPrice, close: closePrice, highOfDay: highPrice } = interval;
+    if (!Number.isFinite(buyPrice) || buyPrice <= 0) {
+      throw new Error(`Invalid candle open for ${date}`);
+    }
+
+    // At the open the buy size cannot depend on a later Fibonacci sell. If a
+    // standing sell fills during the candle, this buy seeds the next cycle.
+    const fibBuyPosition = fibActiveSellOrder?.sellAsset > 0 && buyPrice >= fibActiveSellOrder.sellTargetPrice
+      ? 0
+      : fibPosition;
 
     // Same-interval sell proceeds must not fund a same-interval buy (#213C).
-    // A sell fills at the interval HIGH, which may print AFTER the buy's MID
-    // within the candle, so crediting immediately lets money arrive before it
-    // exists. Accumulate this interval's proceeds here and only add them to
+    // A sell can fill later in the candle than a buy at its open. Accumulate
+    // this interval's proceeds here and only add them to
     // availableFunds AFTER the buy phase — proceeds become spendable next
     // interval, matching the existing "new orders can't fill same-interval"
     // conservatism. Only relevant in fixed-fund mode (unlimited mode never
@@ -530,11 +536,9 @@ const runBacktest = async (params, preFetchedPrices = null) => {
     let deferredProceeds = 0;
 
     // 1. SELL CHECK PHASE - Check if any pending orders fill this interval
-    const filledThisInterval = [];
-
     if (isFibonacci && fibActiveSellOrder) {
       // Fibonacci: check consolidated sell order
-      if (highPrice >= fibActiveSellOrder.sellTargetPrice) {
+      if (fibActiveSellOrder.sellAsset > 0 && highPrice >= fibActiveSellOrder.sellTargetPrice) {
         const grossProceeds = fibActiveSellOrder.sellAsset * fibActiveSellOrder.sellTargetPrice;
         const sellFee = grossProceeds * (feePercent / 100);
         const sellRebate = grossProceeds * (rebatePercent / 100);
@@ -571,6 +575,7 @@ const runBacktest = async (params, preFetchedPrices = null) => {
 
         // Reset Fibonacci cycle
         fibCyclesCompleted++;
+        fibBuysSold += fibActiveSellOrder.buysInCycle;
         fibPosition = 0;
         fibCumulativeCost = 0;
         fibCumulativeAsset = 0;
@@ -580,7 +585,7 @@ const runBacktest = async (params, preFetchedPrices = null) => {
       // Fixed strategy: check individual orders
       for (let j = pendingOrders.length - 1; j >= 0; j--) {
         const order = pendingOrders[j];
-        if (highPrice >= order.sellTargetPrice) {
+        if (order.sellAsset > 0 && highPrice >= order.sellTargetPrice) {
           const grossProceeds = order.sellAsset * order.sellTargetPrice;
           const sellFee = grossProceeds * (feePercent / 100);
           const sellRebate = grossProceeds * (rebatePercent / 100);
@@ -615,18 +620,16 @@ const runBacktest = async (params, preFetchedPrices = null) => {
             availableFunds: hasFixedFund ? availableFunds : null
           });
 
-          filledThisInterval.push(order);
           pendingOrders.splice(j, 1);
         }
       }
     }
 
-    // 2. BUY PHASE - Execute buy at mid price
-    const buyPrice = midPrice;
+    // 2. BUY PHASE - Execute buy at the opening price
 
     // Calculate buy amount based on strategy
     const targetBuyAmount = isFibonacci
-      ? getFibonacciBuyAmount(fibPosition, fibBaseAmount)
+      ? getFibonacciBuyAmount(fibBuyPosition, fibBaseAmount)
       : intervalBuyAmount;
 
     // Compute the buy fee up-front so BOTH the affordability guard and the cash
@@ -642,10 +645,14 @@ const runBacktest = async (params, preFetchedPrices = null) => {
     if (availableFunds >= buyCost) {
       const grossBTC = targetBuyAmount / buyPrice;
       const costBasis = buyCost; // targetBuyAmount + netBuyFee
-      const costBasisPerAsset = costBasis / grossBTC;
+      const costBasisPerAsset = buyPrice * (1 + (feePercent - rebatePercent) / 100);
 
       if (hasFixedFund) {
         availableFunds -= buyCost;
+      } else {
+        // Unlimited funding contributes the buy notional. Net fees still
+        // reduce the portfolio's cash and return.
+        usdcBalance -= netBuyFee;
       }
 
       totalInvested += targetBuyAmount;
@@ -656,7 +663,6 @@ const runBacktest = async (params, preFetchedPrices = null) => {
         // Fibonacci strategy: accumulate and update consolidated sell order
         fibCumulativeCost += costBasis;
         fibCumulativeAsset += grossBTC;
-        fibTotalBuys++;
 
         // Calculate holdback and sell amounts based on cumulative position
         const cumulativeHoldback = fibCumulativeAsset * holdbackRate;
@@ -700,7 +706,7 @@ const runBacktest = async (params, preFetchedPrices = null) => {
         // Fixed strategy: individual sell order per buy
         const holdbackAsset = grossBTC * holdbackRate;
         const sellAsset = grossBTC - holdbackAsset;
-        const sellTargetPrice = buyPrice * sellMultiplier;
+        const sellTargetPrice = getFibonacciSellPrice(costBasisPerAsset, sellMarkupPercent);
 
         assetReserves += holdbackAsset;
 
@@ -790,16 +796,15 @@ const runBacktest = async (params, preFetchedPrices = null) => {
   const totalValue = finalCash + assetValue;
 
   const roiBasis = hasFixedFund ? fundSize : totalInvested;
-  const roi = ((totalValue - roiBasis) / roiBasis) * 100;
+  const roi = roiBasis === 0 ? 0 : ((totalValue - roiBasis) / roiBasis) * 100;
 
   const sellFilledType = isFibonacci ? 'FIB_SELL_FILLED' : 'SELL_FILLED';
   const buyType = isFibonacci ? 'FIB_BUY' : 'BUY';
 
   const sellsFilled = transactions.filter(t => t.type === sellFilledType).length;
   const totalBuys = transactions.filter(t => t.type === buyType).length;
-  const fillRate = isFibonacci
-    ? (fibCyclesCompleted > 0 ? 100 : 0) // Fibonacci: cycles completed
-    : (totalBuys > 0 ? (sellsFilled / totalBuys) * 100 : 0);
+  const buysSold = isFibonacci ? fibBuysSold : sellsFilled;
+  const fillRate = totalBuys > 0 ? (buysSold / totalBuys) * 100 : 0;
 
   const fillTimes = transactions
     .filter(t => t.type === sellFilledType)
@@ -832,8 +837,8 @@ const runBacktest = async (params, preFetchedPrices = null) => {
       totalValue,
       roi,
       roiBasis,
-      sellsFilled: isFibonacci ? fibCyclesCompleted : sellsFilled,
-      totalSells: isFibonacci ? fibTotalBuys : totalBuys,
+      sellsFilled: buysSold,
+      totalSells: totalBuys,
       fillRate,
       avgIntervalsToFill,
       totalFees,
@@ -857,7 +862,7 @@ const runBacktest = async (params, preFetchedPrices = null) => {
     result.fibonacci = {
       cyclesCompleted: fibCyclesCompleted,
       finalPosition: fibPosition,
-      totalBuys: fibTotalBuys,
+      totalBuys,
       activeSellOrder: fibActiveSellOrder ? {
         sellAsset: fibActiveSellOrder.sellAsset,
         sellTargetPrice: fibActiveSellOrder.sellTargetPrice,

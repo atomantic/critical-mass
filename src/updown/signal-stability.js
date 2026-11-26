@@ -75,9 +75,10 @@ const clampScoreToExistingType = (publishedType, _rawScore, boostedScore, atrRat
  * The 60s scorecard sampler has its own stabilize clock. Two interval
  * ticks can confirm BUY while the live 5s engine never published it.
  * Journal the banner type so UP precision only scores clips the operator saw.
- * @param {{type?: string}|null} scorecardResult
+ * @template {{type?: string}} T
+ * @param {T|null} scorecardResult
  * @param {string|null|undefined} liveType
- * @returns {{type?: string}|null}
+ * @returns {T|null}
  */
 const alignJournalType = (scorecardResult, liveType) => {
   if (!scorecardResult) return scorecardResult
@@ -140,7 +141,6 @@ const transitionFromBuyState = (rawType, score, now, state, publish) => {
  * @returns {{type: string, state: {publishedType: string, publishedAt: number, pendingType: string|null, pendingSince: number}}}
  */
 const transitionFromSellState = (rawType, score, now, state, publish) => {
-  if (score > EXIT_SELL_SCORE && !isSell(rawType)) return publish('NEUTRAL')
   if (isBuy(rawType)) {
     const pendingSince = state.pendingType === 'BUY' ? state.pendingSince : now
     if (now - pendingSince >= MIN_ENTER_MS) return publish('BUY')
@@ -150,6 +150,7 @@ const transitionFromSellState = (rawType, score, now, state, publish) => {
     }
   }
   if (!isSell(rawType)) {
+    if (score > EXIT_SELL_SCORE) return publish('NEUTRAL')
     const pendingSince = state.pendingType === 'NEUTRAL' ? state.pendingSince : now
     if (now - pendingSince >= MIN_EXIT_MS) return publish('NEUTRAL')
     return {

@@ -9,11 +9,13 @@
 const { createPerpBook } = require('./perp-book')
 
 /**
- * @param {{contracts?: number, rounds?: number, totalPnl?: number}|null|undefined} snap
- * @returns {'NO_FILLS' | 'PROFITABLE' | 'UNDERWATER' | 'FLAT'}
+ * @param {{contracts?: number, rounds?: number, totalPnl?: number, hasLegacyRealizedPnl?: boolean, markAvailable?: boolean}|null|undefined} snap
+ * @returns {'NO_FILLS' | 'MIXED_COST_BASIS' | 'MARK_UNAVAILABLE' | 'PROFITABLE' | 'UNDERWATER' | 'FLAT'}
  */
 const verdictOf = (snap) => {
   if (!snap || ((snap.contracts ?? 0) === 0 && (snap.rounds ?? 0) === 0)) return 'NO_FILLS'
+  if (snap.hasLegacyRealizedPnl) return 'MIXED_COST_BASIS'
+  if (snap.contracts > 0 && snap.markAvailable === false) return 'MARK_UNAVAILABLE'
   if (snap.totalPnl > 0) return 'PROFITABLE'
   if (snap.totalPnl < 0) return 'UNDERWATER'
   return 'FLAT'
@@ -32,6 +34,8 @@ const summarize = (snap, extra = {}) => ({
   realizedPnl: snap.realizedPnl,
   unrealizedPnl: snap.unrealizedPnl,
   totalPnl: snap.totalPnl,
+  feePerContract: snap.feePerContract,
+  slippageBps: snap.slippageBps,
   rounds: snap.rounds,
   wins: snap.wins,
   losses: snap.losses,
@@ -72,20 +76,24 @@ const priceAt = (index, ts) => {
 /**
  * Walk engine types through the paper book (same-side skip, one 0.01 BTC contract per fill).
  * Uses `entry.price` when present, otherwise `lookupPrice(timestamp)`.
- * @param {Array<{type?: string, price?: number, timestamp?: number}>} entries
+ * @param {Array<{type?: string, action?: 'OPEN'|'ADD'|'CLOSE', filled?: boolean, price?: number, timestamp?: number}>} entries
  * @param {(ts: number) => number|null|undefined} [lookupPrice]
+ * @param {{feePerContract?: number, slippageBps?: number}} [costs]
  * @returns {{book: ReturnType<typeof createPerpBook>, fills: Array<Object>}}
  */
-const replaySignals = (entries, lookupPrice) => {
-  const book = createPerpBook()
+const replaySignals = (entries, lookupPrice, costs) => {
+  const book = createPerpBook({}, costs)
   const fills = []
   const sorted = (entries || []).slice().sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0))
   for (const s of sorted) {
+    if (s.filled === false) continue
     const stored = Number(s.price)
     const price = Number.isFinite(stored) && stored > 0
       ? stored
       : lookupPrice?.(s.timestamp)
-    const res = book.applySignal(s.type, price, s.timestamp)
+    const res = s.filled === true && s.action
+      ? book.applyFill(s.action, price, s.timestamp)
+      : book.applySignal(s.type, price, s.timestamp)
     if (res.fill) {
       fills.push({
         action: res.action,

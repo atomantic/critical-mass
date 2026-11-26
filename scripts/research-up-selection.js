@@ -17,7 +17,7 @@
  */
 const fs = require('fs')
 const { UP_DIP_PARAMS, decideUpDip, markPosition, pickContract, nextExpiryMs } = require('../src/updown/up-dip-setup')
-const { contractValue, FEE_PER_CONTRACT, parseOrderHistory, deriveCycles } = require('../src/updown/app-order-history')
+const { settlementProceeds, parseOrderHistory, deriveCycles } = require('../src/updown/app-order-history')
 const { entryCost, exitProceeds } = require('../src/updown/app-pricing')
 const { buildFeatures, simulate, summarize, parseSpread } = require('./backtest-up-dip')
 
@@ -146,8 +146,8 @@ function standalone(candles, features, i, params, halfSpread) {
   for (let j = i + 1; j < candles.length; j++) {
     const c = candles[j], now = c.timestamp + MIN
     if (c.low <= contract.floor) return { outcome: 'ko', pnl: -pos.cost, closedAt: now }
-    if (c.high >= contract.ceiling) return { outcome: 'win', pnl: contract.maxPayout - FEE_PER_CONTRACT - pos.cost, closedAt: now }
-    if (now >= contract.expiry) { const pnl = contractValue(c.close, contract) - FEE_PER_CONTRACT - pos.cost; return { outcome: pnl > 0 ? 'win' : 'loss', pnl, closedAt: now } }
+    if (c.high >= contract.ceiling) return { outcome: 'win', pnl: settlementProceeds(contract.ceiling, contract) - pos.cost, closedAt: now }
+    if (now >= contract.expiry) { const pnl = settlementProceeds(c.close, contract) - pos.cost; return { outcome: pnl > 0 ? 'win' : 'loss', pnl, closedAt: now } }
     const d = decideUpDip({ features: features[j], position: pos, now, halfSpread, params })
     if (d.action === 'EXIT' && candles[j + 1]) {
       const pnl = exitProceeds(candles[j + 1].open, contract, halfSpread) - pos.cost

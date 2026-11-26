@@ -2,7 +2,8 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { evaluateDirection, buildOutcomeRecord, tallyHistory, findUnsettledPredictions, scorecardDirection } = require('../../../src/updown/scorecard');
+const { evaluateDirection, buildOutcomeRecord, computeTrainingMetrics, computeAdaptiveWeights, tallyHistory, findUnsettledPredictions, scorecardDirection } = require('../../../src/updown/scorecard');
+const { INDICATOR_WEIGHTS } = require('../../../src/updown/indicator-config');
 
 describe('scorecardDirection treats a gated long as a skip, not an UP call', () => {
   it('maps score=+25 with a closed trend gate to neutral', () => {
@@ -87,6 +88,25 @@ describe('buildOutcomeRecord records both options and perp correctness', () => {
     const outcome = buildOutcomeRecord(upPred, 300_000, 101, { ts: settled });
     assert.equal(outcome.ts, settled);
     assert.equal(outcome.predictionTs, upPred.ts);
+  });
+
+  it('learns from a skipped composite with matching timeframe data and ignores legacy mismatches', () => {
+    const timeframe = { score: -25, scores: { rsi: -25 } };
+    const outcome = buildOutcomeRecord({
+      ...upPred, compositeDirection: 'down',
+      timeframes: { '1m': timeframe, '5m': timeframe, '1d': timeframe },
+    }, 60_000, 99);
+    assert.equal(outcome.trainingOnly, true);
+    assert.equal(outcome.compositeCorrect, null);
+    assert.deepEqual(Object.keys(outcome.tfResults), ['1m']);
+    assert.deepEqual(Object.keys(outcome.indicatorTfResults.rsi), ['1m']);
+    const legacy = { window: '5m', indicatorTfResults: { rsi: { '1h': { correct: false } } } };
+    assert.deepEqual(computeTrainingMetrics([outcome, legacy]).rsi, { accuracy: 100, predictions: 1 });
+  });
+
+  it('keeps a selective indicator at its relative base weight without enough directional samples', () => {
+    const weights = computeAdaptiveWeights({ rsi: { predictions: 500, accuracy: 50 } }, INDICATOR_WEIGHTS, INDICATOR_WEIGHTS, 1);
+    assert.ok(Math.abs(weights.stochastic / weights.rsi - INDICATOR_WEIGHTS.stochastic / INDICATOR_WEIGHTS.rsi) < 0.002);
   });
 });
 

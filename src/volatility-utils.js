@@ -126,14 +126,13 @@ const calculateVWAP = (candles, periodHours = 4) => {
   }
 
   const periodMs = periodHours * 60 * 60 * 1000;
-  const now = Date.now();
-  const cutoff = now - periodMs;
+  const cutoff = candles[candles.length - 1].timestamp - periodMs;
 
   // Filter candles within period
   const periodCandles = candles.filter(c => c.timestamp >= cutoff);
 
   if (periodCandles.length === 0) {
-    // Fall back to all candles if none in period
+    // Keep a price fallback for input without usable timestamps.
     return candles[candles.length - 1].close;
   }
 
@@ -391,12 +390,18 @@ const calculateMomentumAcceleration = (candles, shortPeriod = 3, longPeriod = 10
   const bothPositive = roc3 > 0 && roc10 > 0;
   const bothNegative = roc3 < 0 && roc10 < 0;
 
-  if (bothPositive) {
-    direction = 'up';
-    acceleration = roc3 > roc10 ? 'accelerating' : 'fading';
-  } else if (bothNegative) {
-    direction = 'down';
-    acceleration = Math.abs(roc3) > Math.abs(roc10) ? 'accelerating' : 'fading';
+  if (bothPositive || bothNegative) {
+    direction = bothPositive ? 'up' : 'down';
+    // Equal absolute steps are a steady linear trend. The ROC percentages
+    // alone can differ here because their windows start at different prices.
+    const shortStep = (current - shortAgo) / shortPeriod;
+    const longStep = (current - longAgo) / longPeriod;
+    if (Math.abs(shortStep - longStep) > Number.EPSILON * Math.abs(current)) {
+      const shortRate = Math.abs(roc3) / shortPeriod;
+      const longRate = Math.abs(roc10) / longPeriod;
+      if (shortRate > longRate) acceleration = 'accelerating';
+      if (shortRate < longRate) acceleration = 'fading';
+    }
   }
 
   const magnitude = Math.abs(roc3);

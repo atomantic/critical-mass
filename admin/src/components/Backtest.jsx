@@ -1,6 +1,6 @@
 import Button from './ui/Button'
 import { INTERVAL_OPTIONS } from '../utils/intervals.mjs'
-import { useState, useEffect, useId, useCallback, useRef } from 'react'
+import { useState, useEffect, useId, useCallback, useLayoutEffect, useRef } from 'react'
 import { formatCurrency, formatPrice } from './charts/chartUtils'
 import { CartesianChart } from './charts/primitives/CartesianChart'
 import { pairQuery } from '../utils/api'
@@ -106,7 +106,12 @@ const parseProductId = (productId) => {
   }
 }
 
-function Backtest({ summary, exchange = 'coinbase', pair, quoteCurrency: defaultQuoteCurrency = 'USDC' }) {
+function Backtest(props) {
+  const { exchange = 'coinbase', pair } = props
+  return <FundBacktest key={`${exchange}:${pair}`} {...props} />
+}
+
+function FundBacktest({ summary, exchange = 'coinbase', pair, quoteCurrency: defaultQuoteCurrency = 'USDC' }) {
   const intervalId = useId()
   const buyAmountId = useId()
   const fundSizeId = useId()
@@ -120,6 +125,7 @@ function Backtest({ summary, exchange = 'coinbase', pair, quoteCurrency: default
   const [results, setResults] = useState(null)
   const [error, setError] = useState(null)
   const configLoaded = useRef(false)
+  const activeRequest = useRef(null)
 
   // Parse the productId for display
   const { baseCurrency, quoteCurrency } = params.productId
@@ -136,7 +142,7 @@ function Backtest({ summary, exchange = 'coinbase', pair, quoteCurrency: default
     setParams({
       intervalBuyAmount: config.totalAllocation / configIntervals || 500,
       sellMarkupPercent: config.sellMarkupPercent || 10,
-      holdbackPercent: config.holdbackPercent || 5,
+      holdbackPercent: config.holdbackPercent ?? 5,
       feePercent: 0.125,
       rebatePercent: 0.031,
       intervals: periods[periods.length > 2 ? 2 : periods.length - 1].intervals,
@@ -147,36 +153,39 @@ function Backtest({ summary, exchange = 'coinbase', pair, quoteCurrency: default
     setSelectedPeriod(periods[periods.length > 2 ? 2 : periods.length - 1].label)
   }, [config])
 
-  // Reset fund-specific state whenever the route changes.
-  useEffect(() => {
-    configLoaded.current = false
-    setResults(null)
-    setError(null)
-  }, [exchange, pair])
+  useLayoutEffect(() => () => activeRequest.current?.abort(), [])
 
-  // Auto-load config when exchange or summary changes
+  // Load the active fund’s config once it becomes available
   useEffect(() => {
     if (config && !configLoaded.current) {
       loadFromConfig()
       configLoaded.current = true
     }
-  }, [config, loadFromConfig, exchange, pair])
+  }, [config, loadFromConfig])
 
   // formatCurrency for balances/totals (fixed 2 decimals)
   // formatPrice for prices (smart decimals based on magnitude)
   const formatBase = (n) => (n || 0).toFixed(8)
 
   const runBacktest = async () => {
+    activeRequest.current?.abort()
+    const controller = new AbortController()
+    const { signal } = controller
+    activeRequest.current = controller
     setLoading(true)
     setError(null)
     try {
-      const res = await apiPost(`/api/${exchange}/backtest/run${pairQuery(pair)}`, params)
+      const res = await apiPost(`/api/${exchange}/backtest/run${pairQuery(pair)}`, params, { signal })
+      if (signal.aborted) return
       if (!res.ok) throw new Error(res.error)
       setResults(res.data)
     } catch (err) {
-      setError(err.message)
+      if (!signal.aborted) setError(err.message)
     } finally {
-      setLoading(false)
+      if (!signal.aborted) {
+        activeRequest.current = null
+        setLoading(false)
+      }
     }
   }
 
@@ -404,7 +413,7 @@ function Backtest({ summary, exchange = 'coinbase', pair, quoteCurrency: default
               <div className="space-y-2 text-sm">
                 <div className="flex justify-between">
                   <span className="text-gray-400">
-                    {results.metrics.fundSize ? `${quoteCurrency} (available funds)` : `${quoteCurrency} (from sells)`}
+                    {results.metrics.fundSize ? `${quoteCurrency} (available funds)` : `${quoteCurrency} (proceeds less buy fees)`}
                   </span>
                   <span className="text-green-400">{formatCurrency(results.metrics.finalUSDC)}</span>
                 </div>
@@ -586,8 +595,8 @@ function Backtest({ summary, exchange = 'coinbase', pair, quoteCurrency: default
             Backtesting {params.productId || summary?.config?.productId || 'BTC-USD'}
           </h4>
           <ul className="list-disc list-inside space-y-1 text-sm">
-            <li>Simulates buying a fixed {quoteCurrency} amount of {baseCurrency} every interval at the <strong>mid price</strong> (avg of high/low)</li>
-            <li>Posts a sell order at +{params.sellMarkupPercent}% for {100 - params.holdbackPercent}% of each purchase</li>
+            <li>Simulates buying a fixed {quoteCurrency} amount of {baseCurrency} every interval at the <strong>opening price</strong></li>
+            <li>Posts a sell order at +{params.sellMarkupPercent}% over the fee-adjusted buy cost for {100 - params.holdbackPercent}% of each purchase</li>
             <li>Keeps {params.holdbackPercent}% of each purchase as {baseCurrency} reserves (never sold)</li>
             <li>Sell orders fill when the interval HIGH price reaches the target</li>
             <li>Fees ({params.feePercent}%) and rebates ({params.rebatePercent}%) applied to both buys and sells</li>

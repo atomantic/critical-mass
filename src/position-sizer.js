@@ -174,7 +174,7 @@ const createPositionSizer = (exchange, config) => {
 
     // Calculate actual profit split
     const profitUsdc = sellQty * profitPerAsset;  // USDC profit from selling
-    const profitAssetValue = holdbackQty * profitPerAsset;  // BTC profit value kept
+    const profitAssetValue = holdbackQty * sellPrice;  // BTC profit value kept
 
     return {
       sellQty,
