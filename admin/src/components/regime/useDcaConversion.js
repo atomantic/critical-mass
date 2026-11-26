@@ -91,7 +91,7 @@ export default function useDcaConversion({ exchange, pairQuery, isRunning, addTo
     } finally {
       setConverting(false)
     }
-  }, [exchange, addToast, fetchStatus, fetchFills, convertPreview?.merge])
+  }, [exchange, pairQuery, addToast, fetchStatus, fetchFills, convertPreview?.merge])
 
   return { dcaState, dcaStateError, retryDcaState, convertPreview, converting, showConvertConfirm, setShowConvertConfirm, handlePreviewConvert, handleExecuteConvert }
 }

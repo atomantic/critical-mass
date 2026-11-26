@@ -1,7 +1,8 @@
 import React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import OpenOrdersTable from '../src/components/regime/OpenOrdersTable'
+import { formatTimestamp } from '../src/components/regime/regimeFormat'
 
 afterEach(() => cleanup())
 
@@ -46,6 +47,20 @@ describe('OpenOrdersTable', () => {
     // Sell row: 0.01 BTC @ 52,000 = $520.00 value
     expect(screen.getAllByText('$520.00').length).toBeGreaterThan(0)
     expect(screen.getByText('Totals')).toBeTruthy()
+  })
+
+  it('aligns an expanded buy timestamp under Age and leaves Holdback empty', () => {
+    const buy = {
+      orderId: 'linked-buy', sellOrderId: sellOrder.orderId, side: 'buy',
+      size: 0.01, price: 50000, timestamp: now - 120_000,
+    }
+    render(<OpenOrdersTable {...baseProps({ pendingOrdersList: [sellOrder], liveFills: [buy] })} />)
+    fireEvent.click(screen.getByRole('button', { name: `Buy details for open order ${sellOrder.orderId}` }))
+    const headers = screen.getAllByRole('columnheader')
+    const cells = within(screen.getByText(buy.orderId).closest('tr')).getAllByRole('cell')
+    expect(cells).toHaveLength(headers.length)
+    expect(cells[headers.findIndex(header => header.textContent === 'Holdback')].textContent).toBe('')
+    expect(cells[headers.findIndex(header => header.textContent === 'Age')].textContent).toBe(formatTimestamp(buy.timestamp))
   })
 
   it('omits the sell table when only entry orders are open', () => {

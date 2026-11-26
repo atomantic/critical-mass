@@ -1,0 +1,2 @@
+- Enforce zero admin lint warnings and check engines, shared modules, and development scripts with the Node.js 26 toolchain. CI now requires stale typecheck baseline counts to be lowered.
+- Serve the built admin UI from the production gateway. Vite is opt-in, development ports are configurable, and native PM2 startup checks ports with Node.js and skips unchanged log rotation settings.

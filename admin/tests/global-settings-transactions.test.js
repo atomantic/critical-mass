@@ -103,7 +103,8 @@ function createView(name) {
       if (name === './ModalDialog') return ({ children }) => children
       if (name === './ui/ConfirmDialog') return ConfirmDialogFixture
       if (name === './ui/Button') return 'button'
-      if (name === './Toast') return { useNotify: () => (type, message) => { notices.push({ type, message }); return null }, useToast: () => ({ addToast: () => null, removeToast() {} }) }
+      if (name === './ui/NumberInput') return 'number-input'
+      if (name === './useToast') return { useNotify: () => (type, message) => { notices.push({ type, message }); return null }, useToast: () => ({ addToast: () => null, removeToast() {} }) }
       throw new Error(`Unexpected fixture import ${name}`)
     },
   })
@@ -122,7 +123,10 @@ function find(tree, predicate) { const node = elements(tree).find(predicate); as
 const field = (tree, id) => find(tree, node => node.props.id === id)
 const button = (tree, label) => find(tree, node => node.type === 'button' && text(node) === label)
 const locked = tree => find(tree, node => node.type === 'fieldset').props.disabled
-const edit = (view, id, value) => field(view.render(), id).props.onChange({ target: { value } })
+const edit = (view, id, value) => {
+  const input = field(view.render(), id)
+  input.props.onChange(input.type === 'number-input' ? Number(value) : { target: { value } })
+}
 
 for (const [name, url, fieldId, saveLabel] of [
   ['NotificationsConfig', '/api/notifications/config', 'rate-limit-ms', 'Save'],

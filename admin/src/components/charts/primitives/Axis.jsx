@@ -1,9 +1,6 @@
 // Crisp 1px lines on standard-density screens (d3-axis applies the same half-pixel shift).
 const pixelOffset = () => (typeof window !== 'undefined' && window.devicePixelRatio > 1 ? 0 : 0.5)
 
-// One colour for the domain bar (filled), tick lines and outlined labels.
-export const solidAxis = (color) => ({ stroke: color, domainFill: color, textFill: color, textStroke: color })
-
 const ANCHOR = { left: 'end', right: 'start', top: 'middle', bottom: 'middle' }
 const DY = { left: '0.32em', right: '0.32em', top: '0em', bottom: '0.71em' }
 

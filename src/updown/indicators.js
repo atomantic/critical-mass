@@ -268,6 +268,7 @@ const calculateOBV = (candles, lookback = 14) => {
   const avgVolume = windowCandles.reduce((s, c) => s + Math.abs(c.volume || 0), 0) / n;
   const slope = avgVolume > 0 ? Math.max(-1, Math.min(1, rawSlope / avgVolume)) : 0;
 
+  /** @type {'neutral'|'up'|'down'} */
   let direction = 'neutral';
   if (slope > 0.1) direction = 'up';
   else if (slope < -0.1) direction = 'down';

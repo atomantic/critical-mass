@@ -1,9 +1,10 @@
+import NumberInput from '../ui/NumberInput'
 import Button from '../ui/Button'
 import { useState, useEffect, useCallback } from 'react'
 import useRealtimeRefresh from '../../hooks/useRealtimeRefresh'
 import { getRealtimeClient } from '../../lib/realtime'
 import { apiGet, apiPost, apiPut, apiDelete, describeMutationFailure } from '../../utils/apiClient'
-import { useNotify } from '../Toast'
+import { useNotify } from '../useToast'
 
 const ROOM = 'arbitrage'
 // Bumped with the gateway's ARBITRAGE_DASHBOARD_VERSION whenever the page and
@@ -407,7 +408,7 @@ export default function ArbitrageDashboard() {
             ))}
             <label className="text-sm text-gray-300 flex flex-col gap-1">
               Poll every (seconds)
-              <input type="number" step={5} value={Math.round(Number(draft.pollIntervalMs) / 1000)} onChange={e => setDraft({ ...draft, pollIntervalMs: Number(e.target.value) * 1000 })}
+              <NumberInput step={5} value={Math.round(Number(draft.pollIntervalMs) / 1000)} onChange={value => setDraft(prev => ({ ...prev, pollIntervalMs: value * 1000 }))}
                 className="px-2 py-1.5 bg-gray-900 border border-gray-600 rounded-sm text-white" />
             </label>
           </div>

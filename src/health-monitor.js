@@ -77,9 +77,10 @@ const createInitialHealthState = () => ({
 /**
  * Create health monitor instance
  * @param {string} exchange - Exchange name
- * @param {RegimeStrategyConfig} config - Configuration
+ * @param {RegimeStrategyConfig & {productId?: string}} config - Configuration
  * @param {Object} [callbacks] - Event callbacks
  * @param {Function} [callbacks.onSafeMode] - Called when entering SAFE mode
+ * @param {(reason: string) => void} [callbacks.onAuthDenied] - Called when the exchange rejects authentication
  * @param {Function} [callbacks.onActiveMode] - Called when entering ACTIVE mode
  * @returns {Object} Health monitor instance
  */

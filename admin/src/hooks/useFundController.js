@@ -1,7 +1,8 @@
-import { useState, useEffect, useLayoutEffect, useRef } from 'react'
+import { useState, useEffect, useEffectEvent, useLayoutEffect, useRef } from 'react'
 import { useRealtimeConnection } from './useTradeEvents'
 import useRegimeStateEvents from './useRegimeStateEvents'
 import useRealtimeRefresh from './useRealtimeRefresh'
+import findFund from '../utils/findFund'
 import { pairQuery as buildPairQuery } from '../utils/api'
 import { apiGet, apiPost, describeMutationFailure } from '../utils/apiClient'
 
@@ -36,18 +37,13 @@ const VALID_EXCHANGES = ['coinbase', 'gemini', 'cryptocom']
 
 // Fund list, summary, regime status, action fencing and lifecycle actions for the
 // fund shown by the current route. Everything is derived from `location`.
-export default function useFundController({ location, navigate, addToast }) {
+export default function useFundController({ location, navigate, addToast, isGlobalRoute }) {
   // Extract exchange and pair from URL path (e.g., /coinbase/BTC-USDC/config -> coinbase, BTC-USDC)
   const pathParts = location.pathname.split('/').filter(Boolean)
-  const urlExchange = VALID_EXCHANGES.includes(pathParts[0]) ? pathParts[0] : null
-  const urlPair = urlExchange && pathParts[1] ? pathParts[1] : null
+  const exchangePath = pathParts[0]?.toLowerCase()
+  const urlExchange = !isGlobalRoute && VALID_EXCHANGES.includes(exchangePath) ? exchangePath : null
+  const urlPair = urlExchange ? pathParts[1] : undefined
 
-  // currentExchange/currentStrategy/currentPair are DERIVED from URL (with state fallback
-  // for non-exchange pages). Using local state caused a one-render lag during navigation:
-  // the route would briefly mount the wrong dashboard with stale data before the state
-  // catches up to the URL.
-  const [lastExchange, setLastExchange] = useState(urlExchange || 'coinbase')
-  const currentExchange = urlExchange || lastExchange
   const [exchanges, setExchanges] = useState([])
   const [summarySnapshot, setSummarySnapshot] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -72,26 +68,14 @@ export default function useFundController({ location, navigate, addToast }) {
   const [exchangesLoaded, setExchangesLoaded] = useState(false)
   const [exchangesError, setExchangesError] = useState(null)
 
-  // The exchanges array now contains one entry per (exchange, pair) fund.
-  // Look up the fund matching both the current exchange AND pair from the URL.
-  // Falls back to the first entry on this exchange if the pair is missing
-  // (e.g. on initial load before urlPair is set).
-  const currentExchangeConfig = exchanges?.find(
-    (e) => e.name === currentExchange && (urlPair ? e.pair === urlPair : true)
-  ) || exchanges?.find((e) => e.name === currentExchange)
+  // Resolve the URL against the loaded list so each pair gets its own strategy.
+  const urlFund = findFund(exchanges, urlExchange, urlPair)
+  const currentExchange = urlFund?.name ?? urlExchange
+  const currentPair = urlFund?.pair ?? urlFund?.productId ?? urlPair
   const resolveStrategy = (config) =>
     !simpleDcaEnabled || config?.strategy === 'regime' ? 'regime' : 'dca'
-  const currentStrategy = resolveStrategy(currentExchangeConfig)
-  const currentPair = urlPair || currentExchangeConfig?.productId || 'BTC-USDC'
-
-  // Only /:exchange/:pair routes belong to a fund. Every other page (Overview,
-  // Backups, Notifications, Systems, ...) is global: it must not fetch fund
-  // data, wait on it, or show fund-only banners and controls. currentExchange /
-  // currentPair above are guesses off these routes, never a reason to fetch.
+  const currentStrategy = resolveStrategy(urlFund)
   const isFundRoute = Boolean(urlExchange && urlPair)
-  const urlFund = isFundRoute
-    ? exchanges.find((e) => e.name === urlExchange && (e.pair ?? e.productId)?.toUpperCase() === urlPair.toUpperCase())
-    : undefined
   // Fund data is read only once the fund list has loaded and names this fund,
   // so a mistyped or removed fund never costs a request (the gateway answers
   // an unknown fund with 400) and strategy is known before any status read.
@@ -102,7 +86,7 @@ export default function useFundController({ location, navigate, addToast }) {
   // Get the current sub-path (tab) without the exchange/pair prefix
   const getSubPath = () => {
     if (!isFundRoute) return location.pathname
-    return location.pathname.replace(`/${urlExchange}/${urlPair}`, '') || ''
+    return pathParts.length > 2 ? `/${pathParts.slice(2).join('/')}` : ''
   }
 
   const isActiveTab = (tabPath) => {
@@ -163,9 +147,11 @@ export default function useFundController({ location, navigate, addToast }) {
       setResetting(false)
     }
 
+    const summaryRequest = summaryRequestRef.current
+    const statusRequest = statusRequestRef.current
     return () => {
-      summaryRequestRef.current.controller?.abort()
-      statusRequestRef.current.controller?.abort()
+      summaryRequest.controller?.abort()
+      statusRequest.controller?.abort()
     }
   }, [selectedFund])
 
@@ -197,46 +183,29 @@ export default function useFundController({ location, navigate, addToast }) {
   // Get tabs based on current strategy
   const tabs = getTabsForStrategy(currentStrategy)
 
-  // Fetch list of configured exchanges
-  // Resolves true when the list loaded, false when it did not (never rejects).
-  const fetchExchanges = async (autoSelect = false) => {
+  const exchangeRead = useRef(0)
+
+  // Only the latest request may replace the list. An older initial load can
+  // still be in flight when Add Fund refreshes it after creation.
+  const fetchExchanges = async () => {
+    const read = ++exchangeRead.current
     const result = await apiGet('/api/exchanges')
+    if (read !== exchangeRead.current) return null
     if (!result.ok) {
       setExchangesError(result.status >= 400 ? `Gateway returned ${result.status}` : result.error)
-      return false
+      return null
     }
-    const data = result.data
+    const { exchanges: funds = [], simpleDcaEnabled = false } = result.data
     setExchangesError(null)
     setExchangesLoaded(true)
-    setExchanges(data.exchanges || [])
-    setSimpleDcaEnabled(data.simpleDcaEnabled ?? false)
-    // Only auto-select exchange on initial load if not already in URL
-    // On root "/" (overview page), just set defaults without navigating away
-    if (autoSelect && !urlExchange) {
-      const enabled = data.exchanges?.find(e => e.enabled || e.regimeEnabled)
-      const first = data.exchanges?.[0]
-      const targetExchange = enabled?.name || first?.name || 'coinbase'
-      const exchangeConfig = enabled || first
-      const targetPair = exchangeConfig?.productId || 'BTC-USDC'
-      setLastExchange(targetExchange)
-      // Don't redirect away from non-exchange pages (overview, notifications, etc.)
-      const nonExchangePaths = ['/', '/updown', '/sentinel', '/gateway', '/notifications', '/backups', '/systems', '/ai']
-      const isNonExchangePage = nonExchangePaths.some(p => location.pathname === p || location.pathname.startsWith(p + '/'))
-      if (!isNonExchangePage) {
-        navigate(`/${targetExchange}/${targetPair}`, { replace: true })
-      }
-    } else if (autoSelect && urlExchange && !urlPair) {
-      // URL has exchange but no pair - redirect to pair path
-      const exchangeConfig = data.exchanges?.find(e => e.name === urlExchange)
-      const targetPair = exchangeConfig?.productId || 'BTC-USDC'
-      navigate(`/${urlExchange}/${targetPair}`, { replace: true })
-    }
-    return true
+    setExchanges(funds ?? [])
+    setSimpleDcaEnabled(simpleDcaEnabled)
+    return funds ?? []
   }
 
   // Manual refresh/retry: surface a failure instead of staying silent.
   const retryExchanges = async () => {
-    const loaded = await fetchExchanges(!exchangesLoaded)
+    const loaded = await fetchExchanges()
     if (!loaded) {
       addToast({ type: 'error', title: 'Could not load funds', message: 'The fund list is still unavailable. Try again shortly.' })
     }
@@ -245,8 +214,7 @@ export default function useFundController({ location, navigate, addToast }) {
 
   // Handle exchange change from selector - update URL with pair
   const handleExchangeChange = (newExchange, newPair) => {
-    const newStrategy = resolveStrategy(exchanges?.find(e => e.name === newExchange))
-    setLastExchange(newExchange)
+    const newStrategy = resolveStrategy(findFund(exchanges, newExchange, newPair))
     // Preserve the current tab subpath only if it exists in the new strategy's tab list
     const currentTab = pathParts[2] || ''
     const newTabs = getTabsForStrategy(newStrategy)
@@ -465,15 +433,11 @@ export default function useFundController({ location, navigate, addToast }) {
     }
   }
 
-  // Initial load of exchanges (with auto-select on first load)
+  // Initial load of exchanges
+  const loadInitialExchanges = useEffectEvent(() => fetchExchanges())
   useEffect(() => {
-    fetchExchanges(true)
+    loadInitialExchanges()
   }, [])
-
-  // Remember the last visited exchange so non-exchange pages (Overview) can build tab links
-  useEffect(() => {
-    if (urlExchange && urlExchange !== lastExchange) setLastExchange(urlExchange)
-  }, [urlExchange, lastExchange])
 
   // Summary: one read per fund, then re-read when the gateway reports order,
   // cycle, engine-state or trade activity for it (#1880).
@@ -541,7 +505,7 @@ export default function useFundController({ location, navigate, addToast }) {
   return {
     // Route / fund identity
     urlExchange, urlPair, isFundRoute, currentExchange, currentPair, currentStrategy,
-    exchanges, simpleDcaEnabled, fundsUnavailable, exchangesError, awaitingFundList, fundMissing,
+    exchanges, exchangesLoaded, simpleDcaEnabled, fundsUnavailable, exchangesError, awaitingFundList, fundMissing,
     // Summary and status
     summary, loading, error, summaryWanted, pollRegime,
     regimeRunning, regimeDryRun, regimeLifecycle, statusError, wsConnected,

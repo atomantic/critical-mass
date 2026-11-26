@@ -1,6 +1,7 @@
+import NumberInput from './ui/NumberInput'
 import { useState, useEffect, useRef } from 'react'
 import { formatCurrency } from './charts/chartUtils'
-import { useToast } from './Toast'
+import { useToast } from './useToast'
 import Button from './ui/Button'
 import { pairQuery as buildPairQuery } from '../utils/api'
 import { getRealtimeClient } from '../lib/realtime'
@@ -396,13 +397,12 @@ function Optimizer({ exchange = 'coinbase', pair }) {
                 {selectedIntervals.map(interval => (
                   <div key={interval}>
                     <label htmlFor={`buy-amount-${interval}`} className="text-xs text-gray-400 block">{interval}</label>
-                    <input
+                    <NumberInput
                       id={`buy-amount-${interval}`}
-                      type="number"
                       value={buyAmounts[interval] || DEFAULT_BUY_AMOUNTS[interval]}
-                      onChange={(e) => setBuyAmounts(prev => ({
+                      onChange={value => setBuyAmounts(prev => ({
                         ...prev,
-                        [interval]: parseFloat(e.target.value) || 1
+                        [interval]: Math.max(1, value)
                       }))}
                       className="w-full bg-gray-700 border border-gray-600 rounded-sm px-2 py-1 text-white text-sm"
                       min="1"
@@ -418,11 +418,10 @@ function Optimizer({ exchange = 'coinbase', pair }) {
         <div className="flex items-end gap-4 flex-wrap">
           <div>
             <label htmlFor="fund-size" className="block text-sm text-gray-400 mb-1">Fund Size ($)</label>
-            <input
+            <NumberInput
               id="fund-size"
-              type="number"
               value={fundSize}
-              onChange={(e) => setFundSize(parseFloat(e.target.value) || 0)}
+              onChange={setFundSize}
               className="w-48 bg-gray-700 border border-gray-600 rounded-sm px-3 py-2 text-white"
               min="100"
               step="1000"

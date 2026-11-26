@@ -1,5 +1,5 @@
 import { lazy } from 'react'
-import { matchPath, rankRoutes } from './lib/router'
+import { matchPath, rankRoutes } from './lib/routeMatching'
 
 export const routePaths = {
   fund: '/:exchange/:pair',
