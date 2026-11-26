@@ -146,7 +146,7 @@ const checkEngineStopped = async (exchange, pair) => {
 
 /**
  * Is the gateway down? While it runs it is the DCA writer (scheduler,
- * /api/trade, consolidation) and serializes each fund's state.json under a
+ * /api/:exchange/trade, consolidation) and serializes each fund's state.json under a
  * process-local lock, so a second process cycling the same fund races it.
  * Probes loopback (bound in every default topology) plus any explicit HOST,
  * on both $PORT and the PM2 port: a shell PORT meant for another app must not

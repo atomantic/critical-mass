@@ -20,7 +20,6 @@ const GUARDED_SOURCES = [
   '../src/routes/backtest-routes.js',
   '../src/routes/exchange-routes.js',
   '../src/routes/keys-routes.js',
-  '../src/routes/legacy-routes.js',
   '../src/routes/regime-routes.js',
   '../src/routes/sentinel-routes.js',
   '../src/routes/settings-routes.js',

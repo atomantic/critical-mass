@@ -1,7 +1,6 @@
 // @ts-check
 /**
- * Live fund status payload shared by GET /api/:exchange/status and the legacy
- * unprefixed GET /api/status, so the two can never drift apart.
+ * Live fund status payload for GET /api/:exchange/status.
  */
 
 const dcaState = require('./dca-state');

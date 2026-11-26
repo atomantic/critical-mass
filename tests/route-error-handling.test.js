@@ -250,7 +250,6 @@ describe('malformed request bodies and query params return 400 (issue #570)', ()
     writeJSON: () => {},
     DATA_DIR: os.tmpdir(),
   };
-  const legacyDeps = { parseTSV: () => [], calculateCostBasis: () => ({}), getNextTradeInfo: () => ({}) };
 
   const expect400 = async (res, pattern) => {
     assert.equal(res.status, 400);
@@ -354,7 +353,6 @@ describe('malformed request bodies and query params return 400 (issue #570)', ()
      */
     const neverFivexx = [
       ['exchange-routes', exchangeDeps, 'PATCH', '/api/coinbase/config?pair=BTC-USDC'],
-      ['legacy-routes', legacyDeps, 'PATCH', '/api/config'],
       ['updown-routes', updownDeps, 'PUT', '/api/updown/contract'],
     ];
 

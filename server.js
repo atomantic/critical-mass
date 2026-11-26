@@ -480,7 +480,6 @@ require('./src/routes/exchange-routes')(routes, sharedDeps);
 require('./src/routes/regime-routes')(routes, sharedDeps);
 require('./src/routes/keys-routes')(routes, sharedDeps);
 require('./src/routes/backtest-routes')(routes, sharedDeps);
-require('./src/routes/legacy-routes')(routes, sharedDeps);
 
 // ============ Health Aggregation ============
 

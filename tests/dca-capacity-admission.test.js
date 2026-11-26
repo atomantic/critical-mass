@@ -19,7 +19,6 @@ const PAIR = 'ETH-USDC';
 const modulePaths = [
   '../src/dca-engine',
   '../src/routes/exchange-routes',
-  '../src/routes/legacy-routes',
 ];
 
 const clearModules = () => {
@@ -248,7 +247,7 @@ describe('DCA operation capacity and admission bounds (issue #1814)', () => {
     assert.equal(engine._test.getOperationCounts().funds.size, 0);
   });
 
-  it('exercises real exchange and legacy HTTP handlers and verifies 503, stable code and Retry-After', async () => {
+  it('exercises real exchange HTTP handlers and verifies 503, stable code and Retry-After', async () => {
     let release;
     let holding = true;
     const gate = new Promise((resolve) => { release = resolve; });
@@ -271,7 +270,6 @@ describe('DCA operation capacity and admission bounds (issue #1814)', () => {
       app[method] = (route, handler) => { handlers[`${method} ${route}`] = handler; };
     }
     require('../src/routes/exchange-routes')(app, {});
-    require('../src/routes/legacy-routes')(app, {});
 
     const invokeHandler = async (routeKey, req) => {
       const headers = {};
@@ -346,24 +344,6 @@ describe('DCA operation capacity and admission bounds (issue #1814)', () => {
     assert.equal(retrySellRes.headers['Retry-After'], '1');
     assert.equal(retrySellRes.body.success, false);
     assert.equal(retrySellRes.body.code, 'dca-busy');
-
-    // 6. POST /api/sync (legacy)
-    const legSyncRes = await invokeHandler('post /api/sync', {
-      query: {},
-    });
-    assert.equal(legSyncRes.statusCode, 503);
-    assert.equal(legSyncRes.headers['Retry-After'], '1');
-    assert.equal(legSyncRes.body.success, false);
-    assert.equal(legSyncRes.body.code, 'dca-busy');
-
-    // 7. POST /api/trade (legacy)
-    const legTradeRes = await invokeHandler('post /api/trade', {
-      query: {},
-    });
-    assert.equal(legTradeRes.statusCode, 503);
-    assert.equal(legTradeRes.headers['Retry-After'], '1');
-    assert.equal(legTradeRes.body.success, false);
-    assert.equal(legTradeRes.body.code, 'dca-busy');
 
     holding = false;
     release();

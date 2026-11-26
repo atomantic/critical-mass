@@ -1551,8 +1551,7 @@ describe('Fill Ledger', () => {
     //
     // The repair must NOT auto-persist from load() itself (codex/claude
     // review): `quiet`/no-quiet is a logging hint, not an ownership signal
-    // — several read-only scripts (scripts/analyze-unaccounted.js and
-    // friends) construct a non-quiet ledger purely to inspect it, so an
+    // — read-only callers can construct a non-quiet ledger, so an
     // unconditional persist() here would make any such caller a second,
     // uncoordinated writer of a live fund's ledger file. It rides along
     // on the same deferred-persist contract the netFee backfill above

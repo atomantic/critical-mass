@@ -30,7 +30,6 @@ const { getRunIdentifier } = require('../src/interval-utils');
 
 const DCA_ENGINE = require.resolve('../src/dca-engine');
 const EXCHANGE_ROUTES = require.resolve('../src/routes/exchange-routes');
-const LEGACY_ROUTES = require.resolve('../src/routes/legacy-routes');
 
 const EXCHANGE = 'coinbase';
 const PAIR = 'BTC-USDC';
@@ -718,31 +717,30 @@ describe('trade endpoints distinguish pending recovery from rejection (issue #96
     } finally { restore(); }
   });
 
-  for (const [label, routesPath, key, req] of [
-    ['POST /api/:exchange/trade', EXCHANGE_ROUTES, 'POST /api/:exchange/trade', { params: { exchange: EXCHANGE } }],
-    ['POST /api/trade (legacy)', LEGACY_ROUTES, 'POST /api/trade', {}],
-  ]) {
-    it(`${label} answers 202 with the pending order and recovery message`, async () => {
-      const { app, restore } = withStubbedCycle(routesPath, pending);
-      try {
-        const res = await invoke(app, key, req);
-        assert.equal(res.statusCode, 202);
-        assert.equal(res.body.status, 'buy_fill_pending');
-        assert.equal(res.body.pendingBuy.orderId, 'buy-1');
-        assert.match(res.body.message, /awaiting fill recovery/);
-      } finally {
-        restore();
-      }
-    });
+  it(`POST /api/:exchange/trade answers 202 with the pending order and recovery message`, async () => {
+    const { app, restore } = withStubbedCycle(EXCHANGE_ROUTES, pending);
+    try {
+      const res = await invoke(app, 'POST /api/:exchange/trade', {
+        params: { exchange: EXCHANGE },
+      });
+      assert.equal(res.statusCode, 202);
+      assert.equal(res.body.status, 'buy_fill_pending');
+      assert.equal(res.body.pendingBuy.orderId, 'buy-1');
+      assert.match(res.body.message, /awaiting fill recovery/);
+    } finally {
+      restore();
+    }
+  });
 
-    it(`${label} keeps 200 for a completed cycle`, async () => {
-      const { app, restore } = withStubbedCycle(routesPath, { status: 'success' });
-      try {
-        const res = await invoke(app, key, req);
-        assert.equal(res.statusCode, 200);
-      } finally {
-        restore();
-      }
-    });
-  }
+  it(`POST /api/:exchange/trade keeps 200 for a completed cycle`, async () => {
+    const { app, restore } = withStubbedCycle(EXCHANGE_ROUTES, { status: 'success' });
+    try {
+      const res = await invoke(app, 'POST /api/:exchange/trade', {
+        params: { exchange: EXCHANGE },
+      });
+      assert.equal(res.statusCode, 200);
+    } finally {
+      restore();
+    }
+  });
 });
