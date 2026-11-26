@@ -21,8 +21,11 @@ const fill = (extra = {}) => ({
   tradeId: 't-1', orderId: 'filled-1', side: 'buy', price: 2402.64, size: 0.013293, timestamp: DISPATCHED_AT + 60_000, ...extra,
 });
 
+// An unrelated trade at the read boundary shows the history has caught up.
+const recentUnrelatedFill = () => fill({ tradeId: 'other-trade', orderId: 'other-order', side: 'sell', timestamp: NOW });
+
 /** Adapter whose open orders, fills and order statuses are fixed. */
-const makeAdapter = ({ openOrders = [], fills = [], orders = {} } = {}) => {
+const makeAdapter = ({ openOrders = [], fills = [recentUnrelatedFill()], orders = {} } = {}) => {
   const calls = { getOrder: 0 };
   return {
     calls,
@@ -36,7 +39,7 @@ const makeAdapter = ({ openOrders = [], fills = [], orders = {} } = {}) => {
 };
 
 const search = (adapter, extra = {}) => findPlacementOnExchange({
-  adapter, productId: 'ETHUSD', intent: intent(), isKnownOrder: () => false, isKnownTrade: () => false, now: NOW, ...extra,
+  adapter, productId: 'ETHUSD', intent: intent(), isKnownOrder: () => false, isKnownTrade: () => false, now: NOW, clock: () => NOW, ...extra,
 });
 
 describe('findPlacementOnExchange', () => {
@@ -71,7 +74,7 @@ describe('findPlacementOnExchange', () => {
   it('ignores fills already in the ledger, from orders created elsewhen, or outside the limit', async () => {
     const adapter = makeAdapter({
       fills: [
-        fill({ tradeId: 'booked', orderId: 'booked-order' }),
+        fill({ tradeId: 'booked', orderId: 'booked-order', timestamp: NOW }),
         fill({ tradeId: 't-old', orderId: 'old-order' }),
         fill({ tradeId: 't-high', orderId: 'above-limit', price: 2410 }),
         fill({ tradeId: 't-big', orderId: 'too-big', size: 0.5 }),
@@ -85,7 +88,7 @@ describe('findPlacementOnExchange', () => {
 
   it('ignores a smaller unrelated order that filled at dispatch time', async () => {
     const adapter = makeAdapter({
-      fills: [fill({ size: 0.001 })],
+      fills: [fill({ size: 0.001, timestamp: NOW })],
       orders: { 'filled-1': { orderId: 'filled-1', side: 'BUY', status: 'FILLED', filledSize: 0.001, completionPercentage: 100, createdTime: iso(400) } },
     });
     assert.deepEqual(await search(adapter), { verdict: 'absent' });
@@ -109,7 +112,7 @@ describe('findPlacementOnExchange', () => {
   });
 
   it('stays inconclusive when the fill history may be incomplete', async () => {
-    const fills = Object.defineProperty([], 'incomplete', { value: true });
+    const fills = Object.defineProperty([recentUnrelatedFill()], 'incomplete', { value: true });
     assert.equal((await search(makeAdapter({ fills }))).verdict, 'inconclusive');
   });
 
@@ -166,8 +169,7 @@ describe('findPlacementOnExchange', () => {
     /**
      * A simulated exchange on a stepping clock. The placement rested until just
      * before the first open-order read and is gone from every listing after
-     * that; the fill history lags, reporting a bound before that read, and
-     * only shows the fill on a later call.
+     * that. The fill history only shows the fill on a later call.
      */
     const makeRacingExchange = ({ restingOnRead = [], historyLagCalls = 1 } = {}) => {
       let tick = DISPATCHED_AT + 3 * 60 * 60_000;
@@ -187,8 +189,8 @@ describe('findPlacementOnExchange', () => {
           tick += 1_000;
           calls.push('fills');
           fillReads += 1;
-          if (fillReads <= historyLagCalls) return Object.defineProperty([], 'coveredThrough', { value: filledAt - 5_000 });
-          return Object.defineProperty([fill({ orderId: 'raced', timestamp: filledAt })], 'coveredThrough', { value: tick });
+          if (fillReads <= historyLagCalls) return [];
+          return [fill({ orderId: 'raced', timestamp: filledAt }), { ...recentUnrelatedFill(), timestamp: tick }];
         },
         getOrder: async (orderId) => ({ orderId, side: 'BUY', status: 'FILLED', filledSize: 0.013293, completionPercentage: 100, createdTime: iso(400) }),
       };
@@ -206,6 +208,19 @@ describe('findPlacementOnExchange', () => {
       assert.equal(second.verdict === 'match' && second.order.orderId, 'raced');
       assert.equal(second.verdict === 'match' && second.resting, false);
       assert.deepEqual(calls, ['open', 'fills', 'open', 'fills']);
+    });
+
+    it('stays inconclusive with an empty, stale or undated history even if the scan requested up to the present', async () => {
+      for (const timestamps of [[], [NOW - 1], [NaN, Infinity]]) {
+        const fills = timestamps.map(timestamp => fill({ side: 'sell', timestamp }));
+        Object.defineProperty(fills, 'coveredThrough', { value: NOW });
+        assert.equal((await search(makeAdapter({ fills }))).verdict, 'inconclusive');
+      }
+    });
+
+    it('respects the scan end even when a returned trade reaches the open-order read', async () => {
+      const fills = Object.defineProperty([recentUnrelatedFill()], 'coveredThrough', { value: NOW - 1 });
+      assert.equal((await search(makeAdapter({ fills }))).verdict, 'inconclusive');
     });
 
     it('stays inconclusive when the re-read lists a matching order the first listing missed', async () => {
@@ -232,7 +247,7 @@ describe('findPlacementOnExchange', () => {
       const adapter = {
         ...makeAdapter(),
         getOpenOrders: async () => { calls.push('open'); return []; },
-        getReconciliationFills: async () => { calls.push('fills'); return []; },
+        getReconciliationFills: async () => { calls.push('fills'); return [recentUnrelatedFill()]; },
       };
       assert.deepEqual(await search(adapter), { verdict: 'absent' });
       assert.deepEqual(calls, ['open', 'fills', 'open']);

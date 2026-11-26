@@ -1,0 +1,1 @@
+- Placement recovery keeps an uncertain order pending while exchange fill history lags, preventing a duplicate order when the original has already filled.

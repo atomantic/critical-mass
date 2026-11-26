@@ -859,7 +859,7 @@
  * @property {(orderId: string) => Promise<CancelResult>} cancelOrder - Cancel an order
  * @property {(orderId: string) => Promise<OrderFill[]>} getOrderFills - Get order fills
  * @property {{fillReconciliation: boolean}} capabilities - Optional exchange feature metadata
- * @property {(productId: string|undefined, startTimestampMs: number, options?: ReconciliationScanOptions) => Promise<ReconciliationFill[]>} getReconciliationFills - Get normalized historical fills for ledger reconciliation; resolves only with the complete requested range. The array may carry non-enumerable `incomplete` (the history may be truncated) and `coveredThrough` (ms upper bound of the range read; absent means the read reached the present)
+ * @property {(productId: string|undefined, startTimestampMs: number, options?: ReconciliationScanOptions) => Promise<ReconciliationFill[]>} getReconciliationFills - Get normalized historical fills for ledger reconciliation; resolves only with the complete requested range. The array may carry non-enumerable `incomplete` (the history may be truncated) and `coveredThrough` (optional ms upper bound of the requested scan range, independent of fill indexing)
  * @property {(orderId: string) => Promise<FillSummary>} getOrderFillSummary - Get fill summary
  * @property {(productId: string, start: number, end: number, granularity: string) => Promise<Candle[]>} getCandles - Get candles
  */
