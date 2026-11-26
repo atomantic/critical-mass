@@ -1,15 +1,14 @@
-const TEST_DIR = require('node:path').resolve(__dirname, '../..');
 const { describe, it } = require('node:test')
 const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
 
 const routeSource = fs.readFileSync(
-  path.join(__dirname, '..', 'admin', 'src', 'routeChunks.js'),
+  path.join(__dirname, '../../../admin/src/routeChunks.js'),
   'utf8',
 )
 const appSource = fs.readFileSync(
-  path.join(TEST_DIR, '..', 'admin', 'src', 'App.jsx'),
+  path.join(__dirname, '../../../admin/src/App.jsx'),
   'utf8',
 )
 
