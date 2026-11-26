@@ -171,7 +171,7 @@ describe('issue #694 — recordCycleForSizeOptimizer feeds the real adapter bala
     assert.notEqual(sizeOptimizer.lastKnownBalance, configMaxUsdcDeployed, 'must never fall back to feeding the cap as the balance');
   });
 
-  it('adds open cost and resting buy commitments to verified free quote on cycle close', async () => {
+  it('adds open cost and remaining buy commitments to verified free quote on cycle close', async () => {
     const orderId = 'balance-feed-equity';
     const eng = makeEngine({
       adapter: {
@@ -180,12 +180,12 @@ describe('issue #694 — recordCycleForSizeOptimizer feeds the real adapter bala
         getAccountBalance: async () => {
           // New-cycle state visible by the time the detached wallet fetch settles.
           Object.assign(eng._getPositionState(), {
-            totalCostBasis: 500,
+            totalCostBasis: 575, // $500 tracked in bodies and $75 of legacy open cost
             celestialBodies: [{ id: 'open-body', tier: 'satellite', assetQty: 0.01, costBasis: 500, avgPrice: 50000 }],
             pendingLadderOrders: [{ orderId: 'resting-ladder', sizeUsdc: 200 }],
             pendingEntryOrders: [{ orderId: 'resting-entry', sizeUsdc: 100 }],
           });
-          return { available: '200' };
+          return { available: '125' };
         },
       },
     });

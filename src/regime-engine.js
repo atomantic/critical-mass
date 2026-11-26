@@ -835,7 +835,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * commitments. Feeding the configured cap back in would shrink it on every
    * evaluation (#694).
    *
-   * @param {Object} cycleData - Data about the completed cycle
+   * @param {{stepsUsed: number, capitalDeployed: number, closedCoreTpOrderId?: string}} cycleData
    * @returns {Promise<void>}
    */
   const recordCycleForSizeOptimizer = (cycleData) => fencedWrite(`engine-size-optimizer:${fundLabel}`, async () => {
@@ -911,7 +911,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       if (Number.isFinite(availableQuote) && availableQuote >= 0) {
         fundEquity = availableQuote;
         if (!isDryRun) {
-          fundEquity += getOpenBodyCost();
+          // If reset failed after a legacy core sale, its old aggregate cost
+          // can still be in positionState even though the fill was booked.
+          const soldCoreAwaitingReset = cycleData.closedCoreTpOrderId
+            && positionState.activeTpOrderId === cycleData.closedCoreTpOrderId;
+          fundEquity += soldCoreAwaitingReset ? getOpenBodyCost() : getAllocatedCapital();
+          // Partial-fill booking shrinks these tracked rows by the cost
+          // booked into a body, so sizeUsdc is already the remaining hold.
           for (const order of [...(positionState.pendingEntryOrders || []), ...(positionState.pendingLadderOrders || [])]) {
             fundEquity += order.sizeUsdc || 0;
           }
@@ -3122,7 +3128,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       await resetCycle();
     } finally {
       if (sizeOptimizerCycleData) {
-        recordCycleForSizeOptimizer(sizeOptimizerCycleData).catch(() => {}).finally(resaveAfterSizeOptimizerLive);
+        recordCycleForSizeOptimizer({
+          ...sizeOptimizerCycleData,
+          closedCoreTpOrderId: fillData.orderId,
+        }).catch(() => {}).finally(resaveAfterSizeOptimizerLive);
       }
     }
     saveLiveState();
