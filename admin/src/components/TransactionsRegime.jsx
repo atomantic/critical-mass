@@ -12,7 +12,7 @@ import useRealtimeRefresh from '../hooks/useRealtimeRefresh'
 const EMPTY_SUMMARY = { totalBuys: 0, totalSells: 0, totalAssetBought: 0, totalBtcSold: 0, totalFees: 0, totalPnL: 0, totalHoldbackBtc: 0, totalHoldbackValue: 0 }
 const EMPTY_PAGE = { page: 0, pageCount: 1, total: 0, start: 0, end: 0, hasPrev: false, hasNext: false }
 
-function TransactionsRegime({ exchange = 'coinbase', pair }) {
+function TransactionsRegime({ exchange = 'coinbase', pair, readInitialStatus }) {
   const cycleFilterId = useId()
   const [snapshot, setSnapshot] = useState({ fills: [], summary: EMPTY_SUMMARY, pageInfo: EMPTY_PAGE, cycleIds: [] })
   const [openOrders, setOpenOrders] = useState([])
@@ -30,7 +30,7 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
   const [sortDir, setSortDir] = useState('desc')
   const [productId, setProductId] = useState(null)
   const [page, setPage] = useState(0)
-  const reader = useMemo(() => createTransactionsReader(), [])
+  const reader = useMemo(() => createTransactionsReader(undefined, readInitialStatus), [readInitialStatus])
   const revision = useRef(null)
   const fund = `${exchange}:${pair || ''}`
   const selection = useMemo(() => ({ fund }), [fund])

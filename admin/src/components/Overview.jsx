@@ -1,5 +1,5 @@
 import Button from './ui/Button'
-import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react'
+import { memo, useState, useEffect, useEffectEvent, useCallback, useRef } from 'react'
 import { Link } from '../lib/router'
 import { ExternalLink } from './icons'
 import { useMultiRegimeStatuses } from '../hooks/useTradeEvents'
@@ -9,10 +9,28 @@ import ClosedFundCard from './ClosedFundCard'
 import { EXCHANGE_ICONS, EXCHANGE_COLORS } from './exchangeStyles'
 import { REGIME_COLORS, HEALTH_COLORS } from './regime/regimeStyles'
 import { apiGet } from '../utils/apiClient'
+import { readRegimeStatus } from '../utils/readRegimeStatus'
+import { pairQuery } from '../utils/api'
+import { TIER_COLORS, TIER_EMOJIS, TIER_ORDER } from './celestial/celestialConstants'
 import { pnlColorClass, signedPrefix } from '../utils/pnlFormat.mjs'
-import { createFundStatusOwner, mergeRegimeStatus, nextRegimeStatusSeq } from '../utils/regimeStatusSnapshot.mjs'
+import { createFundStatusOwner, nextRegimeStatusSeq } from '../utils/regimeStatusSnapshot.mjs'
 
-const CelestialVisualization = lazy(() => import('./celestial/CelestialVisualization'))
+// The gateway lists each (exchange, pair) fund separately.
+const fundKey = (ex) => `${ex.name}::${ex.pair || ex.productId || ex.name || 'default'}`
+
+function CelestialPreview({ bodies }) {
+  const counts = new Map()
+  for (const { tier } of bodies) counts.set(tier, (counts.get(tier) ?? 0) + 1)
+  return (
+    <div className="mb-3 flex flex-wrap gap-2 rounded-sm bg-gray-900 p-2 text-xs text-gray-300" aria-label="Celestial bodies by tier">
+      {TIER_ORDER.filter(tier => counts.has(tier)).map(tier => (
+        <span key={tier} className="rounded-full border px-2 py-1" style={{ borderColor: TIER_COLORS[tier] }}>
+          {TIER_EMOJIS[tier]} {tier.replace('_', ' ')} ×{counts.get(tier)}
+        </span>
+      ))}
+    </div>
+  )
+}
 
 const getEngineStatus = (isRunning, isDryRun, lifecycle, engineDown) => {
   if (lifecycle === 'closed') {
@@ -32,27 +50,18 @@ const getEngineStatus = (isRunning, isDryRun, lifecycle, engineDown) => {
   return { label: 'Stopped', color: 'bg-gray-600', textColor: 'text-gray-300' }
 }
 
-// Per-fund key used in snapshotMap. The /api/exchanges response now returns
-// one entry per (exchange, pair) fund — we use composite keys so two funds
-// on the same exchange (e.g., coinbase BTC-USDC and coinbase ETH-USDC) keep
-// independent status entries.
-const fundKey = (ex) => `${ex.name}::${ex.pair || ex.productId || ex.name || 'default'}`
-
-function Overview({ onAddFund }) {
-  const [exchanges, setExchanges] = useState([])
+function Overview({ funds, fundsLoaded, fundsError, refreshFunds, onAddFund }) {
+  const [localExchanges, setLocalExchanges] = useState([])
+  const exchanges = funds ?? localExchanges
   const [snapshotMap, setSnapshotMap] = useState({})
-  const [statusState, setStatusState] = useState({})
   const [exchangesError, setExchangesError] = useState(null)
   const [loading, setLoading] = useState(true)
   const loadOwnerRef = useRef(0)
   const abortControllerRef = useRef(null)
-  const snapshotMapRef = useRef(snapshotMap)
-  snapshotMapRef.current = snapshotMap
 
   const { snapshots: wsSnapshots, statuses: wsStatuses } = useMultiRegimeStatuses()
   const ownersRef = useRef(new Map())
   const fallbackStatusesRef = useRef(new Map())
-
 
   const getOrCreateOwner = useCallback((ex) => {
     const key = fundKey(ex)
@@ -66,12 +75,10 @@ function Overview({ onAddFund }) {
           setSnapshotMap(prev => {
             const current = prev[key]
             if (current && snap.seq < current.seq) return prev
-            return { ...prev, [key]: { status: snap.status, seq: snap.seq } }
+            const state = snap.probeFailed ? 'error' : (snap.isStale ? 'stale' : 'ok')
+            if (current?.status === snap.status && current.seq === snap.seq && current.state === state) return prev
+            return { ...prev, [key]: { status: snap.status, seq: snap.seq, state } }
           })
-          setStatusState(prev => ({
-            ...prev,
-            [key]: snap.probeFailed ? 'error' : (snap.isStale ? 'stale' : 'ok'),
-          }))
         },
       })
       ownersRef.current.set(key, owner)
@@ -79,121 +86,85 @@ function Overview({ onAddFund }) {
     return owner
   }, [])
 
-  // Fetch exchange list and each fund status as one retryable, fenced page load (#1817).
-  const load = useCallback(async () => {
+  const retryFund = useCallback((key) => ownersRef.current.get(key)?.retry(), [])
+
+  // Render each fund as soon as its status settles. A slow engine only leaves
+  // its own card pending and cannot hold up the other cards or their totals.
+  const loadStatuses = useCallback((exchangeList) => {
     const loadId = ++loadOwnerRef.current
     abortControllerRef.current?.abort()
     const controller = new AbortController()
     abortControllerRef.current = controller
-    setLoading(true)
-    try {
-      const res = await apiGet('/api/exchanges', { signal: controller.signal })
-      if (loadOwnerRef.current !== loadId) return
-      if (!res.ok) throw new Error(`Exchange list request failed (HTTP ${res.status})`)
-      const exchangeList = res.data.exchanges || []
-      setExchanges(exchangeList)
-      setExchangesError(null)
 
-      const activeKeys = new Set(exchangeList.map(fundKey))
-      for (const [key, owner] of ownersRef.current.entries()) {
-        if (!activeKeys.has(key)) {
-          owner.dispose()
-          ownersRef.current.delete(key)
-          fallbackStatusesRef.current.delete(key)
-        }
+    const activeKeys = new Set(exchangeList.map(fundKey))
+    for (const [key, owner] of ownersRef.current.entries()) {
+      if (!activeKeys.has(key)) {
+        owner.dispose()
+        ownersRef.current.delete(key)
+        fallbackStatusesRef.current.delete(key)
       }
+    }
 
-      const entries = await Promise.all(exchangeList.map(async (ex) => {
-        const key = fundKey(ex)
-        const owner = getOrCreateOwner(ex)
-        const pairParam = ex.pair || ex.productId || ''
-        const readSeq = nextRegimeStatusSeq()
-        try {
-          const r = await apiGet(`/api/${ex.name}/regime/status?pair=${encodeURIComponent(pairParam)}`, { signal: controller.signal })
-          if (loadOwnerRef.current !== loadId) return null
-          if (!r.ok) {
-            const existing = owner.getSnapshot().status
-            return { key, status: existing, state: 'error', seq: readSeq }
-          }
-          const status = r.data?.status || null
-          if (status) {
-            owner.acceptSnapshot(status, readSeq, { isSocket: false })
-            return { key, status: owner.getSnapshot().status, state: 'ok', seq: readSeq }
-          }
-          return { key, status: null, state: 'error', seq: readSeq }
-        } catch {
-          if (loadOwnerRef.current !== loadId) return null
-          const existing = owner.getSnapshot().status
-          return { key, status: existing, state: 'error', seq: readSeq }
-        }
-      }))
-      if (loadOwnerRef.current !== loadId) return
-
-      const validKeys = new Set(exchangeList.map(fundKey))
-
-      setSnapshotMap(prev => {
-        const next = {}
-        // Retain only currently valid funds
-        for (const [key, snap] of Object.entries(prev)) {
-          if (validKeys.has(key)) next[key] = snap
-        }
-        for (const entry of entries) {
-          if (!entry) continue
-          const { key, status, seq, state } = entry
-          const current = next[key]
-          // If a newer snapshot already arrived (e.g. from socket while HTTP was in flight), keep it
-          if (current && current.seq >= seq) continue
-          if (state === 'error') {
-            if (!current?.status) {
-              next[key] = { status: null, seq }
-            }
-          } else {
-            const merged = mergeRegimeStatus(current?.status, status)
-            next[key] = { status: merged, seq }
-          }
-        }
-        return next
-      })
-
-      setStatusState(prev => {
-        const next = {}
-        for (const [key, state] of Object.entries(prev)) {
-          if (validKeys.has(key)) next[key] = state
-        }
-        for (const entry of entries) {
-          if (!entry) continue
-          const { key, seq, state } = entry
-          const currentSnap = snapshotMapRef.current[key]
-          if (currentSnap && currentSnap.seq >= seq) continue
-          next[key] = state
-        }
-        return next
-      })
-    } catch (error) {
-      if (loadOwnerRef.current === loadId) {
-        setExchangesError(error.message || 'Failed to load exchanges')
+    setSnapshotMap(prev => Object.fromEntries(Object.entries(prev).filter(([key]) => activeKeys.has(key))))
+    for (const ex of exchangeList) {
+      const key = fundKey(ex)
+      const owner = getOrCreateOwner(ex)
+      const query = pairQuery(ex.pair || ex.productId)
+      const url = `/api/${ex.name}/regime/status${query}`
+      const fail = (seq) => {
+        if (loadOwnerRef.current !== loadId) return
+        setSnapshotMap(prev => {
+          const current = prev[key]
+          if (current && current.seq >= seq) return prev
+          return { ...prev, [key]: { ...current, seq, state: 'error' } }
+        })
       }
-    } finally {
-      if (loadOwnerRef.current === loadId) {
-        setLoading(false)
-      }
+      const readSeq = nextRegimeStatusSeq()
+      readRegimeStatus(url, { signal: controller.signal }).then(result => {
+        if (loadOwnerRef.current !== loadId) return
+        if (result.ok && result.data?.status) {
+          owner.acceptSnapshot(result.data.status, result.seq, { isSocket: false })
+        } else {
+          fail(result.seq)
+        }
+      }).catch(() => fail(readSeq))
     }
   }, [getOrCreateOwner])
 
-  const retryFund = useCallback(async (card) => {
-    const key = card.key || fundKey(card)
-    const owner = ownersRef.current.get(key)
-    if (owner) {
-      await owner.retry()
-    } else {
-      await load()
+  const load = useCallback(async () => {
+    if (refreshFunds) return refreshFunds()
+    const loadId = ++loadOwnerRef.current
+    abortControllerRef.current?.abort()
+    const controller = new AbortController()
+    abortControllerRef.current = controller
+    try {
+      const result = await apiGet('/api/exchanges', { signal: controller.signal })
+      if (loadId !== loadOwnerRef.current) return
+      if (!result.ok) throw new Error(`Exchange list request failed (HTTP ${result.status})`)
+      setExchangesError(null)
+      setLoading(false)
+      const list = result.data.exchanges || []
+      setLocalExchanges(list)
+      loadStatuses(list)
+    } catch (error) {
+      if (loadId !== loadOwnerRef.current) return
+      setExchangesError(error.message || 'Failed to load exchanges')
+      setLoading(false)
     }
-  }, [load])
+  }, [loadStatuses, refreshFunds])
 
   useEffect(() => {
+    if (fundsLoaded) loadStatuses(funds)
+  }, [funds, fundsLoaded, loadStatuses])
+
+  const loadStandaloneOnMount = useEffectEvent(() => {
+    if (!funds) load()
+  })
+
+  useEffect(() => {
+    loadStandaloneOnMount()
     const owners = ownersRef.current
     const fallbackStatuses = fallbackStatusesRef.current
-    load()
     return () => {
       loadOwnerRef.current += 1
       abortControllerRef.current?.abort()
@@ -203,7 +174,7 @@ function Overview({ onAddFund }) {
       owners.clear()
       fallbackStatuses.clear()
     }
-  }, [load])
+  }, [])
 
   // Merge WebSocket updates into snapshot map. wsSnapshots is keyed by
   // `${exchange}::${pair}` with monotonic generations so each fund updates
@@ -248,10 +219,11 @@ function Overview({ onAddFund }) {
   const cards = exchanges.map(ex => {
     const key = fundKey(ex)
     const status = snapshotMap[key]?.status
-    const state = statusState[key]
+    const state = snapshotMap[key]?.state
     const hasSnapshot = Boolean(status)
     const isStale = Boolean(status?.market?.stale || status?.statusSilent || status?.probeFailed || state === 'stale' || (state === 'error' && hasSnapshot))
     const statusUnavailable = state === 'error' && !hasSnapshot
+    const statusPending = !hasSnapshot && !statusUnavailable
     const pair = ex.pair || ex.productId || 'BTC-USDC'
     const baseCurrency = getBaseCurrency(ex.productId || pair)
     const quoteCurrency = getQuoteCurrency(ex.productId || pair)
@@ -316,6 +288,7 @@ function Overview({ onAddFund }) {
       status,
       hasSnapshot,
       statusUnavailable,
+      statusPending,
       stale: isStale,
       probeFailed: Boolean(status?.probeFailed || (state === 'error' && hasSnapshot)),
       baseCurrency,
@@ -358,8 +331,11 @@ function Overview({ onAddFund }) {
   })
 
   // Aggregate summary
-  const availableCards = cards.filter(c => !c.statusUnavailable && !c.stale)
-  const unavailableCount = cards.length - availableCards.length
+  const availableCards = cards.filter(c => !c.statusPending && !c.statusUnavailable && !c.stale)
+  const unavailableCount = cards.filter(c => c.statusUnavailable || c.stale).length
+  const pendingCount = cards.filter(c => c.statusPending).length
+  const closedCards = cards.filter(c => c.lifecycle === 'closed' && !c.statusPending && !c.statusUnavailable)
+  const activeCards = cards.filter(c => c.lifecycle !== 'closed' || c.statusPending || c.statusUnavailable)
   const totals = availableCards.reduce((acc, c) => ({
     deployed: acc.deployed + c.totalCostBasis,
     available: acc.available + c.availableCapital,
@@ -405,7 +381,8 @@ function Overview({ onAddFund }) {
   const totalAnnualAssetUsd = Object.values(annualAssetBreakdown).reduce((sum, a) => sum + a.usd, 0)
   const totalAnnualLiquid = totalAnnualUsdc + totalAnnualAssetUsd
 
-  if (loading) {
+  const listError = funds ? fundsError : exchangesError
+  if (funds ? !fundsLoaded && !fundsError : loading) {
     return (
       <div className="flex items-center justify-center h-64">
         <div className="text-gray-400">Loading...</div>
@@ -427,9 +404,9 @@ function Overview({ onAddFund }) {
         </Button>
       </div>
 
-      {exchangesError && (
+      {listError && (
         <div role="alert" className="flex items-center justify-between gap-3 rounded-lg border border-red-700 bg-red-900/20 p-4 mb-4 text-red-200">
-          <span>Unable to load exchanges: {exchangesError}</span>
+          <span>Unable to load exchanges: {listError}</span>
           <Button onClick={load} variant="primary" size="compact">Retry</Button>
         </div>
       )}
@@ -495,205 +472,33 @@ function Overview({ onAddFund }) {
         <div className="text-sm text-amber-300 mb-4" role="status">{unavailableCount} {unavailableCount === 1 ? 'fund' : 'funds'} unavailable; excluded from totals.</div>
       )}
 
+      {pendingCount > 0 && (
+        <div className="text-sm text-gray-400 mb-4" role="status">Waiting for {pendingCount} {pendingCount === 1 ? 'fund' : 'funds'} to report status. Totals reflect loaded funds.</div>
+      )}
+
       {/* Active fund cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-        {cards.filter(c => c.lifecycle !== 'closed').map(card => {
-          if (card.statusUnavailable) {
-            return (
-              <div key={`${card.exchange}-${card.pair}`} className="bg-gray-800 rounded-lg border border-amber-700 p-4">
-                <div className="flex items-center justify-between gap-3">
-                  <Link to={`/${card.exchange}/${card.pair}`} className="text-white font-medium capitalize hover:opacity-80">
-                    {card.exchange} / {card.pair}
-                  </Link>
-                  <span className="text-xs px-2 py-0.5 rounded-sm bg-amber-900/60 text-amber-200">Status unavailable</span>
-                </div>
-                <Button onClick={load} variant="primary" size="compact" className="mt-4">Retry</Button>
-              </div>
-            )
-          }
-          const engineStatus = getEngineStatus(card.isRunning, card.isDryRun, card.lifecycle, card.engineDown)
-          const regimeColor = REGIME_COLORS[card.regimeMode] || {}
-          const healthColor = HEALTH_COLORS[card.healthMode]?.text || 'text-gray-400'
-
-          return (
-            <div
-              key={`${card.exchange}-${card.pair}`}
-              className={`bg-gray-800 rounded-lg border ${card.stale ? 'border-amber-700/80' : 'border-gray-700'} transition-colors p-4 block`}
-            >
-              {/* Header: icon + name + pair + badges */}
-              <Link to={`/${card.exchange}/${card.pair}`} className="flex items-center justify-between mb-3 hover:opacity-80 transition-opacity">
-                <div className="flex items-center gap-2">
-                  <span className={`w-7 h-7 flex items-center justify-center rounded-sm shrink-0 ${EXCHANGE_COLORS[card.exchange] || 'bg-gray-600'}`}>
-                    {EXCHANGE_ICONS[card.exchange] || '?'}
-                  </span>
-                  <div>
-                    <span className="font-medium capitalize text-white">{card.exchange}</span>
-                    <span className="text-gray-400 mx-1">/</span>
-                    <span className="text-sm text-gray-300">{card.pair}</span>
-                  </div>
-                  <ExternalLink className="w-3.5 h-3.5 text-gray-500" />
-                </div>
-                <div className="flex items-center gap-2">
-                  {card.stale && (
-                    <span className="text-xs px-2 py-0.5 rounded-sm bg-amber-900/60 text-amber-200">
-                      Status stale
-                    </span>
-                  )}
-                  <span className={`text-xs px-2 py-0.5 rounded-sm ${engineStatus.color} ${engineStatus.textColor} ${engineStatus.pulse ? 'animate-pulse' : ''}`}>
-                    {engineStatus.label}
-                  </span>
-                </div>
+        {activeCards.map(({ key, ...card }) => card.statusPending || card.statusUnavailable ? (
+          <div key={key} className={`bg-gray-800 rounded-lg border ${card.statusUnavailable ? 'border-amber-700' : 'border-gray-700'} p-4`}>
+            <div className="flex items-center justify-between gap-3">
+              <Link to={`/${card.exchange}/${card.pair}`} className="text-white font-medium capitalize hover:opacity-80">
+                {card.exchange} / {card.pair}
               </Link>
-
-              {/* Stale retry banner */}
-              {card.stale && (
-                <div className="flex items-center justify-between bg-amber-950/40 border border-amber-700/50 rounded-sm px-2.5 py-1.5 mb-3 text-xs text-amber-200">
-                  <span>{card.probeFailed ? 'Status probe failed' : 'Showing last known data (stale)'}</span>
-                  <Button onClick={(e) => { e.preventDefault(); e.stopPropagation(); retryFund(card); }} variant="primary" size="compact">Retry</Button>
-                </div>
-              )}
-
-              {/* Status pills */}
-              <div className="flex items-center gap-2 mb-3">
-                <span className={`text-xs px-2 py-0.5 rounded-sm bg-gray-700 ${healthColor}`}>
-                  {card.healthMode}
-                </span>
-                {card.regimeMode && (
-                  <span className={`text-xs px-2 py-0.5 rounded-sm ${regimeColor.bg || 'bg-gray-700'} ${regimeColor.text || 'text-gray-400'}`}>
-                    {card.regimeMode}
-                  </span>
-                )}
-              </div>
-
-              {/* Celestial Visualization */}
-              {card.celestial?.enabled && card.celestial?.bodies?.length > 0 && (
-                <div className="pointer-events-none mb-3">
-                  <Suspense fallback={<div className="bg-gray-900 rounded-sm p-2 text-xs text-gray-400">Loading...</div>}>
-                    <CelestialVisualization
-                      celestial={card.celestial}
-                      currentPrice={card.lastPrice}
-                      maxUsdcDeployed={card.maxUsdcDeployed}
-                      baseCurrency={card.baseCurrency}
-                      lazyMount
-                    />
-                  </Suspense>
-                </div>
-              )}
-
-              {/* Live price */}
-              <div className="mb-3">
-                <div className="text-xs text-gray-400 mb-0.5">Price</div>
-                <div className="text-lg font-bold font-mono text-white">
-                  {card.lastPrice ? formatPrice(card.lastPrice) : '-'}
-                </div>
-              </div>
-
-              {/* Position info */}
-              <div className="grid grid-cols-2 gap-x-3 gap-y-2 text-sm mb-3 min-w-0">
-                <div className="min-w-0">
-                  <div className="text-xs text-gray-400">Position</div>
-                  <div className="text-gray-200 font-mono truncate">
-                    {card.totalAssetQty > 0 ? `${card.totalAssetQty.toFixed(6)} ${card.baseCurrency}` : '-'}
-                  </div>
-                  {card.totalAssetCostBasis > 0 && (
-                    <div className="text-xs text-gray-400 truncate">{formatCurrency(card.totalAssetCostBasis)} cost</div>
-                  )}
-                </div>
-                <div className="min-w-0">
-                  <div className="text-xs text-gray-400">Unrealized P&L</div>
-                  <div className={`font-mono truncate ${pnlColorClass(card.unrealizedPnL)}`}>
-                    {card.totalAssetQty > 0 && card.lastPrice > 0
-                      ? `${signedPrefix(card.unrealizedPnL)}${formatCurrency(card.unrealizedPnL)}`
-                      : '-'}
-                  </div>
-                  {card.totalAssetQty > 0 && card.lastPrice > 0 && (
-                    <div className={`text-xs ${card.unrealizedPct >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-                      {signedPrefix(card.unrealizedPct)}{card.unrealizedPct.toFixed(2)}%
-                    </div>
-                  )}
-                  {card.totalAssetQty > 0 && card.lastPrice > 0 && <div className="text-2xs text-gray-400">if sold now</div>}
-                  {card.expectedCycleGain > 0 && (
-                    <div className="text-2xs text-cyan-400 font-mono truncate">+{formatCurrency(card.expectedCycleGain)} at target</div>
-                  )}
-                </div>
-                <div className="min-w-0">
-                  <div className="text-xs text-gray-400 truncate">Total Realized (USD + Reserves) {card.totalLiquidValuePercent ? `(${card.totalLiquidValuePercent.toFixed(2)}%)` : ''}</div>
-                  <div className={`font-mono truncate ${pnlColorClass(card.realizedPnL)}`}>
-                    {signedPrefix(card.realizedPnL)}{formatCurrency(card.realizedPnL)}
-                  </div>
-                  <div className="text-xs text-white font-mono truncate">{formatCurrency(card.realizedUsdcPnL)} {card.quoteCurrency}</div>
-                  {card.realizedAssetPnL !== 0 && (
-                    <div className="text-xs text-orange-400 truncate">{signedPrefix(card.realizedAssetPnL)}{card.realizedAssetPnL.toFixed(8)} {card.baseCurrency}</div>
-                  )}
-                </div>
-                <div className="min-w-0">
-                  <div className="text-xs text-gray-400">Total-return APY</div>
-                  <div className={`font-mono ${pnlColorClass(card.estimatedApy)}`}>
-                    {card.projectionReady ? `${card.estimatedApy.toFixed(1)}%${card.isApyClamped ? ' (capped)' : ''}` : 'Awaiting 24h'}
-                  </div>
-                </div>
-              </div>
-
-              {/* APY & Returns (matching RegimeDashboard) */}
-              {(card.engineStartTime || card.isRunning) && (
-                <div className="mb-3 pt-2 border-t border-gray-700 text-xs">
-                  <div className="flex flex-wrap gap-x-3 gap-y-1 text-gray-400 mb-2">
-                    <span>Deposited: {formatCurrency(card.depositedCapital)}</span>
-                    <span className="text-green-400">Max: {formatCurrency(card.maxUsdcDeployed)}</span>
-                    <span className="text-cyan-400">Avail: {formatCurrency(card.availableCapital)}</span>
-                  </div>
-                  <div className="flex flex-wrap gap-x-3 gap-y-1 text-gray-400 mb-2">
-                    <span>{card.elapsedDays.toFixed(1)}d running</span>
-                    <span>{card.cyclesPerDay.toFixed(1)} cycles/day</span>
-                    <span>Buys {card.cycleBuys}/{card.maxCycleBuys}</span>
-                  </div>
-                  {card.projectionReady && <div className="grid grid-cols-2 gap-2">
-                    <div className="bg-green-900/20 border border-green-700/30 rounded-sm p-1.5 min-w-0 overflow-hidden">
-                      <div className="text-green-400/70 text-2xs">Daily realized run rate</div>
-                      <div className="font-mono text-xs text-green-400 truncate">
-                        {formatCurrency(card.estimatedDailyUsdc + (card.estimatedDailyAsset * card.lastPrice))}
-                      </div>
-                      <div className="text-white text-2xs font-mono truncate">{formatCurrency(card.estimatedDailyUsdc)} {card.quoteCurrency}</div>
-                      {card.estimatedDailyAsset !== 0 && (
-                        <div className="text-orange-400 text-2xs font-mono truncate">
-                          {signedPrefix(card.estimatedDailyAsset)}{formatAsset(card.estimatedDailyAsset, card.baseCurrency)} ({formatCurrency(card.estimatedDailyAsset * card.lastPrice)})
-                        </div>
-                      )}
-                    </div>
-                    <div className="bg-cyan-900/20 border border-cyan-700/30 rounded-sm p-1.5 min-w-0 overflow-hidden">
-                      <div className="text-cyan-400/70 text-2xs truncate">Annual realized run rate</div>
-                      <div className="font-mono text-xs text-cyan-400 truncate">
-                        {formatCurrency((card.estimatedDailyUsdc * 365) + (card.estimatedDailyAsset * 365 * card.lastPrice))}/yr
-                      </div>
-                      <div className="text-white text-2xs font-mono truncate">{formatCurrency(card.estimatedDailyUsdc * 365)} {card.quoteCurrency}</div>
-                      {card.estimatedDailyAsset !== 0 && (
-                        <div className="text-orange-400 text-2xs font-mono truncate">
-                          {signedPrefix(card.estimatedDailyAsset)}{(card.estimatedDailyAsset * 365).toFixed(6)} {card.baseCurrency} ({formatCurrency(card.estimatedDailyAsset * 365 * card.lastPrice)})
-                        </div>
-                      )}
-                    </div>
-                  </div>}
-                </div>
-              )}
-
-              {/* Footer: cycles + celestial */}
-              <div className="flex items-center justify-between text-xs text-gray-400 border-t border-gray-700 pt-2">
-                <span>Cycles: {card.cyclesCompleted}</span>
-                {card.bodiesActive > 0 && (
-                  <span>{card.bodiesActive} active {card.tierSummary ? `(${card.tierSummary})` : ''}</span>
-                )}
-              </div>
+              <span className="text-xs text-gray-300" role="status">
+                {card.statusUnavailable ? 'Status unavailable' : 'Loading status…'}
+              </span>
             </div>
-          )
-        })}
+            {card.statusUnavailable && <Button onClick={load} variant="primary" size="compact" className="mt-4">Retry</Button>}
+          </div>
+        ) : <FundCard key={key} fundKey={key} retryFund={retryFund} {...card} />)}
       </div>
 
       {/* Closed funds section */}
-      {cards.some(c => c.lifecycle === 'closed') && (
+      {closedCards.length > 0 && (
         <div className="mt-6">
           <h2 className="text-sm font-medium text-gray-400 mb-2">Closed Funds</h2>
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-            {cards.filter(c => c.lifecycle === 'closed').map(card => (
+            {closedCards.map(card => (
               <ClosedFundCard
                 key={`${card.exchange}-${card.pair}`}
                 card={card}
@@ -705,7 +510,7 @@ function Overview({ onAddFund }) {
         </div>
       )}
 
-      {cards.length === 0 && !exchangesError && (
+      {cards.length === 0 && !listError && (
         <div className="text-center text-gray-400 py-12">
           No exchanges configured. Add an exchange to get started.
         </div>
@@ -713,5 +518,168 @@ function Overview({ onAddFund }) {
     </div>
   )
 }
+
+const FundCard = memo(function FundCard({ retryFund, ...card }) {
+  const engineStatus = getEngineStatus(card.isRunning, card.isDryRun, card.lifecycle, card.engineDown)
+  const regimeColor = REGIME_COLORS[card.regimeMode] || {}
+  const healthColor = HEALTH_COLORS[card.healthMode]?.text || 'text-gray-400'
+
+  return (
+    <div className={`bg-gray-800 rounded-lg border ${card.stale ? 'border-amber-700/80' : 'border-gray-700'} transition-colors p-4 block`}>
+      {/* Header: icon + name + pair + badges */}
+      <Link to={`/${card.exchange}/${card.pair}`} className="flex items-center justify-between mb-3 hover:opacity-80 transition-opacity">
+        <div className="flex items-center gap-2">
+          <span className={`w-7 h-7 flex items-center justify-center rounded-sm shrink-0 ${EXCHANGE_COLORS[card.exchange] || 'bg-gray-600'}`}>
+            {EXCHANGE_ICONS[card.exchange] || '?'}
+          </span>
+          <div>
+            <span className="font-medium capitalize text-white">{card.exchange}</span>
+            <span className="text-gray-400 mx-1">/</span>
+            <span className="text-sm text-gray-300">{card.pair}</span>
+          </div>
+          <ExternalLink className="w-3.5 h-3.5 text-gray-500" />
+        </div>
+        <div className="flex items-center gap-2">
+          {card.stale && (
+            <span className="text-xs px-2 py-0.5 rounded-sm bg-amber-900/60 text-amber-200">
+              Status stale
+            </span>
+          )}
+          <span className={`text-xs px-2 py-0.5 rounded-sm ${engineStatus.color} ${engineStatus.textColor} ${engineStatus.pulse ? 'animate-pulse' : ''}`}>
+            {engineStatus.label}
+          </span>
+        </div>
+      </Link>
+
+      {/* Stale retry banner */}
+      {card.stale && (
+        <div className="flex items-center justify-between bg-amber-950/40 border border-amber-700/50 rounded-sm px-2.5 py-1.5 mb-3 text-xs text-amber-200">
+          <span>{card.probeFailed ? 'Status probe failed' : 'Showing last known data (stale)'}</span>
+          <Button onClick={(e) => { e.preventDefault(); e.stopPropagation(); retryFund(card.fundKey); }} variant="primary" size="compact">Retry</Button>
+        </div>
+      )}
+
+      {/* Status pills */}
+      <div className="flex items-center gap-2 mb-3">
+        <span className={`text-xs px-2 py-0.5 rounded-sm bg-gray-700 ${healthColor}`}>
+          {card.healthMode}
+        </span>
+        {card.regimeMode && (
+          <span className={`text-xs px-2 py-0.5 rounded-sm ${regimeColor.bg || 'bg-gray-700'} ${regimeColor.text || 'text-gray-400'}`}>
+            {card.regimeMode}
+          </span>
+        )}
+      </div>
+
+      {card.celestial?.enabled && card.celestial.bodies?.length > 0 && (
+        <CelestialPreview bodies={card.celestial.bodies} />
+      )}
+
+      {/* Live price */}
+      <div className="mb-3">
+        <div className="text-xs text-gray-400 mb-0.5">Price</div>
+        <div className="text-lg font-bold font-mono text-white">
+          {card.lastPrice ? formatPrice(card.lastPrice) : '-'}
+        </div>
+      </div>
+
+      {/* Position info */}
+      <div className="grid grid-cols-2 gap-x-3 gap-y-2 text-sm mb-3 min-w-0">
+        <div className="min-w-0">
+          <div className="text-xs text-gray-400">Position</div>
+          <div className="text-gray-200 font-mono truncate">
+            {card.totalAssetQty > 0 ? `${card.totalAssetQty.toFixed(6)} ${card.baseCurrency}` : '-'}
+          </div>
+          {card.totalAssetCostBasis > 0 && (
+            <div className="text-xs text-gray-400 truncate">{formatCurrency(card.totalAssetCostBasis)} cost</div>
+          )}
+        </div>
+        <div className="min-w-0">
+          <div className="text-xs text-gray-400">Unrealized P&L</div>
+          <div className={`font-mono truncate ${pnlColorClass(card.unrealizedPnL)}`}>
+            {card.totalAssetQty > 0 && card.lastPrice > 0
+              ? `${signedPrefix(card.unrealizedPnL)}${formatCurrency(card.unrealizedPnL)}`
+              : '-'}
+          </div>
+          {card.totalAssetQty > 0 && card.lastPrice > 0 && (
+            <div className={`text-xs ${card.unrealizedPct >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+              {signedPrefix(card.unrealizedPct)}{card.unrealizedPct.toFixed(2)}%
+            </div>
+          )}
+          {card.totalAssetQty > 0 && card.lastPrice > 0 && <div className="text-2xs text-gray-400">if sold now</div>}
+          {card.expectedCycleGain > 0 && (
+            <div className="text-2xs text-cyan-400 font-mono truncate">+{formatCurrency(card.expectedCycleGain)} at target</div>
+          )}
+        </div>
+        <div className="min-w-0">
+          <div className="text-xs text-gray-400 truncate">Total Realized (USD + Reserves) {card.totalLiquidValuePercent ? `(${card.totalLiquidValuePercent.toFixed(2)}%)` : ''}</div>
+          <div className={`font-mono truncate ${pnlColorClass(card.realizedPnL)}`}>
+            {signedPrefix(card.realizedPnL)}{formatCurrency(card.realizedPnL)}
+          </div>
+          <div className="text-xs text-white font-mono truncate">{formatCurrency(card.realizedUsdcPnL)} {card.quoteCurrency}</div>
+          {card.realizedAssetPnL !== 0 && (
+            <div className="text-xs text-orange-400 truncate">{signedPrefix(card.realizedAssetPnL)}{card.realizedAssetPnL.toFixed(8)} {card.baseCurrency}</div>
+          )}
+        </div>
+        <div className="min-w-0">
+          <div className="text-xs text-gray-400">Total-return APY</div>
+          <div className={`font-mono ${pnlColorClass(card.estimatedApy)}`}>
+            {card.projectionReady ? `${card.estimatedApy.toFixed(1)}%${card.isApyClamped ? ' (capped)' : ''}` : 'Awaiting 24h'}
+          </div>
+        </div>
+      </div>
+
+      {/* APY & Returns (matching RegimeDashboard) */}
+      {(card.engineStartTime || card.isRunning) && (
+        <div className="mb-3 pt-2 border-t border-gray-700 text-xs">
+          <div className="flex flex-wrap gap-x-3 gap-y-1 text-gray-400 mb-2">
+            <span>Deposited: {formatCurrency(card.depositedCapital)}</span>
+            <span className="text-green-400">Max: {formatCurrency(card.maxUsdcDeployed)}</span>
+            <span className="text-cyan-400">Avail: {formatCurrency(card.availableCapital)}</span>
+          </div>
+          <div className="flex flex-wrap gap-x-3 gap-y-1 text-gray-400 mb-2">
+            <span>{card.elapsedDays.toFixed(1)}d running</span>
+            <span>{card.cyclesPerDay.toFixed(1)} cycles/day</span>
+            <span>Buys {card.cycleBuys}/{card.maxCycleBuys}</span>
+          </div>
+          {card.projectionReady && <div className="grid grid-cols-2 gap-2">
+            <div className="bg-green-900/20 border border-green-700/30 rounded-sm p-1.5 min-w-0 overflow-hidden">
+              <div className="text-green-400/70 text-2xs">Daily realized run rate</div>
+              <div className="font-mono text-xs text-green-400 truncate">
+                {formatCurrency(card.estimatedDailyUsdc + (card.estimatedDailyAsset * card.lastPrice))}
+              </div>
+              <div className="text-white text-2xs font-mono truncate">{formatCurrency(card.estimatedDailyUsdc)} {card.quoteCurrency}</div>
+              {card.estimatedDailyAsset !== 0 && (
+                <div className="text-orange-400 text-2xs font-mono truncate">
+                  {signedPrefix(card.estimatedDailyAsset)}{formatAsset(card.estimatedDailyAsset, card.baseCurrency)} ({formatCurrency(card.estimatedDailyAsset * card.lastPrice)})
+                </div>
+              )}
+            </div>
+            <div className="bg-cyan-900/20 border border-cyan-700/30 rounded-sm p-1.5 min-w-0 overflow-hidden">
+              <div className="text-cyan-400/70 text-2xs truncate">Annual realized run rate</div>
+              <div className="font-mono text-xs text-cyan-400 truncate">
+                {formatCurrency((card.estimatedDailyUsdc * 365) + (card.estimatedDailyAsset * 365 * card.lastPrice))}/yr
+              </div>
+              <div className="text-white text-2xs font-mono truncate">{formatCurrency(card.estimatedDailyUsdc * 365)} {card.quoteCurrency}</div>
+              {card.estimatedDailyAsset !== 0 && (
+                <div className="text-orange-400 text-2xs font-mono truncate">
+                  {signedPrefix(card.estimatedDailyAsset)}{(card.estimatedDailyAsset * 365).toFixed(6)} {card.baseCurrency} ({formatCurrency(card.estimatedDailyAsset * 365 * card.lastPrice)})
+                </div>
+              )}
+            </div>
+          </div>}
+        </div>
+      )}
+
+      {/* Footer: cycles + celestial */}
+      <div className="flex items-center justify-between text-xs text-gray-400 border-t border-gray-700 pt-2">
+        <span>Cycles: {card.cyclesCompleted}</span>
+        {card.bodiesActive > 0 && (
+          <span>{card.bodiesActive} active {card.tierSummary ? `(${card.tierSummary})` : ''}</span>
+        )}
+      </div>
+    </div>
+  )
+})
 
 export default Overview

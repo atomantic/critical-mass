@@ -1,6 +1,8 @@
 import Button from './ui/Button'
-import { Suspense, useRef, useState, useCallback, useMemo } from 'react'
+import { Suspense, useEffect, useRef, useState } from 'react'
 import { Canvas, useThree } from '@react-three/fiber'
+import useCanvasActive from '../hooks/useCanvasActive'
+import useReducedMotion from '../hooks/useReducedMotion'
 import BloomEffect from './celestial/BloomEffect'
 import OrbitControlsLite from './celestial/OrbitControlsLite'
 import CelestialScene from './celestial/CelestialScene'
@@ -41,23 +43,24 @@ const CAMERA_VIEWS = {
 }
 
 const NOOP = () => {}
+const SHOWCASE_CAMERA = { position: CAMERA_VIEWS.perspective.position, fov: 50, near: 0.1, far: 150 }
+const TIER_CAMERA = [0, 2, 4]
+const TIER_BODIES = Object.fromEntries(TIER_ORDER.map(tier => [tier, SHOWCASE_BODIES.find(body => body.tier === tier)]))
 
 const CameraController = ({ targetView, controlsRef }) => {
-  const { camera } = useThree()
-  const prevView = useRef(null)
+  const camera = useThree(state => state.camera)
+  const invalidate = useThree(state => state.invalidate)
 
-  if (targetView && targetView !== prevView.current) {
-    prevView.current = targetView
-    const view = CAMERA_VIEWS[targetView]
-    if (view) {
-      camera.position.set(...view.position)
-      camera.lookAt(0, 0, 0)
-      if (controlsRef.current) {
-        controlsRef.current.target.set(0, 0, 0)
-        controlsRef.current.update()
-      }
+  useEffect(() => {
+    camera.position.set(...(CAMERA_VIEWS[targetView]?.position ?? TIER_CAMERA))
+    camera.lookAt(0, 0, 0)
+    const controls = controlsRef.current
+    if (controls) {
+      controls.target.set(0, 0, 0)
+      controls.update()
     }
-  }
+    invalidate()
+  }, [targetView, camera, controlsRef, invalidate])
 
   return null
 }
@@ -73,11 +76,7 @@ const renderBody = (bodyProps) => {
   return <CelestialBody {...bodyProps} />
 }
 
-/**
- * Single-body scene for tier cards. Uses frameloop="demand" + invalidate
- * to avoid running a continuous animation loop per card.
- */
-const SingleBodyScene = ({ body }) => {
+const SingleBodyScene = ({ body, controlsRef, paused }) => {
   const bodyProps = { body, showTooltip: false, onHover: NOOP, maxUsdcDeployed: MAX_USDC, baseCurrency: 'BTC' }
 
   return (
@@ -86,7 +85,7 @@ const SingleBodyScene = ({ body }) => {
       <pointLight position={[0, 3, 3]} intensity={1.5} distance={15} decay={2} />
       <pointLight position={[0, 0, 0]} color={TIER_COLORS[body.tier]} intensity={0.8} distance={10} decay={2} />
 
-      <OrbitControlsLite enablePan={false} enableZoom={false} autoRotate autoRotateSpeed={1.5} minPolarAngle={Math.PI * 0.3} maxPolarAngle={Math.PI * 0.7} />
+      <OrbitControlsLite ref={controlsRef} enablePan={false} enableZoom={false} autoRotate={!paused} autoRotateSpeed={1.5} minPolarAngle={Math.PI * 0.3} maxPolarAngle={Math.PI * 0.7} />
 
       {renderBody(bodyProps)}
 
@@ -96,57 +95,63 @@ const SingleBodyScene = ({ body }) => {
 }
 
 const Systems = () => {
-  const [activeView, setActiveView] = useState('perspective')
-  const controlsRef = useRef()
-  const [viewKey, setViewKey] = useState(0)
+  const [{ view, revision }, setSelection] = useState({ view: 'perspective', revision: 0 })
+  const controlsRef = useRef(null)
+  const showcaseRef = useRef(null)
+  const { active, everInView } = useCanvasActive(showcaseRef)
+  const reducedMotion = useReducedMotion()
+  const paused = reducedMotion || !active
+  const selectedBody = TIER_BODIES[view]
 
-  const handleViewChange = useCallback((view) => {
-    setActiveView(view)
-    setViewKey(k => k + 1)
-  }, [])
-
-  const tierShowcaseBodies = useMemo(() => {
-    const bodies = {}
-    for (const body of SHOWCASE_BODIES) {
-      if (!bodies[body.tier]) bodies[body.tier] = body
-    }
-    return bodies
-  }, [])
+  const selectView = (view) => setSelection(previous => ({ view, revision: previous.revision + 1 }))
+  const previewTier = (tier) => {
+    selectView(tier)
+    showcaseRef.current?.focus({ preventScroll: true })
+    showcaseRef.current?.scrollIntoView?.({ block: 'nearest' })
+  }
 
   return (
     <div className="space-y-6">
       <div>
         <h2 className="text-xl font-bold text-white mb-1">Celestial Body Showcase</h2>
         <p className="text-gray-400 text-sm">
-          Full hierarchical system with every body type at scale. Drag to orbit, scroll to zoom, right-click to pan.
+          {selectedBody
+            ? 'Drag to orbit the selected body. Choose a camera view to return to the full system.'
+            : 'Full hierarchical system with every body type at scale. Drag to orbit, scroll to zoom, right-click to pan.'}
         </p>
       </div>
 
       <div className="flex items-center gap-2">
         <span className="text-gray-400 text-xs uppercase tracking-wider mr-1">View:</span>
-        {Object.entries(CAMERA_VIEWS).map(([key, view]) => (
+        {Object.entries(CAMERA_VIEWS).map(([key, cameraView]) => (
           <Button
             key={key}
-            onClick={() => handleViewChange(key)}
-            variant={activeView === key ? 'accent' : 'secondary'} size="compact-xs"
+            onClick={() => selectView(key)}
+            aria-pressed={view === key}
+            variant={view === key ? 'accent' : 'secondary'} size="compact-xs"
           >
-            {view.name}
+            {cameraView.name}
           </Button>
         ))}
       </div>
 
-      <div className="rounded-lg overflow-hidden border border-gray-700" style={{ aspectRatio: '16/9' }}>
-        <Canvas
-          dpr={[1, 1.5]}
-          camera={{ position: [0, 12, 18], fov: 50, near: 0.1, far: 150 }}
-          gl={{ antialias: true, alpha: false }}
-          onCreated={({ gl }) => gl.setClearColor('#0f0f14')}
-        >
-          <Suspense fallback={null}>
-            <CameraController key={viewKey} targetView={activeView} controlsRef={controlsRef} />
-            <CelestialScene bodies={SHOWCASE_BODIES} buyOrders={MOCK_BUY_ORDERS} maxUsdcDeployed={MAX_USDC} controlsRef={controlsRef} />
-          </Suspense>
-        </Canvas>
+      <div ref={showcaseRef} tabIndex={-1} role="region" aria-label={selectedBody ? `${view.replace('_', ' ')} preview` : 'Celestial system preview'} className="rounded-lg overflow-hidden border border-gray-700 bg-gray-900" style={{ aspectRatio: '16/9' }}>
+        {everInView && (
+          <Canvas
+            dpr={[1, 1.5]}
+            camera={SHOWCASE_CAMERA}
+            frameloop={paused ? 'demand' : 'always'}
+            gl={{ antialias: true, alpha: false }}
+            onCreated={({ gl }) => gl.setClearColor('#0f0f14')}
+          >
+            <Suspense fallback={null}>
+              {selectedBody
+                ? <SingleBodyScene key={view} body={selectedBody} controlsRef={controlsRef} paused={paused} />
+                : <CelestialScene bodies={SHOWCASE_BODIES} buyOrders={MOCK_BUY_ORDERS} maxUsdcDeployed={MAX_USDC} controlsRef={controlsRef} reducedMotion={paused} />}
+              <CameraController key={revision} targetView={view} controlsRef={controlsRef} />
+            </Suspense>
+          </Canvas>
+        )}
       </div>
 
       <div className="grid grid-cols-3 sm:grid-cols-5 lg:grid-cols-9 gap-2 text-sm">
@@ -162,24 +167,11 @@ const Systems = () => {
         <h3 className="text-lg font-semibold text-white mb-3">Body Types</h3>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {TIER_ORDER.map((tier) => {
-            const body = tierShowcaseBodies[tier]
+            const body = TIER_BODIES[tier]
             if (!body) return null
 
             return (
               <div key={tier} className="bg-gray-800 rounded-lg border border-gray-700 overflow-hidden" style={{ borderTop: `2px solid ${TIER_COLORS[tier]}` }}>
-                <div className="h-48" style={{ background: '#0f0f14' }}>
-                  <Canvas
-                    dpr={[1, 1]}
-                    camera={{ position: [0, 2, 4], fov: 40, near: 0.01, far: 50 }}
-                    gl={{ antialias: false, alpha: false, powerPreference: 'low-power' }}
-                    onCreated={({ gl }) => gl.setClearColor('#0f0f14')}
-                  >
-                    <Suspense fallback={null}>
-                      <SingleBodyScene body={body} />
-                    </Suspense>
-                  </Canvas>
-                </div>
-
                 <div className="p-3 space-y-1">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
@@ -196,6 +188,9 @@ const Systems = () => {
                   <p className="text-gray-400 text-xs leading-relaxed">
                     {TIER_DESCRIPTIONS[tier]}
                   </p>
+                  <Button type="button" onClick={() => previewTier(tier)} aria-pressed={view === tier} variant="secondary" size="compact" touchTarget="always">
+                    Preview {tier.replace('_', ' ')}
+                  </Button>
                 </div>
               </div>
             )

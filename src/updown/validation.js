@@ -65,23 +65,17 @@ function evaluatePolicy(candles, decisions, start, end, options) {
   if (![feePerContract, slippageBps, minScore].every(n => Number.isFinite(n) && n >= 0)
     || slippageBps >= 10000 || !Number.isInteger(start) || start < 1
     || !Number.isInteger(end) || end > candles.length || end <= start) throw new Error('Invalid evaluation options')
-  const book = createPerpBook()
+  const book = createPerpBook({}, { feePerContract, slippageBps })
   let costs = 0, peak = 0, drawdown = 0, maxContracts = 0, exposureMinutes = 0
   const netTrades = []
-  let entryCosts = 0
   function fill(type, price, timestamp) {
-    const execution = price * (1 + (isBuyType(type) ? 1 : -1) * slippageBps / 10000)
-    const result = book.applySignal(type, execution, timestamp)
+    const result = book.applySignal(type, price, timestamp)
     if (!result.fill) return
-    const fee = result.fill.contracts * feePerContract
-    costs += fee
-    if (result.trade) {
-      netTrades.push(result.trade.pnl - entryCosts - fee)
-      entryCosts = 0
-    } else entryCosts += fee
+    costs += result.fill.feeUsd
+    if (result.trade) netTrades.push(result.trade.pnl)
   }
   function mark(price) {
-    const net = book.snapshot(price).totalPnl - costs
+    const net = book.snapshot(price).totalPnl
     peak = Math.max(peak, net)
     drawdown = Math.max(drawdown, peak - net)
     return net

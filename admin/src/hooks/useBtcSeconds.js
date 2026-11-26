@@ -19,8 +19,22 @@ export default function useBtcSeconds(rangeSeconds) {
   const [elapsedAt, setElapsedAt] = useState(() => performance.now())
 
   useEffect(() => {
-    const timer = setInterval(() => setElapsedAt(performance.now()), CLOCK_INTERVAL_MS)
-    return () => clearInterval(timer)
+    let timer
+    const updateClock = () => {
+      setElapsedAt(performance.now())
+    }
+    const onVisibility = () => {
+      clearInterval(timer)
+      if (document.visibilityState === 'hidden') return
+      updateClock()
+      timer = setInterval(updateClock, CLOCK_INTERVAL_MS)
+    }
+    onVisibility()
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
   }, [])
 
   useEffect(() => {

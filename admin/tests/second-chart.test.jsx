@@ -5,8 +5,6 @@ import SecondChart from '../src/components/updown/SecondChart.jsx'
 const feed = vi.hoisted(() => ({ current: null, ranges: [] }))
 vi.mock('../src/hooks/useBtcSeconds', () => ({ default: (range) => { feed.ranges.push(range); return feed.current } }))
 const api = vi.hoisted(() => ({ held: null, ok: true }))
-vi.mock('../src/utils/apiClient', () => ({ apiGet: async () => (api.ok ? { ok: true, data: { success: true, held: api.held } } : { ok: false, data: null }) }))
-vi.mock('../src/hooks/useRealtimeRefresh', () => ({ default: () => {} }))
 
 const T0 = 1_800_000_000_000
 const bar = (sec, close, over = {}) => ({ t: T0 + sec * 1000, open: close, high: close + 2, low: close - 2, close, buyVolume: 1, sellVolume: 1, trades: 2, ...over })
@@ -18,7 +16,7 @@ const held = (action = 'HOLD') => ({ contract: { floor: 60607, ceiling: 62607 },
 
 const show = async (over, props = {}) => {
   feed.current = state(over)
-  const view = render(<SecondChart contract={null} {...props} />)
+  const view = render(<SecondChart contract={null} held={api.ok ? api.held : undefined} {...props} />)
   await act(async () => {})
   return view
 }

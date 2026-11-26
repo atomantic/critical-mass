@@ -492,3 +492,24 @@ describe('Overview status freshness and silent engine expiration', () => {
     expect(screen.getByText('1 fund unavailable; excluded from totals.')).toBeTruthy()
   })
 })
+
+it('renders and totals the ready fund while another status read is pending', async () => {
+  let resolveSlow
+  fetch.mockImplementation(async url => {
+    if (url.includes('/gemini/')) {
+      return new Promise(resolve => { resolveSlow = resolve })
+    }
+    return { ok: true, json: async () => ({ status: status(100, 7) }) }
+  })
+
+  render(<Overview funds={exchangeList} fundsLoaded refreshFunds={vi.fn()} />)
+  expect(await screen.findByText('Running')).toBeTruthy()
+  expect(screen.getByText('Loading status…')).toBeTruthy()
+  expect(screen.getByText('Waiting for 1 fund to report status. Totals reflect loaded funds.')).toBeTruthy()
+  expect(within(screen.getByText('Capital').parentElement).getByText('$100.00')).toBeTruthy()
+  expect(fetch.mock.calls.some(([url]) => url === '/api/exchanges')).toBe(false)
+
+  await act(async () => resolveSlow({ ok: true, json: async () => ({ status: status(900, 90) }) }))
+  expect(screen.queryByText('Loading status…')).toBeNull()
+  expect(within(screen.getByText('Capital').parentElement).getByText('$1,000.00')).toBeTruthy()
+})

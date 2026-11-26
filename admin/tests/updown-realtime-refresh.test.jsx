@@ -86,8 +86,9 @@ it('refreshes contract and position on change events while stopped, without usin
   expect(screen.getByTestId('signal-position').textContent).toBe('90')
   expect(screen.getByTestId('banner-position').textContent).toBe('90')
   expect(screen.getByTestId('countdown').textContent).toBe(`${newExpiry} / status expiry`)
-  const pnlRow = screen.getByText('Contract P&L').parentElement
-  expect(within(pnlRow).getByText('$0.20')).toBeTruthy()
+  const pnlRow = screen.getByText('Unrealized P&L').parentElement
+  expect(within(pnlRow).getByText(/\$0\.20/)).toBeTruthy()
+  expect(screen.queryByText('Contract P&L')).toBeNull()
   expect(screen.queryByText('$999.00')).toBeNull()
 
   status = { ...status, position: null }

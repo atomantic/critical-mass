@@ -1,14 +1,23 @@
 import React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, screen } from '@testing-library/react'
-import UpDipPanel from '../src/components/updown/UpDipPanel.jsx'
+import Panel from '../src/components/updown/UpDipPanel.jsx'
+import useUpDip from '../src/hooks/useUpDip.js'
 
 const api = vi.hoisted(() => ({ body: null }))
-vi.mock('../src/utils/apiClient', () => ({ apiGet: async () => ({ data: api.body }) }))
+vi.mock('../src/utils/apiClient', async importOriginal => ({
+  ...await importOriginal(),
+  apiGet: async () => ({ ok: true, data: api.body }),
+}))
 vi.mock('../src/hooks/useRealtimeRefresh', () => ({ default: () => {} }))
 vi.mock('../src/components/updown/AppQuoteForm', () => ({ default: () => <div data-testid="quote-form" /> }))
 
 afterEach(cleanup)
+
+function UpDipPanel() {
+  const upDip = useUpDip(true)
+  return <Panel {...upDip} />
+}
 
 const AT = Date.parse('2026-11-23T18:55:00Z')
 const contract = { floor: 59800, ceiling: 61800, expiryDate: '2026-11-28' }
@@ -30,6 +39,15 @@ it('headlines the market signal and labels the paper book decision separately', 
   render(<UpDipPanel />)
   expect((await screen.findByTestId('up-dip-signal')).textContent).toContain('ENTER')
   expect(screen.getByTestId('up-dip-book').textContent).toContain('HOLD')
+})
+
+it('keeps held-contract controls visible when the paper books are collapsed', async () => {
+  api.body = body({ held: null })
+  render(<UpDipPanel />)
+  const controls = await screen.findByText('Your contract')
+  expect(controls.closest('details')).toBeNull()
+  const paper = screen.getByTestId('up-dip-signal').closest('details')
+  expect(paper.open).toBe(false)
 })
 
 it('cautions on an ENTER signal while the paper book is holding', async () => {

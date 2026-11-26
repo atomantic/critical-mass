@@ -114,7 +114,7 @@ export default function AlertBanner() {
     fetchAlerts()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
-  useRealtimeRefresh({ events: ['sentinel:alert', 'sentinel:status'], rooms: ['sentinel'], onRefresh: fetchAlerts })
+  useRealtimeRefresh({ events: ['sentinel:alert', 'sentinel:status'], rooms: ['sentinel'], minIntervalMs: 3000, onRefresh: fetchAlerts })
 
   // The slot is always rendered as a zero-height anchor so alerts that arrive
   // after the first paint never push <main> down. The banner itself is fixed

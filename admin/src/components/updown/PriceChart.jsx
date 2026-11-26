@@ -1,5 +1,5 @@
 import Button from '../ui/Button'
-import { useMemo, useState } from 'react'
+import { memo, useMemo, useState } from 'react'
 import BTCPriceChart from '../charts/BTCPriceChart'
 import { formatBTCPrice } from '../charts/chartUtils'
 
@@ -46,7 +46,32 @@ const CANDLE_COUNT_OPTIONS = [
   { label: '300', value: 300 },
 ]
 
-export default function PriceChart({ tick, indicators, weeklyTrend, dailySMA, contract, signalAnnotations }) {
+const OVERLAYS = ['bollinger', 'vwap']
+const WEEKLY_OVERLAYS = ['bollinger']
+const EMPTY_LINES = []
+
+const TimeframePriceChart = memo(function TimeframePriceChart({
+  label, signal, signalColor, interval, range, subscribeTicks, referenceLines,
+  signalAnnotations, candleCount, weekly = false,
+}) {
+  return (
+    <BTCPriceChart
+      exchange="coinbase"
+      subscribeTicks={subscribeTicks}
+      chartType="heikinAshi"
+      defaultInterval={interval}
+      defaultRange={range}
+      overlays={weekly ? WEEKLY_OVERLAYS : OVERLAYS}
+      referenceLines={referenceLines}
+      signalAnnotations={signalAnnotations}
+      maxBucketsOverride={candleCount}
+      height={weekly ? 180 : 220}
+      headerLabel={<><span className="text-white font-bold">{label}:</span> <span className={signalColor}>{signal}</span></>}
+    />
+  )
+})
+
+export default function PriceChart({ subscribeTicks, indicators, weeklyTrend, dailySMA, contract, signalAnnotations }) {
   const [candleCount, setCandleCount] = useState(null)
   // Levels of an expired contract can sit far from price and flatten the candles.
   const expired = contract?.expiry != null && contract.expiry <= Date.now()
@@ -91,28 +116,18 @@ export default function PriceChart({ tick, indicators, weeklyTrend, dailySMA, co
   const renderChart = (tf) => {
     const tfScore = indicators?.[tf.interval]?.score ?? 0
     const tfSignal = tfScoreToSignal(tfScore)
-    const label = tf.interval
-    const signalLabel = tfSignal.replace(/_/g, ' ')
-    const signalColor = SIGNAL_COLORS[tfSignal] || SIGNAL_COLORS.NEUTRAL
-
     return (
-      <BTCPriceChart
+      <TimeframePriceChart
         key={tf.interval}
-        exchange="coinbase"
-        tickPrice={tick?.price}
-        tickTimestamp={tick?.timestamp}
-        indicators={indicators}
-        chartType="heikinAshi"
-        showIntervalSelector={false}
-        defaultInterval={tf.interval}
-        defaultRange={tf.range}
-        overlays={['bollinger', 'vwap']}
-        subCharts={[]}
-        referenceLines={tf.interval === '5m' ? referenceLines : tf.interval === '1d' ? dailySMALines : []}
+        label={tf.interval}
+        signal={tfSignal.replace(/_/g, ' ')}
+        signalColor={SIGNAL_COLORS[tfSignal]}
+        subscribeTicks={subscribeTicks}
+        interval={tf.interval}
+        range={tf.range}
+        referenceLines={tf.interval === '5m' ? referenceLines : tf.interval === '1d' ? dailySMALines : EMPTY_LINES}
         signalAnnotations={signalAnnotations}
-        maxBucketsOverride={candleCount}
-        height={220}
-        headerLabel={<><span className="text-white font-bold">{label}:</span> <span className={signalColor}>{signalLabel}</span></>}
+        candleCount={candleCount}
       />
     )
   }
@@ -147,20 +162,15 @@ export default function PriceChart({ tick, indicators, weeklyTrend, dailySMA, co
         </div>
       </div>
       {/* Weekly macro chart — full width at bottom */}
-      <BTCPriceChart
-        exchange="coinbase"
-        tickPrice={tick?.price}
-        tickTimestamp={tick?.timestamp}
-        indicators={indicators}
-        chartType="heikinAshi"
-        showIntervalSelector={false}
-        defaultInterval="1w"
-        defaultRange="52w"
-        overlays={['bollinger']}
-        subCharts={[]}
+      <TimeframePriceChart
+        label="1W"
+        signal={weeklyLabel}
+        signalColor={weeklyColor}
+        subscribeTicks={subscribeTicks}
+        interval="1w"
+        range="52w"
         signalAnnotations={signalAnnotations}
-        height={180}
-        headerLabel={<><span className="text-white font-bold">1W:</span> <span className={weeklyColor}>{weeklyLabel}</span></>}
+        weekly
       />
     </div>
   )
