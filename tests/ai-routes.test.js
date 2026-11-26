@@ -354,18 +354,30 @@ describe('owned AI provider and run routes', () => {
     release?.();
   });
 
-  it('times a run out at the provider timeout', async () => {
+  it('times a run out at the provider timeout', async t => {
     providerBehavior['/v1/chat/completions'] = (req, res) => res.writeHead(200, { 'Content-Type': 'text/event-stream' }).write(': waiting\n\n');
     await api('/api/providers', { method: 'POST', body: apiProvider() });
+    // Preserve the route's minimum timeout while advancing only the run timer.
+    const originalTimeout = setTimeout;
+    let expire;
+    t.mock.method(global, 'setTimeout', (callback, delay, ...args) => {
+      if (delay !== 1000) return originalTimeout(callback, delay, ...args);
+      expire = () => callback(...args);
+      return originalTimeout(() => {}, 60000);
+    });
     const { runId } = (await api('/api/runs', { method: 'POST', body: { providerId: 'fixture', prompt: 'p', timeout: 1000 } })).json;
+    assert.equal(typeof expire, 'function');
+    expire();
     await waitFor(async () => (await api(`/api/runs/${runId}`)).json.endTime, 'timeout');
     assert.equal((await api(`/api/runs/${runId}`)).json.error, 'Run timed out after 1s');
     assert.equal((await api('/api/runs', { method: 'POST', body: { providerId: 'fixture', prompt: 'p', timeout: 10 } })).status, 400);
   });
 
   // Generate responses on demand: no huge preallocated body and no real provider.
+  const chunkBytes = 1024 * 1024;
+  const sse = line => line.padEnd(4094) + '\n\n';
   const oversizedResponse = (payload, { status = 200, type = 'text/event-stream', tail = '' } = {}) => {
-    const chunk = Buffer.alloc(64 * 1024, payload);
+    const chunk = Buffer.alloc(chunkBytes, payload);
     const state = { emitted: 0, cancelled: 0, response: null };
     state.response = new Response(new ReadableStream({
       pull(controller) {
@@ -384,9 +396,9 @@ describe('owned AI provider and run routes', () => {
 
   for (const [label, payload, options] of [
     ['unterminated SSE', 'x', {}],
-    ['ignored SSE comments', ': keepalive\n\n', {}],
-    ['malformed SSE data', 'data: noise\n\n', {}],
-    ['ignored SSE data', 'data: {}\n\n', {}],
+    ['ignored SSE comments', sse(': keepalive'), {}],
+    ['malformed SSE data', sse('data: noise'), {}],
+    ['ignored SSE data', sse('data: {}'), {}],
     ['non-SSE JSON', ' ', { type: 'application/json', tail: '{"choices":[{"message":{"content":"small output"}}]}' }],
     ['HTTP error bodies', 'x', { status: 503, type: 'text/plain' }],
   ]) {
@@ -404,7 +416,7 @@ describe('owned AI provider and run routes', () => {
       assert.ok(failed.endTime);
       assert.match(failed.error, /response exceeded 20971520 bytes/);
       assert.equal(source.cancelled, 1);
-      assert.equal(source.emitted, MAX_RESPONSE_BYTES + 64 * 1024);
+      assert.equal(source.emitted, MAX_RESPONSE_BYTES + chunkBytes);
 
       providerFetch = async () => Response.json({ choices: [{ message: { content: 'retry works' } }] });
       const retry = await api('/api/runs', { method: 'POST', body: { providerId: 'fixture', prompt: 'retry' } });
@@ -424,7 +436,7 @@ describe('owned AI provider and run routes', () => {
       assert.equal(result.json.success, false);
       assert.match(result.json.error, /response exceeded 20971520 bytes/);
       assert.equal(source.cancelled, 1);
-      assert.equal(source.emitted, MAX_RESPONSE_BYTES + 64 * 1024);
+      assert.equal(source.emitted, MAX_RESPONSE_BYTES + chunkBytes);
       assert.deepEqual(readProvidersFile().providers.fixture.models, ['m1']);
     }
   });

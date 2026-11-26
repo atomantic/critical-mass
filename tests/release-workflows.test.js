@@ -10,6 +10,10 @@ const dockerWorkflow = fs.readFileSync(
   path.join(root, '.github/workflows/docker-build.yml'),
   'utf8',
 );
+const dockerCheckWorkflow = fs.readFileSync(
+  path.join(root, '.github/workflows/docker-check.yml'),
+  'utf8',
+);
 const releaseWorkflow = fs.readFileSync(
   path.join(root, '.github/workflows/release.yml'),
   'utf8',
@@ -27,21 +31,27 @@ test('Docker workflow accepts reusable and manual release-tag invocations', () =
   assert.match(dockerWorkflow, /on:\n  workflow_call:\n    inputs:\n      release_tag:/);
   assert.match(dockerWorkflow, /\n  workflow_dispatch:\n    inputs:\n      release_tag:/);
   assert.doesNotMatch(dockerWorkflow, /\n  push:/);
-  assert.match(dockerWorkflow, /ref: \$\{\{ inputs\.release_tag \}\}/);
+  assert.match(dockerWorkflow, /ref: refs\/tags\/\$\{\{ inputs\.release_tag \}\}/);
 });
 
 test('Docker workflow validates the exact immutable source and publishes both architectures', () => {
   assert.match(dockerWorkflow, /name: Verify immutable release tag/);
   assert.match(dockerWorkflow, /refs\/tags\/\$\{RELEASE_TAG\}\^\{commit\}/);
   assert.match(dockerWorkflow, /TAG_COMMIT.*CHECKED_OUT_COMMIT/s);
-  assert.match(dockerWorkflow, /platforms: linux\/amd64,linux\/arm64/);
+  assert.match(dockerWorkflow, /arch: amd64\n            runner: ubuntu-latest/);
+  assert.match(dockerWorkflow, /arch: arm64\n            runner: ubuntu-24\.04-arm/);
+  assert.match(dockerWorkflow, /platforms: linux\/\$\{\{ matrix\.arch \}\}/);
+  assert.match(dockerWorkflow, /outputs: type=image,[^\n]+push-by-digest=true,[^\n]+push=true/);
+  assert.match(dockerWorkflow, /publish-manifest:\n    runs-on: ubuntu-latest\n    needs: build/);
+  assert.doesNotMatch(dockerWorkflow, /setup-qemu|fetch-depth: 0/);
   assert.match(dockerWorkflow, /org\.opencontainers\.image\.revision=\$\{\{ steps\.source\.outputs\.revision \}\}/);
 });
 
-test('Docker packages permission is limited to the publication job', () => {
+test('Docker packages permission is limited to digest and manifest publication jobs', () => {
   assert.match(dockerWorkflow, /^permissions: \{\}$/m);
-  assert.equal((dockerWorkflow.match(/packages: write/g) || []).length, 1);
-  assert.match(dockerWorkflow, /build-and-push:\n    runs-on: ubuntu-latest\n    permissions:\n      contents: read\n      packages: write/);
+  assert.equal((dockerWorkflow.match(/packages: write/g) || []).length, 2);
+  assert.match(dockerWorkflow, /  build:[\s\S]*?permissions:\n      contents: read\n      packages: write/);
+  assert.match(dockerWorkflow, /  publish-manifest:[\s\S]*?permissions:\n      packages: write/);
 });
 
 test('release workflow passes only newly-created version tags to publication', () => {
@@ -69,9 +79,16 @@ test('release runs only after CI succeeds on a main push, from the CI run head_s
 
 test('CI keeps the required check name and cancels only superseded pull request runs', () => {
   assert.match(ciWorkflow, /\nconcurrency:\n  group: ci-\$\{\{ github\.event_name == 'pull_request' && github\.ref \|\| github\.sha \}\}\n  cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}\n/);
-  assert.match(ciWorkflow, /\njobs:\n  build:\n/);
-  assert.match(ciWorkflow, /node-version: \[26\.x\]/);
-  assert.doesNotMatch(ciWorkflow, /\n    name:/);
+  assert.match(ciWorkflow, /  build:[\s\S]*?name: build \(26\.x\)[\s\S]*?needs: \[backend-tests, admin, typecheck\]\n    if: \$\{\{ always\(\) \}\}/);
+  assert.equal((ciWorkflow.match(/node-version: 26\.x/g) || []).length, 3);
+  assert.match(ciWorkflow, /  admin:[\s\S]*?cache-dependency-path: admin\/package-lock\.json/);
+  const backendJob = ciWorkflow.match(/^  backend-tests:\n([\s\S]*?)(?=^  admin:)/m)?.[1];
+  assert.ok(backendJob);
+  assert.match(backendJob, /cache-dependency-path: package-lock\.json/);
+  assert.match(backendJob, /run: npm ci\n\n      - name: Run backend tests\n        run: npm test/);
+  assert.doesNotMatch(backendJob, /admin\/package-lock\.json|npm ci --prefix admin/);
+  assert.match(ciWorkflow, /  typecheck:[\s\S]*?cache-dependency-path: package-lock\.json/);
+  assert.doesNotMatch(ciWorkflow, /matrix:|\[skip ci\]|\bdev\b/);
   assert.match(releaseDocs, /workflow_run/);
 });
 
@@ -92,36 +109,67 @@ test('release documentation covers image verification and recovery', () => {
   assert.match(releaseDocs, /immutable tag/);
 });
 
-function computeTags(publishLatest) {
-  const m = dockerWorkflow.match(/- name: Compute image tags[\s\S]*?run: \|\n([\s\S]*?)\n\n      - name:/);
-  assert.ok(m, 'Compute image tags step exists');
-  const script = m[1].replace(/^ {10}/gm, '');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tags-'));
+function workflowScript(workflow, step) {
+  const start = workflow.indexOf(`- name: ${step}\n`);
+  assert.ok(start >= 0, `Found step ${step}`);
+  const script = workflow.slice(start).match(/run: \|\n((?: {10}[^\n]*\n|\n)+)/);
+  assert.ok(script, `Found shell script for ${step}`);
+  return script[1].replace(/^ {10}/gm, '');
+}
+
+test('the required CI check fails for a non-success result in any dependency', () => {
+  const script = workflowScript(ciWorkflow, 'Require all CI jobs to succeed');
+  const success = { BACKEND: 'success', ADMIN: 'success', TYPECHECK: 'success' };
+  const run = (env) => execFileSync('bash', ['-c', script], { env, stdio: 'pipe' });
+  assert.doesNotThrow(() => run(success));
+  for (const job of Object.keys(success)) {
+    for (const result of ['failure', 'cancelled', 'skipped']) {
+      assert.throws(() => run({ ...success, [job]: result }), { status: 1 });
+    }
+  }
+});
+
+const amd64Digest = 'sha256:' + 'a'.repeat(64);
+const arm64Digest = 'sha256:' + 'b'.repeat(64);
+
+function publishManifest(publishLatest, arm64Revision = 'release-sha') {
+  const script = workflowScript(dockerWorkflow, 'Publish multi-arch manifest');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'manifest-'));
   try {
-    const out = path.join(dir, 'out');
-    fs.writeFileSync(out, '');
-    execFileSync('bash', ['-c', script], {
+    for (const [arch, digest, revision] of [
+      ['amd64', amd64Digest, 'release-sha'],
+      ['arm64', arm64Digest, arm64Revision],
+    ]) {
+      const artifact = path.join(dir, `image-digest-${arch}`);
+      fs.mkdirSync(artifact);
+      fs.writeFileSync(path.join(artifact, 'image.txt'), `${digest} ${revision}\n`);
+    }
+    return execFileSync('bash', ['-c', 'docker() { printf "%s\\n" "$@"; }\n' + script], {
+      cwd: dir,
       env: {
         PATH: process.env.PATH,
         IMAGE: 'ghcr.io/o/r',
         RELEASE_TAG: 'v1.2.3',
         PUBLISH_LATEST: publishLatest,
-        GITHUB_OUTPUT: out,
       },
-    });
-    return fs.readFileSync(out, 'utf8').split('\n').filter((l) => l.startsWith('ghcr.io'));
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).toString().trim().split('\n');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
 
 test('historical recovery publishes only the versioned tag; normal release also publishes latest', () => {
-  assert.deepEqual(computeTags(''), ['ghcr.io/o/r:v1.2.3']);
-  assert.deepEqual(computeTags('false'), ['ghcr.io/o/r:v1.2.3']);
-  assert.deepEqual(computeTags('true'), ['ghcr.io/o/r:v1.2.3', 'ghcr.io/o/r:latest']);
+  for (const publishLatest of ['', 'false', 'true']) {
+    assert.deepEqual(publishManifest(publishLatest), [
+      'buildx', 'imagetools', 'create', '--tag', 'ghcr.io/o/r:v1.2.3',
+      ...(publishLatest === 'true' ? ['--tag', 'ghcr.io/o/r:latest'] : []),
+      `ghcr.io/o/r@${amd64Digest}`, `ghcr.io/o/r@${arm64Digest}`,
+    ]);
+  }
+  assert.throws(() => publishManifest('true', 'different-sha'), /Release build revisions differ/);
   assert.match(dockerWorkflow, /publish_latest:\n        description: [^\n]*\n        required: false\n        default: false\n        type: boolean\n  workflow_dispatch:/);
   assert.doesNotMatch(dockerWorkflow.split('workflow_dispatch:')[1].split('permissions:')[0], /publish_latest/);
-  assert.match(dockerWorkflow, /tags: \$\{\{ steps\.tags\.outputs\.tags \}\}/);
   assert.match(releaseWorkflow, /release_tag: \$\{\{ needs\.release\.outputs\.release_tag \}\}\n      publish_latest: \$\{\{ needs\.release\.outputs\.promote_latest == 'true' \}\}/);
   assert.match(releaseDocs, /leaves `latest` unchanged/);
 });
@@ -129,12 +177,44 @@ test('historical recovery publishes only the versioned tag; normal release also 
 test('Docker workflow fails unless both platforms are in the pushed manifest', () => {
   const step = dockerWorkflow.slice(dockerWorkflow.indexOf('- name: Verify multi-arch manifest'));
   assert.ok(step.length > 0);
-  assert.match(step, /docker buildx imagetools inspect "\$IMAGE_REF"/);
-  assert.match(step, /linux\/amd64 linux\/arm64/);
+  assert.match(step, /docker buildx imagetools inspect --raw "\$IMAGE_REF"/);
+  assert.match(step, /for ARCH in amd64 arm64;/);
   assert.match(step, /exit 1/);
   // Must be the last step, after the push.
   assert.ok(dockerWorkflow.indexOf('docker/build-push-action') < dockerWorkflow.indexOf('Verify multi-arch manifest'));
   assert.match(dockerWorkflow, /Verify immutable release tag/);
+});
+
+test('Docker PR checks reuse the release amd64 cache and run all three smoke tests', () => {
+  assert.match(dockerWorkflow, /arch: amd64[\s\S]*?cache: buildkit\n/);
+  assert.match(dockerWorkflow, /arch: arm64[\s\S]*?cache: buildkit-arm64\n/);
+  assert.match(dockerCheckWorkflow, /cache-from: \|\n\s+type=gha,scope=docker-check\n\s+type=gha\n/);
+  assert.match(dockerCheckWorkflow, /cache-to: type=gha,mode=max,scope=docker-check/);
+  for (const smoke of ['seed', 'storage', 'stop-order']) {
+    assert.match(dockerCheckWorkflow, new RegExp(`npm run test:docker-${smoke}`));
+  }
+});
+
+test('release tag lookup treats only a missing tag as permission to create one', () => {
+  const script = workflowScript(releaseWorkflow, 'Check if tag exists');
+  assert.match(script, /git ls-remote --exit-code --tags --refs origin "refs\/tags\/\$TAG"/);
+  assert.doesNotMatch(releaseWorkflow, /fetch-depth: 0/);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'release-tag-'));
+  try {
+    const out = path.join(dir, 'out');
+    for (const [status, expected] of [[0, 'exists=true'], [2, 'exists=false'], [128, '']]) {
+      fs.writeFileSync(out, '');
+      const run = () => execFileSync('bash', ['-c', `git() { return ${status}; }\n${script}`], {
+        env: { TAG: 'v1.2.3', GITHUB_OUTPUT: out },
+        stdio: 'pipe',
+      });
+      if (status === 128) assert.throws(run, { status });
+      else run();
+      assert.equal(fs.readFileSync(out, 'utf8').trim(), expected);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('release fails before tagging when notes are missing, with no commit-list fallback', () => {
