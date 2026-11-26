@@ -6,7 +6,7 @@ services:
       APP_PORT: 5570
 
   web:
-    image: ghcr.io/atomantic/critical-mass:v2.26.1@sha256:97930e6bab3085258699cfd6f62aa9822e541379826f94eab8b3cc2449545ab6
+    image: ghcr.io/atomantic/critical-mass:v2.31.0@sha256:e844ac24a8799d33afe2fd334c21558b68d53df49fb240e14bb34f5eb7f21a34
     user: "1000:1000"
     restart: on-failure
     stop_grace_period: 70s
