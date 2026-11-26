@@ -2,7 +2,9 @@ import React from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import App from '../src/App'
+import OperatorLogin from '../src/components/OperatorLogin'
 import { BrowserRouter } from '../src/lib/router'
+import { preloadInitialRoute } from '../src/routeChunks'
 
 // Route-level behaviour of the code-split shell: a shared loading announcement,
 // chunk-failure recovery, and per-fund remounts of lazily loaded fund pages.
@@ -13,9 +15,14 @@ vi.mock('../src/hooks/useTradeEvents', () => ({
 }))
 vi.mock('../src/lib/realtime', () => ({
   getRealtimeClient: () => ({ subscribe() {}, unsubscribe() {}, on() {}, off() {} }),
+  pauseRealtimeClient: vi.fn(),
 }))
 vi.mock('../src/components/sentinel/AlertBanner', () => ({ default: () => null }))
-const mocks = vi.hoisted(() => ({ overview: { mode: 'ok' }, mounts: [] }))
+const mocks = vi.hoisted(() => ({ overview: { mode: 'ok' }, mounts: [], loadLogViewer: vi.fn() }))
+vi.mock('../src/components/LogViewer', () => {
+  mocks.loadLogViewer()
+  return { default: () => <div>Private gateway logs</div> }
+})
 vi.mock('../src/components/Overview', () => ({
   default: () => {
     if (mocks.overview.mode === 'throw') throw new Error('chunk failed')
@@ -44,7 +51,12 @@ beforeEach(() => {
     return Promise.resolve(response({}))
   }))
 })
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks() })
+afterEach(() => {
+  cleanup()
+  window.history.replaceState({}, '', '/')
+  vi.unstubAllGlobals()
+  vi.restoreAllMocks()
+})
 
 const mount = (path) => {
   window.history.replaceState({}, '', path)
@@ -57,6 +69,22 @@ it('announces route loading through a polite status region until the lazy page a
   expect(status?.getAttribute('aria-live')).toBe('polite')
   await screen.findByText('Overview page')
   expect(screen.queryByText('Loading...')).toBeNull()
+})
+
+it('starts fetching a known route while the session check gates its UI and data', async () => {
+  window.history.replaceState({}, '', '/gateway/logs')
+  const probe = Promise.withResolvers()
+  vi.stubGlobal('fetch', vi.fn(() => probe.promise))
+
+  preloadInitialRoute(window.location.pathname)
+  render(<OperatorLogin><BrowserRouter><App /></BrowserRouter></OperatorLogin>)
+  await waitFor(() => expect(mocks.loadLogViewer).toHaveBeenCalledOnce())
+  expect(screen.getByText('Checking operator session…')).toBeTruthy()
+  expect(screen.queryByText('Private gateway logs')).toBeNull()
+  expect(fetch.mock.calls.map(([url]) => url)).toEqual(['/api/auth/session'])
+
+  probe.resolve(response({ required: true, authenticated: false }))
+  expect(await screen.findByRole('heading', { name: 'Operator sign-in' })).toBeTruthy()
 })
 
 it('recovers from a failed route with an alert and a Reload page button', async () => {
