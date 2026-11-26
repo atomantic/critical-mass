@@ -360,6 +360,21 @@ describe('realtime bus: delivery', () => {
 });
 
 describe('realtime bus: shutdown and revocation', () => {
+  it('requires fresh authorization when credentials are revoked during an upgrade', async (t) => {
+    const { promise: started, resolve: start } = Promise.withResolvers();
+    const { promise: verdict, resolve: authorize } = Promise.withResolvers();
+    const { bus, hosts: [host] } = await startBus(t, {
+      authorize: () => { start(); return verdict; },
+    });
+
+    const pending = upgradeStatus(host);
+    await started;
+    bus.disconnectSockets();
+    authorize(true);
+    assert.equal(await pending, 401);
+    assert.equal(await upgradeStatus(host), 101);
+  });
+
   it('refuses upgrades and drops inbound client messages while the gateway is stopping', async (t) => {
     let stopping = false;
     const received = [];

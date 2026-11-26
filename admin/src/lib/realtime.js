@@ -38,6 +38,7 @@ export function connect({
   let id = null
   let connected = false
   let closed = false
+  let paused = false
   let attempt = 0
   let reconnectTimer = null
   let livenessTimer = null
@@ -85,9 +86,9 @@ export function connect({
     connected = false
     id = null
     if (wasConnected) fire('disconnect')
-    else if (socket && !closed) fire('connect_error', new Error('Realtime connection failed'))
+    else if (socket && !closed && !paused) fire('connect_error', new Error('Realtime connection failed'))
     // A handler may have closed the client or reconnected it already.
-    if (closed || ws) return
+    if (closed || paused || ws) return
     if (immediate) {
       attempt = 0
       open()
@@ -123,7 +124,7 @@ export function connect({
 
   function open() {
     reconnectTimer = null
-    if (closed || ws) return
+    if (closed || paused || ws) return
     let socket
     try {
       socket = createSocket(url)
@@ -155,6 +156,7 @@ export function connect({
       return [...(listeners.get(event) || [])]
     },
     emit(event, payload) {
+      if (paused) return
       const message = { t: 'event', e: event, p: payload }
       if (connected) {
         send(message)
@@ -180,7 +182,15 @@ export function connect({
     },
     // Drop the current transport and connect again now (skips the backoff).
     reconnect() {
-      if (!closed) drop({ immediate: true })
+      if (closed) return
+      paused = false
+      drop({ immediate: true })
+    },
+    pause() {
+      if (closed || paused) return
+      paused = true
+      queue.length = 0
+      drop()
     },
     close() {
       if (closed) return
@@ -201,3 +211,6 @@ export const getRealtimeClient = () => {
   if (!shared) shared = connect()
   return shared
 }
+
+export const pauseRealtimeClient = () => shared?.pause()
+export const reconnectRealtimeClient = () => shared?.reconnect()
