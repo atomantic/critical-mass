@@ -1,0 +1,1 @@
+- Arbitrage alerts close silently when their venue is disabled or the monitor stops. Quote-currency edits refresh market discovery immediately, and Telegram alert headings display as plain text.
