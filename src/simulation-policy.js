@@ -9,6 +9,16 @@
  */
 
 const { INTERVAL_DEFINITIONS } = require('./interval-utils');
+const { DEFAULT_FEE_RATE_PER_SIDE } = require('../shared/fee-defaults.mjs');
+
+const OPTIMIZER_CACHE_VERSION = 2;
+
+// Fund feeRate is a fraction (0.001 = 0.1% per side). Backtests use percentage
+// points. The shared fallback is a net fee, so no separate rebate is assumed.
+const resolveOptimizerFees = (fundConfig = {}) => ({
+  feePercent: (fundConfig.feeRate ?? fundConfig.regime?.feeRate ?? DEFAULT_FEE_RATE_PER_SIDE) * 100,
+  rebatePercent: 0,
+});
 
 const BACKTEST_INTERVALS = Object.freeze(Object.keys(INTERVAL_DEFINITIONS));
 // Preserve every current Backtest screen preset while applying a history limit
@@ -176,6 +186,8 @@ module.exports = {
   BACKTEST_INTERVALS,
   MAX_INTERVALS_BY_TYPE,
   OPTIMIZER_INTERVALS,
+  OPTIMIZER_CACHE_VERSION,
+  resolveOptimizerFees,
   OPTIMIZER_MARKUPS,
   OPTIMIZER_PERIODS,
   DEFAULT_BUY_AMOUNTS,

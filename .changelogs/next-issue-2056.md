@@ -1,0 +1,2 @@
+- DCA Backtest now buys at the candle open, accounts for fees in unlimited-fund returns, and reports the share of Fibonacci buys sold. Switching funds clears and cancels the previous run, and loading a fund preserves a 0% holdback.
+- Parameter Optimizer now uses the selected fund’s fee rate and ranks results by annualized ROI, with fully covered periods first. Run the optimizer again to replace results calculated under the previous model.

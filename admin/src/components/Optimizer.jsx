@@ -515,9 +515,9 @@ function Optimizer({ exchange = 'coinbase', pair }) {
                     <span className="ml-1 text-green-400 font-medium">{formatCurrency(currentBest.metrics.totalValue)}</span>
                   </div>
                   <div>
-                    <span className="text-gray-400">ROI:</span>
-                    <span className={`ml-1 ${pnlColorClass(currentBest.metrics.roi)}`}>
-                      {signedPrefix(currentBest.metrics.roi)}{formatPercent(currentBest.metrics.roi)}
+                    <span className="text-gray-400">Annualized ROI:</span>
+                    <span className={`ml-1 ${pnlColorClass(currentBest.metrics.annualizedRoi)}`}>
+                      {signedPrefix(currentBest.metrics.annualizedRoi)}{formatPercent(currentBest.metrics.annualizedRoi)}
                     </span>
                   </div>
                 </div>
@@ -558,12 +558,12 @@ function Optimizer({ exchange = 'coinbase', pair }) {
                 </p>
               </div>
               <div className="text-right">
-                <div className="text-sm text-gray-400">Best Total Value</div>
-                <div className="text-2xl font-bold text-green-400">
-                  {formatCurrency(results.bestResult.metrics.totalValue)}
+                <div className="text-sm text-gray-400">Annualized ROI</div>
+                <div className={`text-2xl font-bold ${pnlColorClass(results.bestResult.metrics.annualizedRoi)}`}>
+                  {signedPrefix(results.bestResult.metrics.annualizedRoi)}{formatPercent(results.bestResult.metrics.annualizedRoi)}
                 </div>
                 <div className="text-sm text-gray-400">
-                  from {formatCurrency(fundSize)} fund ({formatPercent(results.bestResult.metrics.roi)} ROI)
+                  {formatCurrency(results.bestResult.metrics.totalValue)} final value ({formatPercent(results.bestResult.metrics.roi)} ROI)
                 </div>
               </div>
             </div>
@@ -612,7 +612,7 @@ function Optimizer({ exchange = 'coinbase', pair }) {
 
           {/* Top Results Table */}
           <div className="bg-gray-800 rounded-lg p-4">
-            <h3 className="text-lg font-semibold mb-4">Top 20 Configurations (by Total Value)</h3>
+            <h3 className="text-lg font-semibold mb-4">Top 20 Configurations</h3>
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
@@ -625,6 +625,7 @@ function Optimizer({ exchange = 'coinbase', pair }) {
                     <th className="pb-2 pr-4">Period</th>
                     <th className="pb-2 pr-4">Total Value</th>
                     <th className="pb-2 pr-4">ROI</th>
+                    <th className="pb-2 pr-4">Annualized ROI</th>
                     <th className="pb-2 pr-4">Fill Rate</th>
                     <th className="pb-2 pr-4">Avg Fill</th>
                     <th className="pb-2">Actions</th>
@@ -644,6 +645,9 @@ function Optimizer({ exchange = 'coinbase', pair }) {
                       <td className="py-2 pr-4 font-medium text-green-400">{formatCurrency(result.totalValue)}</td>
                       <td className={`py-2 pr-4 ${pnlColorClass(result.roi)}`}>
                         {signedPrefix(result.roi)}{formatPercent(result.roi)}
+                      </td>
+                      <td className={`py-2 pr-4 ${pnlColorClass(result.annualizedRoi)}`}>
+                        {signedPrefix(result.annualizedRoi)}{formatPercent(result.annualizedRoi)}
                       </td>
                       <td className="py-2 pr-4">{formatPercent(result.fillRate)}</td>
                       <td className="py-2 pr-4">
@@ -695,7 +699,7 @@ function Optimizer({ exchange = 'coinbase', pair }) {
             <li>Select intervals, markup percentages, and time periods to include</li>
             <li>Adjust buy amounts per interval (default scales with interval length)</li>
             <li>Holdback is always 50% of markup (e.g., 4% markup = 2% holdback)</li>
-            <li>Runs backtests for each combination and ranks by Total Value</li>
+            <li>Ranks by annualized ROI, with fully covered periods first</li>
             <li>Uses your specified fund size to simulate realistic capital constraints</li>
           </ul>
         </div>
