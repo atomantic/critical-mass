@@ -4,6 +4,10 @@ const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
 
+const routeSource = fs.readFileSync(
+  path.join(__dirname, '..', 'admin', 'src', 'routeChunks.js'),
+  'utf8',
+)
 const appSource = fs.readFileSync(
   path.join(TEST_DIR, '..', 'admin', 'src', 'App.jsx'),
   'utf8',
@@ -35,11 +39,11 @@ describe('admin route code splitting', () => {
   it('loads route-only dashboard modules through dynamic imports', () => {
     for (const component of routeComponents) {
       assert.match(
-        appSource,
-        new RegExp(`const ${component} = lazy\\(\\(\\) => import\\('\\./components/${component}'\\)\\)`),
+        routeSource,
+        new RegExp(`const ${component} = lazyRoute\\(routePaths\\.\\w+, \\(\\) => import\\('\\./components/${component}'\\)\\)`),
       )
       assert.doesNotMatch(
-        appSource,
+        routeSource + appSource,
         new RegExp(`import ${component} from ['\"]\\./components/${component}['\"]`),
       )
     }

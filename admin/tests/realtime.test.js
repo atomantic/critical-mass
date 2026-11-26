@@ -151,6 +151,23 @@ describe('realtime client', () => {
     client.close()
   })
 
+  it('pauses a pending retry and drops stale events until explicitly reconnected', () => {
+    const client = open()
+    latest().accept()
+    latest().fail()
+    client.emit('logs:flush', { processName: 'critical-mass' })
+    client.pause()
+    client.emit('logs:flush', { processName: 'critical-mass' })
+
+    vi.advanceTimersByTime(60000)
+    expect(FakeSocket.instances).toHaveLength(1)
+    client.reconnect()
+    expect(FakeSocket.instances).toHaveLength(2)
+    latest().accept()
+    expect(latest().sent).toEqual([])
+    client.close()
+  })
+
   it('gives up on an attempt the gateway never accepts', () => {
     const client = open({ connectTimeoutMs: 500 })
     const onError = vi.fn()

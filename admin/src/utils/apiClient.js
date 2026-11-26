@@ -8,9 +8,8 @@
  * that does throw is an AbortError, so callers using an AbortSignal can ignore
  * it the way they already do. Pass `allowEmpty: true` for replies that legitimately carry no body.
  *
- * Every request made here (and by `apiFetch`, for helpers that need the raw
- * Response) tells `onUnauthorized` subscribers about a 401, so the operator
- * sign-in boundary does not have to patch `window.fetch`.
+ * A 401 tells `onUnauthorized` subscribers to return to sign-in. Requests
+ * that submit a password can opt out and display a rejected credential inline.
  */
 import { describeActionFailure } from './actionFailure.mjs'
 
@@ -29,14 +28,14 @@ export function onUnauthorized(handler) {
 // fetch that reports a 401 reply to `onUnauthorized` subscribers. For low-level
 // helpers that inject their own transport and need the raw Response; everything
 // else should call apiGet/apiPost/apiPut/apiDelete.
-export async function apiFetch(url, init) {
+export async function apiFetch(url, init, { notifyUnauthorized = true } = {}) {
   const res = await fetch(url, init)
-  if (res.status === 401) unauthorizedHandlers.forEach(handler => handler())
+  if (res.status === 401 && notifyUnauthorized) unauthorizedHandlers.forEach(handler => handler())
   return res
 }
 
 // `headers` adds request headers; `rawBody` sends a File/Blob as-is under `contentType` (e.g. a screenshot upload) instead of JSON.
-export async function apiRequest(method, url, { body, rawBody, contentType, signal, allowEmpty = false, asText = false, headers } = {}) {
+export async function apiRequest(method, url, { body, rawBody, contentType, signal, allowEmpty = false, asText = false, headers, notifyUnauthorized } = {}) {
   const init = { method, signal }
   if (headers) init.headers = { ...headers }
   if (rawBody !== undefined) {
@@ -48,7 +47,7 @@ export async function apiRequest(method, url, { body, rawBody, contentType, sign
   }
   let res
   try {
-    res = await apiFetch(url, init)
+    res = await apiFetch(url, init, { notifyUnauthorized })
   } catch (err) {
     if (err?.name === 'AbortError') throw err
     return { ok: false, status: 0, data: null, error: err?.message || 'Network error' }
