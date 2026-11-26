@@ -22,6 +22,23 @@ const make = (dir, candles, name = 'p.json') => createUpDipPaper({ getHalfSpread
 });
 
 describe('up-dip paper restart replay', () => {
+  it('floors an in-range expiry payout below the fee at zero, with or without a gap', () => {
+    for (const gap of [false, true]) {
+      const dir = tmp();
+      try {
+        const file = path.join(dir, 'p.json');
+        const pos = position();
+        seed(file, { position: pos, lastBarTs: EXPIRY - 2 * MIN, lastClose: 63_001 });
+        const timestamp = gap ? EXPIRY : EXPIRY - MIN;
+        const paper = make(dir, [{ timestamp, open: 63_001, low: 63_001, high: 63_002, close: 63_001, volume: 1 }]);
+        assert.equal(paper.step(), true);
+        assert.equal(paper.getStatus().cycles[0].pnl, -pos.cost);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
   it('replays every buffered bar in the gap, so an early floor knock-out is not skipped', () => {
     const dir = tmp();
     const file = path.join(dir, 'p.json');

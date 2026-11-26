@@ -63,7 +63,7 @@ const { createTpPlacement } = require('./regime-tp-placement');
 const celestialHierarchy = require('./celestial-hierarchy');
 const { createDryRunFillHandlers } = require('./regime-dry-run-fills');
 const { DEFAULT_FEE_RATE_PER_SIDE } = require('../shared/fee-defaults.mjs');
-const { fmtCurrency: fmtPrice, isTerminalStatus, sleep } = require('./shared-utils');
+const { fmtCurrency: fmtPrice, isCancelledStatus, isTerminalStatus, sleep } = require('./shared-utils');
 const { createContextLogger } = require('./logger');
 const { DEFAULT_MAX_USDC_DEPLOYED } = require('./fund-defaults');
 const { createEngineLocks, FILL_DRAIN_MS } = require('./engine-locks');
@@ -1400,7 +1400,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     if (data.status === 'FILLED') {
       await handleOrderFill(data);
-    } else if (data.status === 'CANCELLED') {
+    } else if (isCancelledStatus(data)) {
       // A cancelled order with a fill still bought/sold that filled portion.
       // Route it through handleOrderFill BEFORE dropping tracking so the fill
       // isn't lost — otherwise the asset sits untracked (the polling path's
@@ -1413,23 +1413,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         // as partial when it's genuinely under-filled. Mirrors the polling path,
         // which checks completionPercentage >= 100 before CANCELLED (issue #107).
         const fullyFilled = (data.completionPercentage || 0) >= 100;
-        logger.warn(`⚠️ [${exchange}] WS CANCELLED ${data.orderId} with ${data.filledSize} ${fullyFilled ? 'full' : 'partial'} fill — routing through handleOrderFill before dropping tracking`);
+        logger.warn(`⚠️ [${exchange}] WS ${data.status} ${data.orderId} with ${data.filledSize} ${fullyFilled ? 'full' : 'partial'} fill — routing through handleOrderFill before dropping tracking`);
         orderExecutor.markSettled(data.orderId);
         await handleOrderFill(fullyFilled
           ? { ...data, status: 'FILLED', isPartialFill: false }
           : buildPartialFillData(data.orderId, data.side, data));
       }
       orderExecutor.handleOrderCancel(data.orderId);
-      // Remove cancelled entry from persisted pending orders
-      if (positionState.pendingEntryOrders && positionState.pendingEntryOrders.length > 0) {
-        const before = positionState.pendingEntryOrders.length;
-        positionState.pendingEntryOrders = positionState.pendingEntryOrders.filter(
-          e => e.orderId !== data.orderId
-        );
-        if (positionState.pendingEntryOrders.length < before) {
-          saveLiveState();
-        }
-      }
+      retireTrackedEntry(data.orderId);
     }
   };
 
@@ -1440,7 +1431,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
   // The booking paths call back into fill dispatch for execution discovered
   // during a TP cancel. Late calls also read the active placement functions.
-  const { handleBuyOrderFill } = createBuyBooking({
+  const { handleBuyOrderFill, retireTrackedEntry } = createBuyBooking({
     exchange, baseCurrency, config, logger, positionState, positionSizer, fillLedger,
     recentlyProcessedBuyFills, pendingMergeTpOrders, completeMergeSnapshot,
     getAdapter: () => adapter,
@@ -2329,10 +2320,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         placedAt: status.placedAt, // Passed from order executor for fill time tracking
         isPartialFill: status.isPartialFill === true,
       };
-      // order-executor invokes this callback fire-and-forget (no await/catch),
-      // and handleOrderFill awaits network + fs work that can reject on a
-      // routine API blip. An unhandled rejection here crashes the process
-      // (Node ≥15) mid-fill, leaving state partially mutated. Contain it and
+      // handleOrderFill awaits network and persistence work. On failure,
       // DELETE this outer polling dedup key so a still-pending order (a
       // partial fill) is re-detected and re-processed by the next reconcile's
       // checkPendingOrderFills poll (ingestFill dedups by tradeId, so

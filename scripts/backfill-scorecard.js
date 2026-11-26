@@ -23,8 +23,8 @@ const { acquireScorecardLock, atomicPublish, validateJsonl, lockPath } = require
 const { createCandleAggregator } = require('../src/candle-aggregator')
 const { createSignalEngine, ALL_SIGNAL_TFS } = require('../src/updown/signal-engine')
 const { TF_MS, seedCompletedCandles } = require('../src/updown/replay-candles')
-const { computeAdaptiveWeights, buildOutcomeRecord, scorecardDirection, SCORECARD_RETENTION_DAYS } = require('../src/updown/scorecard')
-const { INDICATORS, INDICATOR_WEIGHTS } = require('../src/updown/indicator-config')
+const { computeAdaptiveWeights, computeTrainingMetrics, buildOutcomeRecord, scorecardDirection, SCORECARD_RETENTION_DAYS } = require('../src/updown/scorecard')
+const { INDICATOR_WEIGHTS } = require('../src/updown/indicator-config')
 const { DATA_DIR } = require('../src/paths')
 const COINBASE_DIR = path.join(DATA_DIR, 'coinbase')
 const SCORECARD_DIR = path.join(DATA_DIR, 'updown', 'scorecard')
@@ -335,54 +335,35 @@ const main = () => {
       signalType: result.type,
       confidence: result.confidence,
       trigger: 'backfill',
+      trainIndicators: true,
       timeframes,
     }
     appendLine(dateStr, prediction)
 
-    // UP-only: skip outcome evaluation for NEUTRAL and DOWN
-    if (compositeDirection !== 'up') {
-      processed++
-      continue
-    }
-
-    directional++
+    if (compositeDirection === 'up') directional++
 
     // Evaluate outcomes at each window by looking at future candles
     for (const w of EVAL_WINDOWS) {
       const futureIdx = i + w.candles5m
       if (futureIdx >= candles5m.length) continue
-
-      const exitPrice = candles5m[futureIdx].close
+      const settlement = candles5m[futureIdx]
+      if (settlement.timestamp - candle.timestamp !== w.windowMs) continue
+      const exitPrice = settlement.close
       const outcome = buildOutcomeRecord(prediction, w.windowMs, exitPrice, {
-        ts: new Date(candles5m[futureIdx].timestamp + TF_MS['5m']).toISOString(),
+        ts: new Date(settlement.timestamp + TF_MS['5m']).toISOString(),
       })
       outcome.backfilled = true
       appendLine(dateStr, outcome)
 
-      if (outcome.compositeCorrect != null) {
-        outcomeBuffer.push(outcome)
-        if (outcomeBuffer.length > 500) {
-          outcomeBuffer.splice(0, outcomeBuffer.length - 500)
-        }
+      outcomeBuffer.push(outcome)
+      if (outcomeBuffer.length > 500) {
+        outcomeBuffer.splice(0, outcomeBuffer.length - 500)
       }
     }
 
     // Periodically compute and log adaptive weights
-    if (directional % WEIGHT_INTERVAL === 0 && outcomeBuffer.length > 50) {
-      const byIndicator = {}
-      for (const ind of INDICATORS) {
-        let total = 0, correct = 0
-        for (const o of outcomeBuffer) {
-          const r = o.indicatorResults?.[ind]
-          if (!r || r.predictions === 0) continue
-          total += r.predictions
-          correct += r.correct
-        }
-        byIndicator[ind] = {
-          accuracy: total > 0 ? Math.round(correct / total * 10000) / 100 : null,
-          predictions: total,
-        }
-      }
+    if ((processed + 1) % WEIGHT_INTERVAL === 0 && outcomeBuffer.length > 50) {
+      const byIndicator = computeTrainingMetrics(outcomeBuffer.filter(outcome => outcome.ts <= ts))
       adaptiveWeights = computeAdaptiveWeights(byIndicator, BASE_WEIGHTS, adaptiveWeights)
       engine.setIndicatorWeights(adaptiveWeights)
 

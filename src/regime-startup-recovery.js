@@ -191,8 +191,9 @@ const createStartupRecovery = ({
     const pendingEntries = getOrderExecutor().getPendingEntries();
     for (const [orderId] of pendingEntries) {
       if (!openOrderIds.has(orderId)) {
-        const orderStatus = await getAdapter().getOrder(orderId);
-        if (isFilledStatus(orderStatus)) {
+        const orderStatus = await lookupOrNull('getOrder', orderId, getAdapter().getOrder(orderId));
+        const full = isFilledStatus(orderStatus);
+        if (full || (isCancelledStatus(orderStatus) && orderStatus.filledSize > 0)) {
           logger.info(
             `✅ [${exchange}] Entry order ${orderId} filled while offline — routing through handleOrderFill`,
             { orderId, orderType: 'entry', status: orderStatus.status }
@@ -207,6 +208,8 @@ const createStartupRecovery = ({
           // its dynamic TP, keeping the hierarchy in sync with position state.
           try {
             await handleOrderFill(buildPartialFillData(orderId, 'buy', orderStatus, {
+              status: full ? 'FILLED' : orderStatus.status,
+              isPartialFill: !full,
               placedAt: getOrderExecutor().getOrderPlacedAt(orderId),
             }));
           } catch (err) {
@@ -503,12 +506,7 @@ const createStartupRecovery = ({
       terminalSavedEntries.map(e => getAdapter().getOrder(e.orderId).catch(err => ({ __err: err })))
     );
     let caughtUpEntries = 0;
-    // Orders whose catch-up handleOrderFill threw (issue #679's stricter
-    // getOrderFills contract) — must NOT be purged below with no ledger
-    // record. Re-armed via restorePendingOrder (inside catchUpTerminalEntry) so the
-    // next reconcile's checkPendingOrderFills polls this (already-terminal
-    // on the exchange) order again and routes it through the
-    // retry-hardened live polling fill path.
+    // The reconcile sweep retries uncertain statuses and unsuccessful bookings.
     const failedCatchUpIds = new Set();
     for (let i = 0; i < terminalSavedEntries.length; i++) {
       const savedEntry = terminalSavedEntries[i];
@@ -520,6 +518,12 @@ const createStartupRecovery = ({
             { orderId: savedEntry.orderId, error: orderStatus.__err.message }
           );
         }
+        failedCatchUpIds.add(savedEntry.orderId);
+        continue;
+      }
+      if (!isTerminalStatus(orderStatus)) {
+        // The open-order snapshot and the individual status can race.
+        failedCatchUpIds.add(savedEntry.orderId);
         continue;
       }
       // Shared with reconcileTick's orphan sweep (issue #764): honors the
@@ -539,7 +543,7 @@ const createStartupRecovery = ({
       logger.info(`📥 [${exchange}] Caught up ${caughtUpEntries} offline-terminal entries before purge`);
     }
     if (failedCatchUpIds.size > 0) {
-      logger.info(`🔁 [${exchange}] Re-armed ${failedCatchUpIds.size} offline-terminal entries whose fill catch-up failed, for retry`);
+      logger.info(`🔁 [${exchange}] Retained ${failedCatchUpIds.size} unresolved offline entries for reconciliation`);
     }
 
     // Remove saved pending entries that are no longer open on the exchange
@@ -679,10 +683,7 @@ const createStartupRecovery = ({
         // clears tracking; transient failures must not orphan a live order.
         tpLookupFailed = !isOrderNotFoundError(err);
       }
-      const tpOrderExists = tpLookupFailed || (tpOrderStatus
-        && tpOrderStatus.status !== 'CANCELLED'
-        && tpOrderStatus.status !== 'FAILED'
-        && tpOrderStatus.status !== 'EXPIRED');
+      const tpOrderExists = tpLookupFailed || (tpOrderStatus && !isCancelledStatus(tpOrderStatus));
 
       if (tpOrderExists) {
         // Check if a celestial body owns this TP — restore as body_tp if so
@@ -843,10 +844,7 @@ const createStartupRecovery = ({
           bodyLookupFailed = !isOrderNotFoundError(err);
         }
         // Mirror the core-TP exists check: EXPIRED is terminal cancellation.
-        const bodyExists = bodyLookupFailed || (bodyStatus
-          && bodyStatus.status !== 'CANCELLED'
-          && bodyStatus.status !== 'FAILED'
-          && bodyStatus.status !== 'EXPIRED');
+        const bodyExists = bodyLookupFailed || (bodyStatus && !isCancelledStatus(bodyStatus));
 
         if (bodyExists && isFilledStatus(bodyStatus)) {
           // Body filled while offline — handled in checkOfflineOrderFills above

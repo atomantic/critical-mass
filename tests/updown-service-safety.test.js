@@ -262,6 +262,7 @@ const cycleHarness = async (t, { saved = null, metrics = { adaptiveWeights: null
 const historyRow = (type, timestamp, score = 0) => ({
   type, action: type === 'BUY' ? 'OPEN' : 'HOLD', score, confidence: 0, timestamp, price: 100,
 })
+const unfilledHistoryRow = (type, timestamp) => ({ ...historyRow(type, timestamp), filled: false })
 
 describe('UpDown cycle momentum characterization', () => {
   const cases = [
@@ -308,18 +309,18 @@ describe('UpDown cycle history and side-effect characterization', () => {
     const ts = CYCLE_START + 5_000
     const book = calls.find(c => c.name === 'fill-book').payload
     assert.equal(book.contracts, 1)
-    assert.deepEqual(book.lots, [{ entryPrice: 100, entryTs: ts, action: 'OPEN' }])
+    assert.deepEqual(book.lots, [{ entryPrice: 100, executionPrice: 100.02, entryFee: 0.5, entryTs: ts, action: 'OPEN' }])
     assert.deepEqual(calls.find(c => c.name === 'recordPerpFill').payload, {
       action: 'OPEN', signalType: 'BUY', price: 100, ts, contracts: 1, side: 'buy', pnl: undefined,
       trade: null, book: { contracts: 1, realizedPnl: 0 },
     })
-    const row = { type: 'BUY', action: 'OPEN', score: 30, confidence: 0.5, timestamp: ts, price: 100 }
+    const row = { type: 'BUY', action: 'OPEN', filled: true, score: 30, confidence: 0.5, timestamp: ts, price: 100 }
     const writes = calls.filter(c => c.name === 'persist').map(c => c.payload)
     const state = {
       formatVersion: 1,
       contract: { expiry: null, target: null, stop: null, range: null, direction: null },
       position: null, signalHistory: [], stability: { publishedType: 'NEUTRAL' },
-      perpBook: { contractSizeBtc: 0.01, lots: book.lots, realizedPnl: 0, closedTrades: [], maxContracts: 1, lastSide: 'BUY', open: true },
+      perpBook: { contractSizeBtc: 0.01, lots: book.lots, realizedPnl: 0, hasLegacyRealizedPnl: false, closedTrades: [], maxContracts: 1, lastSide: 'BUY', open: true },
     }
     assert.deepEqual(writes, [state, { ...state, signalHistory: [row] }])
     assert.deepEqual(service.getStatus().signalHistory, [row])
@@ -355,7 +356,7 @@ describe('UpDown cycle history and side-effect characterization', () => {
       const { service, cycle } = await cycleHarness(t, { saved: { signalHistory: [old] } })
       const calls = cycle()
       assert.deepEqual(calls.map(c => c.name), ['compute', 'updown:indicators', 'persist', 'prediction', 'updown:signal'])
-      assert.deepEqual(service.getStatus().signalHistory, age < 300_000 ? [old] : [old, historyRow('NEUTRAL', CYCLE_START + 5_000)])
+      assert.deepEqual(service.getStatus().signalHistory, age < 300_000 ? [old] : [old, unfilledHistoryRow('NEUTRAL', CYCLE_START + 5_000)])
       assert.deepEqual(calls.find(c => c.name === 'persist').payload.signalHistory, service.getStatus().signalHistory)
     })
 
@@ -368,11 +369,12 @@ describe('UpDown cycle history and side-effect characterization', () => {
     })
   }
 
-  it('resuming with a saved published BUY and a BUY result emits no prediction or signal', async t => {
+  it('publishes a resumed same-type BUY fill without duplicating the prediction', async t => {
     const { cycle } = await cycleHarness(t, { saved: { stability: { publishedType: 'BUY' } } })
     const calls = cycle({ type: 'BUY', score: 30 })
     assert.ok(calls.some(c => c.name === 'updown:indicators'))
-    assert.ok(!calls.some(c => c.name === 'prediction' || c.name === 'updown:signal'))
+    assert.ok(!calls.some(c => c.name === 'prediction'))
+    assert.equal(calls.find(c => c.name === 'updown:signal').payload.filled, true)
   })
 
   it('resuming with a saved published BUY and a different result still emits both', async t => {
@@ -407,7 +409,7 @@ describe('UpDown cycle history and side-effect characterization', () => {
     cycle()
     cycle({ type: 'NO_TRADE_ZONE', noTradeZone: true })
     const calls = cycle()
-    assert.deepEqual(service.getStatus().signalHistory, [historyRow('NEUTRAL', CYCLE_START + 5_000)])
+    assert.deepEqual(service.getStatus().signalHistory, [unfilledHistoryRow('NEUTRAL', CYCLE_START + 5_000)])
     assert.deepEqual(calls.map(c => c.name), ['compute', 'updown:indicators', 'persist', 'prediction', 'updown:signal'])
   })
 
@@ -429,7 +431,7 @@ describe('UpDown cycle history and side-effect characterization', () => {
     const history = Array.from({ length: 100 }, (_, i) => historyRow('NEUTRAL', CYCLE_START - (100 - i) * 300_000))
     const { service, cycle } = await cycleHarness(t, { saved: { signalHistory: history } })
     const calls = cycle()
-    const expected = [...history.slice(1), historyRow('NEUTRAL', CYCLE_START + 5_000)]
+    const expected = [...history.slice(1), unfilledHistoryRow('NEUTRAL', CYCLE_START + 5_000)]
     assert.deepEqual(service.getStatus().signalHistory, expected)
     assert.deepEqual(calls.find(c => c.name === 'persist').payload.signalHistory, expected)
   })

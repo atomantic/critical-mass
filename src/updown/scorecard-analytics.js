@@ -105,6 +105,7 @@ const buildIndicatorTimeframeHeatmap = (
   for (const outcome of outcomes) {
     for (const ind of indicators) {
       for (const tf of timeframes) {
+        if (outcome.alignedIndicators && tf !== outcome.window) continue;
         let exact = outcome.indicatorTfResults?.[ind]?.[tf]?.correct;
         if (exact === undefined) {
           const prediction = predictionById.get(outcome.predictionId);
@@ -136,7 +137,7 @@ const buildAccuracyOverTime = (outcomes) => {
   const hourlyBuckets = {};
   for (const o of outcomes) {
     if (o.compositeCorrect == null) continue;
-    const hour = o.ts?.slice(0, 13); // YYYY-MM-DDTHH
+    const hour = (o.predictionTs ?? o.ts)?.slice(0, 13); // YYYY-MM-DDTHH
     if (!hour) continue;
     if (!hourlyBuckets[hour]) hourlyBuckets[hour] = { correct: 0, total: 0 };
     hourlyBuckets[hour].total++;
@@ -161,7 +162,7 @@ const buildIndicatorAccuracyOverTime = (outcomes) => {
   const indHourly = {};
   for (const ind of INDICATORS) indHourly[ind] = {};
   for (const o of outcomes) {
-    const hour = o.ts?.slice(0, 13);
+    const hour = (o.predictionTs ?? o.ts)?.slice(0, 13);
     if (!hour) continue;
     for (const ind of INDICATORS) {
       const indResult = o.indicatorResults?.[ind];
@@ -333,7 +334,8 @@ const buildWindowAndContractStats = (outcomes, predictionById, perpFills) => {
     .filter(f => f.action === 'CLOSE' && f.trade)
     .map(f => ({
       ...f,
-      normalizedPnl: calculatePerpPnl(f.trade.avgEntry, f.trade.exitPrice, f.trade.contracts),
+      normalizedPnl: Number.isFinite(f.trade.feesUsd) ? f.trade.pnl
+        : calculatePerpPnl(f.trade.avgEntry, f.trade.exitPrice, f.trade.contracts),
     }));
   const perpWins = closedRounds.filter(f => f.normalizedPnl > 0);
   const perpLosses = closedRounds.filter(f => f.normalizedPnl <= 0);
@@ -348,6 +350,7 @@ const buildWindowAndContractStats = (outcomes, predictionById, perpFills) => {
       ? Math.round(perpWins.length / closedRounds.length * 10000) / 100
       : null,
     realizedPnl: Math.round(perpRealized * 100) / 100,
+    hasLegacyRealizedPnl: closedRounds.some(f => !Number.isFinite(f.trade.feesUsd)),
   } : null;
 
   return {
@@ -367,7 +370,7 @@ const buildScorecardAnalysis = (journalRecords) => {
   const records = dedupeScorecardRecords(journalRecords);
   const predictions = records.filter(r => r.type === 'prediction');
   const predictionById = new Map(predictions.map(p => [p.id, p]));
-  const outcomes = records.filter(r => r.type === 'outcome' && r.compositeDirection !== 'down');
+  const outcomes = records.filter(r => r.type === 'outcome' && !r.trainingOnly && r.compositeDirection !== 'down');
   const weights = records.filter(r => r.type === 'weights');
   const perpFills = records.filter(r => r.type === 'perp_fill');
 
@@ -399,7 +402,7 @@ const buildScorecardAnalysis = (journalRecords) => {
     summary: {
       accuracy: summaryStats.accuracy,
       perpDirectionalAccuracy: summaryStats.perpDirectionalAccuracy,
-      predictions: predictions.length,
+      predictions: predictions.filter(p => p.compositeDirection === 'up').length,
       outcomes: outcomes.filter(o => o.compositeCorrect != null).length,
       bestIndicator: summaryStats.bestIndicator,
       worstIndicator: summaryStats.worstIndicator,

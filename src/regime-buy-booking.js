@@ -23,8 +23,8 @@ const createBuyBooking = ({
 }) => {
   /**
    * Drop a terminal order from the persisted pending-entry / ladder lists.
-   * Shared by the normal commit path and the skip-recommit early return, which
-   * would otherwise leave the entry (and its deployedInPosition share) behind.
+   * Used after a WebSocket cancellation and when booking skips a settled
+   * or already-committed order.
    * @param {string} orderId
    * @returns {void}
    */
@@ -593,7 +593,7 @@ const createBuyBooking = ({
     });
   };
 
-  return { handleBuyOrderFill };
+  return { handleBuyOrderFill, retireTrackedEntry };
 };
 
 module.exports = { createBuyBooking };

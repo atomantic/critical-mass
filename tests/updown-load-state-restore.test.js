@@ -2,6 +2,7 @@
 const { describe, it } = require('node:test')
 const assert = require('node:assert/strict')
 const { createUpDownService } = require('../src/updown/updown-service')
+const { scorecardDirection } = require('../src/updown/scorecard')
 
 const io = { to: () => ({ emit: () => {} }) }
 
@@ -26,6 +27,45 @@ const seed = (service) => {
 }
 
 describe('UpDown loadState replaces in-memory state (restore reload)', () => {
+  it('restores and clears the flush override on the scorecard sampler as well as the live engine', async () => {
+    let state = { flushSetup: { armed: true } }
+    const flushStates = []
+    let sample
+    const service = createUpDownService(io, {
+      readJSON: () => state,
+      writeJSON: () => {},
+      DATA_DIR: '/tmp/updown-load-state-restore',
+      candleCache: { getCandles: () => [], isSeeded: () => true },
+      createSignalEngine: () => {
+        const i = flushStates.push({}) - 1
+        return {
+          setStabilityState() {},
+          getStabilityState: () => ({}),
+          setFlushSetupState: (next) => { flushStates[i] = next },
+          computeSignals: () => ({ type: 'BUY', source: flushStates[i].armed ? 'flush-setup' : 'composite',
+            score: 30, trendGate: { open: false } }),
+        }
+      },
+      createScorecard: () => ({
+        start: (next) => { sample = next },
+        stop() {},
+        getMetrics: () => ({}),
+      }),
+    })
+    try {
+      await service.start()
+      assert.deepEqual(flushStates, [state.flushSetup, state.flushSetup])
+      assert.equal(scorecardDirection(sample()), 'up')
+      service.stop()
+      state = {}
+      await service.start()
+      assert.deepEqual(flushStates, [{}, {}])
+      assert.equal(scorecardDirection(sample()), 'neutral')
+    } finally {
+      service.stop()
+    }
+  })
+
   for (const [name, restore] of [
     ['restored archive has no state file', (files, key) => { delete files[key] }],
     ['restored file lacks position, book and contract', (files, key) => { files[key] = { signalHistory: [] } }],
