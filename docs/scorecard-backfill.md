@@ -18,6 +18,10 @@ or settles against a fresh expiry mark, comparing proceeds after the app fee
 with the modeled entry cost. Recovery can use retained journal prices and ticks
 received during startup. A feed gap can hide touches between observed marks.
 
+The retired `GET /api/updown/candles` route returned Crypto.com candles and had
+no in-repository consumers. UpDown's BTC charts use Coinbase, available through
+the shared `GET /api/candles/coinbase` route.
+
 UpDown keeps only the newest 30 daily journals (`SCORECARD_RETENTION_DAYS` in
 `src/updown/scorecard.js`) and prunes the rest at every start and daily. The
 script therefore clamps `--from` to the oldest retained UTC day (today and the
