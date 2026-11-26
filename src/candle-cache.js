@@ -510,6 +510,7 @@ const createCandleCache = ({
   const getAllCandles = (exchange) => {
     const agg = aggregators.get(exchange);
     if (!agg) return {};
+    /** @type {Record<string, ReturnType<ReturnType<typeof createCandleAggregator>['getCandles']>>} */
     const result = {};
     for (const tf of ['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '1d', '1w']) {
       result[tf] = agg.getCandles(tf);

@@ -84,7 +84,7 @@ const createReconcileLoop = ({
    * fill).
    *
    * @param {{orderId: string, price?: number, assetQty?: number, sizeUsdc?: number, placedAt?: number, ladderIndex?: number, knownFilledSize?: number}} savedEntry
-   * @param {{status?: string, filledSize?: number}} orderStatus - already known to be terminal (FILLED/CANCELLED/EXPIRED/FAILED)
+   * @param {Parameters<typeof buildPartialFillData>[2]} orderStatus - already known to be terminal (FILLED/CANCELLED/EXPIRED/FAILED)
    * @param {'entry'|'ladder_entry'} [entryType]
    * @returns {Promise<{outcome: 'filled'|'empty'|'failed', error?: Error}>}
    */
@@ -97,7 +97,7 @@ const createReconcileLoop = ({
     // exists for. onEntryCancelled stamps that resolved value onto the saved
     // row as knownFilledSize before this function ever sees it; never trust a
     // fresh read that's SMALLER than what's already confirmed known (issue #673).
-    const partialSize = Math.max(parseFloat(orderStatus.filledSize || 0), savedEntry.knownFilledSize || 0);
+    const partialSize = Math.max(parseFloat(String(orderStatus.filledSize || 0)), savedEntry.knownFilledSize || 0);
     if (!isFullFilled && partialSize <= 0) {
       return { outcome: 'empty' }; // truly empty cancel — safe for the caller to purge, no fill to record
     }

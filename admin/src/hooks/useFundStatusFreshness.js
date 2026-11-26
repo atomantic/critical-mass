@@ -37,7 +37,7 @@ export function useFundStatusFreshness({
   const ownerRef = useRef(null)
   // A new visit to the same fund has a distinct identity, fencing callbacks
   // from an earlier visit even after navigating A -> B -> A.
-  const selection = useMemo(() => ({}), [exchange, pair])
+  const selection = useMemo(() => ({ exchange, pair }), [exchange, pair])
   const [snapshotState, setSnapshotState] = useState(null)
 
   useLayoutEffect(() => {

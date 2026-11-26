@@ -55,7 +55,7 @@ function createView(providers = [], activeProvider = null, runs = [], samples = 
       if (name === '../ui/touchTarget') return { TOUCH_TARGET: 'min-h-11' }
       if (name === '../ModalDialog') return { default: ({ children }) => children }
       if (name === '../ui/Button') return 'button'
-      if (name === '../Toast') return { useNotify: () => () => {} }
+      if (name === '../useToast') return { useNotify: () => () => {} }
       if (name === '../DestructiveConfirmation') return { default: ({ children }) => children }
       if (name === '../../utils/apiClient') return apiClientStub(fetch)
       if (name === '../../utils/runLifecycle.mjs') return { createRunLifecycle: () => ({ execute() {}, dispose() {} }), RUN_NOTICE: {} }

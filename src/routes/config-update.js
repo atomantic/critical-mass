@@ -26,7 +26,8 @@ const buildClientConfig = (exchange, pair) => {
  */
 const prepareConfigUpdate = ({
   exchange, pair, updates, fullConfig = false, rawRegime,
-  onDroppedKeys = () => {}, onProductMismatch = () => {},
+  onDroppedKeys = (/** @type {string[]} */ _keys) => {},
+  onProductMismatch = (/** @type {{productId: string, pairBase?: string, incomingBase?: string}} */ _mismatch) => {},
 }) => {
   const fundUpdates = {};
   const rawRegimeUpdates = fullConfig ? rawRegime : {};

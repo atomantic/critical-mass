@@ -310,8 +310,8 @@ const writePriceCache = (file, { intervalType, exchange, productId, prices }) =>
  * @param {string} intervalType - Interval type
  * @param {string} exchange - Exchange name (default: coinbase)
  * @param {Object} options - Additional options
- * @param {boolean} options.preferCache - If true, use cached data without fetching new intervals (for optimizer)
- * @param {string} options.productId - Product ID (e.g., 'BTC-USDC', 'CRO_USD')
+ * @param {boolean} [options.preferCache] - If true, use cached data without fetching new intervals (for optimizer)
+ * @param {string} [options.productId] - Product ID (e.g., 'BTC-USDC', 'CRO_USD')
  * @param {Object} [options.freshness] - Out-param: set to `{stale: true, staleReason}` when an incremental top-up failed and the cached prices were returned as-is
  * @returns {Promise<Array>} Price data array
  */

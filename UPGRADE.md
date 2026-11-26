@@ -2,12 +2,10 @@
 
 Step-by-step instructions for breaking changes that require operator action.
 
-## Node.js minimum (22.12.0)
+## Node.js minimum (26)
 
-Update native Node.js installations to 22.12.0 or newer before upgrading
-Critical Mass. Production accounting requires synchronous loading of shared
-ESM modules, and the locked admin toolchain requires 22.12 or newer on the
-Node 22 line. Container users should use an image with Node.js 22.12.0 or newer.
+Update native Node.js installations to Node.js 26 or newer before upgrading
+Critical Mass. The production image and CI use Node.js 26.
 
 ---
 
@@ -214,7 +212,7 @@ npm ci && npm --prefix admin ci && npm run build         # 4. install both locke
 pm2 start ecosystem.config.cjs --only critical-mass-coinbase,critical-mass-gemini,critical-mass-cryptocom   # 5. engines first
 pm2 logs critical-mass-coinbase --lines 50 --nostream    # 6. inspect startup/migration errors (repeat for each engine you run)
 pm2 start ecosystem.config.cjs --only critical-mass      # 7. then the gateway
-pm2 start ecosystem.config.cjs --only critical-mass-ui   # 8. development UI only, if you use it
+CRITICAL_MASS_DEV_UI=1 pm2 start ecosystem.config.cjs --only critical-mass-ui   # optional development UI
 ```
 
 For every native upgrade, refresh both projects from their committed lockfiles, even when only the root version changes. The production UI build needs the admin project's build dependencies.

@@ -44,6 +44,7 @@ const EXTRACTED_DIRECTIONS = new Set(['Up', 'Down']);
 const sanitizeExtractedFields = (value) => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
 
+  /** @type {Record<string, unknown>} */
   const extracted = {};
   for (const [key, raw] of Object.entries(value)) {
     if (!ALLOWED_EXTRACTED_KEYS.has(key)) continue;

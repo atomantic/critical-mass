@@ -2,7 +2,7 @@ import React from 'react'
 import { cleanup, render } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 import LongTermBiasPanel from '../src/components/regime/LongTermBiasPanel'
-vi.mock('../src/components/regime/RegimeHelp', () => ({ ConfigTooltip: () => null, LONG_TERM_BIAS_TOOLTIP: null }))
+vi.mock('../src/components/regime/RegimeHelp', () => ({ ConfigTooltip: () => null }))
 afterEach(() => { cleanup(); sessionStorage.clear() })
 const props = {
   exchange: 'gemini', pairQuery: '?pair=BTC-USD', config: { aggressiveness: 'moderate' },

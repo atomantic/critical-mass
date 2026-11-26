@@ -3,7 +3,7 @@ import { extent, linePath, linearScale, timeScale, trianglePath } from '../../li
 import { Axis } from './primitives/Axis'
 import { ClipRect, Grid } from './primitives/Grid'
 import { HoverMarker } from './primitives/Tooltip'
-import { localPoint, svgId, useElementSize } from './primitives/Responsive'
+import { localPoint, svgId, useElementSize } from './primitives/chartMeasurement'
 import {
   formatCurrencyCompact,
   formatCurrency,

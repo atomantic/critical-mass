@@ -5,7 +5,8 @@ import LongTermBiasDetails from './LongTermBiasDetails'
 import React, { useEffect, useRef, useState } from 'react'
 import { detectAggressivenessLevel, computeAggressivenessParams, AGGRESSIVENESS_LEVEL_META } from './aggressiveness'
 import { SUGGESTED_LEVEL_STYLES, CACHE_HEALTH_STYLES } from './regimeStyles'
-import { ConfigTooltip, LONG_TERM_BIAS_TOOLTIP } from './RegimeHelp'
+import { ConfigTooltip } from './RegimeHelp'
+import { LONG_TERM_BIAS_TOOLTIP } from './regimeTooltips'
 
 export default function LongTermBiasPanel({ bias, config, presets, exchange, pairQuery, onConfigUpdate, addToast }) {
   const [applying, setApplying] = useState(false)

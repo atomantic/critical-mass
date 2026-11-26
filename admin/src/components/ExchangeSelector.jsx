@@ -1,5 +1,5 @@
 import Button from './ui/Button'
-import { useState, useEffect, useLayoutEffect, useRef } from 'react'
+import { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react'
 import { EXCHANGE_ICONS, EXCHANGE_COLORS } from './exchangeStyles'
 
 // Get engine status for an exchange
@@ -84,17 +84,10 @@ function ExchangeSelector({ currentExchange, currentPair, exchanges, onChange, o
 
   // Focus before removing the active option so dialogs capture a connected
   // return target and navigation/refresh never leave focus on the body.
-  const closeWithFocus = () => {
+  const closeWithFocus = useCallback(() => {
     triggerRef.current?.focus()
     setIsOpen(false)
-  }
-
-  const handleKeyDown = (event) => {
-    if (event.key === 'Escape') {
-      event.preventDefault()
-      closeWithFocus()
-    }
-  }
+  }, [])
 
   const handleSelect = (exchangeName, pair) => {
     closeWithFocus()
@@ -114,13 +107,19 @@ function ExchangeSelector({ currentExchange, currentPair, exchanges, onChange, o
         setIsOpen(false)
       }
     }
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        closeWithFocus()
+      }
+    }
     document.addEventListener('click', handleClickOutside)
     document.addEventListener('keydown', handleKeyDown)
     return () => {
       document.removeEventListener('click', handleClickOutside)
       document.removeEventListener('keydown', handleKeyDown)
     }
-  }, [isOpen])
+  }, [isOpen, closeWithFocus])
 
   // Find the entry matching both exchange AND pair (multi-pair installs may
   // have several entries per exchange). Falls back to the first entry on

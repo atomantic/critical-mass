@@ -27,12 +27,12 @@ const buildPartialFillData = (orderId, side, orderStatus, extras = {}) => ({
   orderId,
   side,
   status: orderStatus.status,
-  filledSize: parseFloat(orderStatus.filledSize || 0),
+  filledSize: parseFloat(String(orderStatus.filledSize || 0)),
   // Preserve absence so terminal fallback can derive cumulative quote from
   // the average and the resolved quantity (including a saved high-water mark).
   // Explicit zero or malformed quote remains present and fails validation.
-  filledValue: orderStatus.filledValue == null ? undefined : parseFloat(orderStatus.filledValue),
-  averageFilledPrice: parseFloat(orderStatus.averageFilledPrice || 0),
+  filledValue: orderStatus.filledValue == null ? undefined : parseFloat(String(orderStatus.filledValue)),
+  averageFilledPrice: parseFloat(String(orderStatus.averageFilledPrice || 0)),
   isPartialFill: true,
   ...extras,
 });

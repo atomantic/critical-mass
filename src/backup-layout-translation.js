@@ -241,6 +241,7 @@ const projectedArchivePaths = (entries, { translations, rootTranslation }) => {
  *
  * @param {Object} params
  * @param {string} params.zipPath
+ * @param {{entries: string[], members: Map<string, string>}} params.archive
  * @param {Object|null} params.snapshot - Archive configuration snapshot, if any
  * @param {Object} params.destinationConfig - Destination's effective configuration
  * @returns {{legacyLayout: boolean, layoutTranslations: Array<{exchange: string, pair: string}>,

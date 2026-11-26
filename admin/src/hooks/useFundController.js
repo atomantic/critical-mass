@@ -1,4 +1,4 @@
-import { useState, useEffect, useLayoutEffect, useRef } from 'react'
+import { useState, useEffect, useEffectEvent, useLayoutEffect, useRef } from 'react'
 import { useRealtimeConnection } from './useTradeEvents'
 import useRegimeStateEvents from './useRegimeStateEvents'
 import useRealtimeRefresh from './useRealtimeRefresh'
@@ -147,9 +147,11 @@ export default function useFundController({ location, navigate, addToast, isGlob
       setResetting(false)
     }
 
+    const summaryRequest = summaryRequestRef.current
+    const statusRequest = statusRequestRef.current
     return () => {
-      summaryRequestRef.current.controller?.abort()
-      statusRequestRef.current.controller?.abort()
+      summaryRequest.controller?.abort()
+      statusRequest.controller?.abort()
     }
   }, [selectedFund])
 
@@ -431,8 +433,10 @@ export default function useFundController({ location, navigate, addToast, isGlob
     }
   }
 
+  // Initial load of exchanges
+  const loadInitialExchanges = useEffectEvent(() => fetchExchanges())
   useEffect(() => {
-    fetchExchanges()
+    loadInitialExchanges()
   }, [])
 
   // Summary: one read per fund, then re-read when the gateway reports order,

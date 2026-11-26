@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 import { extent, histogram, linearScale, max } from '../../lib/chart-math'
 import { Axis } from './primitives/Axis'
 import { Grid } from './primitives/Grid'
-import { useElementSize } from './primitives/Responsive'
+import { useElementSize } from './primitives/chartMeasurement'
 import {
   formatCurrencyCompact,
   formatCurrency,

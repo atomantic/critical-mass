@@ -18,9 +18,10 @@ function localImports(file, text) {
   const paths = [];
   // Some integration tests pass their entry point to a child process or read
   // it as a fixture. Record exact paths here, without module resolution.
+  /** @param {readonly import('typescript').Expression[]} args */
   function addFilePath([root, ...parts]) {
     if (!root || !ts.isIdentifier(root) || root.text !== '__dirname' ||
-        !parts.length || !parts.every(part => ts.isStringLiteralLike(part) && !path.isAbsolute(part.text))) return;
+        !parts.length || !parts.every(ts.isStringLiteralLike) || parts.some(part => path.isAbsolute(part.text))) return;
     paths.push(path.join(path.dirname(file), ...parts.map(part => part.text)));
   }
   function addImport(node) {

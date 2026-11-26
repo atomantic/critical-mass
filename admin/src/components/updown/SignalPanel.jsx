@@ -28,7 +28,7 @@ export default function SignalPanel({ signal, indicators, position }) {
       if (exists) return prev
       return [signal, ...prev].slice(0, 50)
     })
-  }, [signal?.timestamp])
+  }, [signal])
 
   // Fetch initial history. Live signals that arrived before the read resolved
   // are merged in rather than replaced; a failed read is reported, not shown

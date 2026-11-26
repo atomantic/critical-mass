@@ -6,6 +6,7 @@ const path = require('path');
 const { isDeepStrictEqual } = require('util');
 const { jsonReadError } = require('./json-diagnostics');
 const { atomicWriteSync } = require('./durable-write');
+const { withUnreclaimedLock } = require('./file-lock');
 
 const BASE_SNAPSHOT_FILENAME = 'config-base.snapshot.json';
 const CONFIG_LOCK_DIR = '.config-write.lock';
@@ -24,19 +25,12 @@ const readConfigObject = (file) => {
 // Never steal by age or PID: after a crash, an operator must stop all writers
 // before removing this directory. A bounded wait lets concurrent starters
 // finish normally and fails closed if ownership cannot be established.
-const withConfigWriteLock = (dataDir, action, timeoutMs = 5000) => {
-  fs.mkdirSync(dataDir, { recursive: true });
-  const lock = path.join(dataDir, CONFIG_LOCK_DIR);
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    try { fs.mkdirSync(lock); break; } catch (error) {
-      if (error.code !== 'EEXIST') throw error;
-      if (Date.now() >= deadline) throw new Error(`Config write lock busy: ${CONFIG_LOCK_DIR}; see UPGRADE.md`);
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
-    }
-  }
-  try { return action(); } finally { fs.rmdirSync(lock); }
-};
+const withConfigWriteLock = (dataDir, action, timeoutMs = 5000) => withUnreclaimedLock(
+  path.join(dataDir, CONFIG_LOCK_DIR),
+  { waitMs: timeoutMs, pollMs: 20 },
+  action,
+  () => new Error(`Config write lock busy: ${CONFIG_LOCK_DIR}; see UPGRADE.md`),
+);
 
 // Publish the override durably BEFORE publishing its new baseline. If the
 // process dies between the two writes, replay sees the pins and is idempotent.

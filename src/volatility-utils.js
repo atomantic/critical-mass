@@ -383,7 +383,9 @@ const calculateMomentumAcceleration = (candles, shortPeriod = 3, longPeriod = 10
   const roc3 = (current - shortAgo) / shortAgo * 100;
   const roc10 = (current - longAgo) / longAgo * 100;
 
+  /** @type {'neutral'|'accelerating'|'fading'} */
   let acceleration = 'neutral';
+  /** @type {'neutral'|'up'|'down'} */
   let direction = 'neutral';
 
   const bothPositive = roc3 > 0 && roc10 > 0;

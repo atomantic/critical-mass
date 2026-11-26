@@ -68,7 +68,7 @@ function createView(component, extraStubs = {}, fetchResponse = null) {
     react: hooks,
     'lucide-react': new Proxy({}, { get: () => () => null }),
     '../icons': new Proxy({}, { get: () => () => null }),
-    '../Toast': { useToast: () => ({ addToast() {} }), useNotify: () => (type, message) => { notices.push({ type, message }) } },
+    '../useToast': { useToast: () => ({ addToast() {} }), useNotify: () => (type, message) => { notices.push({ type, message }) } },
     '../../utils/plural.mjs': { plural: (n, s, p = `${s}s`) => `${n} ${n === 1 ? s : p}` },
     '../../utils/pnlFormat.mjs': { pnlColorClass: n => (n >= 0 ? 'text-green-400' : 'text-red-400'), signedPrefix: n => (n >= 0 ? '+' : '') },
     '../utils/plural.mjs': { plural: (n, s, p = `${s}s`) => `${n} ${n === 1 ? s : p}` },
