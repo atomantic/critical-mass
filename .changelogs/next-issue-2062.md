@@ -1,0 +1,1 @@
+- Consolidate restore, namespace migration, config, placement-intent and scorecard maintenance locking while retaining their existing lock paths and recovery policies.
