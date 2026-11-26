@@ -17,6 +17,8 @@ const {
   validateOptimizerInput,
   normalizeOptimizerConfig,
   optimizerRequestKey,
+  OPTIMIZER_CACHE_VERSION,
+  resolveOptimizerFees,
 } = require('../simulation-policy');
 const { SimulationRunCoordinator } = require('../simulation-run-coordinator');
 
@@ -53,6 +55,13 @@ module.exports = (app, deps) => {
   const getOptimizerCacheFile = (exchange, productId) => {
     const slug = (productId || 'default').toLowerCase().replace(/[^a-z0-9]/g, '-');
     return path.join(DATA_DIR, exchange, `optimizer-cache-${slug}.json`);
+  };
+  const readOptimizerCache = (cacheFile, fees) => {
+    const cache = readJSON(cacheFile, null);
+    if (cache?.version !== OPTIMIZER_CACHE_VERSION ||
+        cache.config?.feePercent !== fees.feePercent ||
+        cache.config?.rebatePercent !== fees.rebatePercent) return null;
+    return cache;
   };
   const rejectAdmission = (res, admission) => {
     res.set?.('Retry-After', String(admission.retryAfter));
@@ -138,8 +147,8 @@ module.exports = (app, deps) => {
     const { exchange } = req.params;
     const pair = getFundPair(req);
     const fundConfig = getFundConfig(exchange, pair);
-    const cache = readJSON(getOptimizerCacheFile(exchange, fundConfig.productId), null);
-    res.json(cache ? { success: true, cached: true, ...cache } : { success: true, cached: false });
+    const cache = readOptimizerCache(getOptimizerCacheFile(exchange, fundConfig.productId || pair), resolveOptimizerFees(fundConfig));
+    res.json(cache ? { ...cache, success: true, cached: true } : { success: true, cached: false });
   });
 
   pairDelete('/api/:exchange/optimizer/cache', (req, res) => {
@@ -147,7 +156,7 @@ module.exports = (app, deps) => {
     const pair = getFundPair(req);
     const fundConfig = getFundConfig(exchange, pair);
     const fs = require('fs');
-    const cacheFile = getOptimizerCacheFile(exchange, fundConfig.productId);
+    const cacheFile = getOptimizerCacheFile(exchange, fundConfig.productId || pair);
     if (fs.existsSync(cacheFile)) {
       fs.unlinkSync(cacheFile);
       backtestLogger(exchange, pair, '/api/:exchange/optimizer/cache').info(`ℹ️ [${exchange}/${pair}] Optimizer cache cleared`, {
@@ -177,6 +186,7 @@ module.exports = (app, deps) => {
     if (!validation.ok) return res.status(400).json({ success: false, error: validation.error, code: validation.code });
     const { fundSize, forceRefresh, intervals, markups, periods, buyAmounts, combinations } = validation.value;
     const productId = configProductId;
+    const fees = resolveOptimizerFees(fundConfig);
     const { runId: requestedRunId } = body;
     const cacheFile = getOptimizerCacheFile(exchange, productId);
     const configKey = JSON.stringify({ intervals, markups, periods, buyAmounts });
@@ -185,7 +195,7 @@ module.exports = (app, deps) => {
       : randomUUID();
 
     if (!forceRefresh) {
-      const cache = readJSON(cacheFile, null);
+      const cache = readOptimizerCache(cacheFile, fees);
       const cacheConfig = normalizeOptimizerConfig(cache?.config);
       const cacheConfigKey = cacheConfig && JSON.stringify(cacheConfig);
       if (cache && cache.fundSize === fundSize && cache.productId === productId && configKey === cacheConfigKey) {
@@ -194,18 +204,18 @@ module.exports = (app, deps) => {
           productId,
           fundSize,
         });
-        return res.json({ success: true, cached: true, ...cache });
+        return res.json({ ...cache, success: true, cached: true });
       }
     }
 
-    const requestKey = optimizerRequestKey({ exchange, pair, productId, ...validation.value });
+    const requestKey = optimizerRequestKey({ exchange, pair, productId, ...validation.value, ...fees });
     let currentBestResult = null;
     const admission = simulationCoordinator.start({
       resourceKey: `fund:${exchange}:${pair}`,
       requestKey,
       forceRefresh,
     }, () => optimizerEngine.runOptimizer({
-      fundSize, exchange, forceRefresh, productId, intervals, markups, periods, buyAmounts,
+      fundSize, exchange, forceRefresh, productId, intervals, markups, periods, buyAmounts, fees,
       onProgress: (progress) => {
         io.emit('optimizer:progress', { ...progress, runId, exchange, pair, requestKey });
         if (progress.latestResult) {
@@ -247,17 +257,18 @@ module.exports = (app, deps) => {
           totalCombinations: result.totalCombinations,
           durationMs: result.duration,
         });
-        logger.info(`ℹ️ [${exchange}] Best result: ${result.bestResult.params.intervalType} ${result.bestResult.params.sellMarkupPercent}% markup -> $${result.bestResult.metrics.totalValue.toFixed(2)}`, {
+        logger.info(`ℹ️ [${exchange}] Best result: ${result.bestResult.params.intervalType} ${result.bestResult.params.sellMarkupPercent}% markup -> ${result.bestResult.metrics.annualizedRoi?.toFixed(2)}% annualized ROI`, {
           action: 'optimizer-best',
           runId,
           intervalType: result.bestResult.params.intervalType,
           sellMarkupPercent: result.bestResult.params.sellMarkupPercent,
+          annualizedRoi: result.bestResult.metrics.annualizedRoi,
           totalValue: result.bestResult.metrics.totalValue,
         });
 
         const topResults = optimizerEngine.getTopResults(result.results, 20);
         const response = {
-          success: true, cached: false, cachedAt: new Date().toISOString(),
+          success: true, cached: false, cachedAt: new Date().toISOString(), version: OPTIMIZER_CACHE_VERSION,
           fundSize, productId: result.productId, totalCombinations: result.totalCombinations,
           duration: result.duration, bestResult: result.bestResult, topResults, config: result.config,
           runId, exchange, pair,

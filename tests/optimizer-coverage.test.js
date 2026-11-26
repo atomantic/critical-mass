@@ -8,7 +8,7 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { buildResultRecord, compareOptimizerResults } = require('../src/optimizer-engine');
+const { buildResultRecord, compareOptimizerResults, runOptimizer, prefetchPriceData } = require('../src/optimizer-engine');
 
 const baseMetrics = () => ({
   totalValue: 10_500,
@@ -66,12 +66,12 @@ describe('#213B optimizer coverage labeling', () => {
 });
 
 describe('#213B follow-up — compareOptimizerResults ranks fully-covered ahead of under-covered', () => {
-  const makeRecord = (totalValue, underCovered) => ({
+  const makeRecord = (annualizedRoi, underCovered) => ({
     params: { underCovered },
-    metrics: { totalValue },
+    metrics: { annualizedRoi },
   });
 
-  it('a lower-totalValue fully-covered result outranks a higher-totalValue under-covered one', () => {
+  it('a fully covered result outranks an under-covered one with higher annualized ROI', () => {
     const fullyCovered = makeRecord(10_000, false);
     const underCovered = makeRecord(50_000, true); // higher totalValue, but the period silently truncated
     const results = [underCovered, fullyCovered];
@@ -81,15 +81,33 @@ describe('#213B follow-up — compareOptimizerResults ranks fully-covered ahead 
     assert.equal(results[1], underCovered);
   });
 
-  it('sorts by totalValue descending within the same coverage group', () => {
+  it('sorts by annualized ROI descending within the same coverage group', () => {
     const results = [makeRecord(100, false), makeRecord(300, false), makeRecord(200, false)];
     results.sort(compareOptimizerResults);
-    assert.deepEqual(results.map((r) => r.metrics.totalValue), [300, 200, 100]);
+    assert.deepEqual(results.map((r) => r.metrics.annualizedRoi), [300, 200, 100]);
   });
 
   it('sorts under-covered results among themselves too, not just deprioritized wholesale', () => {
     const results = [makeRecord(10, true), makeRecord(30, true), makeRecord(20, true)];
     results.sort(compareOptimizerResults);
-    assert.deepEqual(results.map((r) => r.metrics.totalValue), [30, 20, 10]);
+    assert.deepEqual(results.map((r) => r.metrics.annualizedRoi), [30, 20, 10]);
+  });
+});
+
+describe('#2056 optimizer ranking and interval validation', () => {
+  it('ranks the 30-day result above the higher-value 60-day result on annualized ROI', () => {
+    const makeResult = (days, endDate, totalValue, roi) => buildResultRecord(
+      { intervalType: 'daily', period: `${days}D`, intervals: days },
+      { params: { intervals: days }, metrics: { ...baseMetrics(), startDate: '2026-01-01T00:00:00Z', endDate, totalValue, roi } },
+    );
+    const shorter = makeResult(30, '2026-01-30T00:00:00Z', 10_300, 3);
+    const longer = makeResult(60, '2026-03-01T00:00:00Z', 10_500, 5);
+    assert.equal(shorter.metrics.annualizedRoi, 36.5);
+    assert.deepEqual([longer, shorter].sort(compareOptimizerResults), [shorter, longer]);
+  });
+
+  it('rejects a one-minute optimizer interval before fetching history', async () => {
+    await assert.rejects(runOptimizer({ intervals: ['1min'] }), /Unsupported optimizer interval: 1min/);
+    await assert.rejects(prefetchPriceData(['1min'], ['30D']), /Unsupported optimizer interval: 1min/);
   });
 });

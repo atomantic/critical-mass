@@ -31,7 +31,7 @@ describe('#205 backtest buy-side fee leakage', () => {
     const buyAmount = 100;
     const price = 50_000;
 
-    // Flat market: sell target (mid * 1.1) is never reached, so no sells fill
+    // Flat market: sell target (fee-adjusted open + 10%) is never reached, so no sells fill
     // and the only cash movement is buys plus their fees.
     const prices = [1, 2, 3, 4, 5].map(n => candle(day(n), price));
 
@@ -65,5 +65,55 @@ describe('#205 backtest buy-side fee leakage', () => {
       Math.abs(result.metrics.finalAvailableFunds - expectedFinalCash) < 1e-6,
       `finalAvailableFunds ${result.metrics.finalAvailableFunds} should be ${expectedFinalCash}`,
     );
+  });
+});
+
+describe('#2056 backtest fee and candle accounting', () => {
+  it('deducts net buy fees from unlimited-fund cash and ROI', async () => {
+    const result = await runBacktest({
+      intervalBuyAmount: 100, feePercent: 2, rebatePercent: 1, fundSize: 0,
+    }, [candle(day(1), 100), candle(day(2), 100)]);
+    assert.equal(result.metrics.totalInvested, 200);
+    assert.equal(result.metrics.finalUSDC, -2);
+    assert.equal(result.metrics.netFees, 2);
+    assert.equal(result.metrics.totalValue, 198);
+    assert.equal(result.metrics.roi, -1);
+  });
+
+  it('returns finite zero ROI when there are no contributions', async () => {
+    const result = await runBacktest({ intervalBuyAmount: 0 }, [candle(day(1), 100)]);
+    assert.equal(result.metrics.roiBasis, 0);
+    assert.equal(result.metrics.roi, 0);
+  });
+
+  it('uses the opening price and the same fee-adjusted markup in both strategies', async () => {
+    const prices = [{ ...candle(day(1), 100), high: 170, highOfDay: 170, low: 90 }];
+    const params = { intervalBuyAmount: 100, fibBaseAmount: 100, sellMarkupPercent: 25, feePercent: 5, rebatePercent: 1 };
+    const fixed = await runBacktest(params, prices);
+    const fibonacci = await runBacktest({ ...params, dcaStrategy: 'fibonacci' }, prices);
+    for (const { transactions, metrics } of [fixed, fibonacci]) {
+      assert.equal(transactions[0].price, 100);
+      assert.equal(transactions[0].assetAmount, 1);
+      assert.equal(transactions[0].sellTargetPrice, 130);
+      assert.equal(metrics.sellsFilled, 0, 'new sell orders cannot fill during the buy candle');
+    }
+  });
+
+  it('counts buys sold in completed Fibonacci cycles and sizes buys before later fills', async () => {
+    const result = await runBacktest({
+      dcaStrategy: 'fibonacci', fibBaseAmount: 100, sellMarkupPercent: 10,
+      feePercent: 0, rebatePercent: 0,
+    }, [
+      candle(day(1), 100),
+      candle(day(2), 100),
+      { ...candle(day(3), 100), high: 120, highOfDay: 120 },
+      candle(day(4), 100),
+    ]);
+    const sameCandleBuy = result.transactions.find(t => t.date === day(3) && t.type === 'FIB_BUY');
+    assert.equal(sameCandleBuy.usdcAmount, -200, 'a later sell cannot reset the size of this opening buy');
+    assert.equal(result.fibonacci.cyclesCompleted, 1);
+    assert.equal(result.metrics.sellsFilled, 2);
+    assert.equal(result.metrics.totalSells, 4);
+    assert.equal(result.metrics.fillRate, 50);
   });
 });

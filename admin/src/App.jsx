@@ -255,7 +255,7 @@ function AppContent() {
 
               {/* DCA-only routes (backtest, optimizer) */}
               {simpleDcaEnabled && currentStrategy !== 'regime' && <>
-              <Route path="/:exchange/:pair/backtest" element={<Backtest key={`${currentExchange}:${currentPair}`} summary={summary} exchange={currentExchange} pair={currentPair} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />} />
+              <Route path="/:exchange/:pair/backtest" element={<Backtest summary={summary} exchange={currentExchange} pair={currentPair} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />} />
               <Route path="/:exchange/:pair/optimizer" element={<Optimizer key={`${currentExchange}:${currentPair}`} exchange={currentExchange} pair={currentPair} />} />
               </>}
 
