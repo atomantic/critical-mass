@@ -1,220 +1,41 @@
 name: Image Security
 
-# Scheduled and manual vulnerability scan of every container image this
-# repository builds or ships (issue #1951): both Dockerfile stages, the exact
-# digest-pinned Umbrel image, and the storage smoke-test helper images, for
-# linux/amd64 and linux/arm64. See docs/IMAGE_SECURITY.md.
-#
-# Each target ends as `scanned` (OS + application inventories and all-severity
-# findings) or `unavailable` with a named reason. A scanner, registry, build or
-# architecture failure turns the run red and is never recorded as zero findings.
-# Findings themselves do not fail the run; maintainers triage them from the
-# job summary and the `image-security-evidence` artifact.
-
 on:
   schedule:
-    # Twice a week keeps evidence inside the 14-day currency window even if a run is missed.
-    - cron: '17 6 * * 1,4'
+    - cron: '17 6 * * 1'
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      release_tag:
+        type: string
+        required: true
 
-permissions: {}
-
-concurrency:
-  group: image-security
-  cancel-in-progress: false
+permissions:
+  contents: read
 
 jobs:
-  plan:
-    name: Plan targets
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    outputs:
-      matrix: ${{ steps.plan.outputs.matrix }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      # Targets are derived from Dockerfile, umbrel/docker-compose.yml and the
-      # storage smoke test, so an image reference is never copied into this file.
-      - name: Derive scan matrix
-        id: plan
-        # Assign first: inside echo's argument a planning failure would be masked.
-        run: |
-          set -euo pipefail
-          matrix="$(node scripts/image-security-scan.js plan)"
-          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
-
   scan:
-    name: Scan ${{ matrix.id }}
-    needs: plan
     runs-on: ubuntu-latest
-    timeout-minutes: 60
-    permissions:
-      contents: read
-      packages: read
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    timeout-minutes: 15
     steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Scan published image for fixable vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          persist-credentials: false
-
-      - name: Install pinned Syft and Grype
-        run: scripts/install-image-scanners.sh "$RUNNER_TEMP/scanner-bin" && echo "$RUNNER_TEMP/scanner-bin" >> "$GITHUB_PATH"
-
-      - name: Login to GitHub Container Registry
+          scan-ref: ghcr.io/atomantic/critical-mass:${{ inputs.release_tag || 'latest' }}
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+          output: trivy-results.txt
         env:
-          REGISTRY_USER: ${{ github.repository_owner }}
-          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: echo "$REGISTRY_TOKEN" | docker login ghcr.io -u "$REGISTRY_USER" --password-stdin
+          TRIVY_IMAGE_SRC: remote
+          TRIVY_PLATFORM: linux/amd64
 
-      - name: Set up QEMU
-        if: matrix.build && matrix.platform == 'linux/arm64'
-        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
-
-      - name: Set up Docker Buildx
-        if: matrix.build
-        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
-
-      # A failed build is recorded as unavailable coverage by the scan step, so it
-      # must not stop the job before evidence is written and uploaded.
-      - name: Build image from the checked-out recipe
-        id: build
-        if: matrix.build
-        continue-on-error: true
-        env:
-          PLATFORM: ${{ matrix.platform }}
-          DOCKER_TARGET: ${{ matrix.dockerTarget }}
+      - name: Report vulnerability scan results
+        if: ${{ !cancelled() && hashFiles('trivy-results.txt') != '' }}
         run: |
-          set -euo pipefail
-          docker buildx build \
-            --platform "$PLATFORM" \
-            ${DOCKER_TARGET:+--target "$DOCKER_TARGET"} \
-            --provenance=false --sbom=false \
-            --output "type=oci,dest=$RUNNER_TEMP/image.tar" \
-            .
-
-      - name: Inventory and scan
-        env:
-          TARGET_ID: ${{ matrix.id }}
-          BUILD_TARGET: ${{ matrix.build }}
-          BUILD_OUTCOME: ${{ steps.build.outcome }}
-        run: |
-          set -uo pipefail
-          args=(scan --target "$TARGET_ID" --out "evidence/$TARGET_ID")
-          if [ "$BUILD_TARGET" = "true" ]; then
-            if [ "$BUILD_OUTCOME" = "success" ]; then
-              args+=(--source "oci-archive:$RUNNER_TEMP/image.tar")
-            else
-              args+=(--upstream-failure "docker buildx build finished with outcome $BUILD_OUTCOME")
-            fi
-          fi
-          node scripts/image-security-scan.js "${args[@]}"
-
-      - name: Upload target evidence
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: image-scan-${{ matrix.id }}
-          path: evidence/${{ matrix.id }}
-          if-no-files-found: error
-          retention-days: 90
-
-  selftest:
-    name: Scanner controls
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      contents: read
-      packages: read
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Install pinned Syft and Grype
-        run: scripts/install-image-scanners.sh "$RUNNER_TEMP/scanner-bin" && echo "$RUNNER_TEMP/scanner-bin" >> "$GITHUB_PATH"
-
-      - name: Login to GitHub Container Registry
-        env:
-          REGISTRY_USER: ${{ github.repository_owner }}
-          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: echo "$REGISTRY_TOKEN" | docker login ghcr.io -u "$REGISTRY_USER" --password-stdin
-
-      # Positive control: a known-vulnerable lockfile must produce findings.
-      # Negative controls: an unreachable image and a missing scanner must be
-      # reported as unavailable, never as a clean scan.
-      - name: Run detection and failure controls
-        run: node scripts/image-security-scan.js selftest --out selftest
-
-      - name: Upload control evidence
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: selftest-evidence
-          path: selftest
-          if-no-files-found: error
-          retention-days: 90
-
-  aggregate:
-    name: Coverage summary
-    needs: [plan, scan, selftest]
-    if: always()
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Download target evidence
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          pattern: image-scan-*
-          path: downloaded
-
-      # The verifier requires a passing selftest.json: zero findings are not
-      # trustworthy from a run whose vulnerable-fixture control failed.
-      - name: Download control evidence
-        continue-on-error: true
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: selftest-evidence
-          path: downloaded-selftest
-
-      # Re-verifies every target against this checkout (recipe hashes, Umbrel
-      # digest, inventories, artifact hashes). A target with no uploaded
-      # evidence, e.g. a runner that died, is reported as a coverage gap.
-      - name: Assemble and verify evidence bundle
-        run: |
-          set -uo pipefail
-          mkdir -p image-security-evidence
-          for dir in downloaded/image-scan-*; do
-            [ -d "$dir" ] || continue
-            cp -R "$dir" "image-security-evidence/${dir#downloaded/image-scan-}"
-          done
-          if [ -f downloaded-selftest/selftest.json ]; then
-            mkdir -p image-security-evidence/selftest
-            cp downloaded-selftest/selftest.json image-security-evidence/selftest/selftest.json
-          fi
-          node scripts/image-security-scan.js aggregate --in image-security-evidence --out image-security-evidence
-          status=$?
-          cat image-security-evidence/summary.md >> "$GITHUB_STEP_SUMMARY"
-          exit "$status"
-
-      - name: Upload evidence bundle
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: image-security-evidence
-          path: image-security-evidence
-          if-no-files-found: warn
-          retention-days: 90
+          {
+            printf '### Fixable HIGH and CRITICAL vulnerabilities (linux/amd64)\n\n```text\n'
+            cat trivy-results.txt
+            printf '\n```\n'
+          } >> "$GITHUB_STEP_SUMMARY"

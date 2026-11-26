@@ -119,3 +119,10 @@ jobs:
     permissions:
       contents: read
       packages: write
+
+  scan-image:
+    name: Scan release image
+    needs: [release, publish-image]
+    uses: ./.github/workflows/image-security.yml
+    with:
+      release_tag: ${{ needs.release.outputs.release_tag }}
