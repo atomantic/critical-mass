@@ -179,6 +179,7 @@ describe('validateEndpointUrl — invalid inputs', () => {
 describe('validateEndpointUrl — private/localhost URLs rejected', () => {
   const privateUrls = [
     'http://localhost/api',
+    'http://localhost:11434/v1',
     'http://localhost./api',    // trailing dot
     'http://127.0.0.1/api',
     'http://0.0.0.0/api',

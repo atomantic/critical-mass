@@ -2,8 +2,7 @@
 /**
  * URL Validator — SSRF Defence
  *
- * Validates provider endpoint URLs before they are used to make outbound
- * HTTP requests. Rejects:
+ * Validates external RSS URLs for Sentinel configuration and polling. Rejects:
  *   - Non-http/https schemes
  *   - Private IPv4 ranges (RFC 1918, loopback, link-local, unspecified, and other reserved)
  *   - Private IPv6 ranges (unspecified ::, loopback ::1, ULA fc00::/7, link-local fe80::/10,
@@ -340,7 +339,7 @@ function stripAuthHeaders(headers) {
 }
 
 /**
- * SSRF-safe, redirect-safe replacement for `fetch()`.
+ * SSRF-safe HTTP transport for external RSS feeds.
  *
  * Unlike a plain `fetch(url, { headers })`, this:
  *  1. Runs every URL — including every redirect target — through
@@ -354,15 +353,13 @@ function stripAuthHeaders(headers) {
  *     TOCTOU — see `createSafeLookup`).
  *  5. Caps the response body size to avoid unbounded memory growth from
  *     a malicious or misbehaving remote endpoint.
- *  6. When allowedOrigins is supplied, enforces that grant before every
- *     request, including redirects. Feed callers omit the AI-specific grant.
  *
  * Method/body handling on redirect mirrors the WHATWG fetch spec: a 303
  * always downgrades to GET with no body; a 301/302 downgrades POST to
  * GET with no body; 307/308 preserve the original method and body.
  *
  * @param {string} url
- * @param {{ method?: string, headers?: Record<string,string>, body?: string, signal?: AbortSignal, maxRedirects?: number, maxResponseBytes?: number, allowedOrigins?: Set<string> }} [options]
+ * @param {{ method?: string, headers?: Record<string,string>, body?: string, signal?: AbortSignal, maxRedirects?: number, maxResponseBytes?: number }} [options]
  * @returns {Promise<{ ok: boolean, status: number, headers: { get: (name: string) => string | undefined }, text: () => Promise<string>, json: () => Promise<any> }>}
  */
 async function safeFetch(url, options = {}) {
@@ -374,7 +371,6 @@ async function safeFetch(url, options = {}) {
     signal,
     maxRedirects = DEFAULT_MAX_REDIRECTS,
     maxResponseBytes = DEFAULT_MAX_RESPONSE_BYTES,
-    allowedOrigins,
   } = options;
 
   const originalOrigin = new URL(url).origin;
@@ -385,9 +381,6 @@ async function safeFetch(url, options = {}) {
 
   for (let attempt = 0; attempt <= maxRedirects; attempt++) {
     const parsed = new URL(currentUrl);
-    if (allowedOrigins && !allowedOrigins.has(parsed.origin)) {
-      throw new Error(`Blocked endpoint: AI provider origin is not allowlisted: ${parsed.origin}`);
-    }
     signal?.throwIfAborted();
     const validation = await validateEndpointUrl(currentUrl, { signal });
     signal?.throwIfAborted();

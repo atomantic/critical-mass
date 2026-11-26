@@ -12,7 +12,6 @@ const { execFile } = require('child_process');
 const { promisify } = require('util');
 const { createContextLogger } = require('../logger');
 const { UPDOWN_DATA_DIR } = require('../paths');
-const { validateEndpointUrl, safeFetch } = require('../url-validator');
 const { parseAllowedOrigins } = require('../ai-security');
 const { parsePaging, pagedEnvelope } = require('./route-utils');
 const { createTradeLog } = require('../updown/trade-log');
@@ -144,7 +143,7 @@ const parseExpiryToMs = (value) => {
 
 /**
  * @param {import('express').Express} app
- * @param {{updownService: Object, upDipHeld?: any, appQuotes?: any, upDipCandles?: any, io?: any, readJSON: Function, DATA_DIR: string, validateEndpointUrl?: Function, safeFetch?: Function, allowedAiOrigins?: Set<string>}} deps
+ * @param {{updownService: Object, upDipHeld?: any, appQuotes?: any, upDipCandles?: any, io?: any, readJSON: Function, DATA_DIR: string, fetchImpl?: typeof fetch, allowedAiOrigins?: Set<string>}} deps
  */
 module.exports = (app, deps) => {
   const {
@@ -158,14 +157,12 @@ module.exports = (app, deps) => {
     readJSON,
     writeJSON,
     DATA_DIR,
-    validateEndpointUrl: validateEndpointUrlFn = validateEndpointUrl,
-    safeFetch: safeFetchFn = safeFetch,
+    fetchImpl,
     allowedAiOrigins = parseAllowedOrigins(),
   } = deps;
   const PROVIDERS_PATH = path.join(DATA_DIR, 'providers.json');
   const visionClient = createVisionClient({
-    validateEndpointUrl: validateEndpointUrlFn,
-    safeFetch: safeFetchFn,
+    fetchImpl,
     allowedOrigins: allowedAiOrigins,
   });
 
@@ -218,9 +215,6 @@ module.exports = (app, deps) => {
     if (!provider) return res.status(400).json({ success: false, error: `Provider "${providerId}" not found` });
     if (provider.type !== 'api') return res.status(400).json({ success: false, error: `Provider "${providerId}" is type "${provider.type}", need "api"` });
     if (!provider.enabled) return res.status(400).json({ success: false, error: `Provider "${providerId}" is disabled` });
-    if (!URL.canParse(provider.endpoint) || !allowedAiOrigins.has(new URL(provider.endpoint).origin)) {
-      return res.status(400).json({ success: false, error: 'Provider endpoint origin is not allowlisted in AI_ALLOWED_ENDPOINTS' });
-    }
 
     const selectedModel = typeof model === 'string' && model || provider.defaultModel;
     if (!selectedModel) return res.status(400).json({ success: false, error: `No model specified and provider has no defaultModel` });

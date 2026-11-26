@@ -11,10 +11,7 @@ const createApp = () => {
   return { handlers, get: register('GET'), put: register('PUT'), post: register('POST'), delete: register('DELETE') };
 };
 
-const createResponse = content => ({
-  ok: true,
-  async json() { return { choices: [{ message: { content } }] }; },
-});
+const createResponse = content => Response.json({ choices: [{ message: { content } }] });
 
 const analyze = async content => {
   const app = createApp();
@@ -25,8 +22,7 @@ const analyze = async content => {
     readJSON: () => ({ providers: { fixture: {
       type: 'api', enabled: true, endpoint: 'https://vision.example.test/v1', defaultModel: 'fixture',
     } } }),
-    validateEndpointUrl: async () => ({ valid: true }),
-    safeFetch: async () => createResponse(content),
+    fetchImpl: async () => createResponse(content),
     allowedAiOrigins: new Set(['https://vision.example.test']),
   });
   const req = {

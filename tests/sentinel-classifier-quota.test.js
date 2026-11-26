@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const { readFileSync } = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const aiSecurity = require('../src/ai-security');
 
 const sourcePath = path.join(__dirname, '../src/sentinel/classifier.js');
 const source = readFileSync(sourcePath, 'utf8');
@@ -30,17 +31,22 @@ const loadClassifier = (options = {}) => {
     AbortController, AbortSignal, setTimeout, clearTimeout,
     require: (name) => {
       if (name === 'path') return path;
-      if (name === 'fs/promises') return { readFile: async () => JSON.stringify({ providers, activeProvider: options.activeProvider }) };
+      if (name === 'fs/promises') return {
+        readFile: async () => {
+          await options.beforeRead?.();
+          return JSON.stringify({ providers, activeProvider: options.activeProvider });
+        },
+      };
       if (name === '../logger') return { createContextLogger: () => ({ warn: () => {} }) };
       if (name === '../config-utils') return { SENTINEL_DEFAULTS: { keywords } };
       if (name === '../paths') return { DATA_DIR: '/synthetic-data' };
-      if (name === '../ai-security') return { parseAllowedOrigins: () => new Set(['https://provider.example']) };
-      if (name === '../url-validator') return {
-        validateEndpointUrl: options.validate || (async () => ({ valid: true })),
-        safeFetch: async (url, request) => {
+      if (name === '../ai-security') return {
+        ...aiSecurity,
+        parseAllowedOrigins: () => new Set(['https://provider.example']),
+        createAllowlistedFetch: (allowedOrigins) => aiSecurity.createAllowlistedFetch(allowedOrigins, async (url, request) => {
           dispatches++;
           return options.fetch ? options.fetch(url, request) : successfulResponse();
-        },
+        }),
       };
       throw new Error('Unexpected dependency: ' + name);
     },
@@ -73,11 +79,9 @@ describe('Sentinel AI provider selection and cancellation', () => {
 
   it('cancels the in-flight provider request when the poll signal aborts', async () => {
     const deadline = new AbortController();
-    let validationSignal;
     let signalForRequest;
     const dispatched = new Promise((resolve) => { signalForRequest = resolve; });
     const fixture = loadClassifier({
-      validate: async (_url, { signal }) => { validationSignal = signal; return { valid: true }; },
       fetch: (_url, { signal }) => new Promise((_resolve, reject) => {
         signal.addEventListener('abort', () => reject(signal.reason), { once: true });
         signalForRequest(signal);
@@ -85,7 +89,6 @@ describe('Sentinel AI provider selection and cancellation', () => {
     });
     const result = fixture.classifier.classifyByAI(item, aiConfig, deadline.signal);
     const requestSignal = await dispatched;
-    assert.equal(requestSignal, validationSignal);
     deadline.abort();
     assert.equal(requestSignal.aborted, true);
     assert.equal(await result, null);
@@ -127,30 +130,31 @@ describe('Sentinel process-local hourly AI attempt budget', () => {
   });
 
   it('does not charge endpoints rejected before dispatch', async () => {
-    let valid = false;
-    const fixture = loadClassifier({ validate: async () => ({ valid, error: 'mock rejection' }) });
+    const fixture = loadClassifier();
+    const provider = { enabled: true, type: 'api', endpoint: 'http://localhost:11434/v1' };
+    fixture.setProviders({ test: provider });
     for (let i = 0; i < 25; i++) await fixture.classifier.classifyByAI(item, aiConfig);
     assert.equal(fixture.dispatchCount(), 0);
-    valid = true;
+    fixture.setProviders({ test: { ...provider, endpoint: 'https://provider.example' } });
     for (let i = 0; i < 25; i++) await fixture.classifier.classifyByAI(item, aiConfig);
     assert.equal(fixture.dispatchCount(), 10);
   });
 
-  it('cannot oversubscribe when concurrent asynchronous validations finish together', async () => {
+  it('cannot oversubscribe when concurrent provider reads finish together', async () => {
     const pending = [];
-    let allValidating;
-    const ready = new Promise((resolve) => { allValidating = resolve; });
+    let allReading;
+    const ready = new Promise((resolve) => { allReading = resolve; });
     const fixture = loadClassifier({
-      validate: () => new Promise((resolve) => {
+      beforeRead: () => new Promise((resolve) => {
         pending.push(resolve);
-        if (pending.length === 25) allValidating();
+        if (pending.length === 25) allReading();
       }),
       fetch: () => ({ ok: false }),
     });
     const calls = Array.from({ length: 25 }, () => fixture.classifier.classifyByAI(item, aiConfig));
     await ready;
     assert.equal(pending.length, 25);
-    for (const resolve of pending) resolve({ valid: true });
+    for (const resolve of pending) resolve();
     await Promise.all(calls);
     assert.equal(fixture.dispatchCount(), 10);
   });
@@ -166,16 +170,16 @@ describe('Sentinel process-local hourly AI attempt budget', () => {
     assert.equal(fixture.dispatchCount(), 20);
   });
 
-  it('resets at reservation time when validation crosses the hourly boundary', async () => {
+  it('resets at reservation time when the provider read crosses the hourly boundary', async () => {
     const pending = [];
-    let allValidating;
-    const ready = new Promise((resolve) => { allValidating = resolve; });
+    let allReading;
+    const ready = new Promise((resolve) => { allReading = resolve; });
     let delay = false;
     const fixture = loadClassifier({
-      validate: () => delay ? new Promise((resolve) => {
+      beforeRead: () => delay ? new Promise((resolve) => {
         pending.push(resolve);
-        if (pending.length === 25) allValidating();
-      }) : Promise.resolve({ valid: true }),
+        if (pending.length === 25) allReading();
+      }) : Promise.resolve(),
     });
     for (let i = 0; i < 9; i++) await fixture.classifier.classifyByAI(item, aiConfig);
     delay = true;
@@ -183,7 +187,7 @@ describe('Sentinel process-local hourly AI attempt budget', () => {
     await ready;
     assert.equal(pending.length, 25);
     fixture.advance(3_600_000);
-    for (const resolve of pending) resolve({ valid: true });
+    for (const resolve of pending) resolve();
     await Promise.all(calls);
     assert.equal(fixture.dispatchCount(), 19, 'new window permits exactly ten delayed dispatches');
   });

@@ -52,7 +52,7 @@
   "src/routes/regime-routes.js": 2,
   "src/routes/route-utils.js": 2,
   "src/routes/settings-routes.js": 2,
-  "src/routes/updown-routes.js": 10,
+  "src/routes/updown-routes.js": 9,
   "src/sell-fill-correction.js": 11,
   "src/sentinel/sentinel-service.js": 6,
   "src/simulation-policy.js": 16,

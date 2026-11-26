@@ -34,12 +34,7 @@ const validProvider = {
   timeout: 10,
 };
 
-const responseWithContent = content => ({
-  ok: true,
-  async json() {
-    return { choices: [{ message: { content } }] };
-  },
-});
+const responseWithContent = content => Response.json({ choices: [{ message: { content } }] });
 
 const registerRoute = (dataDir, overrides = {}) => {
   const app = createFakeApp();
@@ -48,8 +43,7 @@ const registerRoute = (dataDir, overrides = {}) => {
     candleCache: { getAllCandles: () => [] },
     readJSON: () => ({ providers: { vision: validProvider } }),
     DATA_DIR: dataDir,
-    validateEndpointUrl: async () => ({ valid: true }),
-    safeFetch: async () => responseWithContent('{"screenType":"select","direction":"Up"}'),
+    fetchImpl: async () => responseWithContent('{"screenType":"select","direction":"Up"}'),
     allowedAiOrigins: new Set(['https://vision.example.test']),
     ...overrides,
   });
@@ -100,10 +94,10 @@ describe('POST /api/updown/screenshot transient storage (issue #286)', () => {
       }),
     ];
 
-    for (const safeFetch of failures) {
+    for (const fetchImpl of failures) {
       const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'critical-mass-updown-'));
       try {
-        const handler = registerRoute(dataDir, { safeFetch });
+        const handler = registerRoute(dataDir, { fetchImpl });
         const res = createRes();
         await handler(createReq(), res);
         assert.equal(res.statusCode, 502);
@@ -118,7 +112,7 @@ describe('POST /api/updown/screenshot transient storage (issue #286)', () => {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'critical-mass-updown-'));
     try {
       const handler = registerRoute(dataDir, {
-        safeFetch: async () => responseWithContent('not json'),
+        fetchImpl: async () => responseWithContent('not json'),
       });
       const res = createRes();
       await handler(createReq(), res);
@@ -136,7 +130,7 @@ describe('app quotes', () => {
     const refuse = () => assert.fail('a quote is recorded only when the operator confirms it');
     const handler = registerRoute(dir, {
       appQuotes: { record: refuse, check: refuse },
-      safeFetch: async () => responseWithContent('{"screenType":"select","direction":"Up","range":2000,"currentPrice":61118.69,"upPrice":61172,"downPrice":61074,"target":62200,"stop":60200,"maxLoss":"-$486.00"}'),
+      fetchImpl: async () => responseWithContent('{"screenType":"select","direction":"Up","range":2000,"currentPrice":61118.69,"upPrice":61172,"downPrice":61074,"target":62200,"stop":60200,"maxLoss":"-$486.00"}'),
     });
     const res = createRes();
     await handler(createReq(), res);
