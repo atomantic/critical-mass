@@ -3,10 +3,10 @@
 // Callers require this module directly; no facade re-exports it.
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
 const { randomUUID } = require('crypto');
 const { resolveFundDataDir } = require('./fund-paths');
 const { atomicWriteSync } = require('./durable-write');
+const { tryOwnerDirectoryLock, waitForLock } = require('./file-lock');
 const { PLACEMENT_INTENTS_FILENAME, parsePlacementIntentsDocument } = require('./placement-intent-document');
 
 // ============================================================================
@@ -92,87 +92,20 @@ const INTENT_LOCK_TIMEOUT_MS = 10_000;
 const INTENT_LOCK_STALE_MS = 30_000;
 const INTENT_LOCK_POLL_MS = 5;
 
-const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-
 /**
- * A lock is reclaimed only when its owner is provably gone: a readable owner.json
- * on this host naming a pid that no longer exists. A live or foreign-host owner
- * is never stolen (it may be paused mid-write); age only reclaims a lock with no
- * readable owner record, i.e. one whose creator died before writing it.
- * @param {string} lock - Lock directory
- * @returns {boolean}
- */
-const isIntentLockStale = (lock) => {
-  let ageMs;
-  try { ageMs = Date.now() - fs.statSync(lock).mtimeMs; } catch { return false; }
-  let owner;
-  try { owner = JSON.parse(fs.readFileSync(path.join(lock, 'owner.json'), 'utf8')); } catch { return ageMs > INTENT_LOCK_STALE_MS; }
-  if (owner.host !== os.hostname() || !Number.isInteger(owner.pid)) return false;
-  try { process.kill(owner.pid, 0); return false; } catch (err) { return err.code === 'ESRCH'; }
-};
-
-/**
- * Remove a stale lock under a second, short-lived reclaim mutex. Reclaimers are
- * serialized and re-judge staleness while holding it, so none can delete a lock
- * another process acquired after the check (a dead owner's lock is only ever
- * removed by a reclaimer). Failures are swallowed; the caller's deadline bounds retries.
- * @param {string} lock - Lock directory
- */
-const reclaimStaleIntentLock = (lock) => {
-  const mutex = `${lock}.reclaim`;
-  try {
-    fs.mkdirSync(mutex, { mode: 0o700 });
-  } catch (err) {
-    // A reclaimer that died holding the mutex must not wedge reclamation forever.
-    try { if (err.code === 'EEXIST' && Date.now() - fs.statSync(mutex).mtimeMs > INTENT_LOCK_STALE_MS) fs.rmSync(mutex, { recursive: true, force: true }); } catch { /* raced */ }
-    return;
-  }
-  try {
-    if (isIntentLockStale(lock)) fs.rmSync(lock, { recursive: true, force: true });
-  } catch { /* retried until the caller's deadline */ } finally {
-    fs.rmSync(mutex, { recursive: true, force: true });
-  }
-};
-
-/**
- * Run `fn` holding the cross-process lock for a fund's intents file.
  * @template T
- * @param {string} file - Intents file path
- * @param {() => T} fn - Synchronous critical section
+ * @param {string} file
+ * @param {() => T} fn
  * @returns {T}
  */
 const withPlacementIntentsLock = (file, fn) => {
   const lock = `${file}.lock`;
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const deadline = Date.now() + INTENT_LOCK_TIMEOUT_MS;
-  const token = randomUUID();
-  // The lock appears already holding its owner record: stage the directory, then
-  // rename it into place (fails if a non-empty lock exists), so a lock never
-  // exists ownerless and an age-based reclaim cannot steal a paused creator's lock.
-  const staged = `${lock}.new-${process.pid}-${token}`;
-  for (;;) {
-    fs.mkdirSync(staged, { mode: 0o700 });
-    try {
-      const fd = fs.openSync(path.join(staged, 'owner.json'), 'w', 0o600);
-      try { fs.writeSync(fd, JSON.stringify({ pid: process.pid, host: os.hostname(), token })); } finally { fs.closeSync(fd); }
-      fs.renameSync(staged, lock);
-      break;
-    } catch (err) {
-      fs.rmSync(staged, { recursive: true, force: true });
-      if (!['EEXIST', 'ENOTEMPTY', 'EPERM'].includes(err.code)) throw err;
-      if (Date.now() > deadline) throw new Error(`placement intents lock ${lock} still held after ${INTENT_LOCK_TIMEOUT_MS / 1000}s; refusing to write without it`);
-      if (isIntentLockStale(lock)) reclaimStaleIntentLock(lock);
-      sleepSync(INTENT_LOCK_POLL_MS);
-    }
-  }
-  try {
-    return fn();
-  } finally {
-    // Release only a lock that is still ours.
-    try {
-      if (JSON.parse(fs.readFileSync(path.join(lock, 'owner.json'), 'utf8')).token === token) fs.rmSync(lock, { recursive: true, force: true });
-    } catch { /* already reclaimed */ }
-  }
+  const release = waitForLock(
+    () => tryOwnerDirectoryLock(lock, { ownerlessMs: INTENT_LOCK_STALE_MS, bestEffortRelease: true }),
+    { waitMs: INTENT_LOCK_TIMEOUT_MS, pollMs: INTENT_LOCK_POLL_MS },
+  );
+  if (!release) throw new Error(`placement intents lock ${lock} still held after ${INTENT_LOCK_TIMEOUT_MS / 1000}s; refusing to write without it`);
+  try { return fn(); } finally { release(); }
 };
 
 /**

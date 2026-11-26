@@ -43,6 +43,7 @@ const path = require('path');
 const { randomUUID } = require('crypto');
 const { fsyncDir } = require('./fsync-dir');
 const { fsyncFile } = require('./durable-write');
+const { acquireOwnerFileLock, breakFileLock, fileLockIsHeld, releaseOwnerFileLock } = require('./file-lock');
 const { createContextLogger } = require('./logger');
 
 const namespaceLog = () => createContextLogger({ component: 'namespace-migration' });
@@ -72,23 +73,9 @@ const LOCK_STALE_MS = 5 * 60 * 1000;
 /** How long a starter waits for another process's migration before refusing to start. */
 const LOCK_WAIT_MS = 30 * 1000;
 const LOCK_POLL_MS = 50;
-/** A breaker marker older than this was abandoned mid-break. */
-const BREAK_STALE_MS = 10 * 1000;
 
 /** Errors meaning "hard links are not available here" — fall back to rename under the lock. */
 const LINK_UNSUPPORTED = new Set(['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EXDEV', 'EMLINK']);
-
-const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-
-/** @param {number} pid @returns {boolean} */
-const isPidAlive = (pid) => {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    return err.code === 'EPERM';
-  }
-};
 
 /** @param {string} p @returns {fs.Stats|null} */
 const lstatOrNull = (p) => {
@@ -151,68 +138,8 @@ const discoverLegacyArtifacts = (dataDir) => {
 
 // ============ Cross-process ownership ============
 
-/**
- * @param {string} lockPath
- * @returns {{pid: number|null, token: string|null, mtimeMs: number}|null} null when the lock vanished
- */
-const readLockOwner = (lockPath) => {
-  let stat;
-  let raw;
-  try {
-    stat = fs.statSync(lockPath);
-    raw = fs.readFileSync(lockPath, 'utf8');
-  } catch (err) {
-    if (err.code === 'ENOENT') return null;
-    throw err;
-  }
-  let parsed = null;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    // Created but not yet written (or torn): staleness then rests on age alone.
-  }
-  return {
-    pid: Number.isInteger(parsed?.pid) ? parsed.pid : null,
-    token: typeof parsed?.token === 'string' ? parsed.token : null,
-    mtimeMs: stat.mtimeMs,
-  };
-};
-
-/**
- * Remove an abandoned lock without ever displacing a live one. Breakers
- * serialise on a second exclusive marker, and the holder re-reads the lock and
- * re-judges it stale from scratch before unlinking it, so a lock that another
- * starter broke and re-acquired since we first looked is left alone (identity
- * is never inferred from an inode number, which filesystems reuse). The lock
- * path is never vacated while a live owner holds it.
- * @param {string} lockPath
- * @param {(owner: NonNullable<ReturnType<typeof readLockOwner>>) => boolean} isStale
- * @param {() => number} [now]
- * @returns {void}
- */
-const breakStaleLock = (lockPath, isStale, now = Date.now) => {
-  const breakPath = `${lockPath}.break`;
-  try {
-    fs.closeSync(fs.openSync(breakPath, 'wx', 0o600));
-  } catch (err) {
-    if (err.code !== 'EEXIST') throw err;
-    // Another starter is breaking it. A marker outliving BREAK_STALE_MS was
-    // left by a breaker that died mid-break (the break itself takes
-    // microseconds); clear it so recovery can make progress.
-    const marker = lstatOrNull(breakPath);
-    if (marker && now() - marker.mtimeMs > BREAK_STALE_MS) fs.rmSync(breakPath, { force: true });
-    return;
-  }
-  try {
-    const owner = readLockOwner(lockPath);
-    if (owner && isStale(owner)) {
-      namespaceLog().warn(`Breaking abandoned migration lock (pid ${owner.pid ?? 'unknown'})`);
-      fs.unlinkSync(lockPath);
-    }
-  } finally {
-    fs.rmSync(breakPath, { force: true });
-  }
-};
+const logBrokenLock = (pid) => namespaceLog().warn(`Breaking abandoned migration lock (pid ${pid ?? 'unknown'})`);
+const breakStaleLock = (lockPath, isStale, now = Date.now) => breakFileLock(lockPath, isStale, now, logBrokenLock);
 
 /**
  * @typedef {Object} LockOptions
@@ -224,78 +151,27 @@ const breakStaleLock = (lockPath, isStale, now = Date.now) => {
  * @property {(pid: number) => boolean} [isAlive]
  */
 
-/**
- * Take exclusive ownership of the migration, waiting for a live owner.
- * @param {string} dataDir
- * @param {LockOptions} [opts]
- * @returns {{lockPath: string, token: string}|null} null when a live owner kept it past the wait
- */
+/** @param {string} dataDir @param {LockOptions} [opts] */
 const acquireMigrationLock = (dataDir, opts = {}) => {
-  const waitMs = opts.waitMs ?? LOCK_WAIT_MS;
-  const pollMs = opts.pollMs ?? LOCK_POLL_MS;
-  const staleMs = opts.staleMs ?? LOCK_STALE_MS;
   const now = opts.now ?? Date.now;
-  const sleep = opts.sleep ?? sleepSync;
-  const isAlive = opts.isAlive ?? isPidAlive;
-  const lockPath = path.join(dataDir, LOCK_FILENAME);
-  const token = randomUUID();
-  const deadline = now() + waitMs;
-  /** @param {NonNullable<ReturnType<typeof readLockOwner>>} owner */
-  const isStale = (owner) => now() - owner.mtimeMs > staleMs
-    || (owner.pid !== null && owner.pid !== process.pid && !isAlive(owner.pid));
-
-  for (;;) {
-    let fd;
-    try {
-      fd = fs.openSync(lockPath, 'wx', 0o600);
-    } catch (err) {
-      if (err.code !== 'EEXIST') throw err;
-    }
-    if (fd !== undefined) {
-      try {
-        fs.writeFileSync(fd, JSON.stringify({
-          pid: process.pid,
-          token,
-          hostname: os.hostname(),
-          acquiredAt: new Date(now()).toISOString(),
-        }));
-        fs.fsyncSync(fd);
-      } finally {
-        fs.closeSync(fd);
-      }
-      return { lockPath, token };
-    }
-
-    const owner = readLockOwner(lockPath);
-    if (!owner) continue;
-    if (isStale(owner)) {
-      breakStaleLock(lockPath, isStale, now);
-      continue;
-    }
-    if (now() >= deadline) return null;
-    sleep(pollMs);
-  }
+  const { isAlive } = opts;
+  return acquireOwnerFileLock(path.join(dataDir, LOCK_FILENAME), {
+    waitMs: opts.waitMs ?? LOCK_WAIT_MS,
+    pollMs: opts.pollMs ?? LOCK_POLL_MS,
+    staleMs: opts.staleMs ?? LOCK_STALE_MS,
+    now,
+    sleep: opts.sleep,
+    isDead: isAlive ? (pid) => !isAlive(pid) : undefined,
+    metadata: { hostname: os.hostname(), acquiredAt: new Date(now()).toISOString() },
+    onBreak: logBrokenLock,
+  });
 };
 
-/**
- * Confirm we still own the lock before a mutation, and refresh its mtime so a
- * slow but live migration is never judged abandoned.
- * @param {{lockPath: string, token: string}} lock
- * @returns {void}
- */
+/** Confirm ownership and refresh the mtime before each migration mutation. */
 const assertLockHeld = (lock) => {
-  const owner = readLockOwner(lock.lockPath);
-  if (!owner || owner.token !== lock.token) {
-    throw new Error('lost ownership of the namespace migration lock');
-  }
+  if (!fileLockIsHeld(lock)) throw new Error('lost ownership of the namespace migration lock');
   const t = new Date();
   fs.utimesSync(lock.lockPath, t, t);
-};
-
-/** @param {{lockPath: string, token: string}} lock @returns {void} */
-const releaseMigrationLock = (lock) => {
-  const owner = readLockOwner(lock.lockPath);
-  if (owner && owner.token === lock.token) fs.rmSync(lock.lockPath, { force: true });
 };
 
 // ============ Planning ============
@@ -489,7 +365,7 @@ const migrateLegacyNamespace = ({ dataDir, pairDir = null, lock: lockOpts = {} }
     return { ...result, status: 'error', error: err.message };
   } finally {
     try {
-      releaseMigrationLock(lock);
+      releaseOwnerFileLock(lock);
     } catch {
       // A lock we could not remove is broken as abandoned by the next starter.
     }
@@ -523,7 +399,7 @@ module.exports = {
   lstatOrNull,
   describeBlockedMigration,
   acquireMigrationLock,
-  releaseMigrationLock,
+  releaseMigrationLock: releaseOwnerFileLock,
   breakStaleLock,
   LEGACY_EXCHANGE,
   LEGACY_FILES,
