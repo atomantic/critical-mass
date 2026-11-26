@@ -270,13 +270,13 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
             </div>
             <div>
               <span className="text-gray-400">{baseCurrency} Holdback:</span>
-              <span className={`ml-2 font-mono ${totalHoldbackBtc < 0 ? 'text-amber-400' : 'text-cyan-400'}`} title={`≈${formatCurrency(totalHoldbackValue)}`}>
+              <span className={`ml-2 font-mono ${totalHoldbackBtc < 0 ? 'text-amber-400' : 'text-cyan-400'}`} title={totalHoldbackValue == null ? undefined : `≈${formatCurrency(totalHoldbackValue)}`}>
                 {totalHoldbackBtc < 0 ? '−' : '+'}{formatAsset(Math.abs(totalHoldbackBtc))}
               </span>
             </div>
             <div>
               <span className="text-gray-400">Holdback Value:</span>
-              <span className="ml-2 text-cyan-400">{formatCurrency(totalHoldbackValue)}</span>
+              <span className="ml-2 text-cyan-400">{totalHoldbackValue == null ? '—' : formatCurrency(totalHoldbackValue)}</span>
             </div>
             <div>
               <span className="text-gray-400">Total P&L:</span>
@@ -415,13 +415,13 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
                       {formatCurrency(fill.quoteAmount || fill.size * fill.price)}
                     </td>
                     <td className="px-4 py-3 text-gray-400">
-                      {formatCurrency(fill.netFee || fill.fee || 0)}
+                      {formatCurrency(fill.netFee ?? fill.fee ?? 0)}
                     </td>
                     <td className="px-4 py-3">
                       {fill.holdbackAsset !== null ? (
                         <span
                           className={fill.holdbackAsset < 0 ? 'text-amber-400' : 'text-cyan-400'}
-                          title={fill.holdbackAsset < 0 ? `Sold beyond the body's holdings — drawn from reserves (≈${formatCurrency(fill.holdbackValue)})` : `≈${formatCurrency(fill.holdbackValue)}`}
+                          title={fill.holdbackValue == null ? undefined : fill.holdbackAsset < 0 ? `Sold beyond the body's holdings — drawn from reserves (≈${formatCurrency(fill.holdbackValue)})` : `≈${formatCurrency(fill.holdbackValue)}`}
                         >
                           {fill.holdbackAsset < 0 ? '−' : '+'}{formatAsset(Math.abs(fill.holdbackAsset))}
                         </span>

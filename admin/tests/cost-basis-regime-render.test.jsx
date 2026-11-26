@@ -1,6 +1,7 @@
 import React from 'react'
 import { afterEach, expect, it, vi } from 'vitest'
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import CostBasisDCA from '../src/components/CostBasisDCA'
 import CostBasisRegime from '../src/components/CostBasisRegime'
 
 // Issue #499: the numeric states the Cost Basis page derives (unrealized,
@@ -50,27 +51,41 @@ it('omits the dry-run badge for live funds and shows negative unrealized P&L wit
   expect(text).toContain('(')
 })
 
-it('shows P&L only for completed cycles and lists current-cycle fills oldest first in a locally scrollable table', async () => {
+it('shows paired USD even for sells with no buys in their cycle and discloses older fills', async () => {
   serve({
-    position: {},
+    position: { activeCycleId: 'cycle-2' },
     cycles: [
-      { cycleId: 'current', totalBought: 1, totalCost: 100, totalSold: 0, totalProceeds: 0, entryCount: 1, exitCount: 1 },
-      { cycleId: 'cycle-1', totalBought: 1, totalCost: 100, totalSold: 1, totalProceeds: 110, entryCount: 1, exitCount: 1 },
+      { cycleId: 'cycle-2', totalBought: 1, totalCost: 100, totalSold: 0.5, totalProceeds: 60, totalPnl: 8, entryCount: 1, exitCount: 1 },
+      { cycleId: 'cycle-1', totalBought: 0, totalCost: 0, totalSold: 1, totalProceeds: 110, totalPnl: 7, entryCount: 0, exitCount: 1 },
     ],
     detailFills: [
-      { cycleId: 'current', side: 'sell', timestamp: 2000, size: 0.5, price: 120, quoteAmount: 60 },
-      { cycleId: 'current', side: 'buy', timestamp: 1000, size: 1, price: 100, quoteAmount: 100 },
+      { cycleId: 'cycle-2', side: 'sell', timestamp: 2000, size: 0.5, price: 120, quoteAmount: 60 },
+      { cycleId: 'cycle-2', side: 'buy', timestamp: 1000, size: 1, price: 100, quoteAmount: 100 },
+      { cycleId: 'cycle-1', side: 'sell', timestamp: 900, size: 1, price: 110, quoteAmount: 110 },
     ],
   })
   render(<CostBasisRegime exchange="coinbase" pair="BTC-USDC" />)
-  await screen.findByText('Current Cycle')
-  expect(screen.getAllByText(/^P&L:/)).toHaveLength(1)
-  expect(screen.getByText(/^P&L:/).textContent).toContain('+$10.00')
-  expect(screen.getByText('cycle-1')).toBeTruthy()
-
-  const table = screen.getByRole('table')
+  await screen.findByText('Current Cycle (cycle-2)')
+  expect(screen.getByText('Realized USD: +$8.00')).toBeTruthy()
+  expect(screen.getByText('Realized USD: +$7.00')).toBeTruthy()
+  const [active, previous] = screen.getAllByText('Fill details').map(summary => summary.parentElement)
+  expect(active.open).toBe(true)
+  expect(previous.open).toBe(false)
+  fireEvent.click(within(previous).getByText('Fill details'))
+  expect(previous.open).toBe(true)
+  const table = within(active).getByRole('table')
   expect(table.parentElement.className).toContain('overflow-x-auto')
   await waitFor(() => expect(within(table).getAllByRole('row')).toHaveLength(3))
-  const sides = within(table).getAllByRole('row').slice(1).map(r => r.cells[1].textContent)
-  expect(sides).toEqual(['BUY', 'SELL'])
+  expect(within(table).getAllByRole('row').slice(1).map(r => r.cells[1].textContent)).toEqual(['BUY', 'SELL'])
+})
+
+it('prices only the held part of a DCA order after a partial cancelled sale', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ currentPrice: 120 }) })))
+  const order = { date: '2026-11-01', status: 'sell_failed', assetBought: 1, executedSellQuantity: 0.4,
+    costBasis: 100, buyPrice: 100, costPerAsset: 100, holdback: 0.1, sellQuantity: 0.5, sellPrice: 130, netFees: 0 }
+  render(<CostBasisDCA summary={{ config: { productId: 'BTC-USDC' }, costBasis: {
+    totalAssetBought: 1, totalCostBasis: 100, avgCostPerAsset: 100, pendingAsset: 0, pendingCostBasis: 0,
+    reservesAsset: 0.1, reservesCostBasis: 10, reservesAvgCost: 100, orderBreakdown: [order],
+  } }} />)
+  expect(await screen.findByText('+$12.00 (20.0%)')).toBeTruthy()
 })

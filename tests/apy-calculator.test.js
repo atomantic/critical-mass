@@ -219,7 +219,7 @@ describe('calculateApyMetrics', () => {
   });
 
   // --------------------------------------------------------------------------
-  // Minimum hours for projection (1 hour threshold)
+  // Wait for a full day before annualizing
   // --------------------------------------------------------------------------
   it('returns zero projections when elapsed time < 1 hour', () => {
     const pos = basePositionState();
@@ -238,19 +238,19 @@ describe('calculateApyMetrics', () => {
     assert.equal(result.cyclesPerDay, 0, 'Cycles per day should be 0 under 1 hour');
   });
 
-  it('calculates projections when elapsed time >= 1 hour', () => {
+  it('calculates projections after a full day', () => {
     const pos = basePositionState();
-    pos.engineStartTime = Date.now() - 2 * MS_PER_HOUR; // 2 hours ago
+    pos.engineStartTime = Date.now() - MS_PER_DAY;
     pos.realizedPnL = 5;
     pos.initialCapital = 10000;
     pos.cyclesCompleted = 4;
 
     const result = calculateApyMetrics(pos, baseConfig(), baseMarketState());
 
-    assert.ok(result.dailyReturnPercent > 0, 'Daily return should be positive after 1 hour');
-    assert.ok(result.estimatedApy > 0, 'APY should be positive after 1 hour');
-    assert.ok(result.estimatedDailyUsdc > 0, 'Daily USDC should be positive after 1 hour');
-    assert.ok(result.cyclesPerDay > 0, 'Cycles per day should be positive after 1 hour');
+    assert.ok(result.dailyReturnPercent > 0, 'Daily return should be positive after a full day');
+    assert.ok(result.estimatedApy > 0, 'APY should be positive after a full day');
+    assert.ok(result.estimatedDailyUsdc > 0, 'Daily USDC should be positive after a full day');
+    assert.ok(result.cyclesPerDay > 0, 'Cycles per day should be positive after a full day');
   });
 
   // --------------------------------------------------------------------------
@@ -383,8 +383,19 @@ describe('calculateApyMetrics', () => {
 
     const result = calculateApyMetrics(pos, baseConfig(), baseMarketState());
 
-    assert.ok(result.dailyReturnPercent > 0, 'Should have daily return just above 1h threshold');
-    assert.ok(result.estimatedApy > 0, 'Should have APY just above 1h threshold');
+    assert.equal(result.dailyReturnPercent, 0);
+    assert.equal(result.estimatedApy, 0);
+    assert.equal(result.projectionReady, false);
+  });
+
+  it('prices a legacy core holding and avoids counting a modern body snapshot twice', () => {
+    const position = { ...basePositionState(), engineStartTime: Date.now() - MS_PER_DAY,
+      totalAsset: 2, totalCostBasis: 180, depositedCapital: 200 };
+    const metrics = () => calculateApyMetrics(position, baseConfig(), { lastPrice: 100 });
+    assert.equal(metrics().unrealizedReturn, 20);
+    assert.equal(metrics().isApyClamped, true);
+    position.celestialBodies = [{ assetQty: 2, costBasis: 180 }];
+    assert.equal(metrics().unrealizedReturn, 20);
   });
 
   it('handles negative USDC PnL with positive BTC PnL', () => {

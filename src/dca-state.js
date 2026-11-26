@@ -369,7 +369,7 @@ const updateAfterSellFill = (state, fillDetails) => {
   const sellNetFees = fillDetails.netFees || 0;
 
   // Net proceeds after fees
-  const netProceeds = fillDetails.netProceeds || (fillDetails.fillValue - sellNetFees);
+  const netProceeds = fillDetails.netProceeds ?? (fillDetails.fillValue - sellNetFees);
 
   state.usdcFundSize += netProceeds;
   state.outstandingOrdersAsset -= fillDetails.filledSize;

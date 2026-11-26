@@ -1,4 +1,4 @@
-import { buyFillCost, feeOf, quoteOf, isBodyOwnedFill, foldSellAnnotations } from './cycle-pairing.mjs';
+import { buyFillCost, feeOf, quoteOf, isBodyOwnedFill, pairCycleFills } from './cycle-pairing.mjs';
 
 // Pure P&L aggregation for the Transactions (Regime) view.
 //
@@ -23,18 +23,7 @@ export function computeFillsWithPnL(fills) {
   // subset) so the running-avg fallback and orderId aggregation are correct.
   const chronological = [...fills].sort((a, b) => a.timestamp - b.timestamp)
 
-  // Build buy→sell linkage map: buys annotated with sellOrderId point to their matching sell
-  const buysBySellId = new Map()
-  for (const fill of chronological) {
-    if (fill.side === 'buy' && fill.sellOrderId) {
-      if (!buysBySellId.has(fill.sellOrderId)) buysBySellId.set(fill.sellOrderId, [])
-      buysBySellId.get(fill.sellOrderId).push(fill)
-    }
-  }
-
-  // Take annotations once in chronological order, preserving the view's
-  // first-wins semantics even when the ledger arrived out of order.
-  const sellTotalsByOrderId = foldSellAnnotations(chronological)
+  const { sells } = pairCycleFills(chronological)
 
   let totalBtc = 0
   let totalCost = 0
@@ -53,25 +42,25 @@ export function computeFillsWithPnL(fills) {
     }
     // Sell fill
     const isBody = isBodyOwnedFill(fill)
-    const orderTotals = sellTotalsByOrderId.get(fill.orderId)
+    const orderTotals = sells.get(fill.orderId)
     const fillValue = quoteOf(fill)
     // This partial fill's share of its order's total sell value. Used to
     // prorate once-per-orderId annotations across partial rows so the
     // per-row values sum back to the single annotated total (not N× it).
     const fillShare = orderTotals && orderTotals.quote > 0 ? fillValue / orderTotals.quote : 1
-    const pnl = sellPnlForRow(fill, orderTotals, buysBySellId.get(fill.orderId), fillShare, fillValue, isBody, totalBtc, totalCost)
+    const pnl = sellPnlForRow(fill, orderTotals, fillShare, fillValue, isBody, totalBtc, totalCost)
 
     // Holdback is likewise annotated once per orderId — prorate across partials.
     // Net of reserves a stale TP sold beyond its body (#770), so this page's
     // holdback total matches the server's realizedAssetPnL; negative when the
     // sale drew reserves down.
-    const annotatedHoldbackTotal = orderTotals?.holdback
-    const netHoldbackTotal = (annotatedHoldbackTotal > 0 ? annotatedHoldbackTotal : 0) - (orderTotals?.reservesSold || 0)
+    const netHoldbackTotal = orderTotals.holdback - orderTotals.reservesSold
     const holdbackAsset = netHoldbackTotal !== 0 ? netHoldbackTotal * fillShare : null
-    const holdbackValue = holdbackAsset != null ? holdbackAsset * fill.price : null
+    // Market valuation is applied to the returned page with the latest price.
+    const holdbackValue = null
 
     // Update running position for non-body sells without linkage (core TP)
-    if (!isBody && !buysBySellId.has(fill.orderId)) {
+    if (!isBody && !orderTotals.buyKeys.length) {
       const remainingBtc = totalBtc - fill.size
       if (remainingBtc > 0) {
         const avgCost = totalBtc > 0 ? totalCost / totalBtc : 0
@@ -91,17 +80,10 @@ export function computeFillsWithPnL(fills) {
 
 // Preserve the trust order: annotation, explicit buy linkage, annotated cost,
 // then the running-average fallback for unlinked rows.
-function sellPnlForRow(fill, orderTotals, linkedBuys, fillShare, fillValue, isBody, totalBtc, totalCost) {
+function sellPnlForRow(fill, orderTotals, fillShare, fillValue, isBody, totalBtc, totalCost) {
   if (orderTotals?.pnl != null) {
     // 1. Server-annotated P&L, prorated across the order's partial rows.
     return orderTotals.pnl * fillShare
-  }
-  if (linkedBuys && linkedBuys.length > 0) {
-    // 2. Explicit buy-sell linkage, distributed by sell value.
-    const buyCost = linkedBuys.reduce((s, b) => s + buyFillCost(b), 0)
-    const totalSellProceeds = orderTotals.quote - orderTotals.fee
-    const totalPnl = totalSellProceeds - buyCost
-    return totalPnl * fillShare
   }
   // Preserve the existing truthiness rule: a zero cost annotation falls through
   // to running average, as characterized for this behavior-preserving refactor.

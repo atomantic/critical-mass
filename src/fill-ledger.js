@@ -1299,7 +1299,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     hasProcessedTrade,
     getFillCount,
     getAllFills,
-    getFillPage: input => transactionsReadView.query(input),
+    getFillPage: (input, currentPrice) => transactionsReadView.query(input, currentPrice),
     getFillAggregates: input => transactionsReadView.aggregates(input),
     getStats,
     getFillTimeStats,

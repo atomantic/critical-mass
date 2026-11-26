@@ -81,7 +81,7 @@ function createTransactionsReadView(readFills, readRevision) {
     return snapshot;
   };
   return {
-    query(input) {
+    query(input, currentPrice) {
       const query = parseFillsQuery(input);
       if (query.success === false) return query;
       const revision = readRevision();
@@ -117,7 +117,13 @@ function createTransactionsReadView(readFills, readRevision) {
         cycleOptions = { cycleOptionsInfo: { offset, limit: query.cycleLimit, total: matches.length,
           hasPrev: offset > 0, hasNext: offset + query.cycleLimit < matches.length } };
       }
-      return { fills: rows.map(projectPageRow), pageInfo, summary: { ...result.summary }, cycleIds: [...cycleIds], ...cycleOptions, revision };
+      // Price can change without a ledger revision. Revalue only the bounded
+      // page and the filtered total; keep the cached history price-independent.
+      const valueOf = qty => qty == null ? null : qty === 0 ? 0
+        : Number.isFinite(currentPrice) && currentPrice > 0 ? qty * currentPrice : null;
+      const fills = rows.map(row => ({ ...projectPageRow(row), holdbackValue: valueOf(row.holdbackAsset) }));
+      const summary = { ...result.summary, totalHoldbackValue: valueOf(result.summary.totalHoldbackBtc) };
+      return { fills, pageInfo, summary, cycleIds: [...cycleIds], ...cycleOptions, revision };
     },
     aggregates(input = {}) {
       const query = parseAggregateQuery(input);

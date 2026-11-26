@@ -264,10 +264,12 @@ function CostBasisDCA({ summary, quoteCurrency = 'USDC', exchange = 'coinbase', 
                 </tr>
               ) : (
                 costBasis.orderBreakdown.map((order, i) => {
-                  const currentOrderValue = (order.assetBought || order.btcBought || 0) * price
-                  const unrealized = currentOrderValue - order.costBasis
-                  const unrealizedPercent = order.costBasis > 0
-                    ? ((currentOrderValue / order.costBasis) - 1) * 100
+                  const bought = order.assetBought ?? order.btcBought ?? 0
+                  const held = Math.max(0, bought - (order.executedSellQuantity || 0))
+                  const heldCost = bought > 0 ? order.costBasis * (held / bought) : 0
+                  const unrealized = held * price - heldCost
+                  const unrealizedPercent = heldCost > 0
+                    ? (unrealized / heldCost) * 100
                     : 0
 
                   return (
@@ -296,11 +298,11 @@ function CostBasisDCA({ summary, quoteCurrency = 'USDC', exchange = 'coinbase', 
                           <span className={pnlColorClass(order.realizedPnL)}>
                             {signedPrefix(order.realizedPnL)}{formatCurrency(order.realizedPnL)}
                           </span>
-                        ) : !priceKnown ? (
+                        ) : !priceKnown || held <= 0 ? (
                           <span className="text-gray-400">{NA}</span>
                         ) : (
                           <span className={pnlColorClass(unrealized)}>
-                            {signedPrefix(unrealized)}{unrealizedPercent.toFixed(1)}%
+                            {signedPrefix(unrealized)}{formatCurrency(unrealized)} ({unrealizedPercent.toFixed(1)}%)
                           </span>
                         )}
                       </td>

@@ -245,9 +245,9 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
           </div>
         </div>
 
-        {/* Realized P&L */}
+        {/* Realized USD */}
         <div className="min-w-0 bg-gray-800 rounded-lg p-4">
-          <h3 className="min-w-0 wrap-break-word text-lg font-semibold text-green-400 mb-3">Realized P&L</h3>
+          <h3 className="min-w-0 wrap-break-word text-lg font-semibold text-green-400 mb-3">Realized USD</h3>
           <div className="space-y-2">
             <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-1">
               <span className="min-w-0 wrap-break-word text-gray-400">{quoteCurrency} Profit:</span>
@@ -295,9 +295,9 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
           </div>
         ) : (
           <div className="space-y-4">
-            {cycles.map((cycle, i) => {
-              const isComplete = cycle.cycleId !== 'current' && cycle.totalSold > 0
-              const cyclePnL = cycle.totalProceeds - (cycle.totalCost * (cycle.totalSold / cycle.totalBought || 0))
+            {cycles.map(cycle => {
+              const isActive = cycle.cycleId === (status?.activeCycleId ?? position.activeCycleId)
+              const cyclePnL = cycle.totalPnl
               const avgEntry = cycle.totalBought > 0 ? cycle.totalCost / cycle.totalBought : 0
               const avgExit = cycle.totalSold > 0 ? cycle.totalProceeds / cycle.totalSold : 0
 
@@ -306,21 +306,21 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
                   <div className="flex flex-wrap items-start justify-between gap-2 mb-3">
                     <div className="min-w-0 flex-1 flex flex-wrap items-center gap-3">
                       <span className={`px-2 py-1 rounded text-xs ${
-                        cycle.cycleId === 'current'
+                        isActive
                           ? 'bg-blue-900/50 text-blue-400'
-                          : isComplete
+                          : cycle.totalSold > 0
                             ? 'bg-green-900/50 text-green-400'
                             : 'bg-yellow-900/50 text-yellow-400'
                       }`}>
-                        {cycle.cycleId === 'current' ? 'Current Cycle' : cycle.cycleId}
+                        {isActive ? `Current Cycle (${cycle.cycleId})` : cycle.cycleId === 'current' ? 'Unassigned fills' : cycle.cycleId}
                       </span>
                       <span className="min-w-0 wrap-break-word text-sm text-gray-400">
                         {plural(cycle.entryCount, "entry", "entries")}, {plural(cycle.exitCount, "exit")}
                       </span>
                     </div>
-                    {isComplete && (
+                    {cycle.exitCount > 0 && (
                       <span className={`min-w-0 wrap-break-word text-sm ${pnlColorClass(cyclePnL)}`}>
-                        P&L: {signedPrefix(cyclePnL)}{formatCurrency(cyclePnL)}
+                        Realized USD: {signedPrefix(cyclePnL)}{formatCurrency(cyclePnL)}
                       </span>
                     )}
                   </div>
@@ -347,8 +347,9 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
                   </div>
 
                   {/* Fill details (collapsed by default for completed cycles) */}
-                  {cycle.cycleId === 'current' && cycle.entries.length > 0 && (
-                    <div className="mt-3 pt-3 border-t border-gray-700">
+                  {cycle.entries.length + cycle.exits.length > 0 ? (
+                    <details open={isActive} className="mt-3 pt-3 border-t border-gray-700">
+                      <summary className="cursor-pointer text-sm">Fill details</summary>
                       {cycle.entryCount + cycle.exitCount > cycle.entries.length + cycle.exits.length && <p className="text-xs text-gray-400 mb-2">Recent fill details shown; cycle totals include all fills.</p>}
                       <div className="overflow-x-auto">
                         <table className="w-full text-xs">
@@ -380,8 +381,8 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
                           </tbody>
                         </table>
                       </div>
-                    </div>
-                  )}
+                    </details>
+                  ) : <p className="mt-3 text-xs text-gray-400">Fill details outside the recent history window.</p>}
                 </div>
               )
             })}
@@ -396,7 +397,7 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
           <li><strong>Cycle-based</strong>: Each trading cycle (entry to TP fill) is tracked separately</li>
           <li><strong>Position</strong>: Current {baseCurrency} held from active entries</li>
           <li><strong>{baseCurrency} Reserves</strong>: Accumulated holdback from profitable take-profit fills</li>
-          <li><strong>Realized P&L</strong>: {quoteCurrency} profit from completed cycles</li>
+          <li><strong>Realized USD</strong>: {quoteCurrency} profit from completed cycles</li>
           <li><strong>Total Value</strong>: Combines position + reserves + realized profit</li>
         </ul>
       </div>

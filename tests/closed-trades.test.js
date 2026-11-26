@@ -61,6 +61,23 @@ describe('Closed Trades dedup and aggregation', () => {
     ...overrides,
   });
 
+  it('rebuilds linked holdback, clamped oversells and later-partial annotations once per order', () => {
+    const ct = freshModule().createClosedTrades('coinbase', 'BTC-USD');
+    const fills = [
+      { side: 'buy', orderId: 'b1', sellOrderId: 's1', size: 2, quoteAmount: 100 },
+      { side: 'buy', orderId: 'b2', bodyId: 'old-body', size: 1, quoteAmount: 50 },
+      { side: 'sell', orderId: 's1', size: 1.5, quoteAmount: 120 },
+      { side: 'sell', orderId: 's2', bodyId: 'old-body', size: 2, quoteAmount: 120 },
+      { side: 'sell', orderId: 's3', size: 1, quoteAmount: 80 },
+      { side: 'sell', orderId: 's3', size: 1, quoteAmount: 80, bodyPnl: 10, bodyHoldbackAsset: 0.1, bodyReservesSoldAsset: 0.2 },
+    ];
+    const ledger = { getAllFills: () => fills };
+    ct.migrateFromFills(ledger);
+    ct.migrateFromFills(ledger);
+    const rows = ct.getAll().map(t => [t.sellOrderId, t.costBasis, t.pnl, t.holdbackAsset, t.reservesSoldAsset]).sort();
+    assert.deepEqual(rows, [['s1', 75, 45, 0.5, 0], ['s2', 50, 70, 0, 0], ['s3', 150, 10, 0.1, 0.2]]);
+  });
+
   it('records a sell once even if qtySold differs between live and migration paths', () => {
     const { createClosedTrades } = freshModule();
     const ct = createClosedTrades('test-exchange');

@@ -81,7 +81,11 @@ const calculateApyMetrics = (positionState, config, marketState) => {
   // Asset breakdown: position split into "active in bodies" vs "reserves".
   const reservesQty = positionState.realizedAssetPnL || 0;
   const bodyQty = (positionState.celestialBodies || []).reduce((s, b) => s + (b.assetQty || 0), 0);
-  const totalHeldQty = reservesQty + bodyQty;
+  // Modern totalAsset mirrors the body sum. Legacy core positions store the
+  // active quantity and cost directly on the position instead.
+  const hasBodies = (positionState.celestialBodies || []).length > 0;
+  const activeQty = hasBodies ? bodyQty : (positionState.totalAsset || 0);
+  const totalHeldQty = reservesQty + activeQty;
   const assetValueUsd = reservesQty * currentPrice;  // legacy field — "what reserves are worth now"
   const heldAssetMarketValue = totalHeldQty * currentPrice;
 
@@ -91,7 +95,7 @@ const calculateApyMetrics = (positionState, config, marketState) => {
   // Σ cost over buys whose sellOrderId is absent or has no sell fills yet
   // (sellOrderId is stamped at TP placement, not fill). Falls back to bodyCost
   // for stale state.
-  const heldAssetCostBasis = positionState.heldAssetCostBasis ?? bodyCost;
+  const heldAssetCostBasis = positionState.heldAssetCostBasis ?? (hasBodies ? bodyCost : (positionState.totalCostBasis || 0));
   const unrealizedReturn = heldAssetMarketValue - heldAssetCostBasis;
 
   // Total economic return over principal: realized + unrealized.
@@ -101,6 +105,8 @@ const calculateApyMetrics = (positionState, config, marketState) => {
   const totalLiquidValue = realizedReturn + assetValueUsd;
 
   const denom = depositedCapital || initialCapital || 1;
+
+  const hasEnoughData = Boolean(startTime && now - startTime >= 24 * 60 * 60 * 1000);
 
   // Zero return template
   const zeroMetrics = {
@@ -118,9 +124,10 @@ const calculateApyMetrics = (positionState, config, marketState) => {
     dailyReturnPercent: 0, estimatedAnnualReturn: 0, estimatedApy: 0,
     cyclesPerDay: 0, avgPnlPerCycle: 0,
     isApyClamped: false,
+    projectionReady: hasEnoughData,
   };
 
-  if (!startTime || (realizedReturn === 0 && reservesQty === 0 && bodyQty === 0)) {
+  if (!startTime || (realizedReturn === 0 && reservesQty === 0 && activeQty === 0)) {
     return zeroMetrics;
   }
 
@@ -132,9 +139,6 @@ const calculateApyMetrics = (positionState, config, marketState) => {
   const totalReturnPercent = (totalReturn / denom) * 100;
   const totalLiquidValuePercent = (totalLiquidValue / denom) * 100;
   const totalUsdcReturnPercent = realizedReturnPercent; // legacy alias
-
-  const minHoursForProjection = 1;
-  const hasEnoughData = elapsedMs >= minHoursForProjection * 60 * 60 * 1000;
 
   // Time-weighted APY: if return r over y years, APY = (1+r)^(1/y) − 1.
   // Uses totalReturnPercent (realized + unrealized) as the basis since that's
@@ -185,7 +189,7 @@ const calculateApyMetrics = (positionState, config, marketState) => {
     deployedCapital: roundUSDC(deployedCapital),
     elapsedMs,
     elapsedDays: roundUSDC(elapsedDays * 100) / 100,
-    // Realized: locked-in USD profit (FIFO over the ledger).
+    // Realized: locked-in USD profit (paired sells in the ledger).
     realizedReturn: roundUSDC(realizedReturn),
     realizedReturnPercent: roundUSDC(realizedReturnPercent * 100) / 100,
     // Unrealized: market value − cost basis of currently-held BTC.
@@ -208,6 +212,7 @@ const calculateApyMetrics = (positionState, config, marketState) => {
     estimatedAnnualReturn: roundUSDC(estimatedAnnualReturn * 100) / 100,
     estimatedApy: roundUSDC(estimatedApy * 100) / 100,
     isApyClamped,
+    projectionReady: hasEnoughData,
     cyclesPerDay: roundUSDC(cyclesPerDay * 100) / 100,
     avgPnlPerCycle: roundUSDC(avgPnlPerCycle),
   };

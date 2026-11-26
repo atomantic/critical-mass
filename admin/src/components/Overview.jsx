@@ -294,11 +294,10 @@ function Overview() {
     const depositedCapital = apy?.depositedCapital ?? apy?.originalCapital ?? apy?.initialCapital ?? 0
     const elapsedDays = apy?.elapsedDays ?? 0
     const cyclesPerDay = apy?.cyclesPerDay ?? 0
-    const dailyReturnPercent = apy?.dailyReturnPercent ?? 0
+    const projectionReady = apy != null && (apy.projectionReady ?? elapsedDays >= 1)
     const estimatedDailyUsdc = apy?.estimatedDailyUsdc ?? 0
     const estimatedDailyAsset = apy?.estimatedDailyAsset ?? 0
-    const totalLiquidValue = apy?.totalLiquidValue
-    const totalLiquidValuePercent = apy?.totalLiquidValuePercent
+    const totalLiquidValuePercent = depositedCapital > 0 ? 100 * realizedPnL / depositedCapital : null
     const engineStartTime = apy?.engineStartTime
     const cycleBuys = position?.cycleBuys ?? position?.ladderStep ?? 0
     const maxCycleBuys = status?.config?.maxCycleBuys ?? 10
@@ -346,10 +345,10 @@ function Overview() {
       depositedCapital,
       elapsedDays,
       cyclesPerDay,
-      dailyReturnPercent,
+      projectionReady,
+      isApyClamped: Boolean(apy?.isApyClamped),
       estimatedDailyUsdc,
       estimatedDailyAsset,
-      totalLiquidValue,
       totalLiquidValuePercent,
       realizedAssetPnL,
       engineStartTime,
@@ -384,7 +383,7 @@ function Overview() {
     return acc
   }, {})
   const assetBreakdown = availableCards.reduce((acc, c) => {
-    if (c.realizedAssetPnL > 0) {
+    if (c.realizedAssetPnL !== 0) {
       if (!acc[c.baseCurrency]) acc[c.baseCurrency] = { qty: 0, usd: 0 }
       acc[c.baseCurrency].qty += c.realizedAssetPnL
       acc[c.baseCurrency].usd += c.realizedAssetPnL * c.lastPrice
@@ -392,16 +391,16 @@ function Overview() {
     return acc
   }, {})
 
-  // Weighted APY (by cost basis)
-  const totalCostBasisAll = availableCards.reduce((sum, c) => sum + c.totalCostBasis, 0)
-  const weightedApy = totalCostBasisAll > 0
-    ? availableCards.reduce((sum, c) => sum + c.estimatedApy * c.totalCostBasis, 0) / totalCostBasisAll
-    : 0
+  const projectedCards = availableCards.filter(c => c.projectionReady && c.depositedCapital > 0)
+  const projectedCapital = projectedCards.reduce((sum, c) => sum + c.depositedCapital, 0)
+  const weightedApy = projectedCapital > 0
+    ? projectedCards.reduce((sum, c) => sum + c.estimatedApy * c.depositedCapital, 0) / projectedCapital
+    : null
 
   // Aggregate annual yield projections
   const totalAnnualUsdc = availableCards.reduce((sum, c) => sum + (c.estimatedDailyUsdc * 365), 0)
   const annualAssetBreakdown = availableCards.reduce((acc, c) => {
-    if (c.estimatedDailyAsset > 0) {
+    if (c.estimatedDailyAsset !== 0) {
       const key = c.baseCurrency
       if (!acc[key]) acc[key] = { qty: 0, usd: 0 }
       acc[key].qty += c.estimatedDailyAsset * 365
@@ -475,7 +474,7 @@ function Overview() {
           )}
         </div>
         <div className="bg-gray-800 rounded-lg p-3 sm:p-4 min-w-0 overflow-hidden">
-          <div className="text-xs text-gray-400 mb-1">Realized P&L</div>
+          <div className="text-xs text-gray-400 mb-1">Total Realized (USD + Reserves)</div>
           <div className={`text-base sm:text-lg font-bold truncate ${pnlColorClass(totals.realized)}`}>
             {signedPrefix(totals.realized)}{formatCurrency(totals.realized)}
           </div>
@@ -483,25 +482,26 @@ function Overview() {
             <div key={quote} className="text-xs text-white font-mono truncate">{formatCurrency(amounts.realized)} {quote}</div>
           ))}
           {Object.entries(assetBreakdown).map(([asset, { qty, usd }]) => (
-            <div key={asset} className="text-xs text-orange-400 font-mono truncate">+{formatAsset(qty, asset)} ({formatCurrency(usd)})</div>
+            <div key={asset} className="text-xs text-orange-400 font-mono truncate">{signedPrefix(qty)}{formatAsset(qty, asset)} ({formatCurrency(usd)})</div>
           ))}
         </div>
         <div className="bg-gray-800 rounded-lg p-3 sm:p-4 min-w-0 overflow-hidden">
-          <div className="text-xs text-gray-400 mb-1">Estimated APY</div>
+          <div className="text-xs text-gray-400 mb-1">Deposit-weighted total-return APY</div>
           <div className={`text-base sm:text-lg font-bold ${pnlColorClass(weightedApy)}`}>
-            {weightedApy.toFixed(1)}%
+            {weightedApy == null ? '—' : `${weightedApy.toFixed(1)}%`}
           </div>
-          {totalAnnualLiquid > 0 && (
+          {projectedCards.some(c => c.isApyClamped) && <div className="text-xs text-amber-300">Includes capped APY</div>}
+          {totalAnnualLiquid !== 0 && (
             <div className="mt-1">
               <div className={`text-xs sm:text-sm font-mono font-semibold truncate ${totalAnnualLiquid >= 0 ? 'text-cyan-400' : 'text-red-400'}`}>
-                {formatCurrency(totalAnnualLiquid)}/yr
+                Realized run rate: {formatCurrency(totalAnnualLiquid)}/yr
               </div>
               {Object.entries(quoteBreakdown).map(([quote, amounts]) => (
                 <div key={quote} className="text-xs text-white font-mono truncate">{formatCurrency(amounts.annual)} {quote}</div>
               ))}
               {Object.entries(annualAssetBreakdown).map(([asset, { qty, usd }]) => (
                 <div key={asset} className="text-xs text-orange-400 font-mono truncate">
-                  +{qty.toFixed(6)} {asset} ({formatCurrency(usd)})
+                  {signedPrefix(qty)}{qty.toFixed(6)} {asset} ({formatCurrency(usd)})
                 </div>
               ))}
             </div>
@@ -619,38 +619,34 @@ function Overview() {
                 <div className="min-w-0">
                   <div className="text-xs text-gray-400">Unrealized P&L</div>
                   <div className={`font-mono truncate ${pnlColorClass(card.unrealizedPnL)}`}>
-                    {card.totalCostBasis > 0
+                    {card.totalAssetQty > 0 && card.lastPrice > 0
                       ? `${signedPrefix(card.unrealizedPnL)}${formatCurrency(card.unrealizedPnL)}`
                       : '-'}
                   </div>
-                  {card.totalCostBasis > 0 && (
+                  {card.totalAssetQty > 0 && card.lastPrice > 0 && (
                     <div className={`text-xs ${card.unrealizedPct >= 0 ? 'text-green-500' : 'text-red-500'}`}>
                       {signedPrefix(card.unrealizedPct)}{card.unrealizedPct.toFixed(2)}%
                     </div>
                   )}
-                  {card.totalCostBasis > 0 && <div className="text-2xs text-gray-400">if sold now</div>}
+                  {card.totalAssetQty > 0 && card.lastPrice > 0 && <div className="text-2xs text-gray-400">if sold now</div>}
                   {card.expectedCycleGain > 0 && (
                     <div className="text-2xs text-cyan-400 font-mono truncate">+{formatCurrency(card.expectedCycleGain)} at target</div>
                   )}
                 </div>
                 <div className="min-w-0">
-                  <div className="text-xs text-gray-400 truncate">Realized P&L {card.totalLiquidValuePercent ? `(${card.totalLiquidValuePercent.toFixed(2)}%)` : ''}</div>
-                  <div className={`font-mono truncate ${pnlColorClass(card.totalLiquidValue ?? card.realizedUsdcPnL)}`}>
-                    {card.totalLiquidValue !== undefined
-                      ? `${signedPrefix(card.totalLiquidValue)}${formatCurrency(card.totalLiquidValue)}`
-                      : card.realizedUsdcPnL !== 0
-                        ? `${signedPrefix(card.realizedUsdcPnL)}${formatCurrency(card.realizedUsdcPnL)}`
-                        : '-'}
+                  <div className="text-xs text-gray-400 truncate">Total Realized (USD + Reserves) {card.totalLiquidValuePercent ? `(${card.totalLiquidValuePercent.toFixed(2)}%)` : ''}</div>
+                  <div className={`font-mono truncate ${pnlColorClass(card.realizedPnL)}`}>
+                    {signedPrefix(card.realizedPnL)}{formatCurrency(card.realizedPnL)}
                   </div>
                   <div className="text-xs text-white font-mono truncate">{formatCurrency(card.realizedUsdcPnL)} {card.quoteCurrency}</div>
-                  {card.realizedAssetPnL > 0 && (
-                    <div className="text-xs text-orange-400 truncate">+{card.realizedAssetPnL.toFixed(8)} {card.baseCurrency}</div>
+                  {card.realizedAssetPnL !== 0 && (
+                    <div className="text-xs text-orange-400 truncate">{signedPrefix(card.realizedAssetPnL)}{card.realizedAssetPnL.toFixed(8)} {card.baseCurrency}</div>
                   )}
                 </div>
                 <div className="min-w-0">
-                  <div className="text-xs text-gray-400">Est. APY</div>
+                  <div className="text-xs text-gray-400">Total-return APY</div>
                   <div className={`font-mono ${pnlColorClass(card.estimatedApy)}`}>
-                    {card.estimatedApy !== 0 ? `${card.estimatedApy.toFixed(1)}%` : '-'}
+                    {card.projectionReady ? `${card.estimatedApy.toFixed(1)}%${card.isApyClamped ? ' (capped)' : ''}` : 'Awaiting 24h'}
                   </div>
                 </div>
               </div>
@@ -668,32 +664,32 @@ function Overview() {
                     <span>{card.cyclesPerDay.toFixed(1)} cycles/day</span>
                     <span>Buys {card.cycleBuys}/{card.maxCycleBuys}</span>
                   </div>
-                  <div className="grid grid-cols-2 gap-2">
+                  {card.projectionReady && <div className="grid grid-cols-2 gap-2">
                     <div className="bg-green-900/20 border border-green-700/30 rounded-sm p-1.5 min-w-0 overflow-hidden">
-                      <div className="text-green-400/70 text-2xs">Daily ({card.dailyReturnPercent.toFixed(2)}%)</div>
+                      <div className="text-green-400/70 text-2xs">Daily realized run rate</div>
                       <div className="font-mono text-xs text-green-400 truncate">
                         {formatCurrency(card.estimatedDailyUsdc + (card.estimatedDailyAsset * card.lastPrice))}
                       </div>
                       <div className="text-white text-2xs font-mono truncate">{formatCurrency(card.estimatedDailyUsdc)} {card.quoteCurrency}</div>
-                      {card.estimatedDailyAsset > 0 && (
+                      {card.estimatedDailyAsset !== 0 && (
                         <div className="text-orange-400 text-2xs font-mono truncate">
-                          +{formatAsset(card.estimatedDailyAsset, card.baseCurrency)} ({formatCurrency(card.estimatedDailyAsset * card.lastPrice)})
+                          {signedPrefix(card.estimatedDailyAsset)}{formatAsset(card.estimatedDailyAsset, card.baseCurrency)} ({formatCurrency(card.estimatedDailyAsset * card.lastPrice)})
                         </div>
                       )}
                     </div>
                     <div className="bg-cyan-900/20 border border-cyan-700/30 rounded-sm p-1.5 min-w-0 overflow-hidden">
-                      <div className="text-cyan-400/70 text-2xs truncate">Annual ({card.estimatedApy > 9999 ? '>9999' : card.estimatedApy.toFixed(0)}% APY)</div>
+                      <div className="text-cyan-400/70 text-2xs truncate">Annual realized run rate</div>
                       <div className="font-mono text-xs text-cyan-400 truncate">
                         {formatCurrency((card.estimatedDailyUsdc * 365) + (card.estimatedDailyAsset * 365 * card.lastPrice))}/yr
                       </div>
                       <div className="text-white text-2xs font-mono truncate">{formatCurrency(card.estimatedDailyUsdc * 365)} {card.quoteCurrency}</div>
-                      {card.estimatedDailyAsset > 0 && (
+                      {card.estimatedDailyAsset !== 0 && (
                         <div className="text-orange-400 text-2xs font-mono truncate">
-                          +{(card.estimatedDailyAsset * 365).toFixed(6)} {card.baseCurrency} ({formatCurrency(card.estimatedDailyAsset * 365 * card.lastPrice)})
+                          {signedPrefix(card.estimatedDailyAsset)}{(card.estimatedDailyAsset * 365).toFixed(6)} {card.baseCurrency} ({formatCurrency(card.estimatedDailyAsset * 365 * card.lastPrice)})
                         </div>
                       )}
                     </div>
-                  </div>
+                  </div>}
                 </div>
               )}
 

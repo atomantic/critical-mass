@@ -1759,8 +1759,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
      *     belongs to a gone body, and every record of those bodies (all their
      *     sales, partial or full) lists this order and no other;
      *   - each such body closed (a full, non-partial sale) and every record is
-     *     `source: 'live'` — the migration backfill writes holdbackAsset 0
-     *     because it cannot know it, so its figure is not a held quantity;
+     *     `source: 'live'` — migrated records may infer holdback from buy
+     *     linkage, so they cannot prove how much the engine booked;
      *   - every row of the order names one of them (a row marked owned
      *     without a bodyId could be another gone body's);
      *   - every body sale since the order started filling — a live body's
@@ -5454,7 +5454,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     updateConfig,
     updatePosition,
     getFills,
-    getFillPage: input => fillLedger.getFillPage(input),
+    getFillPage: input => fillLedger.getFillPage(input, marketState.lastPrice),
     getFillAggregates: input => fillLedger.getFillAggregates(input),
     getFillLedger: () => fillLedger,
     recalculateAndRefresh,

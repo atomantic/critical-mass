@@ -6,6 +6,7 @@
  */
 
 const { getFundConfig, getGlobalConfig, REGIME_DEFAULTS } = require('./config-utils');
+const { buyFillCost, feeOf } = require('../shared/cycle-pairing.mjs');
 const { loadState } = require('./dca-state');
 const { loadFundRegimeState } = require('./regime-state-store');
 const { getCachedFillLedger } = require('./fill-ledger');
@@ -98,7 +99,7 @@ function buildFundSummary(exchange, pair, opts = {}) {
   const totalSold = sellFills.reduce((s, f) => s + (f.quoteAmount || 0), 0);
   const totalAssetBought = buyFills.reduce((s, f) => s + (f.size || 0), 0);
   const totalAssetSold = sellFills.reduce((s, f) => s + (f.size || 0), 0);
-  const totalFees = allFills.reduce((s, f) => s + (f.netFee || 0), 0);
+  const totalFees = allFills.reduce((s, f) => s + feeOf(f), 0);
 
   // Derive realized P&L from fill ledger cycle-pair accounting
   const derived = fillLedger.getDerivedRealizedPnL();
@@ -108,7 +109,7 @@ function buildFundSummary(exchange, pair, opts = {}) {
   const bodies = position.celestialBodies || [];
   const pendingCostBasis = bodies.reduce((s, b) => s + (b.costBasis || 0), 0);
   const pendingAsset = bodies.reduce((s, b) => s + (b.assetQty || 0), 0);
-  const totalCostBasis = totalBought; // gross capital ever deployed on buys
+  const totalCostBasis = buyFills.reduce((sum, fill) => sum + buyFillCost(fill), 0);
   const avgCostPerAsset = totalAssetBought > 0 ? totalCostBasis / totalAssetBought : 0;
 
   // Reserves are zero-cost in the cycle-pair model (their cost was attributed
@@ -121,7 +122,7 @@ function buildFundSummary(exchange, pair, opts = {}) {
   const state = {
     usdcFundSize: position.depositedCapital || 0,
     assetReserves: reservesAsset,
-    outstandingOrdersUSDC: bodies.reduce((s, b) => s + (b.assetQty || 0) * (b.tpPrice || 0), 0),
+    outstandingOrdersUSDC: bodies.reduce((s, b) => s + (b.assetOnOrder ?? 0) * (b.tpPrice || 0), 0),
     outstandingOrdersAsset: position.assetOnOrder || 0,
     totalAllocated: position.depositedCapital || 0,
     totalFees,
@@ -138,7 +139,7 @@ function buildFundSummary(exchange, pair, opts = {}) {
     stats: {
       totalBuys: buyFills.length,
       totalSells: sellFills.length,
-      pendingOrders: (position.pendingEntryOrders || []).length,
+      pendingOrders: (position.pendingEntryOrders || []).length + (position.pendingLadderOrders || []).length,
       totalBought,
       totalSold,
       totalBTCBought: totalAssetBought,

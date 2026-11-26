@@ -55,6 +55,8 @@ function PositionCard({ position, apy, market, celestial, config, asset, isDryRu
     }
   }
 
+  const projectionReady = apy.projectionReady ?? apy.elapsedDays >= 1
+
   return (
     <div className="bg-gray-800 rounded-lg p-4 overflow-hidden">
       <div className="flex items-center justify-between mb-2">
@@ -107,7 +109,7 @@ function PositionCard({ position, apy, market, celestial, config, asset, isDryRu
             const denom = apy.depositedCapital || apy.originalCapital || apy.initialCapital || 0
             const pct = denom > 0 ? (usdPnL / denom) * 100 : 0
             return <>
-              <div className="text-gray-400 truncate">Realized P&L {pct ? `(${pct.toFixed(2)}%)` : ''}</div>
+              <div className="text-gray-400 truncate">Realized USD {pct ? `(${pct.toFixed(2)}%)` : ''}</div>
               <div className={`font-mono text-base ${pnlColorClass(usdPnL)}`}>
                 {formatCurrency(usdPnL)}
               </div>
@@ -228,25 +230,27 @@ function PositionCard({ position, apy, market, celestial, config, asset, isDryRu
             <span>Deposited: ${(apy.depositedCapital || apy.originalCapital || apy.initialCapital)?.toLocaleString()}</span>
             <span className="text-green-400">Max: ${(apy.maxUsdcDeployed || apy.currentCapital)?.toLocaleString()}</span>
             <CapitalAdjust apy={apy} exchange={exchange} pairQuery={pairQuery} fetchConfig={fetchConfig} fetchStatus={fetchStatus} addToast={addToast} />
+            <span>Total-return APY: {projectionReady
+              ? `${(apy.estimatedApy || 0).toFixed(1)}%${apy.isApyClamped ? ' (capped)' : ''}` : 'Awaiting 24h'}</span>
             <span>Running: {apy.elapsedDays?.toFixed(1)}d</span>
             <span>{apy.cyclesPerDay?.toFixed(1)} cycles/day</span>
           </div>
-          <div className="grid grid-cols-2 gap-2">
+          {projectionReady && <div className="grid grid-cols-2 gap-2">
             <div className="bg-green-900/20 border border-green-700/30 rounded-sm p-1.5 min-w-0">
-              <div className="text-green-400/70 text-2xs">Daily ({(apy.dailyReturnPercent || 0).toFixed(2)}%)</div>
+              <div className="text-green-400/70 text-2xs">Daily realized run rate</div>
               <div className="flex flex-col font-mono text-xs min-w-0">
                 <span className="text-green-400">{formatCurrency(apy.estimatedDailyUsdc || 0)} + <span className="text-orange-400">{(apy.estimatedDailyAsset || 0).toFixed(8)}</span></span>
                 <span className="text-green-400">= {formatCurrency((apy.estimatedDailyUsdc || 0) + (apy.estimatedDailyAsset || 0) * (market.lastPrice || 0))}</span>
               </div>
             </div>
             <div className="bg-cyan-900/20 border border-cyan-700/30 rounded-sm p-1.5 min-w-0">
-              <div className="text-cyan-400/70 text-2xs">Annual ({(apy.estimatedApy || 0) > 9999 ? '>9999' : (apy.estimatedApy || 0).toFixed(0)}% APY)</div>
+              <div className="text-cyan-400/70 text-2xs">Annual realized run rate</div>
               <div className="flex flex-col font-mono text-xs min-w-0">
                 <span className="text-green-400">{formatCurrency((apy.estimatedDailyUsdc || 0) * 365)} + <span className="text-orange-400">{((apy.estimatedDailyAsset || 0) * 365).toFixed(6)} {asset}</span></span>
                 <span className="text-cyan-400">= {formatCurrency(((apy.estimatedDailyUsdc || 0) + (apy.estimatedDailyAsset || 0) * (market.lastPrice || 0)) * 365)}</span>
               </div>
             </div>
-          </div>
+          </div>}
         </div>
       )}
 

@@ -8,6 +8,7 @@
  * Total realized P&L is simply the sum of all closed trade pnl fields.
  */
 
+const { pairCycleFills } = require('../shared/cycle-pairing.mjs');
 const fs = require('fs');
 const path = require('path');
 const { resolveFundDataDir } = require('./fund-paths');
@@ -265,139 +266,55 @@ const createClosedTrades = (exchange, pair) => {
     const allFills = fillLedger.getAllFills();
     if (allFills.length === 0) return;
 
-    // Group buys and sells by bodyId
-    const buysByBody = new Map();
-    const sellsByBody = new Map();
-    const sellsNoBody = [];
-
+    // Some old buys name their body but have no TP order stamp. Resolve that
+    // legacy link only if the body has one sell; multiple TPs need explicit
+    // links or booking annotations to distinguish their costs and reserves.
+    const sellForBody = new Map();
+    const metadata = new Map();
     for (const fill of allFills) {
-      if (fill.side === 'buy' && fill.bodyId) {
-        if (!buysByBody.has(fill.bodyId)) buysByBody.set(fill.bodyId, []);
-        buysByBody.get(fill.bodyId).push(fill);
-      } else if (fill.side === 'sell') {
-        if (fill.bodyId) {
-          if (!sellsByBody.has(fill.bodyId)) sellsByBody.set(fill.bodyId, []);
-          sellsByBody.get(fill.bodyId).push(fill);
-        } else {
-          sellsNoBody.push(fill);
-        }
+      if (fill.side !== 'sell') continue;
+      if (fill.bodyId) {
+        if (!sellForBody.has(fill.bodyId)) sellForBody.set(fill.bodyId, fill.orderId);
+        else if (sellForBody.get(fill.bodyId) !== fill.orderId) sellForBody.set(fill.bodyId, null);
       }
+      const previous = metadata.get(fill.orderId);
+      metadata.set(fill.orderId, {
+        tier: previous?.tier ?? fill.bodyTier,
+        cycleId: previous?.cycleId ?? fill.cycleId,
+        isPartial: Boolean(previous?.isPartial || fill.partialFill),
+        foreign: Boolean(previous?.foreign || fill.untrackedSell),
+      });
     }
-
-    // Process body-matched sells: prorate buy cost to sell quantity
-    for (const [bodyId, sellFills] of sellsByBody) {
-      const buyFills = buysByBody.get(bodyId) || [];
-
-      // Aggregate sell fills by orderId
-      const sellOrders = new Map();
-      for (const s of sellFills) {
-        const prev = sellOrders.get(s.orderId);
-        if (prev) {
-          prev.qty += s.size;
-          prev.proceeds += s.quoteAmount - s.netFee;
-          prev.fees += s.netFee;
-        } else {
-          sellOrders.set(s.orderId, {
-            qty: s.size,
-            proceeds: s.quoteAmount - s.netFee,
-            fees: s.netFee,
-            timestamp: s.timestamp,
-            tier: s.bodyTier,
-            cycleId: s.cycleId,
-            isPartial: s.partialFill || false,
-            holdback: s.bodyHoldbackAsset || 0,
-          });
-        }
-      }
-
-      // Total buy cost and quantity for this body
-      const totalBuyQty = buyFills.reduce((s, b) => s + b.size, 0);
-      const totalBuyCost = buyFills.reduce((s, b) => s + (b.quoteAmount || 0) + (b.netFee || 0), 0);
-      const buyAvgPrice = totalBuyQty > 0 ? totalBuyCost / totalBuyQty : 0;
-      const buyOrderIds = [...new Set(buyFills.map(b => b.orderId))];
-
-      for (const [sellOrderId, sd] of sellOrders) {
-        // Prorate buy cost to this sell's quantity
-        const costBasis = totalBuyQty > 0
-          ? roundUSDC((sd.qty / totalBuyQty) * totalBuyCost)
-          : 0;
-        const pnl = roundUSDC(sd.proceeds - costBasis);
-
-        record({
-          sellOrderId,
-          timestamp: sd.timestamp,
-          recordedAt: Date.now(),
-          qtySold: sd.qty,
-          sellProceeds: roundUSDC(sd.proceeds),
-          sellFees: roundUSDC(sd.fees),
-          costBasis,
-          buyAvgPrice: roundUSDC(buyAvgPrice),
-          pnl,
-          holdbackAsset: 0, // Can't reliably compute from historical data
-          isPartial: sd.isPartial,
-          bodyId,
-          bodyTier: sd.tier || null,
-          cycleId: sd.cycleId || null,
-          buyOrderIds,
-          source: 'migration',
-        });
-      }
-    }
-
-    // Process non-body sells: match via sellOrderId linkage on buys
-    const buysBySellId = new Map();
-    for (const fill of allFills) {
-      if (fill.side === 'buy' && fill.sellOrderId && !fill.bodyId) {
-        if (!buysBySellId.has(fill.sellOrderId)) buysBySellId.set(fill.sellOrderId, []);
-        buysBySellId.get(fill.sellOrderId).push(fill);
-      }
-    }
-
-    // Aggregate non-body sells by orderId
-    const noBodySellOrders = new Map();
-    for (const s of sellsNoBody) {
-      const prev = noBodySellOrders.get(s.orderId);
-      if (prev) {
-        prev.qty += s.size;
-        prev.proceeds += s.quoteAmount - s.netFee;
-        prev.fees += s.netFee;
-      } else {
-        noBodySellOrders.set(s.orderId, {
-          qty: s.size,
-          proceeds: s.quoteAmount - s.netFee,
-          fees: s.netFee,
-          timestamp: s.timestamp,
-          cycleId: s.cycleId,
-        });
-      }
-    }
-
-    for (const [sellOrderId, sd] of noBodySellOrders) {
-      const linkedBuys = buysBySellId.get(sellOrderId) || [];
-      if (linkedBuys.length === 0) continue; // Can't compute without buys
-
-      const buyCost = linkedBuys.reduce((s, b) => s + (b.quoteAmount || 0) + (b.netFee || 0), 0);
-      const buyQty = linkedBuys.reduce((s, b) => s + b.size, 0);
-      const costBasis = buyQty > 0
-        ? roundUSDC((sd.qty / buyQty) * buyCost)
-        : 0;
-
+    const linked = allFills.map(fill => {
+      const sellOrderId = sellForBody.get(fill.bodyId);
+      return fill.side === 'buy' && !fill.sellOrderId && !fill.consumedBy && sellOrderId
+        ? { ...fill, sellOrderId } : fill;
+    });
+    for (const sell of pairCycleFills(linked).sells.values()) {
+      const meta = metadata.get(sell.orderId);
+      if (meta.foreign || (sell.pnl == null && sell.costBasis == null)) continue;
+      // A booking annotation remains authoritative even if linked buy rows
+      // are missing (or arrived after the original sale).
+      const pnl = sell.pnl ?? sell.proceeds - sell.costBasis;
+      const costBasis = sell.proceeds - pnl;
       record({
-        sellOrderId,
-        timestamp: sd.timestamp,
+        sellOrderId: sell.orderId,
+        timestamp: sell.timestamp,
         recordedAt: Date.now(),
-        qtySold: sd.qty,
-        sellProceeds: roundUSDC(sd.proceeds),
-        sellFees: roundUSDC(sd.fees),
-        costBasis,
-        buyAvgPrice: buyQty > 0 ? roundUSDC(buyCost / buyQty) : 0,
-        pnl: roundUSDC(sd.proceeds - costBasis),
-        holdbackAsset: 0,
-        isPartial: false,
-        bodyId: null,
-        bodyTier: null,
-        cycleId: sd.cycleId || null,
-        buyOrderIds: [...new Set(linkedBuys.map(b => b.orderId))],
+        qtySold: sell.size,
+        sellProceeds: roundUSDC(sell.proceeds),
+        sellFees: roundUSDC(sell.fee),
+        costBasis: roundUSDC(costBasis),
+        buyAvgPrice: roundUSDC(sell.linkedSize > 0 ? sell.linkedCost / sell.linkedSize
+          : sell.size > 0 ? costBasis / sell.size : 0),
+        pnl: roundUSDC(pnl),
+        holdbackAsset: roundAsset(sell.holdback),
+        reservesSoldAsset: roundAsset(sell.reservesSold),
+        isPartial: meta.isPartial,
+        bodyId: sell.bodyId,
+        bodyTier: meta.tier || null,
+        cycleId: meta.cycleId || null,
+        buyOrderIds: sell.buyKeys.filter(key => !key.startsWith('__noorder__:')),
         source: 'migration',
       });
     }

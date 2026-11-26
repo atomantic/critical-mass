@@ -90,6 +90,7 @@ const buildRegimeEngineStatus = ({
     isDryRun,
     market: marketState,
     position: positionState,
+    activeCycleId: fillLedger.getCurrentCycleId?.() ?? positionState.activeCycleId ?? null,
     regime: regimeDetector.getState(),
     macro: macroRegime ? macroRegime.getState() : null,
     health: healthMonitor.getState(),

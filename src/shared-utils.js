@@ -190,6 +190,7 @@ const calculateCostBasis = (state, transactions) => {
         date: order.createdAt ? order.createdAt.split('T')[0] : 'Unknown',
         buyPrice: order.buyPrice,
         assetBought: assetAmount,
+        executedSellQuantity: order.executedSellQuantity || 0,
         costBasis,
         costPerAsset,
         fees: order.buyFees || 0,
@@ -202,7 +203,7 @@ const calculateCostBasis = (state, transactions) => {
         status: order.status,
         realizedPnL:
           order.status === 'filled'
-            ? (order.netProceeds || order.actualFillValue || 0) -
+            ? (order.netProceeds ?? order.actualFillValue ?? 0) -
               (order.sellQuantity || order.sellQuantityBTC || 0) * costPerAsset
             : null,
       };

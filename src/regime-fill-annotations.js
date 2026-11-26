@@ -10,6 +10,8 @@
  * before (see the P&L model in CLAUDE.md).
  */
 
+const { createPositionSizer } = require('./position-sizer');
+const { feeOf } = require('../shared/cycle-pairing.mjs');
 const celestialHierarchy = require('./celestial-hierarchy');
 const { roundAsset, roundUSDC } = require('./volatility-utils');
 
@@ -193,12 +195,14 @@ const annotateBodyBuyFills = (positionState, fillLedger, cycleFills) => {
 const groupFillsByOrder = (fills) => {
   const byOrder = new Map();
   for (const f of fills) {
-    const fee = f.netFee || f.fee || 0;
+    const fee = feeOf(f);
     const agg = byOrder.get(f.orderId);
     if (!agg) {
-      byOrder.set(f.orderId, { orderId: f.orderId, size: f.size, quoteAmount: f.quoteAmount, fee, timestamp: f.timestamp, price: f.price, rows: 1 });
+      byOrder.set(f.orderId, { orderId: f.orderId, size: f.size, quoteAmount: f.quoteAmount, fee, timestamp: f.timestamp, price: f.price, bodyTier: f.bodyTier, sellOrderId: f.sellOrderId, rows: 1 });
       continue;
     }
+    agg.sellOrderId ||= f.sellOrderId;
+    agg.bodyTier ||= f.bodyTier;
     agg.size += f.size;
     agg.quoteAmount += f.quoteAmount;
     agg.fee += fee;
@@ -209,16 +213,24 @@ const groupFillsByOrder = (fills) => {
 };
 
 /**
- * Buy matching a sell: similar asset size (±1%), earlier than the sell, not
+ * Buy matching an unstamped sell: similar size or exact planned TP size, earlier than the sell, not
  * unavailable (already paired this pass, consumed, or owned by a live body),
  * and closest in time (a body TP is placed right after its buy).
  */
-const matchBuyForSell = (sellFill, buyFills, unavailable) => {
+const matchBuyForSell = (sellFill, buyFills, unavailable, sizer) => {
   let best = null;
   for (const buy of buyFills) {
-    if (unavailable.has(buy.orderId)) continue;
+    if (unavailable.has(buy.orderId) || buy.sellOrderId) continue;
+    if (!(buy.timestamp < sellFill.timestamp) || !(sellFill.size > 0 && buy.size > 0)) continue;
     const sizeRatio = buy.size / sellFill.size;
-    if (!(sizeRatio > 0.99 && sizeRatio < 1.01) || !(buy.timestamp < sellFill.timestamp)) continue;
+    if (!(sizeRatio > 0.99 && sizeRatio < 1.01)) {
+      // For a larger designed holdback, require the engine's actual TP sizing
+      // rule to reproduce the execution. A merely larger buy is insufficient.
+      const tier = buy.bodyTier || sellFill.bodyTier;
+      const scale = tier ? celestialHierarchy.getTierConfig(tier).holdbackScale : 1;
+      const { sellQty } = sizer.calculateTakeProfitSize(buy.size, buy.price, sellFill.price, scale);
+      if (Math.abs(sellQty - sellFill.size) > 1e-8) continue;
+    }
     if (!best || (sellFill.timestamp - buy.timestamp) < (sellFill.timestamp - best.timestamp)) best = buy;
   }
   return best;
@@ -227,13 +239,11 @@ const matchBuyForSell = (sellFill, buyFills, unavailable) => {
 /**
  * Step 2: re-derive PnL/holdback for unannotated or badly-annotated body sells
  * (non-core-TP sells missing isBodyOwned, or with negative PnL/holdback).
- * @param {Object} deps - repairHistoricalFillAnnotations deps
- * @param {Iterable<string>} [deps.mergeSnapshotTpOrderIds] - TP order ids held
- *   by a pending/completed merge snapshot (still owed a snapshot booking)
+ * @param {Parameters<typeof repairHistoricalFillAnnotations>[0]} deps - Startup repair dependencies
  * @param {Object[]} cycleFills - Current-cycle ledger rows
  * @returns {number} annotation operations applied
  */
-const annotateBodySells = ({ fillLedger, positionState, logger, baseCurrency, exchange, roundAsset, mergeSnapshotTpOrderIds }, cycleFills) => {
+const annotateBodySells = ({ fillLedger, positionState, config, logger, baseCurrency, exchange, roundAsset, mergeSnapshotTpOrderIds }, cycleFills) => {
   const coreTpOrderId = positionState.activeTpOrderId;
   const liveBodies = positionState.celestialBodies || [];
   // Ownership is decided per ORDER, not per row: annotateFillsByOrderId writes
@@ -281,31 +291,52 @@ const annotateBodySells = ({ fillLedger, positionState, logger, baseCurrency, ex
     .flatMap(([, rows]) => rows))
     .sort((a, b) => a.timestamp - b.timestamp);
   const buyFills = groupFillsByOrder(cycleFills.filter(f => f.side === 'buy'));
+  const sizer = createPositionSizer(exchange, config);
+  const buysBySellId = new Map();
+  for (const buy of buyFills) {
+    if (!buy.sellOrderId) continue;
+    if (!buysBySellId.has(buy.sellOrderId)) buysBySellId.set(buy.sellOrderId, []);
+    buysBySellId.get(buy.sellOrderId).push(buy);
+  }
   const rejectedSellOrderIds = [];
   let annotatedCount = 0;
 
   for (const sellFill of sellsToAnnotate) {
-    const matchingBuy = matchBuyForSell(sellFill, buyFills, unavailableBuyOrderIds);
-    if (!matchingBuy) continue;
-
-    const costBasis = matchingBuy.quoteAmount + matchingBuy.fee;
+    // Prefer the TP stamps written on its buys. Their combined size can
+    // exceed the sell by any planned holdback. Never steal another TP's buys
+    // or fall through to a guess when a linked order is still owned.
+    let matchingBuys = buysBySellId.get(sellFill.orderId);
+    if (matchingBuys) {
+      if (matchingBuys.some(b => unavailableBuyOrderIds.has(b.orderId) || b.timestamp >= sellFill.timestamp)) continue;
+    } else {
+      const buy = matchBuyForSell(sellFill, buyFills, unavailableBuyOrderIds, sizer);
+      if (!buy) continue;
+      matchingBuys = [buy];
+    }
+    const quantity = matchingBuys.reduce((sum, buy) => sum + buy.size, 0);
+    if (!(quantity > 0)) continue;
+    const quote = matchingBuys.reduce((sum, buy) => sum + buy.quoteAmount, 0);
+    const fees = matchingBuys.reduce((sum, buy) => sum + buy.fee, 0);
+    const costBasis = (quote + fees) * Math.min(1, sellFill.size / quantity);
     const proceeds = sellFill.quoteAmount - sellFill.fee;
     const pnl = proceeds - costBasis;
-    const holdbackAsset = roundAsset(matchingBuy.size - sellFill.size);
+    const holdbackAsset = roundAsset(quantity - sellFill.size);
 
     // Sanity check: body PnL should be positive and holdback non-negative
     if (pnl >= 0 && holdbackAsset >= 0) {
-      unavailableBuyOrderIds.add(matchingBuy.orderId);
       fillLedger.annotateFillsByOrderId(sellFill.orderId, {
         isBodyOwned: true,
         bodyCostBasis: costBasis,
-        bodyAvgPrice: matchingBuy.price,
-        bodyBtcQty: matchingBuy.size,
+        bodyAvgPrice: quote / quantity,
+        bodyBtcQty: quantity,
         bodyHoldbackAsset: holdbackAsset,
         bodyPnl: pnl,
       });
-      fillLedger.annotateFillsByOrderId(matchingBuy.orderId, { isBodyOwned: true, sellOrderId: sellFill.orderId });
-      annotatedCount += 2;
+      for (const buy of matchingBuys) {
+        unavailableBuyOrderIds.add(buy.orderId);
+        fillLedger.annotateFillsByOrderId(buy.orderId, { isBodyOwned: true, sellOrderId: sellFill.orderId });
+      }
+      annotatedCount += 1 + matchingBuys.length;
       logger.info(`🔧 [${exchange}] Annotated body sell: ${sellFill.orderId.slice(0, 8)} PnL=$${pnl.toFixed(4)}, holdback=${holdbackAsset.toFixed(8)} ${baseCurrency}`);
     } else {
       // A size match with an impossible P&L is no pairing, and no proof the
@@ -350,7 +381,7 @@ const moveRecoveredCycleFills = ({ fillLedger, logger, exchange }, currentCycleI
  * Performs four steps of self-healing for fills that predate annotation code:
  * 0. recoverOrphanBuys — merge orphan buys into historical bodies
  * 1. annotateBodyBuyFills — stamp buy fills of active celestial bodies
- * 2. annotateBodySells — match unannotated body sells to buys (1% size fuzzy-match)
+ * 2. annotateBodySells — match unannotated body sells to buys (TP linkage or legacy size matching)
  * 3. moveRecoveredCycleFills — rewrite -recovered- cycle IDs to current cycle
  * @param {Object} deps - Helper dependencies
  * @param {Object} deps.fillLedger - Fill ledger instance

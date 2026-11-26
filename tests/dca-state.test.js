@@ -277,6 +277,15 @@ describe('settleCancelledSell (issue #1887)', () => {
     assert.ok(Math.abs(breakdown.realizedPnL - 4.8) < 1e-9);
   });
 
+  it('honors explicitly zero proceeds on the completed sell in both the fund and the order report', () => {
+    const state = stateWithPendingSell();
+    const before = state.usdcFundSize;
+    const orderId = state.orders[0].orderId;
+    updateAfterSellFill(state, { orderId, filledSize: 0.9, fillValue: 90, netProceeds: 0 });
+    assert.equal(state.usdcFundSize, before);
+    assert.equal(calculateCostBasis(state, []).orderBreakdown[0].realizedPnL, -90);
+  });
+
   it('a zero-fill cancellation credits nothing and keeps the whole sell retryable', () => {
     const state = stateWithPendingSell();
     const before = structuredClone(state);

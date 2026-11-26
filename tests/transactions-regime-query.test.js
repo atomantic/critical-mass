@@ -165,6 +165,23 @@ describe('regime fills paged query', () => {
     assert.equal(view.getRecomputeCount(), 1);
   });
 
+  it('prices prorated linked cost and marks inferred holdback at each current price on the same revision', () => {
+    const history = [
+      { orderId: 'buy', side: 'buy', size: 2, quoteAmount: 100, netFee: 4, sellOrderId: 'sell' },
+      { orderId: 'sell', side: 'sell', size: 1.5, price: 100, quoteAmount: 150 },
+    ];
+    const view = createTransactionsReadView(() => history, () => 'unchanged');
+    for (const price of [80, 40]) {
+      const page = view.query({ paged: true, side: 'sell' }, price);
+      assert.equal(page.fills[0].pnl, 72);
+      assert.equal(page.fills[0].holdbackAsset, 0.5);
+      assert.equal(page.fills[0].holdbackValue, 0.5 * price);
+      assert.equal(page.summary.totalHoldbackValue, 0.5 * price);
+    }
+    assert.equal(view.getRecomputeCount(), 1);
+    assert.equal(view.query({ paged: true }).summary.totalHoldbackValue, null);
+  });
+
   it('rejects mixed revisions without rows, reloads and clamps shrinking history', () => {
     let history = fills(300);
     let revision = 'old';
