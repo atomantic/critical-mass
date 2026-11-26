@@ -1,5 +1,5 @@
 import Button from './ui/Button'
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { memo, useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { plural } from '../utils/plural.mjs'
 import { formatCurrency, formatPrice, formatAsset } from './charts/chartUtils'
 import { getBaseCurrency, getQuoteCurrency } from '../utils/productId.mjs'
@@ -9,6 +9,48 @@ import { readRegimeStatus } from '../utils/readRegimeStatus'
 import { pnlColorClass, signedPrefix } from '../utils/pnlFormat.mjs'
 import useRealtimeRefresh from '../hooks/useRealtimeRefresh'
 import { useRegimeEvents } from '../hooks/useTradeEvents'
+
+const CycleFillDetails = memo(function CycleFillDetails({ rows, isActive, fillCount }) {
+  const [expanded, setExpanded] = useState(isActive)
+  if (!rows) return <p className="mt-3 text-xs text-gray-400">Fill details outside the recent history window.</p>
+  return (
+    <details open={isActive} onToggle={event => setExpanded(event.currentTarget.open)}
+      className="mt-3 pt-3 border-t border-gray-700">
+      <summary className="cursor-pointer text-sm">Fill details</summary>
+      {expanded && <>
+        {fillCount > rows.length && <p className="text-xs text-gray-400 mb-2">Recent fill details shown; cycle totals include all fills.</p>}
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-gray-400">
+                <th className="text-left pb-1">Time</th>
+                <th className="text-left pb-1">Side</th>
+                <th className="text-right pb-1">Size</th>
+                <th className="text-right pb-1">Price</th>
+                <th className="text-right pb-1">Value</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((fill, idx) => (
+                <tr key={idx} className="border-t border-gray-700/50">
+                  <td className="py-1 text-gray-400">
+                    {new Date(fill.timestamp).toLocaleTimeString()}
+                  </td>
+                  <td className={`py-1 ${fill.side === 'buy' ? 'text-green-400' : 'text-red-400'}`}>
+                    {fill.side.toUpperCase()}
+                  </td>
+                  <td className="py-1 text-right font-mono">{formatAsset(fill.size)}</td>
+                  <td className="py-1 text-right">{formatPrice(fill.price)}</td>
+                  <td className="py-1 text-right">{formatCurrency(fill.quoteAmount || fill.size * fill.price)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </>}
+    </details>
+  )
+})
 
 function CostBasisRegime({ exchange = 'coinbase', pair, readInitialStatus = readRegimeStatus }) {
   const [status, setStatus] = useState(null)
@@ -130,19 +172,17 @@ function CostBasisRegime({ exchange = 'coinbase', pair, readInitialStatus = read
     if (livePrice > 0) setCurrentPrice(livePrice)
   }, [livePrice])
 
-  const currentFills = useMemo(() => {
-    const entries = []
-    const exits = []
+  const fillsByCycle = useMemo(() => {
+    const grouped = new Map()
     for (const fill of fillAggregates?.detailFills ?? []) {
-      if ((fill.cycleId || 'current') !== 'current') continue
-      if (fill.side === 'buy') entries.push(fill)
-      if (fill.side === 'sell') exits.push(fill)
+      if (fill.side !== 'buy' && fill.side !== 'sell') continue
+      const id = fill.cycleId || 'current'
+      if (!grouped.has(id)) grouped.set(id, [])
+      grouped.get(id).push(fill)
     }
-    return {
-      rows: [...entries, ...exits].sort((a, b) => a.timestamp - b.timestamp),
-      hasEntries: entries.length > 0,
-    }
-  }, [fillAggregates])
+    for (const rows of grouped.values()) rows.sort((a, b) => a.timestamp - b.timestamp)
+    return grouped
+  }, [fillAggregates?.detailFills])
   const cycles = fillAggregates?.cycles ?? []
 
   if (error) {
@@ -261,9 +301,9 @@ function CostBasisRegime({ exchange = 'coinbase', pair, readInitialStatus = read
           </div>
         </div>
 
-        {/* Realized P&L */}
+        {/* Realized USD */}
         <div className="min-w-0 bg-gray-800 rounded-lg p-4">
-          <h3 className="min-w-0 wrap-break-word text-lg font-semibold text-green-400 mb-3">Realized P&L</h3>
+          <h3 className="min-w-0 wrap-break-word text-lg font-semibold text-green-400 mb-3">Realized USD</h3>
           <div className="space-y-2">
             <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-1">
               <span className="min-w-0 wrap-break-word text-gray-400">{quoteCurrency} Profit:</span>
@@ -311,9 +351,9 @@ function CostBasisRegime({ exchange = 'coinbase', pair, readInitialStatus = read
           </div>
         ) : (
           <div className="space-y-4">
-            {cycles.map((cycle, i) => {
-              const isComplete = cycle.cycleId !== 'current' && cycle.totalSold > 0
-              const cyclePnL = cycle.totalProceeds - (cycle.totalCost * (cycle.totalSold / cycle.totalBought || 0))
+            {cycles.map(cycle => {
+              const isActive = cycle.cycleId === (status?.activeCycleId ?? position.activeCycleId)
+              const cyclePnL = cycle.totalPnl
               const avgEntry = cycle.totalBought > 0 ? cycle.totalCost / cycle.totalBought : 0
               const avgExit = cycle.totalSold > 0 ? cycle.totalProceeds / cycle.totalSold : 0
 
@@ -322,21 +362,21 @@ function CostBasisRegime({ exchange = 'coinbase', pair, readInitialStatus = read
                   <div className="flex flex-wrap items-start justify-between gap-2 mb-3">
                     <div className="min-w-0 flex-1 flex flex-wrap items-center gap-3">
                       <span className={`px-2 py-1 rounded text-xs ${
-                        cycle.cycleId === 'current'
+                        isActive
                           ? 'bg-blue-900/50 text-blue-400'
-                          : isComplete
+                          : cycle.totalSold > 0
                             ? 'bg-green-900/50 text-green-400'
                             : 'bg-yellow-900/50 text-yellow-400'
                       }`}>
-                        {cycle.cycleId === 'current' ? 'Current Cycle' : cycle.cycleId}
+                        {isActive ? `Current Cycle (${cycle.cycleId})` : cycle.cycleId === 'current' ? 'Unassigned fills' : cycle.cycleId}
                       </span>
                       <span className="min-w-0 wrap-break-word text-sm text-gray-400">
                         {plural(cycle.entryCount, "entry", "entries")}, {plural(cycle.exitCount, "exit")}
                       </span>
                     </div>
-                    {isComplete && (
+                    {cycle.exitCount > 0 && (
                       <span className={`min-w-0 wrap-break-word text-sm ${pnlColorClass(cyclePnL)}`}>
-                        P&L: {signedPrefix(cyclePnL)}{formatCurrency(cyclePnL)}
+                        Realized USD: {signedPrefix(cyclePnL)}{formatCurrency(cyclePnL)}
                       </span>
                     )}
                   </div>
@@ -362,40 +402,8 @@ function CostBasisRegime({ exchange = 'coinbase', pair, readInitialStatus = read
                     )}
                   </div>
 
-                  {/* Fill details (collapsed by default for completed cycles) */}
-                  {cycle.cycleId === 'current' && currentFills.hasEntries && (
-                    <div className="mt-3 pt-3 border-t border-gray-700">
-                      {cycle.entryCount + cycle.exitCount > currentFills.rows.length && <p className="text-xs text-gray-400 mb-2">Recent fill details shown; cycle totals include all fills.</p>}
-                      <div className="overflow-x-auto">
-                        <table className="w-full text-xs">
-                          <thead>
-                            <tr className="text-gray-400">
-                              <th className="text-left pb-1">Time</th>
-                              <th className="text-left pb-1">Side</th>
-                              <th className="text-right pb-1">Size</th>
-                              <th className="text-right pb-1">Price</th>
-                              <th className="text-right pb-1">Value</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {currentFills.rows.map((fill, idx) => (
-                                <tr key={idx} className="border-t border-gray-700/50">
-                                  <td className="py-1 text-gray-400">
-                                    {new Date(fill.timestamp).toLocaleTimeString()}
-                                  </td>
-                                  <td className={`py-1 ${fill.side === 'buy' ? 'text-green-400' : 'text-red-400'}`}>
-                                    {fill.side.toUpperCase()}
-                                  </td>
-                                  <td className="py-1 text-right font-mono">{formatAsset(fill.size)}</td>
-                                  <td className="py-1 text-right">{formatPrice(fill.price)}</td>
-                                  <td className="py-1 text-right">{formatCurrency(fill.quoteAmount || fill.size * fill.price)}</td>
-                                </tr>
-                              ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-                  )}
+                  <CycleFillDetails rows={fillsByCycle.get(cycle.cycleId)} isActive={isActive}
+                    fillCount={cycle.entryCount + cycle.exitCount} />
                 </div>
               )
             })}
@@ -410,7 +418,7 @@ function CostBasisRegime({ exchange = 'coinbase', pair, readInitialStatus = read
           <li><strong>Cycle-based</strong>: Each trading cycle (entry to TP fill) is tracked separately</li>
           <li><strong>Position</strong>: Current {baseCurrency} held from active entries</li>
           <li><strong>{baseCurrency} Reserves</strong>: Accumulated holdback from profitable take-profit fills</li>
-          <li><strong>Realized P&L</strong>: {quoteCurrency} profit from completed cycles</li>
+          <li><strong>Realized USD</strong>: {quoteCurrency} profit from completed cycles</li>
           <li><strong>Total Value</strong>: Combines position + reserves + realized profit</li>
         </ul>
       </div>

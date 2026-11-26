@@ -50,7 +50,7 @@ it('keeps mixed-fund overview quote totals and card suffixes distinct', async ()
   const exchanges = ['BTCUSD', 'BTC-USDC', 'BTC_USDT'].map(pair => ({ name: 'gemini', pair, productId: pair }))
   vi.stubGlobal('fetch', vi.fn(async url => ({ ok: true, json: async () => url === '/api/exchanges'
     ? { exchanges }
-    : { status: { position: { realizedPnL: 12, totalCostBasis: 100 }, market: { lastPrice: 100 }, apy: { estimatedDailyUsdc: 2, estimatedApy: 5 }, isRunning: true } }
+    : { status: { position: { realizedPnL: 12, totalCostBasis: 100 }, market: { lastPrice: 100 }, apy: { elapsedDays: 30, depositedCapital: 100, estimatedDailyUsdc: 2, estimatedApy: 5 }, isRunning: true } }
   })))
   render(<Overview />)
   await screen.findAllByText('$12.00 USDT')

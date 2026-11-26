@@ -47,6 +47,22 @@ afterEach(() => {
   fixture.snapshots = {}
 })
 
+it('weights total-return APY by deposits and separates the realized run rate from held exposure', async () => {
+  const large = status(0, 12)
+  large.position.totalAsset = 0
+  Object.assign(large.apy, { depositedCapital: 50000, deployedInPosition: 500, estimatedApy: -20,
+    elapsedDays: 30, estimatedDailyUsdc: 2 })
+  const small = status(1000, 0)
+  Object.assign(small.apy, { depositedCapital: 1000, estimatedApy: 82, elapsedDays: 30, isApyClamped: true })
+  fetch.mockImplementation(async url => ({ ok: true, json: async () => url === '/api/exchanges'
+    ? { exchanges: exchangeList } : { status: url.includes('/coinbase/') ? large : small } }))
+  render(<Overview />)
+  await screen.findByText('-18.0%')
+  expect(screen.getByText('82.0% (capped)')).toBeTruthy()
+  expect(screen.getByText('Realized run rate: $730.00/yr')).toBeTruthy()
+  expect(screen.getAllByText('if sold now')).toHaveLength(1)
+})
+
 describe('Overview read failures', () => {
   it('shows an exchange error instead of the empty state and retries successfully', async () => {
     fetch.mockResolvedValueOnce({ ok: false, status: 500, json: async () => ({}) })

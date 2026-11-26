@@ -95,6 +95,9 @@ export const sellFillProceeds = (fill) => quoteOf(fill) - feeOf(fill);
  * @property {string} orderId
  * @property {number} size
  * @property {number} proceeds
+ * @property {number} quote
+ * @property {number} fee
+ * @property {number|null} costBasis
  * @property {string|null} bodyId
  * @property {number} timestamp - latest fill timestamp
  * @property {boolean} hasPnlAnnotation
@@ -211,6 +214,9 @@ function pairedSellOf(sell) {
     orderId: sell.orderId,
     size: sell.size,
     proceeds: sell.proceeds,
+    quote: sell.quote,
+    fee: sell.fee,
+    costBasis: sell.costBasis,
     bodyId: sell.bodyId,
     timestamp: sell.timestamp,
     annotatedPnl: sell.pnl ?? 0,

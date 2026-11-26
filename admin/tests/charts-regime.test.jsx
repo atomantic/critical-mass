@@ -368,7 +368,7 @@ describe('live fill marker refreshes', () => {
     expect(screen.getByText('TPs Filled').previousElementSibling.textContent).toBe('4')
     expect(screen.getByText('Total Entries').previousElementSibling.textContent).toBe('5')
     expect(screen.getByText('Cycles').previousElementSibling.textContent).toBe('4')
-    expect(screen.getByText('Realized P&L').previousElementSibling.textContent).toBe('$50.00')
+    expect(screen.getByText('Realized USD').previousElementSibling.textContent).toBe('$50.00')
   })
 
   it('retains and refreshes fills when a marker arrives while the full page read is pending', async () => {

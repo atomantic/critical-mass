@@ -22,7 +22,7 @@ export function sortFills(fills, sortField, sortDir) {
 /** Totals over the complete (filtered) history, independent of page. */
 export function summarizeFills(fills) {
   let totalBuys = 0, totalSells = 0, totalAssetBought = 0, totalBtcSold = 0
-  let totalFees = 0, totalPnL = 0, totalHoldbackBtc = 0, totalHoldbackValue = 0
+  let totalFees = 0, totalPnL = 0, totalHoldbackBtc = 0
   for (const f of fills) {
     if (f.side === 'buy') {
       totalBuys++
@@ -34,9 +34,8 @@ export function summarizeFills(fills) {
     totalFees += feeOf(f)
     if (f.pnl !== null) totalPnL += f.pnl
     if (f.holdbackAsset !== null) totalHoldbackBtc += f.holdbackAsset
-    if (f.holdbackValue !== null) totalHoldbackValue += f.holdbackValue
   }
-  return { totalBuys, totalSells, totalAssetBought, totalBtcSold, totalFees, totalPnL, totalHoldbackBtc, totalHoldbackValue }
+  return { totalBuys, totalSells, totalAssetBought, totalBtcSold, totalFees, totalPnL, totalHoldbackBtc, totalHoldbackValue: totalHoldbackBtc === 0 ? 0 : null }
 }
 
 /** Number of pages (always >= 1, so an empty history is "page 1 of 1"). */

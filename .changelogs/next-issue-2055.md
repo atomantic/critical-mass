@@ -1,0 +1,1 @@
+- Align regime transaction and cost-basis views with paired sell costs, fees and retained reserves. Show deposited-capital-weighted total-return APY separately from realized run rates, and value DCA orders using their remaining holdings.

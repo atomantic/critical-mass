@@ -42,7 +42,7 @@
   "src/placement-reconcile.js": 4,
   "src/process-guard.js": 4,
   "src/regime-engine.js": 18,
-  "src/regime-fill-annotations.js": 7,
+  "src/regime-fill-annotations.js": 1,
   "src/regime-operator-actions.js": 3,
   "src/regime-placement-reconciler.js": 8,
   "src/regime-state-persistence.js": 6,

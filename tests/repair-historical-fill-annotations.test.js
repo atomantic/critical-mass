@@ -189,7 +189,31 @@ describe('repairHistoricalFillAnnotations', () => {
     assert.deepEqual(byTrade(ledger, 'booked-flag-sell'), before);
   });
 
-  it('only pairs a buy whose size is within 1% of the sell, and leaves other sells unannotated', () => {
+  it('prorates multiple stamped buys with substantial holdback ahead of a closer unlinked buy', () => {
+    const { ledger } = makeLedger();
+    for (const id of ['first', 'second', 'unlinked']) {
+      ledger.ingestFill({ tradeId: id, orderId: id, side: 'buy', price: '100', size: '1', tradeTime: at(1) }, null, { skipPersist: true });
+      if (id !== 'unlinked') ledger.annotateFillsByOrderId(id, { sellOrderId: 'tp' });
+    }
+    ledger.ingestFill({ tradeId: 'sale', orderId: 'tp', side: 'sell', price: '120', size: '1.8', tradeTime: at(2) }, null, { skipPersist: true });
+    run(ledger, { celestialBodies: [], activeTpOrderId: null });
+    const sale = byTrade(ledger, 'sale');
+    assert.equal(sale.bodyCostBasis, 180);
+    assert.equal(sale.bodyPnl, 36);
+    assert.equal(sale.bodyHoldbackAsset, 0.2);
+    assert.equal(byTrade(ledger, 'unlinked').sellOrderId, undefined);
+  });
+
+  it('recognizes an unstamped TP at its modeled size with more than 1% holdback', () => {
+    const { ledger } = makeLedger();
+    ledger.ingestFill({ tradeId: 'buy', orderId: 'buy', side: 'buy', price: '80', size: '1', tradeTime: at(1) }, null, { skipPersist: true });
+    ledger.ingestFill({ tradeId: 'sell', orderId: 'sell', side: 'sell', price: '100', size: '0.9', tradeTime: at(2) }, null, { skipPersist: true });
+    run(ledger, { celestialBodies: [], activeTpOrderId: null });
+    assert.equal(byTrade(ledger, 'sell').bodyCostBasis, 72);
+    assert.equal(byTrade(ledger, 'sell').bodyHoldbackAsset, 0.1);
+  });
+
+  it('retains the tight size tolerance for buys that do not match modeled holdback',  () => {
     const { ledger } = makeLedger();
     // sell 0.01 BTC: 0.0102 is +2% and 0.0098 is -2% (both outside); 0.00995 / 0.01005 are inside.
     const cases = [

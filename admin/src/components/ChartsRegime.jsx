@@ -372,7 +372,7 @@ function ChartsRegime({ exchange = 'coinbase', pair, fillDebounceMs = 1500, read
           <div className={`text-lg font-bold ${pnlColorClass(position.realizedPnL || 0)}`}>
             {formatCurrency(position.realizedPnL || 0)}
           </div>
-          <div className="text-xs text-gray-400">Realized P&L</div>
+          <div className="text-xs text-gray-400">Realized USD</div>
         </div>
       </div>
 

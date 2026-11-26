@@ -2887,7 +2887,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     updateConfig,
     updatePosition,
     getFills,
-    getFillPage: input => fillLedger.getFillPage(input),
+    getFillPage: input => fillLedger.getFillPage(input, marketState.lastPrice),
     getFillAggregates: input => fillLedger.getFillAggregates(input),
     getFillLedger: () => fillLedger,
     recalculateAndRefresh,

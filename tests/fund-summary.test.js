@@ -145,9 +145,9 @@ describe('fund-summary: buildFundSummary', () => {
         fillLedger: mockLedger,
       });
 
-      assert.equal(summary.costBasis.totalCostBasis, 300);
+      assert.equal(summary.costBasis.totalCostBasis, 300.2);
       assert.equal(summary.costBasis.totalAssetBought, 0.003);
-      assert.equal(summary.costBasis.avgCostPerAsset, 100000); // 300 / 0.003
+      assert.equal(summary.costBasis.avgCostPerAsset, 300.2 / 0.003);
     });
 
     it('handles zero asset bought case with zero division guard', () => {
@@ -201,10 +201,11 @@ describe('fund-summary: buildFundSummary', () => {
           assetOnOrder: 0.005,
           cyclesCompleted: 10,
           celestialBodies: [
-            { assetQty: 0.001, tpPrice: 40000 },
-            { assetQty: 0.002, tpPrice: 40000 },
+            { assetQty: 0.001, assetOnOrder: 0, tpPrice: 40000 },
+            { assetQty: 0.002, assetOnOrder: 0.0015, tpPrice: 40000 },
           ],
           pendingEntryOrders: [{ id: '1' }, { id: '2' }],
+          pendingLadderOrders: [{ id: '3' }],
         },
       };
       const mockLedger = new MockFillLedger([
@@ -220,9 +221,9 @@ describe('fund-summary: buildFundSummary', () => {
       assert.equal(summary.state.usdcFundSize, 500);
       assert.equal(summary.state.totalAllocated, 500);
       assert.equal(summary.state.outstandingOrdersAsset, 0.005);
-      // outstandingOrdersUSDC = (0.001 + 0.002) * 40000 = 0.003 * 40000 = 120
-      assert.equal(summary.state.outstandingOrdersUSDC, 120);
-      assert.equal(summary.stats.pendingOrders, 2);
+      // Only 0.0015 is resting at the target price.
+      assert.equal(summary.state.outstandingOrdersUSDC, 60);
+      assert.equal(summary.stats.pendingOrders, 3);
       assert.equal(summary.state.totalIntervalsRun, 10);
     });
 
