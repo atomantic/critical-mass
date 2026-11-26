@@ -183,18 +183,23 @@ function labelTrades(candles, features, cycles) {
   return { rows, stats }
 }
 
-function main(argv) {
+function parseArgs(argv) {
   const arg = (name, def) => { const i = argv.indexOf(`--${name}`); return i >= 0 ? argv[i + 1] : def }
-  const candles = JSON.parse(fs.readFileSync(arg('candles'), 'utf8'))
-  const orders = parseOrderHistory(fs.readFileSync(arg('orders'), 'utf8'))
-  const cycles = deriveCycles(orders)
   const spread = parseSpread(arg('spread'))
   const listing = arg('listing', 'legacy')
   if (!['legacy', 'grid'].includes(listing)) throw new Error('--listing must be legacy or grid')
+  return { spread, listing, candlesPath: arg('candles'), ordersPath: arg('orders'), out: arg('out'),
+    split: Date.parse(arg('split', '2026-05-01T00:00:00Z')),
+    evalFrom: Date.parse(arg('from', '2026-02-15T00:00:00Z')),
+    evalTo: Date.parse(arg('to', '2026-11-16T00:00:00Z')), grid: argv.includes('--grid') }
+}
+
+function main(argv, log = console.log) {
+  const { spread, listing, candlesPath, ordersPath, out, split, evalFrom, evalTo, grid: searchGrid } = parseArgs(argv)
+  const candles = JSON.parse(fs.readFileSync(candlesPath, 'utf8'))
+  const orders = parseOrderHistory(fs.readFileSync(ordersPath, 'utf8'))
+  const cycles = deriveCycles(orders)
   const options = { halfSpread: spread, pick: listing === 'grid' ? gridPicker(orders) : pickContract }
-  const split = Date.parse(arg('split', '2026-05-01T00:00:00Z'))
-  const evalFrom = Date.parse(arg('from', '2026-02-15T00:00:00Z'))
-  const evalTo = Date.parse(arg('to', '2026-11-16T00:00:00Z'))
   const features = buildFeatures(candles, UP_DIP_PARAMS)
   const at = (ms) => { const i = candles.findIndex(c => c.timestamp >= ms); return i < 0 ? candles.length : i }
   const [iFrom, iSplit, iTo] = [at(evalFrom), at(split), at(evalTo)]
@@ -208,7 +213,7 @@ function main(argv) {
     train: { ...summarize(simulate(candles, features, iFrom, iSplit, params, options), inRange(iFrom, iSplit)), adamEntriesWithSignal: signalAgreement(candles, features, inRange(iFrom, iSplit), params) },
     test: { ...summarize(simulate(candles, features, iSplit, iTo, params, options), inRange(iSplit, iTo)), adamEntriesWithSignal: signalAgreement(candles, features, inRange(iSplit, iTo), params) },
   })
-  if (argv.includes('--grid')) {
+  if (searchGrid) {
     // Selection uses TRAIN only; test numbers are reported for the train-selected params.
     const grid = []
     for (const minDropPct of [0.2, 0.4, 0.6]) for (const minGainPct of [4, 7]) for (const minDaysToEnter of [1, 3])
@@ -234,11 +239,11 @@ function main(argv) {
   }
   report.monthly = months
   const text = JSON.stringify(report, null, 2)
-  if (arg('out')) fs.writeFileSync(arg('out'), text)
-  console.log(text)
+  if (out) fs.writeFileSync(out, text)
+  log(text)
 }
 
 if (require.main === module) {
   try { main(process.argv.slice(2)) } catch (err) { console.error(err.stack); process.exitCode = 1 }
 }
-module.exports = { buildFeatures, simulate, summarize, labelTrades, signalAgreement, gridPicker, parseSpread }
+module.exports = { buildFeatures, simulate, summarize, labelTrades, signalAgreement, gridPicker, parseSpread, parseArgs, main }

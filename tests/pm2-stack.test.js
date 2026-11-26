@@ -192,8 +192,8 @@ test('fresh and partial native installations start without treating absent proce
   }
 });
 
-test('all advertised npm PM2 lifecycle commands use ordered stop; stop preserves registrations (real processes)', { timeout: TEST_TIMEOUT_MS }, async t => {
-  const results = await Promise.all(['pm2:start', 'pm2:restart', 'pm2:stop'].map(async command => [command, await runReal(t, command)]));
+test('each distinct advertised PM2 action uses ordered stop; stop preserves registrations (real processes)', { timeout: TEST_TIMEOUT_MS }, async t => {
+  const results = await Promise.all(['pm2:start', 'pm2:stop'].map(async command => [command, await runReal(t, command)]));
   for (const [command, result] of results) {
     assert.equal(result.status, 0, result.stderr);
     const mutations = result.calls.filter(call => call[0] === 'pm2' && call[1] !== 'jlist');

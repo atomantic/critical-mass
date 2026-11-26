@@ -24,6 +24,7 @@ const PASSWORD = 'gateway-password-1';
 const NEW_PASSWORD = 'gateway-password-2';
 const BOOTSTRAP_SECRET = 'bootstrap-secret-with-at-least-32-bytes';
 const tmpFiles = [];
+const seedHashes = new Map();
 
 const tmpAuthFile = () => {
   const file = path.join(os.tmpdir(), `operator-auth-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.json`);
@@ -32,11 +33,14 @@ const tmpAuthFile = () => {
 };
 
 const seedPassword = (file, password = PASSWORD) => {
-  const salt = crypto.randomBytes(16).toString('hex');
+  // Reuse fixture material while each auth instance keeps its own storage.
+  if (!seedHashes.has(password)) {
+    const salt = crypto.randomBytes(16).toString('hex');
+    seedHashes.set(password, { salt, hash: crypto.scryptSync(password, Buffer.from(salt, 'hex'), 32).toString('hex') });
+  }
   writeJSON(file, {
     kdf: 'scrypt',
-    salt,
-    hash: crypto.scryptSync(password, Buffer.from(salt, 'hex'), 32).toString('hex'),
+    ...seedHashes.get(password),
     updatedAt: new Date().toISOString(),
   });
 };
@@ -46,6 +50,13 @@ after(() => {
     try { fs.unlinkSync(file); } catch { /* already gone */ }
   }
 });
+
+// Tests run serially within this file. Reuse the listener while mounting a
+// fresh app and auth instance for each scenario.
+let currentApp;
+const server = http.createServer((req, res) => currentApp(req, res));
+const startServer = () => new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+after(() => server.listening && new Promise(resolve => server.close(resolve)));
 
 const withServer = async (authOpts, run, { corsMiddleware = null } = {}) => {
   const app = express();
@@ -64,15 +75,11 @@ const withServer = async (authOpts, run, { corsMiddleware = null } = {}) => {
     res.status(202).json({ runId: 'test' });
   });
 
-  const server = http.createServer(app);
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  if (!server.listening) await startServer();
+  currentApp = app;
   const address = server.address();
   const baseUrl = `http://127.0.0.1:${address.port}`;
-  try {
-    await run({ auth, baseUrl, reached });
-  } finally {
-    await new Promise((resolve) => server.close(resolve));
-  }
+  await run({ auth, baseUrl, reached });
 };
 
 describe('operator authentication bootstrap', () => {
@@ -411,6 +418,41 @@ describe('operator password set from the admin panel', () => {
       assert.equal(readJSON(authFile, null).state, 'bootstrap');
       assert.equal((await fetch(`${baseUrl}/api/providers`)).status, 401);
       assert.equal(removalNotified, true);
+    });
+  });
+
+  it('requires a fresh owner-only secret after a reset on the same listener', async () => {
+    const authFile = tmpAuthFile();
+    const localBootstrapSecretFile = tmpAuthFile();
+    await withServer({
+      authFile,
+      readJSON,
+      writeJSON,
+      localBootstrapSecretFile,
+      isTrustedBootstrapRequest: () => false,
+    }, async ({ baseUrl }) => {
+      const sendPassword = (method, secret) => fetch(baseUrl + '/api/auth/password', {
+        method,
+        headers: { 'Content-Type': 'application/json', ...(secret && { [BOOTSTRAP_HEADER]: secret }) },
+        body: JSON.stringify({ password: PASSWORD }),
+      });
+      const firstSecret = fs.readFileSync(localBootstrapSecretFile, 'utf8').trim();
+      const enrolled = await sendPassword('PUT', firstSecret);
+      assert.equal(enrolled.status, 200);
+      const cookie = enrolled.headers.get('set-cookie').split(';')[0];
+      assert.equal(fs.existsSync(localBootstrapSecretFile), false);
+
+      assert.equal((await sendPassword('DELETE')).status, 200);
+      const session = await fetch(baseUrl + '/api/auth/session', { headers: { Cookie: cookie } });
+      assert.deepEqual(await session.json(), {
+        authenticated: false, required: true, bootstrapRequired: true, bootstrapSecretRequired: true,
+      });
+      const nextSecret = fs.readFileSync(localBootstrapSecretFile, 'utf8').trim();
+      assert.notEqual(nextSecret, firstSecret);
+      if (process.platform !== 'win32') assert.equal(fs.statSync(localBootstrapSecretFile).mode & 0o777, 0o600);
+      assert.equal((await sendPassword('PUT', firstSecret)).status, 403);
+      assert.equal((await sendPassword('PUT', nextSecret)).status, 200);
+      assert.equal(fs.existsSync(localBootstrapSecretFile), false);
     });
   });
 });
@@ -884,7 +926,7 @@ describe('operator authentication resource bounds', () => {
     });
   });
 
-  it('keeps the gateway responsive during hashing and rejects overlapping KDF work without queueing', async (t) => {
+  it('keeps the gateway responsive while concurrent Bearer checks queue for one KDF', async (t) => {
     const authFile = tmpAuthFile();
     seedPassword(authFile);
     const original = crypto.scrypt;
@@ -892,20 +934,25 @@ describe('operator authentication resource bounds', () => {
     let started;
     const hashing = new Promise((resolve) => { started = resolve; });
     t.mock.method(crypto, 'scrypt', (...args) => {
+      if (release) return original(...args);
       release = () => original(...args);
       started();
     });
     t.mock.method(crypto, 'scryptSync', () => assert.fail('request used synchronous hashing'));
-    await withServer({ authFile, readJSON, writeJSON }, async ({ baseUrl }) => {
-      const login = send(baseUrl, '/api/auth/session', 'POST', { password: PASSWORD });
+    await withServer({ authFile, readJSON, writeJSON }, async ({ auth, baseUrl }) => {
+      const first = fetch(baseUrl + '/api/providers', { headers: { Authorization: `Bearer ${PASSWORD}` } });
       await hashing;
+      const second = auth.authenticate({ authorization: `Bearer ${PASSWORD}` }, '127.0.0.1');
+      const responses = Promise.allSettled([first, second]);
       try {
         assert.equal((await fetch(baseUrl + '/api/auth/session')).status, 200);
-        assert.equal((await send(baseUrl, '/api/auth/session', 'POST', { password: PASSWORD })).status, 429);
+        assert.equal(crypto.scrypt.mock.callCount(), 1);
       } finally {
         release();
       }
-      assert.equal((await login).status, 200);
+      await responses;
+      assert.equal((await first).status, 200);
+      assert.deepEqual(await second, { source: 'bearer' });
     });
   });
 
