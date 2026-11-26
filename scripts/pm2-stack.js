@@ -2,16 +2,17 @@
 // Native whole-stack lifecycle. Never stop engines until the gateway has drained.
 const { spawnSync } = require('node:child_process');
 const path = require('node:path');
+const { createServer } = require('node:net');
 
 const ROOT = path.resolve(__dirname, '..');
 const GATEWAY = 'critical-mass';
 const ENGINES = ['critical-mass-coinbase', 'critical-mass-gemini', 'critical-mass-cryptocom'];
 const UI = 'critical-mass-ui';
-const NAMES = [GATEWAY, ...ENGINES, UI];
+const PRODUCTION_NAMES = [GATEWAY, ...ENGINES];
+const NAMES = [...PRODUCTION_NAMES, UI];
+const ROTATION_SETTINGS = { max_size: '20M', retain: '5', compress: 'true', rotateInterval: '0 0 * * *' };
 
-// The command runner has spawnSync's call shape and result (status, stdout, error).
-// The default is the real spawnSync, so the CLI behaves exactly as before; tests inject
-// a stub so they never invoke the real pm2 or lsof.
+/** @param {(command: string, args: string[], options: import('node:child_process').SpawnSyncOptionsWithStringEncoding) => {error?: Error, status: number | null, stdout: string}} run */
 function createStack(run) {
   function pm2(args, capture = false) {
     const result = run('pm2', ['--silent', ...args], {
@@ -35,8 +36,8 @@ function createStack(run) {
     return list;
   }
 
-  function processes() {
-    const owned = inventory().filter(app => NAMES.includes(app?.name));
+  function processes(list = inventory()) {
+    const owned = list.filter(app => NAMES.includes(app?.name));
     if (owned.some(app => !Number.isInteger(app.pm_id) || app.pm_id < 0)) {
       throw new Error('Invalid Critical Mass process ID; stack operation stopped.');
     }
@@ -56,71 +57,78 @@ function createStack(run) {
   }
 
   function confirmOnline(names) {
-    const running = processes();
-    if (names.some(name => !running.some(app => app.name === name && app.pm2_env?.status === 'online' && app.pid > 0))) {
+    const running = inventory();
+    const owned = processes(running);
+    if (names.some(name => !owned.some(app => app.name === name && app.pm2_env?.status === 'online' && app.pid > 0))) {
       throw new Error('PM2 did not report every requested Critical Mass process online; stack operation stopped without saving.');
     }
+    return running;
   }
 
-  function ensureLogRotation() {
+  function ensureLogRotation(running) {
     // Installation may need the network. Logging must never prevent an otherwise
     // healthy stack from starting, and inventory output must remain private.
     try {
-      const existing = inventory().find(app => app?.name === 'pm2-logrotate');
+      const isRotation = app => app?.name === 'pm2-logrotate';
+      const isOnline = app => app?.pm2_env?.status === 'online' && app.pid > 0;
+      const existing = running.find(isRotation);
       // 3.0.1 fixes 3.0.0 compression with PMX boolean configuration casting.
-      if (!existing || existing.pm2_env?.version === '3.0.0') {
-        pm2(['install', 'pm2-logrotate@3.0.1'], true);
-      }
-      for (const [setting, value] of Object.entries({
-        max_size: '20M', retain: '5', compress: 'true', rotateInterval: '0 0 * * *',
-      })) {
+      const install = !existing || existing.pm2_env?.version === '3.0.0';
+      if (install) pm2(['install', 'pm2-logrotate@3.0.1'], true);
+      const settings = install ? {} : existing.pm2_env?.env;
+      let changed = install;
+      for (const [setting, value] of Object.entries(ROTATION_SETTINGS)) {
+        if (String(settings?.[setting]) === value) continue;
         pm2(['set', `pm2-logrotate:${setting}`, value], true);
+        changed = true;
       }
-      const online = () => inventory().some(app => app?.name === 'pm2-logrotate' &&
-        app.pm2_env?.status === 'online' && app.pid > 0);
-      if (!online()) pm2(['restart', 'pm2-logrotate'], true);
-      if (!online()) throw new Error('Log rotation module is not online.');
+      const configured = changed ? inventory().find(isRotation) : existing;
+      if (isOnline(configured)) return;
+      pm2(['restart', 'pm2-logrotate'], true);
+      if (!isOnline(inventory().find(isRotation))) throw new Error('Log rotation module is not online.');
     } catch {
       console.warn('Warning: PM2 log rotation could not be configured; retry npm run pm2:start when the module is available.');
     }
   }
-  return { pm2, inventory, processes, stopGroup, confirmOnline, ensureLogRotation };
+  return { pm2, stopGroup, confirmOnline, ensureLogRotation };
 }
 
-function main(action = 'start', { run = spawnSync, ports } = {}) {
-  const { pm2, processes, stopGroup, confirmOnline, ensureLogRotation } = createStack(run);
+/** @param {number} port */
+function checkPort(port) {
+  return new Promise((resolve, reject) => {
+    const probe = createServer();
+    probe.once('error', () => reject(new Error(`Required port ${port} is occupied or could not be checked; startup stopped.`)));
+    probe.listen(port, () => probe.close(error => error ? reject(error) : resolve(undefined)));
+  });
+}
+
+async function main(action = 'start', { run = spawnSync, ports = require('../ecosystem.config.cjs').PORTS, probe = checkPort } = {}) {
   if (!['start', 'stop'].includes(action)) throw new Error('Usage: node scripts/pm2-stack.js [start|stop]');
-  // Validate configuration before interrupting any running process.
-  const PORTS = ports ?? require('../ecosystem.config.cjs').PORTS;
-  // The existing port preflight uses lsof. Fail before stopping if unavailable.
-  if (action === 'start') {
-    const probe = run('lsof', ['-v'], { stdio: 'ignore' });
-    if (probe.error || probe.status !== 0) throw new Error('lsof is required for native startup port checks; no processes were stopped.');
+  const { pm2, stopGroup, confirmOnline, ensureLogRotation } = createStack(run);
+  const { UI: devPort, ...productionPorts } = ports;
+  const requiredPorts = Object.values(productionPorts);
+  if (action === 'start' && requiredPorts.some(port => !Number.isInteger(port) || port < 1 || port > 65535)) {
+    throw new Error('Invalid Critical Mass production port; no processes were stopped.');
   }
 
   const stopped = [...stopGroup([GATEWAY]), ...stopGroup([...ENGINES, UI])];
   if (action === 'stop') return;
+  for (const port of requiredPorts) await probe(port);
   if (stopped.length) pm2(['delete', ...stopped]);
-
-  for (const port of Object.values(PORTS)) {
-    const result = run('lsof', ['-i', `:${port}`, '-sTCP:LISTEN', '-t'], { stdio: 'ignore' });
-    if (result.error || result.status !== 1) {
-      throw new Error(`Required port ${port} is occupied or could not be checked; startup stopped.`);
-    }
-  }
 
   // Recreate rather than restart so edited .env values replace PM2's old env.
   pm2(['start', 'ecosystem.config.cjs', '--only', ENGINES.join(',')]);
   confirmOnline(ENGINES);
-  pm2(['start', 'ecosystem.config.cjs', '--only', [GATEWAY, UI].join(',')]);
-  confirmOnline(NAMES);
-  ensureLogRotation();
+  pm2(['start', 'ecosystem.config.cjs', '--only', GATEWAY]);
+  ensureLogRotation(confirmOnline(PRODUCTION_NAMES));
   pm2(['save']);
 }
 
 if (require.main === module) {
-  try { main(process.argv[2]); }
-  catch (error) { console.error(error.message); process.exitCode = 1; }
+  main(process.argv[2]).catch(error => {
+    console.error(error.message);
+    process.exitCode = 1;
+  });
 }
 
-module.exports = { main };
+module.exports = { main, checkPort };

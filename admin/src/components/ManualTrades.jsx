@@ -8,7 +8,7 @@ import { apiGet, apiPost, describeMutationFailure as mutationError } from '../ut
 import { getBaseCurrency, getQuoteCurrency } from '../utils/productId.mjs'
 import { runUnaccountedFillsScan, describeScanProgress } from '../utils/unaccountedFillsScan.mjs'
 import { pnlColorClass, signedPrefix } from '../utils/pnlFormat.mjs'
-import { useNotify } from './Toast'
+import { useNotify } from './useToast'
 
 const STATUS_COLORS = {
   sell_recorded: 'bg-blue-600/30 text-blue-400 border-blue-500/30',

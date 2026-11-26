@@ -3,6 +3,8 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import App from '../src/App'
 import { BrowserRouter } from '../src/lib/router'
+// Warm the real lazy route before testing its requests and rendered values.
+import '../src/components/ConfigEditor'
 
 // The shell must read fund data only on fund routes, once the fund list names
 // the fund. Global pages are stubbed: only the shell's own requests matter.

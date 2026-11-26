@@ -10,9 +10,7 @@ const jsonReadError = (error, file) => {
   const invalidJson = error instanceof SyntaxError;
   const code = invalidJson ? 'ERR_INVALID_JSON'
     : /^E[A-Z0-9_]+$/.test(error.code || '') ? error.code : 'ERR_JSON_READ';
-  const safeError = new Error(`${file}: ${invalidJson ? 'invalid JSON' : 'unable to read JSON'} (${code})`);
-  safeError.code = code;
-  return safeError;
+  return Object.assign(new Error(`${file}: ${invalidJson ? 'invalid JSON' : 'unable to read JSON'} (${code})`), { code });
 };
 
 module.exports = { jsonReadError };

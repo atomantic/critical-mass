@@ -3,13 +3,14 @@ import { describe, it } from 'vitest'
 import assert from 'node:assert/strict'
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import * as mod from '../src/components/InfoTooltip.jsx'
+import InfoTooltip from '../src/components/InfoTooltip.jsx'
+import { computeTooltipPosition } from '../src/components/tooltipPosition.mjs'
 
 const rect = (left, top, w = 12, h = 12) => ({ left, top, right: left + w, bottom: top + h, width: w, height: h })
 
 describe('InfoTooltip', () => {
   it('exposes the help as a stable accessible description while closed without mounting the visual popup', () => {
-    const html = renderToStaticMarkup(React.createElement(mod.default, { tip: React.createElement('div', null, 'ATR help text'), label: 'About ATR' }))
+    const html = renderToStaticMarkup(React.createElement(InfoTooltip, { tip: React.createElement('div', null, 'ATR help text'), label: 'About ATR' }))
     const button = html.match(/<button[^>]*>/)?.[0]
     const description = html.match(/<span id="([^"]+-description)" class="sr-only" hidden="">([\s\S]*?)<\/span>/)
     assert.match(button, /aria-label="About ATR"/)
@@ -24,8 +25,8 @@ describe('InfoTooltip', () => {
 
   it('uses unique description IDs for repeated tooltips', () => {
     const html = renderToStaticMarkup(React.createElement(React.Fragment, null,
-      React.createElement(mod.default, { tip: 'Configuration help', label: 'Configuration' }),
-      React.createElement(mod.default, { tip: 'ATR help', label: 'About ATR' }),
+      React.createElement(InfoTooltip, { tip: 'Configuration help', label: 'Configuration' }),
+      React.createElement(InfoTooltip, { tip: 'ATR help', label: 'About ATR' }),
     ))
     const descriptionIds = [...html.matchAll(/id="([^"]+-description)"/g)].map(match => match[1])
     const buttons = [...html.matchAll(/<button[^>]*>/g)].map(match => match[0])
@@ -41,7 +42,7 @@ describe('InfoTooltip', () => {
       for (const triggerLeft of [0, vw / 2, vw - 12]) {
         it(`keeps popup inside ${vw}px viewport (${align}, trigger x=${triggerLeft})`, () => {
           const vp = { width: vw, height: 640 }
-          const p = mod.computeTooltipPosition({ trigger: rect(triggerLeft, 300), popup: { height: 120 }, viewport: vp, align, maxWidth: 320 })
+          const p = computeTooltipPosition({ trigger: rect(triggerLeft, 300), popup: { height: 120 }, viewport: vp, align, maxWidth: 320 })
           assert.ok(p.left >= 0 && p.left + p.width <= vw)
           assert.ok(p.top >= 0 && p.top + Math.min(120, p.maxHeight) <= vp.height)
         })
@@ -51,9 +52,9 @@ describe('InfoTooltip', () => {
 
   it('flips below near the top and scrolls when taller than the viewport', () => {
     const vp = { width: 360, height: 400 }
-    const below = mod.computeTooltipPosition({ trigger: rect(10, 4), popup: { height: 100 }, viewport: vp })
+    const below = computeTooltipPosition({ trigger: rect(10, 4), popup: { height: 100 }, viewport: vp })
     assert.ok(below.top >= 16)
-    const tall = mod.computeTooltipPosition({ trigger: rect(10, 200), popup: { height: 900 }, viewport: vp })
+    const tall = computeTooltipPosition({ trigger: rect(10, 200), popup: { height: 900 }, viewport: vp })
     assert.equal(tall.maxHeight, 384)
     assert.equal(tall.top, 8)
   })

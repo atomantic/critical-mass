@@ -121,6 +121,10 @@ function scoreDirections(candles, decisions, start, end, horizon = 15) {
     alwaysUpAccuracyOnSameSamples: directional ? alwaysUpCorrect / directional : null }
 }
 
+/**
+ * @param {Array} candles
+ * @param {{warmup?: number, folds?: number, feePerContract?: number, slippageBps?: number}} [options]
+ */
 function walkForward(candles, { warmup = 7 * 1440, folds = 3, feePerContract, slippageBps } = {}) {
   validateCandles(candles)
   if (!Number.isInteger(warmup) || warmup < 1 || !Number.isInteger(folds) || folds < 1

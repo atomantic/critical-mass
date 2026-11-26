@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { formatCurrency } from './charts/chartUtils'
-import { useToast } from './Toast'
+import { useToast } from './useToast'
 import Button from './ui/Button'
 import { pairQuery as buildPairQuery } from '../utils/api'
 import { getRealtimeClient } from '../lib/realtime'

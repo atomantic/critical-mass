@@ -14,14 +14,15 @@ import TimeframeGrid from './TimeframeGrid'
 import TradeHistory from './TradeHistory'
 import UpDipPanel from './UpDipPanel'
 import ScorecardPanel from './ScorecardPanel'
-import TimeWarningBanner, { parseExpiry } from './TimeWarningBanner'
+import TimeWarningBanner from './TimeWarningBanner'
+import { parseExpiry } from '../../utils/parseExpiry.mjs'
 import { isFreshTick } from './position-tracker-math'
 import { labelHistoryActions } from '../../constants/signals'
 import { formatCurrencyIntl as formatCurrency } from '../charts/chartUtils'
 import { createRequestOwner } from '../../utils/requestOwner.mjs'
 import { apiPost, describeMutationFailure } from '../../utils/apiClient'
 import useRealtimeRefresh from '../../hooks/useRealtimeRefresh'
-import { useNotify } from '../Toast'
+import { useNotify } from '../useToast'
 
 export default function UpDownDashboard() {
   const { connected, tick, indicators: rawIndicators, signal, scorecard: socketScorecard } = useUpDownSocket()

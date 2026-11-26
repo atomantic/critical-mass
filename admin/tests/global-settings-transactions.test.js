@@ -103,7 +103,7 @@ function createView(name) {
       if (name === './ModalDialog') return ({ children }) => children
       if (name === './ui/ConfirmDialog') return ConfirmDialogFixture
       if (name === './ui/Button') return 'button'
-      if (name === './Toast') return { useNotify: () => (type, message) => { notices.push({ type, message }); return null }, useToast: () => ({ addToast: () => null, removeToast() {} }) }
+      if (name === './useToast') return { useNotify: () => (type, message) => { notices.push({ type, message }); return null }, useToast: () => ({ addToast: () => null, removeToast() {} }) }
       throw new Error(`Unexpected fixture import ${name}`)
     },
   })

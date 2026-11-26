@@ -338,7 +338,7 @@ const minimizeReconstructedTarget = (target, base) => {
  */
 const reconstructConfigOverride = ({ snapshot: archivedSnapshot, baseConfig, destinationGlobal }) => {
   const validation = validateConfigSnapshot(archivedSnapshot);
-  if (!validation.valid) return { ok: false, error: validation.error };
+  if (validation.valid === false) return { ok: false, error: validation.error };
   // Start with the sanitized archive and materialize this build's defaults
   // for settings added since it was written. Older version-1 archives lack
   // those keys; comparing them directly with a newly materialized snapshot

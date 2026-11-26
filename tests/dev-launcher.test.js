@@ -203,15 +203,20 @@ test('development specs preserve script cwd, node executable and port environmen
   mkdirSync(vite, { recursive: true });
   writeFileSync(path.join(vite, 'package.json'), '{"name":"vite"}');
   try {
-    const [server, ui] = developmentChildren(dir, { CUSTOM: 'retained', VITE_PORT: '1234' });
+    const [server, ui] = developmentChildren(dir, { CUSTOM: 'retained', PORT: '4321', VITE_PORT: '1234', VITE_API_PORT: '4322' });
     assert.equal(server.command, process.execPath);
     assert.equal(ui.command, process.execPath);
     assert.deepEqual(server.args, ['--watch', 'server.js']);
     assert.deepEqual(ui.args, [path.join(realpathSync(vite), 'bin/vite.js')]);
     assert.equal(server.cwd, dir);
     assert.equal(ui.cwd, path.join(dir, 'admin'));
-    assert.deepEqual(server.env, { CUSTOM: 'retained', VITE_PORT: '1234', VITE_API_PORT: '5570' });
-    assert.deepEqual(ui.env, { CUSTOM: 'retained', VITE_PORT: '5571', VITE_API_PORT: '5570' });
+    assert.equal(server.env.PORT, '4321');
+    assert.equal(server.env.CUSTOM, 'retained');
+    assert.deepEqual(ui.env, { CUSTOM: 'retained', PORT: '4321', VITE_PORT: '1234', VITE_API_PORT: '4322' });
+    assert.deepEqual(developmentChildren(dir, {}, 'ui').map(child => child.env), [{ VITE_PORT: '5571', VITE_API_PORT: '5570' }]);
+    assert.deepEqual(developmentChildren(dir, { PORT: '4321' }, 'ui').map(child => child.env.VITE_API_PORT), ['4321']);
+    rmSync(vite, { recursive: true });
+    assert.deepEqual(developmentChildren(dir, {}, 'server').map(child => child.env), [{ PORT: '5570' }]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

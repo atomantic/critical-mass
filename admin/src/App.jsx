@@ -1,5 +1,6 @@
 import { Component, useState, useEffect, useLayoutEffect, useRef, Suspense } from 'react'
-import { Routes, Route, Link, useLocation, useNavigate, Navigate } from './lib/router'
+import { Routes, Route, Link, Navigate } from './lib/router'
+import { useLocation, useNavigate } from './lib/routerContext'
 import AppHeader from './components/shell/AppHeader'
 import FundSubNav from './components/shell/FundSubNav'
 import FundLifecycleDialogs from './components/shell/FundLifecycleDialogs'
@@ -13,7 +14,9 @@ import {
   ScorecardAnalysis, SentinelDashboard, ArbitrageDashboard,
 } from './routeChunks'
 import AlertBanner from './components/sentinel/AlertBanner'
-import { ToastProvider, useToast, tradeEventToToast } from './components/Toast'
+import { ToastProvider } from './components/Toast'
+import { useToast } from './components/useToast'
+import { tradeEventToToast } from './utils/tradeEventToToast.mjs'
 import { useTradeEvents } from './hooks/useTradeEvents'
 import useFundController from './hooks/useFundController'
 import { getBaseCurrency, getQuoteCurrency } from './utils/productId.mjs'
