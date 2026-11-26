@@ -72,12 +72,12 @@ const scoreRSI = (rsi, trendBias = 'neutral') => {
 
 /**
  * Score Stochastic indicator (-100 to +100)
- * @param {{k: number, d: number}} stoch
+ * @param {{k: number, d: number} | null} stoch
  * @param {{k: number, d: number} | null} prevStoch
  * @returns {number}
  */
 const scoreStochastic = (stoch, prevStoch, trendBias = 'neutral') => {
-  if (!stoch || (stoch.k === 0 && stoch.d === 0)) return 0;
+  if (!stoch) return 0;
 
   const bullishCross = prevStoch && prevStoch.k <= prevStoch.d && stoch.k > stoch.d;
   const bearishCross = prevStoch && prevStoch.k >= prevStoch.d && stoch.k < stoch.d;
@@ -109,14 +109,14 @@ const scoreStochastic = (stoch, prevStoch, trendBias = 'neutral') => {
 /**
  * Score MACD indicator (-100 to +100)
  * @param {{macd: number, signal: number, histogram: number}} macd
- * @param {{macd: number, signal: number, histogram: number} | null} prevMacd
+ * @param {number|null} previousHistogram
  * @returns {number}
  */
-const scoreMACD = (macd, prevMacd, trendBias = 'neutral') => {
+const scoreMACD = (macd, previousHistogram, trendBias = 'neutral') => {
   if (!macd || (macd.macd === 0 && macd.signal === 0)) return 0;
 
-  const bullishCross = prevMacd && prevMacd.macd <= prevMacd.signal && macd.macd > macd.signal;
-  const bearishCross = prevMacd && prevMacd.macd >= prevMacd.signal && macd.macd < macd.signal;
+  const bullishCross = previousHistogram != null && previousHistogram <= 0 && macd.histogram > 0;
+  const bearishCross = previousHistogram != null && previousHistogram >= 0 && macd.histogram < 0;
 
   // Crossover takes precedence, but counter-trend crossovers carry less conviction
   if (bullishCross) return trendBias === 'bearish' ? 50 : 90;
@@ -127,16 +127,10 @@ const scoreMACD = (macd, prevMacd, trendBias = 'neutral') => {
   const histRatio = macd.histogram / denominator;
   let score = Math.max(-60, Math.min(60, histRatio * 60));
 
-  // Histogram inflection bonus: sign flip without full crossover
-  if (prevMacd) {
-    if (prevMacd.histogram < 0 && macd.histogram > 0) score = Math.max(score, 20);
-    else if (prevMacd.histogram > 0 && macd.histogram < 0) score = Math.min(score, -20);
-  }
-
   // Trend-continuation bonus: histogram positive+growing in bullish trend → floor at +50
-  if (prevMacd && trendBias === 'bullish' && macd.histogram > 0 && macd.histogram > prevMacd.histogram) {
+  if (previousHistogram != null && trendBias === 'bullish' && macd.histogram > 0 && macd.histogram > previousHistogram) {
     score = Math.max(score, 50);
-  } else if (prevMacd && trendBias === 'bearish' && macd.histogram < 0 && macd.histogram < prevMacd.histogram) {
+  } else if (previousHistogram != null && trendBias === 'bearish' && macd.histogram < 0 && macd.histogram < previousHistogram) {
     score = Math.min(score, -50);
   }
 
@@ -419,16 +413,18 @@ const computeADXRegime = (adxData) => {
   return { regime: 'neutral', adx: adxData.adx, multiplier: 1 };
 };
 
+/** @typedef {{sma50: number, sma100: number, sma200: number, trend: 'bullish'|'bearish'|'neutral', goldenCross: boolean, deathCross: boolean, priceVsSMA200: number}} DailySMAContext */
+/** @type {DailySMAContext} */
+const EMPTY_DAILY_SMA = { sma50: 0, sma100: 0, sma200: 0, trend: 'neutral', goldenCross: false, deathCross: false, priceVsSMA200: 0 };
+
 /**
  * Compute daily SMA trend context from daily candles
  * Provides macro trend classification using SMA(50), SMA(100), SMA(200)
  * @param {Array<{close: number, timestamp?: number}>} candles1d - Daily candles
- * @returns {{sma50: number, sma100: number, sma200: number, trend: 'bullish'|'bearish'|'neutral', goldenCross: boolean, deathCross: boolean, priceVsSMA200: number}}
+ * @param {{key: string|null, value: DailySMAContext}} cache
+ * @returns {DailySMAContext}
  */
-const EMPTY_DAILY_SMA = { sma50: 0, sma100: 0, sma200: 0, trend: 'neutral', goldenCross: false, deathCross: false, priceVsSMA200: 0 };
-let dailySMACache = { key: null, value: EMPTY_DAILY_SMA };
-
-const computeDailySMAContext = (candles1d) => {
+const computeDailySMAContext = (candles1d, cache) => {
   if (!candles1d || candles1d.length < 50) return EMPTY_DAILY_SMA;
 
   // Daily SMAs only change when the latest daily candle changes — memoize
@@ -436,7 +432,7 @@ const computeDailySMAContext = (candles1d) => {
   // walk 350 closes per call.
   const last = candles1d[candles1d.length - 1];
   const key = `${candles1d.length}:${last.timestamp ?? ''}:${last.close}`;
-  if (dailySMACache.key === key) return dailySMACache.value;
+  if (cache.key === key) return cache.value;
 
   const sma50 = calculateSMA(candles1d, 50);
   const sma100 = calculateSMA(candles1d, 100);
@@ -445,6 +441,7 @@ const computeDailySMAContext = (candles1d) => {
   const has100 = sma100 > 0;
   const price = last.close;
 
+  /** @type {DailySMAContext['trend']} */
   let trend = 'neutral';
   if (has200) {
     if (price > sma200 && sma50 > sma100) trend = 'bullish';
@@ -462,7 +459,8 @@ const computeDailySMAContext = (candles1d) => {
     deathCross: has200 && sma50 < sma200,
     priceVsSMA200: has200 ? ((price - sma200) / sma200) * 100 : 0,
   };
-  dailySMACache = { key, value };
+  cache.key = key;
+  cache.value = value;
   return value;
 };
 
@@ -700,11 +698,10 @@ const computeHorizonPrediction = (byWindow, compositeScore) => {
 /**
  * Compute all indicator scores for a given candle set
  * @param {Array<{open: number, high: number, low: number, close: number, volume: number, timestamp: number}>} candles
- * @param {Record<string, any> | null} prevIndicators - Previous indicator values for crossover detection
  * @param {Record<string, number>} weights - Indicator weights to use
  * @returns {{scores: Record<string, number>, indicators: Record<string, any>, weightedScore: number}}
  */
-const computeTimeframeSignals = (candles, prevIndicators, weights, trendBias = 'neutral') => {
+const computeTimeframeSignals = (candles, weights, trendBias = 'neutral') => {
   if (!candles || candles.length < 2) {
     return { scores: {}, indicators: {}, weightedScore: 0 };
   }
@@ -722,8 +719,9 @@ const computeTimeframeSignals = (candles, prevIndicators, weights, trendBias = '
   // Feature 4: Use momentum acceleration instead of simple momentum
   const momentum = calculateMomentumAcceleration(candles);
 
-  const prevStoch = prevIndicators?.stochastic ?? null;
-  const prevMacd = prevIndicators?.macd ?? null;
+  // Crossovers compare adjacent completed bars at every polling cadence.
+  const prevStoch = calculateStochastic(candles.slice(0, -1));
+  const macdHistSeries = calculateMACDHistogramSeries(closes);
 
   const obv = calculateOBV(candles);
   const adx = calculateADX(candles);
@@ -738,7 +736,7 @@ const computeTimeframeSignals = (candles, prevIndicators, weights, trendBias = '
   const scores = {
     rsi: scoreRSI(rsi, trendBias),
     stochastic: scoreStochastic(stoch, prevStoch, trendBias),
-    macd: scoreMACD(macd, prevMacd, trendBias),
+    macd: scoreMACD(macd, macdHistSeries.at(-2), trendBias),
     bollinger: scoreBollinger(bb.percentB, trendBias),
     vwap: scoreVWAP(currentPrice, vwap, atr, trendBias),
     momentum: scoreMomentumAcceleration(momentum, rsi, trendBias),
@@ -759,7 +757,6 @@ const computeTimeframeSignals = (candles, prevIndicators, weights, trendBias = '
   // Feature 5: Divergence detection (RSI + MACD histogram)
   const rsiSeries = calculateRSISeries(closes);
   const divergence = detectDivergence(closes, rsiSeries);
-  const macdHistSeries = calculateMACDHistogramSeries(closes);
   const macdDivergence = detectMACDDivergence(closes, macdHistSeries);
 
   // Apply the strongest applicable divergence signal
@@ -919,9 +916,7 @@ const compressScoreCeiling = (score, threshold = 50, factor = 0.5) => {
  * @returns {{computeSignals: Function, setIndicatorWeights: Function}}
  */
 const createSignalEngine = (candleAggregator, { now: clock = () => Date.now() } = {}) => {
-  /** @type {Record<string, Record<string, any> | null>} */
-  const prevIndicators = {};
-  for (const tf of ALL_SIGNAL_TFS) prevIndicators[tf] = null;
+  const dailySMACache = { key: null, value: EMPTY_DAILY_SMA };
 
   // Feature 7: Adaptive weights — start with defaults, can be overridden
   let currentIndicatorWeights = { ...INDICATOR_WEIGHTS };
@@ -962,7 +957,7 @@ const createSignalEngine = (candleAggregator, { now: clock = () => Date.now() } 
     const candles1w = candleAggregator.getCandles('1w');
     const weeklyTrend = computeWeeklyTrendFilter(candles1w);
 
-    const dailySMA = computeDailySMAContext(candleAggregator.getCandles('1d'));
+    const dailySMA = computeDailySMAContext(candleAggregator.getCandles('1d'), dailySMACache);
 
     const timeframes = {};
     let compositeScore = 0;
@@ -971,12 +966,7 @@ const createSignalEngine = (candleAggregator, { now: clock = () => Date.now() } 
       const candles = candleAggregator.getCandles(tf);
       // 1m/3m/5m inherit the 1h EMA bias so overbought-in-uptrend is confirmation
       // (not a fade). UP-only: we buy dips in an uptrend, we do not short rips.
-      const result = computeTimeframeSignals(candles, prevIndicators[tf], currentIndicatorWeights, trendFilter.trendBias);
-
-      // Store indicators for next round's crossover detection
-      if (result.indicators && Object.keys(result.indicators).length > 0) {
-        prevIndicators[tf] = result.indicators;
-      }
+      const result = computeTimeframeSignals(candles, currentIndicatorWeights, trendFilter.trendBias);
 
       timeframes[tf] = {
         score: result.weightedScore,

@@ -265,29 +265,41 @@ const historyRow = (type, timestamp, score = 0) => ({
 const unfilledHistoryRow = (type, timestamp) => ({ ...historyRow(type, timestamp), filled: false })
 
 describe('UpDown cycle momentum characterization', () => {
+  it('marks the open paper position using a numeric-string tick', async t => {
+    const { service, calls, cycle } = await cycleHarness(t)
+    cycle({ type: 'BUY', score: 30 })
+    service.handlePriceTick('120', Date.now())
+    const tick = calls.find(c => c.name === 'updown:tick').payload
+    assert.equal(tick.price, 120)
+    assert.equal(tick.perp.contracts, 1)
+    assert.equal(tick.perp.markAvailable, true)
+    assert.equal(tick.perp.unrealizedPnl, service.getStatus().perp.unrealizedPnl)
+  })
+
   const cases = [
-    { name: 'below threshold leaves confidence untouched', input: { score: 4.99, confidence: 0.77 }, prices: [100, 101, 102], score: 4.99, type: 'NEUTRAL', confidence: 0.77 },
-    { name: 'zero momentum leaves confidence untouched', input: { type: 'BUY', score: 25, confidence: 0.77 }, prices: [100, 100, 100], score: 25, type: 'BUY', confidence: 0.77 },
-    { name: 'threshold score is adjusted', input: { score: 5 }, prices: [100, 101, 102], score: 6.25, type: 'NEUTRAL', confidence: 0.1 },
-    { name: 'aligned ticks amplify directional strength', input: { type: 'BUY', score: 30 }, prices: [100, 101, 102], score: 37.5, type: 'STRONG_BUY', confidence: 0.63 },
-    { name: 'small momentum scales the boost', input: { type: 'BUY', score: 20 }, prices: [100, 100.05, 100.1], score: 22.5, type: 'BUY', confidence: 0.38 },
-    { name: 'opposing ticks damp and round', input: { type: 'BUY', score: 20.01 }, prices: [102, 101, 100], score: 17.01, type: 'BUY', confidence: 0.28 },
-    { name: 'damping cannot cancel a published direction', input: { type: 'BUY', score: 16 }, prices: [102, 101, 100], score: 13.6, type: 'BUY', confidence: 0.23 },
-    { name: 'missing volatility uses normal threshold', input: { score: 14.5, volatility: undefined }, prices: [100, 101, 102], score: 15, type: 'NEUTRAL', confidence: 0.25 },
-    { name: 'low volatility retains its wider clamp', input: { score: 19, volatility: { ratio: 0 } }, prices: [100, 101, 102], score: 22, type: 'NEUTRAL', confidence: 0.37 },
-    { name: 'closed trend gate suppresses amplified upgrade', input: { type: 'BUY', score: 30, trendGate: { open: false } }, prices: [100, 101, 102], score: 37.5, type: 'BUY', confidence: 0.63 },
-    { name: 'held DOWN exit bypasses closed trend gate and no-trade zone', input: { type: 'BUY', score: 30, trendGate: { open: false }, noTradeZone: true }, position: { direction: 'down', entryPrice: 100, contracts: 1 }, prices: [100, 101, 102], score: 37.5, type: 'STRONG_BUY', confidence: 0.63 },
-    { name: 'held UP exit survives no-trade zone', input: { type: 'SELL', score: -30, noTradeZone: true }, position: { direction: 'up', entryPrice: 100, contracts: 1 }, prices: [102, 101, 100], score: -37.5, type: 'STRONG_SELL', confidence: 0.63 },
-    { name: 'no-trade zone remains excluded without a held exit', input: { type: 'NO_TRADE_ZONE', score: 14.5, noTradeZone: true }, prices: [100, 101, 102], score: 15, type: 'NO_TRADE_ZONE', confidence: 0.25 },
-    { name: 'confidence caps at one', input: { type: 'STRONG_BUY', score: 60 }, prices: [100, 101, 102], score: 75, type: 'STRONG_BUY', confidence: 1 },
+    { name: 'below threshold leaves confidence untouched', input: { score: 4.99, confidence: 0.77 }, prices: [100, 101, 102], score: 4.99, type: 'NEUTRAL' },
+    { name: 'zero momentum leaves confidence untouched', input: { type: 'BUY', score: 25, confidence: 0.77 }, prices: [100, 100, 100], score: 25, type: 'BUY' },
+    { name: 'threshold score is adjusted', input: { score: 5 }, prices: [100, 101, 102], score: 6.25, type: 'NEUTRAL' },
+    { name: 'aligned ticks amplify directional strength', input: { type: 'BUY', score: 30 }, prices: [100, 101, 102], score: 37.5, type: 'STRONG_BUY' },
+    { name: 'small momentum scales the boost', input: { type: 'BUY', score: 20 }, prices: [100, 100.05, 100.1], score: 22.5, type: 'BUY' },
+    { name: 'opposing ticks damp and round', input: { type: 'BUY', score: 20.01 }, prices: [102, 101, 100], score: 17.01, type: 'BUY' },
+    { name: 'damping cannot cancel a published direction', input: { type: 'BUY', score: 16 }, prices: [102, 101, 100], score: 13.6, type: 'BUY' },
+    { name: 'missing volatility uses normal threshold', input: { score: 14.5, volatility: undefined }, prices: [100, 101, 102], score: 15, type: 'NEUTRAL' },
+    { name: 'low volatility retains its wider clamp', input: { score: 19, volatility: { ratio: 0 } }, prices: [100, 101, 102], score: 22, type: 'NEUTRAL' },
+    { name: 'closed trend gate suppresses amplified upgrade', input: { type: 'BUY', score: 30, trendGate: { open: false } }, prices: [100, 101, 102], score: 37.5, type: 'BUY' },
+    { name: 'held DOWN exit bypasses closed trend gate and no-trade zone', input: { type: 'BUY', score: 30, trendGate: { open: false }, noTradeZone: true }, position: { direction: 'down', entryPrice: 100, contracts: 1 }, prices: [100, 101, 102], score: 37.5, type: 'STRONG_BUY' },
+    { name: 'held UP exit survives no-trade zone', input: { type: 'SELL', score: -30, noTradeZone: true }, position: { direction: 'up', entryPrice: 100, contracts: 1 }, prices: [102, 101, 100], score: -37.5, type: 'STRONG_SELL' },
+    { name: 'no-trade zone remains excluded without a held exit', input: { type: 'NO_TRADE_ZONE', score: 14.5, noTradeZone: true }, prices: [100, 101, 102], score: 15, type: 'NO_TRADE_ZONE' },
+    { name: 'maximum engine confidence is preserved', input: { type: 'STRONG_BUY', score: 60, confidence: 1 }, prices: [100, 101, 102], score: 75, type: 'STRONG_BUY' },
     // Long window rises while the last ten prices fall: magnitude > 0, direction neutral.
-    { name: 'neutral direction recomputes confidence without boosting', input: { type: 'BUY', score: 25, confidence: 0.77 }, prices: [100, 120, 119, 118, 117, 116, 115, 114, 113, 112, 111], score: 25, type: 'BUY', confidence: 0.42 },
+    { name: 'neutral direction preserves confidence without boosting', input: { type: 'BUY', score: 25, confidence: 0.77 }, prices: [100, 120, 119, 118, 117, 116, 115, 114, 113, 112, 111], score: 25, type: 'BUY' },
   ]
   for (const scenario of cases) {
     it(scenario.name, async t => {
       const { service, cycle, results } = await cycleHarness(t, { saved: { position: scenario.position } })
-      const calls = cycle(scenario.input, scenario.prices)
-      const adjusted = { score: scenario.score, type: scenario.type, confidence: scenario.confidence }
+      const input = { confidence: 0.77, ...scenario.input }
+      const calls = cycle(input, scenario.prices)
+      const adjusted = { score: scenario.score, type: scenario.type, confidence: input.confidence }
       for (const result of [results[0], calls.find(c => c.name === 'updown:indicators').payload, service.getTradeContext().latestSignal]) {
         assert.deepEqual({ score: result.score, type: result.type, confidence: result.confidence }, adjusted)
       }

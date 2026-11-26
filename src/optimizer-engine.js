@@ -10,10 +10,12 @@ const {
   DEFAULT_BUY_AMOUNTS,
   OPTIMIZER_MARKUPS: DEFAULT_MARKUPS,
   OPTIMIZER_PERIODS: DEFAULT_PERIODS,
+  resolveOptimizerFees,
 } = require('./simulation-policy');
 const { createContextLogger } = require('./logger');
+const { getIntervalConfig } = require('./interval-utils');
 
-// Default interval types to test
+const YEAR_MS = 365 * 24 * 60 * 60 * 1000;
 
 // Time periods to test with interval counts
 const PERIOD_INTERVALS = {
@@ -55,9 +57,13 @@ const PERIOD_INTERVALS = {
   }
 };
 
-// Fixed fee parameters
-const FEE_PERCENT = 0.125;
-const REBATE_PERCENT = 0.031;
+const requireSupportedIntervals = (intervals) => {
+  for (const interval of intervals) {
+    if (!DEFAULT_INTERVALS.includes(interval)) {
+      throw new Error(`Unsupported optimizer interval: ${interval}`);
+    }
+  }
+};
 
 /**
  * Pre-fetch and cache price data for selected interval types
@@ -70,6 +76,7 @@ const REBATE_PERCENT = 0.031;
  * @param {string} [productId] - Product ID (e.g., 'BTC-USDC', 'CRO_USD')
  */
 const prefetchPriceData = async (intervals, periods, onProgress, exchange = 'coinbase', forceRefresh = false, productId = null, issues = { skipped: [], stale: [] }) => {
+  requireSupportedIntervals(intervals);
   const logger = createContextLogger({ exchange, pair: productId || undefined });
   const cache = {};
   let fetched = 0;
@@ -82,7 +89,7 @@ const prefetchPriceData = async (intervals, periods, onProgress, exchange = 'coi
 
   for (const intervalType of intervals) {
     // Get the maximum intervals needed for this type based on selected periods
-    const maxIntervals = PERIOD_INTERVALS[intervalType]?.[maxPeriod] || PERIOD_INTERVALS[intervalType]?.['1Y'];
+    const maxIntervals = PERIOD_INTERVALS[intervalType][maxPeriod];
 
     onProgress?.({
       phase: 'prefetch',
@@ -154,6 +161,14 @@ const buildResultRecord = (currentParams, result) => {
     ? (actualIntervals / requestedIntervals) * 100
     : 100;
 
+  const intervalMs = getIntervalConfig(currentParams.intervalType).ms;
+  const { startDate, endDate, roi } = result.metrics;
+  const elapsedMs = Date.parse(endDate) - Date.parse(startDate) + intervalMs;
+  const observedMs = Math.max(actualIntervals * intervalMs, Number.isFinite(elapsedMs) ? elapsedMs : intervalMs);
+  // Simple annualization compares different durations without assuming gains
+  // compound or external contributions are reinvested at the same rate.
+  const annualizedRoi = roi * YEAR_MS / observedMs;
+
   return {
     params: {
       ...currentParams,
@@ -164,7 +179,8 @@ const buildResultRecord = (currentParams, result) => {
     },
     metrics: {
       totalValue: result.metrics.totalValue,
-      roi: result.metrics.roi,
+      roi,
+      annualizedRoi,
       fillRate: result.metrics.fillRate,
       sellsFilled: result.metrics.sellsFilled,
       totalSells: result.metrics.totalSells,
@@ -177,19 +193,16 @@ const buildResultRecord = (currentParams, result) => {
       requestedIntervals,
       coveragePct,
       underCovered,
-      startDate: result.metrics.startDate,
-      endDate: result.metrics.endDate,
+      startDate,
+      endDate,
     },
   };
 };
 
 /**
  * Rank optimizer results for display/bestResult selection: every fully-covered
- * result ranks ahead of an under-covered one, then by totalValue descending
- * within each group. Without the underCovered split, a period whose backtest
- * silently truncated to far fewer candles than requested (#213B) could still
- * be crowned bestResult purely on totalValue — defeating the point of
- * annotating coverage at all, since nothing would act on it before ranking.
+ * result ranks ahead of an under-covered one (#213B), then by annualized ROI
+ * descending within each group so results from different periods are comparable.
  * @param {Object} a - Result record (shape from buildResultRecord)
  * @param {Object} b - Result record (shape from buildResultRecord)
  * @returns {number} Sort comparator result
@@ -198,17 +211,18 @@ const compareOptimizerResults = (a, b) => {
   if (a.params.underCovered !== b.params.underCovered) {
     return a.params.underCovered ? 1 : -1;
   }
-  return b.metrics.totalValue - a.metrics.totalValue;
+  return b.metrics.annualizedRoi - a.metrics.annualizedRoi;
 };
 
 /**
  * Run a single backtest with given parameters
  * @param {Object} params - Backtest parameters
  * @param {Object} priceCache - Cached price data by interval type
+ * @param {{feePercent: number, rebatePercent: number}} fees - Fund fee assumptions
  * @param {string} exchange - Exchange name (coinbase, gemini, cryptocom)
  * @param {string} [productId] - Product ID (e.g., 'BTC-USDC', 'CRO_USD')
  */
-const runSingleBacktest = async (params, priceCache, exchange, productId = null) => {
+const runSingleBacktest = async (params, priceCache, fees, exchange, productId = null) => {
   const {
     intervalType,
     intervalBuyAmount,
@@ -227,8 +241,7 @@ const runSingleBacktest = async (params, priceCache, exchange, productId = null)
     intervalBuyAmount,
     sellMarkupPercent,
     holdbackPercent,
-    feePercent: FEE_PERCENT,
-    rebatePercent: REBATE_PERCENT,
+    ...fees,
     intervals,
     intervalType,
     fundSize,
@@ -251,6 +264,7 @@ const runSingleBacktest = async (params, priceCache, exchange, productId = null)
  * @param {number[]} [options.markups] - Markup percentages to test (default: 1-8)
  * @param {string[]} [options.periods] - Periods to test (default: 30D, 60D, 90D, 1Y)
  * @param {Object} [options.buyAmounts] - Buy amounts per interval (default: scaled)
+ * @param {{feePercent: number, rebatePercent: number}} [options.fees] - Resolved fund fee assumptions
  * @returns {Promise<Object>} Optimization results
  */
 const runOptimizer = async ({
@@ -262,13 +276,15 @@ const runOptimizer = async ({
   intervals = null,
   markups = null,
   periods = null,
-  buyAmounts = null
+  buyAmounts = null,
+  fees = resolveOptimizerFees()
 }) => {
   const startTime = Date.now();
   const results = [];
 
   // Use provided options or defaults
   const selectedIntervals = intervals || DEFAULT_INTERVALS;
+  requireSupportedIntervals(selectedIntervals);
   const selectedMarkups = markups || DEFAULT_MARKUPS;
   const selectedPeriods = periods || DEFAULT_PERIODS;
   const selectedBuyAmounts = { ...DEFAULT_BUY_AMOUNTS, ...buyAmounts };
@@ -336,7 +352,7 @@ const runOptimizer = async ({
         // Release the event loop between combinations: with pre-fetched prices
         // each simulation is pure CPU, and the optimizer runs in the gateway.
         await new Promise(resolve => setImmediate(resolve));
-        const result = await runSingleBacktest(currentParams, priceCache, exchange, productId);
+        const result = await runSingleBacktest(currentParams, priceCache, fees, exchange, productId);
 
         const fullResult = buildResultRecord(currentParams, result);
 
@@ -376,8 +392,7 @@ const runOptimizer = async ({
       buyAmounts: Object.fromEntries(selectedIntervals.map(intervalType => [intervalType, selectedBuyAmounts[intervalType]])),
       markups: selectedMarkups,
       periods: selectedPeriods,
-      feePercent: FEE_PERCENT,
-      rebatePercent: REBATE_PERCENT
+      ...fees
     }
   };
 };

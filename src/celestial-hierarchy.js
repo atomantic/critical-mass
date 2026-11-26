@@ -41,6 +41,7 @@ const celestialHierarchyLogger = createContextLogger({ module: 'celestial-hierar
  * @property {number} createdAt - First creation timestamp
  * @property {number} lastMergedAt - Last merge/promotion timestamp
  * @property {string[]} sourceOrderIds - All constituent buy order IDs
+ * @property {Array<{orderId?: string, price?: number, assetQty?: number, sizeUsdc?: number, filledAt?: number, consumedQty?: number}>} [buyOrders] - Tranches attributed to this body, with optional fields for legacy records
  * @property {number} mergeCount - Number of merges undergone
  */
 
@@ -89,12 +90,15 @@ const generateBodyId = (orderId) => {
 };
 
 /**
+ * @typedef {{avgPrice: number, buyOrderId?: string, totalFees?: number} & (
+ *   {assetQty: number, costBasis: number, totalSize?: number, totalValue?: number} |
+ *   {totalSize: number, totalValue: number, assetQty?: number, costBasis?: number}
+ * )} BodyBuy
+ */
+
+/**
  * Create a new celestial body from a buy fill (starts at satellite tier)
- * @param {Object} newBuy - Buy fill summary
- * @param {number} newBuy.totalSize - BTC quantity
- * @param {number} newBuy.totalValue - USDC value
- * @param {number} newBuy.totalFees - Fees paid
- * @param {number} newBuy.avgPrice - Average fill price
+ * @param {BodyBuy} newBuy - Buy fill summary or a sized tranche with its cost basis
  * @param {string} buyOrderId - Order ID from the buy
  * @returns {CelestialBody}
  */
@@ -135,11 +139,7 @@ const createNewBody = (newBuy, buyOrderId) => {
 /**
  * Find a body to merge a new buy into, or null to create a new body
  * @param {CelestialBody[]} bodies - Existing bodies
- * @param {Object} newBuy - Buy fill summary
- * @param {number} newBuy.totalSize - BTC quantity
- * @param {number} newBuy.totalValue - USDC value
- * @param {number} newBuy.totalFees - Fees paid
- * @param {number} newBuy.avgPrice - Average fill price
+ * @param {BodyBuy} newBuy - Buy fill summary or a sized tranche with its cost basis
  * @param {Object} opts - Options (named to avoid positional-number mixups)
  * @param {number} [opts.maxUsdcDeployed] - Maximum capital deployed (unused, accepted for call-site consistency)
  * @param {number} opts.candidateTpPrice - What TP price the new buy would get
@@ -220,11 +220,7 @@ const computeBuyOrderShortfall = (body, totals, buyOrderId) => {
 /**
  * Merge a new buy into an existing body, potentially promoting it
  * @param {CelestialBody} target - Body to merge into
- * @param {Object} newBuy - Buy fill summary
- * @param {number} newBuy.totalSize - BTC quantity
- * @param {number} newBuy.totalValue - USDC value
- * @param {number} newBuy.totalFees - Fees paid
- * @param {number} newBuy.avgPrice - Average fill price
+ * @param {BodyBuy} newBuy - Buy fill summary or a sized tranche with its cost basis
  * @param {number} maxUsdcDeployed - Maximum capital deployed
  * @param {string} buyOrderId - Order ID from the buy
  * @param {Object} [logger] - Context logger

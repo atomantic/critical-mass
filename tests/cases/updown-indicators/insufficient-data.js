@@ -2,7 +2,7 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { calculateRSI, calculateRSISeries, calculateBollingerBands } = require('../../../src/updown/indicators');
+const { calculateRSI, calculateRSISeries, calculateBollingerBands, calculateADX } = require('../../../src/updown/indicators');
 
 // issue #212A — a perfectly flat series (no gains, no losses) must read as neutral
 // (RSI=50), not RSI=100. RSI=100 is reserved for "all gains, zero losses" — a real
@@ -65,5 +65,21 @@ describe('calculateBollingerBands insufficient-data sentinel (issue #212B)', () 
     const closes = Array.from({ length: 25 }, (_, i) => 100 + Math.sin(i) * 2);
     const bb = calculateBollingerBands(closes, 20);
     assert.equal(typeof bb.percentB, 'number');
+  });
+});
+
+describe('Wilder ADX', () => {
+  it('seeds from the first two DX values and smooths every subsequent movement', () => {
+    const bars = [10, 12, 11, 14, 10].map(high => ({ high, low: high - 2, close: high - 1 }));
+    assert.equal(calculateADX(bars.slice(0, 3), 2).adx, 0);
+    // Directional sums are initially (+2, -1), then (+4, -0.5).
+    // DX = 100/3 and 700/9, giving the first ADX = 500/9.
+    assert.deepEqual(calculateADX(bars.slice(0, 4), 2), {
+      adx: 55.56, plusDI: 61.54, minusDI: 7.69, trending: true,
+    });
+    // The next sums (+2, -4.25) give DX = 36.
+    assert.deepEqual(calculateADX(bars, 2), {
+      adx: 45.78, plusDI: 24.24, minusDI: 51.52, trending: true,
+    });
   });
 });

@@ -141,7 +141,6 @@ const transitionFromBuyState = (rawType, score, now, state, publish) => {
  * @returns {{type: string, state: {publishedType: string, publishedAt: number, pendingType: string|null, pendingSince: number}}}
  */
 const transitionFromSellState = (rawType, score, now, state, publish) => {
-  if (score > EXIT_SELL_SCORE && !isSell(rawType)) return publish('NEUTRAL')
   if (isBuy(rawType)) {
     const pendingSince = state.pendingType === 'BUY' ? state.pendingSince : now
     if (now - pendingSince >= MIN_ENTER_MS) return publish('BUY')
@@ -151,6 +150,7 @@ const transitionFromSellState = (rawType, score, now, state, publish) => {
     }
   }
   if (!isSell(rawType)) {
+    if (score > EXIT_SELL_SCORE) return publish('NEUTRAL')
     const pendingSince = state.pendingType === 'NEUTRAL' ? state.pendingSince : now
     if (now - pendingSince >= MIN_EXIT_MS) return publish('NEUTRAL')
     return {
