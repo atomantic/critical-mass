@@ -1,5 +1,5 @@
 import { Component, useState, useEffect, useLayoutEffect, useRef, lazy, Suspense } from 'react'
-import { Routes, Route, Link, useLocation, useNavigate, Navigate } from './lib/router'
+import { Routes, Route, Link, useLocation, useNavigate, Navigate, matchPath } from './lib/router'
 import AppHeader from './components/shell/AppHeader'
 import FundSubNav from './components/shell/FundSubNav'
 import FundLifecycleDialogs from './components/shell/FundLifecycleDialogs'
@@ -34,6 +34,20 @@ import { ToastProvider, useToast, tradeEventToToast } from './components/Toast'
 import { useTradeEvents } from './hooks/useTradeEvents'
 import useFundController from './hooks/useFundController'
 import { getBaseCurrency, getQuoteCurrency } from './utils/productId.mjs'
+
+const globalRoutes = [
+  { path: '/', render: onAddFund => <Overview onAddFund={onAddFund} /> },
+  { path: '/notifications', Page: NotificationsConfig },
+  { path: '/backups', Page: BackupRestore },
+  { path: '/systems', Page: Systems },
+  { path: '/ai', Page: AIProviders },
+  { path: '/updown/analysis', Page: ScorecardAnalysis },
+  { path: '/updown', Page: UpDownDashboard },
+  { path: '/sentinel', Page: SentinelDashboard },
+  { path: '/arbitrage', Page: ArbitrageDashboard },
+  { path: '/gateway', Page: GatewayAccess },
+  { path: '/gateway/logs', Page: LogViewer, props: { processName: 'critical-mass' } },
+]
 
 class RouteErrorBoundary extends Component {
   state = { hasError: false }
@@ -88,7 +102,7 @@ function AppContent() {
   const { addToast } = useToast()
   const {
     urlExchange, urlPair, isFundRoute, currentExchange, currentPair, currentStrategy,
-    exchanges, simpleDcaEnabled, fundsUnavailable, exchangesError, awaitingFundList, fundMissing,
+    exchanges, exchangesLoaded, simpleDcaEnabled, fundsUnavailable, exchangesError, awaitingFundList, fundMissing,
     summary, loading, error, summaryWanted, pollRegime,
     regimeRunning, regimeDryRun, regimeLifecycle, statusError, wsConnected,
     tabs, isActiveTab, buildPath,
@@ -98,9 +112,13 @@ function AppContent() {
     reopenFundDialogOpen, setReopenFundDialogOpen, resetDryRunConfirm, setResetDryRunConfirm,
     handleStartRegime, handleStopRegime, openCloseFundDialog, submitCloseFund,
     openReopenFundDialog, submitReopenFund, handleResetDryRun, handleExecuteResetDryRun,
-  } = useFundController({ location, navigate, addToast })
+  } = useFundController({
+    location, navigate, addToast,
+    isGlobalRoute: globalRoutes.some(({ path }) => matchPath(path, location.pathname)),
+  })
 
   const [addFundDialogOpen, setAddFundDialogOpen] = useState(false)
+  const openAddFund = () => setAddFundDialogOpen(true)
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const mainContentRef = useRef(null)
   const mobileDestinationRef = useRef(null)
@@ -151,7 +169,7 @@ function AppContent() {
             currentPair={currentPair}
             exchanges={exchanges}
             onExchangeChange={handleExchangeChange}
-            onAddFund={() => setAddFundDialogOpen(true)}
+            onAddFund={openAddFund}
             currentStrategy={currentStrategy}
             regimeRunning={regimeRunning}
             regimeDryRun={regimeDryRun}
@@ -223,78 +241,64 @@ function AppContent() {
             <RouteErrorBoundary key={location.pathname}>
               <Suspense fallback={<RouteLoadingFallback />}>
                 <Routes>
-              {/* Overview dashboard at root */}
-              <Route path="/" element={<Overview />} />
+                  {globalRoutes.map(({ path, Page, props, render }) => (
+                    <Route key={path} path={path} element={Page ? <Page {...props} /> : render(openAddFund)} />
+                  ))}
 
-              {/* Pair-based routes - strategy determined from exchange config.
-                  The `key` includes both exchange and pair so React unmounts
-                  and remounts the dashboard whenever the user navigates to a
-                  different fund — this guarantees fresh state and re-fetched
-                  data instead of stale data from the previous fund. */}
-              <Route path="/:exchange/:pair" element={
-                currentStrategy === 'regime'
-                  ? <RegimeDashboard key={`${currentExchange}-${currentPair}`} exchange={currentExchange} pair={currentPair} />
-                  : <Dashboard key={`${currentExchange}-${currentPair}`} summary={summary} onRefresh={refreshFund} exchange={currentExchange} pair={currentPair} />
-              } />
-              <Route path="/:exchange/:pair/cost-basis" element={
-                currentStrategy === 'regime'
-                  ? <CostBasisRegime key={`${currentExchange}-${currentPair}`} exchange={currentExchange} pair={currentPair} />
-                  : <CostBasisDCA key={`${currentExchange}-${currentPair}`} summary={summary} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} exchange={currentExchange} pair={currentPair} />
-              } />
-              <Route path="/:exchange/:pair/transactions" element={
-                currentStrategy === 'regime'
-                  ? <TransactionsRegime key={`${currentExchange}-${currentPair}`} exchange={currentExchange} pair={currentPair} />
-                  : <TransactionsDCA transactions={summary?.transactions} baseCurrency={getBaseCurrency(summary?.config?.productId)} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />
-              } />
-              <Route path="/:exchange/:pair/charts" element={
-                currentStrategy === 'regime'
-                  ? <ChartsRegime key={`${currentExchange}-${currentPair}`} exchange={currentExchange} pair={currentPair} />
-                  : <ChartsDCA summary={summary} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />
-              } />
-              <Route path="/:exchange/:pair/config" element={<ConfigEditor key={`${currentExchange}-${currentPair}`} config={summary?.config} regimeDefaults={summary?.regimeDefaults} loadError={error || (!loading && !summary?.config ? 'Configuration is unavailable' : null)} onRetry={fetchData} onSave={refreshFund} exchange={currentExchange} pair={currentPair} strategy={currentStrategy} engineRunning={regimeRunning} engineDryRun={regimeDryRun} onRestart={fetchRegimeStatus} />} />
+                  {/* Pair-based routes - strategy determined from exchange config.
+                      The `key` includes both exchange and pair so React unmounts
+                      and remounts the dashboard whenever the user navigates to a
+                      different fund — this guarantees fresh state and re-fetched
+                      data instead of stale data from the previous fund. */}
+                  {isFundRoute && (<>
+                    <Route path="/:exchange/:pair" element={
+                      currentStrategy === 'regime'
+                        ? <RegimeDashboard key={`${currentExchange}-${currentPair}`} exchange={currentExchange} pair={currentPair} />
+                        : <Dashboard key={`${currentExchange}-${currentPair}`} summary={summary} onRefresh={refreshFund} exchange={currentExchange} pair={currentPair} />
+                    } />
+                    <Route path="/:exchange/:pair/cost-basis" element={
+                      currentStrategy === 'regime'
+                        ? <CostBasisRegime key={`${currentExchange}-${currentPair}`} exchange={currentExchange} pair={currentPair} />
+                        : <CostBasisDCA key={`${currentExchange}-${currentPair}`} summary={summary} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} exchange={currentExchange} pair={currentPair} />
+                    } />
+                    <Route path="/:exchange/:pair/transactions" element={
+                      currentStrategy === 'regime'
+                        ? <TransactionsRegime key={`${currentExchange}-${currentPair}`} exchange={currentExchange} pair={currentPair} />
+                        : <TransactionsDCA transactions={summary?.transactions} baseCurrency={getBaseCurrency(summary?.config?.productId)} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />
+                    } />
+                    <Route path="/:exchange/:pair/charts" element={
+                      currentStrategy === 'regime'
+                        ? <ChartsRegime key={`${currentExchange}-${currentPair}`} exchange={currentExchange} pair={currentPair} />
+                        : <ChartsDCA summary={summary} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />
+                    } />
+                    <Route path="/:exchange/:pair/config" element={<ConfigEditor key={`${currentExchange}-${currentPair}`} config={summary?.config} regimeDefaults={summary?.regimeDefaults} loadError={error || (!loading && !summary?.config ? 'Configuration is unavailable' : null)} onRetry={fetchData} onSave={refreshFund} exchange={currentExchange} pair={currentPair} strategy={currentStrategy} engineRunning={regimeRunning} engineDryRun={regimeDryRun} onRestart={fetchRegimeStatus} />} />
 
-              {/* DCA-only routes (backtest, optimizer) */}
-              {simpleDcaEnabled && currentStrategy !== 'regime' && <>
-              <Route path="/:exchange/:pair/backtest" element={<Backtest key={`${currentExchange}:${currentPair}`} summary={summary} exchange={currentExchange} pair={currentPair} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />} />
-              <Route path="/:exchange/:pair/optimizer" element={<Optimizer key={`${currentExchange}:${currentPair}`} exchange={currentExchange} pair={currentPair} />} />
-              </>}
+                    {/* DCA-only routes (backtest, optimizer) */}
+                    {simpleDcaEnabled && currentStrategy !== 'regime' && <>
+                      <Route path="/:exchange/:pair/backtest" element={<Backtest key={`${currentExchange}:${currentPair}`} summary={summary} exchange={currentExchange} pair={currentPair} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />} />
+                      <Route path="/:exchange/:pair/optimizer" element={<Optimizer key={`${currentExchange}:${currentPair}`} exchange={currentExchange} pair={currentPair} />} />
+                    </>}
 
-              {/* API Keys - in sub-nav tabs */}
-              <Route path="/:exchange/:pair/keys" element={<KeysConfig key={currentExchange} exchange={currentExchange} funds={exchanges.filter(e => e.name === currentExchange)} onSave={fetchExchanges} />} />
+                    {/* API Keys - in sub-nav tabs */}
+                    <Route path="/:exchange/:pair/keys" element={<KeysConfig key={currentExchange} exchange={currentExchange} funds={exchanges.filter(e => e.name === currentExchange)} onSave={fetchExchanges} />} />
 
-              {/* PM2 Logs - per exchange engine */}
-              <Route path="/:exchange/:pair/logs" element={<LogViewer processName={`critical-mass-${currentExchange}`} />} />
+                    {/* PM2 Logs - per exchange engine */}
+                    <Route path="/:exchange/:pair/logs" element={<LogViewer processName={`critical-mass-${currentExchange}`} />} />
 
-              {/* Notifications - global (not exchange-specific) */}
-              <Route path="/notifications" element={<NotificationsConfig />} />
+                  </>)}
 
-              {/* Backups - global (not exchange-specific) */}
-              <Route path="/backups" element={<BackupRestore />} />
-
-              {/* Systems - debug showcase of all celestial body types */}
-              <Route path="/systems" element={<Systems />} />
-
-              {/* AI Provider management */}
-              <Route path="/ai" element={<AIProviders />} />
-
-              {/* UpDown BTC perp-long dashboard */}
-              <Route path="/updown/analysis" element={<ScorecardAnalysis />} />
-              <Route path="/updown" element={<UpDownDashboard />} />
-
-              {/* Sentinel news monitor */}
-              <Route path="/sentinel" element={<SentinelDashboard />} />
-              {/* Cross-pair arbitrage monitor (alerts only) */}
-              <Route path="/arbitrage" element={<ArbitrageDashboard />} />
-
-              {/* Gateway access + logs */}
-              <Route path="/gateway" element={<GatewayAccess />} />
-              <Route path="/gateway/logs" element={<LogViewer processName="critical-mass" />} />
-
-              {/* Legacy route - redirect /:exchange (without pair) to /:exchange/:pair */}
-              <Route path="/:exchange" element={<Navigate to={`/${currentExchange}/${currentPair}`} replace />} />
-
-              {/* Catch invalid routes - redirect to current exchange/pair */}
-              <Route path="*" element={<Navigate to={`/${currentExchange}/${currentPair}`} replace />} />
+                  {urlExchange && !urlPair && (
+                    <Route path="/:exchange" element={
+                      fundsUnavailable ? (
+                        <RetryBanner message={exchangesError} onRetry={retryExchanges} retryLabel="Retry fund list" />
+                      ) : !exchangesLoaded ? (
+                        <RouteLoadingFallback />
+                      ) : (
+                        <Navigate to={currentPair ? `/${currentExchange}/${currentPair}` : '/'} replace />
+                      )
+                    } />
+                  )}
+                  <Route path="*" element={<Navigate to="/" replace />} />
                 </Routes>
               </Suspense>
             </RouteErrorBoundary>

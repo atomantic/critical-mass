@@ -1,3 +1,4 @@
+import NumberInput from './ui/NumberInput'
 import { FormInput, FormSelect, SectionCard } from './config/ConfigFormControls'
 import { VolatilityClockCard, RegimeScalingCard, EntryModeLadderCard, TakeProfitCard, RegimeDetectionCard, CelestialHierarchyCard, MacroRegimeCard, TpAutoManagementCard, RiskCapsCard, OrderExecutionCard, SafetyTailEventsCard, SystemHealthCard } from './config/RegimeConfigCards'
 import { describeConfigSaveError } from '../utils/configSaveError.mjs'
@@ -629,11 +630,10 @@ function ConfigEditor({ config: initialConfig, regimeDefaults, onSave, exchange 
                   <span className="text-xs text-gray-400 whitespace-nowrap">Auto-Consolidate:</span>
                   <div className="flex items-center gap-2">
                     <span id="consolidate-when-label" className="text-xs text-gray-400">When orders &gt;</span>
-                    <input
+                    <NumberInput
                       aria-labelledby="consolidate-when-label"
-                      type="number"
                       value={config.consolidateAfterOrders || 0}
-                      onChange={(e) => handleChange('consolidateAfterOrders', parseInt(e.target.value) || 0)}
+                      onChange={value => handleChange('consolidateAfterOrders', Math.trunc(value))}
                       className="w-16 px-2 py-1 bg-gray-700 border border-gray-600 rounded-sm text-sm text-white focus:outline-hidden focus:border-blue-500"
                     />
                   </div>

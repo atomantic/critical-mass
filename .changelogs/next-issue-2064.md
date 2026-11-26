@@ -1,0 +1,2 @@
+- Keep the Arbitrage dashboard open on direct visits, resolve legacy fund links from the configured list, preserve compatible tabs when switching pairs, and open a newly created fund from Overview after the fund list refreshes.
+- Label ladder buys as entries, align expanded buy timestamps, allow numeric settings to be cleared while editing, hide Coinbase private-key drafts, and show manual trade import validation beside the submit button.

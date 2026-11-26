@@ -193,7 +193,7 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
                 {openOrders.map(order => (
                   <tr key={order.orderId} className="border-t border-gray-700/50 hover:bg-gray-700/30">
                     <td className="px-4 py-2">
-                      {order.type === 'entry' ? (
+                      {(order.type === 'entry' || order.type === 'ladder_entry') ? (
                         <span className="px-2 py-0.5 rounded-sm text-xs bg-emerald-900/50 text-emerald-400" title="Limit buy entry order">Entry</span>
                       ) : (order.type === 'satellite_tp' || order.type === 'body_tp') ? (
                         <span className="px-2 py-0.5 rounded-sm text-xs bg-purple-900/50 text-purple-400" title={`Celestial body take-profit (${order.type.replace('_tp', '')})`}>

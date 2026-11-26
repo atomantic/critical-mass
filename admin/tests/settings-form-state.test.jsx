@@ -65,6 +65,7 @@ describe('KeysConfig Test Connection', () => {
     vi.stubGlobal('fetch', fetchMock)
     render(<KeysConfig exchange={exchange} funds={[]} />)
     await screen.findByRole('button', { name: 'Test Connection' })
+    if (exchange === 'coinbase') fireEvent.click(screen.getByRole('button', { name: 'Show Secrets' }))
 
     for (const [label, value] of values) fireEvent.change(inputFor(label), { target: { value } })
     const save = saveButton()
@@ -93,6 +94,23 @@ describe('KeysConfig Test Connection', () => {
     for (const [label] of values) expect(inputFor(label).value).toBe('')
   })
 
+  it('redacts the Coinbase PEM draft while keeping it available for editing', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ok({ configured: false, fields: {} })))
+    render(<KeysConfig exchange="coinbase" />)
+    const key = await screen.findByLabelText('Private Key')
+    expect(key.readOnly).toBe(true)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show Secrets' }))
+    const draft = '-----BEGIN EC PRIVATE KEY-----\nexample\n-----END EC PRIVATE KEY-----'
+    fireEvent.change(key, { target: { value: draft } })
+    fireEvent.click(screen.getByRole('button', { name: 'Hide Secrets' }))
+    expect(key.value).toBe('••••••••')
+    expect(key.readOnly).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Show Secrets' }))
+    expect(key.value).toBe(draft)
+    expect(key.readOnly).toBe(false)
+  })
+
   it('retains credentials and allows retry when save fails', async () => {
     vi.stubGlobal('fetch', vi.fn(async (_url, options) => options?.method === 'PUT'
       ? { ok: false, status: 400, json: async () => ({ error: 'Rejected' }) }
@@ -118,6 +136,21 @@ describe('NotificationsConfig', () => {
     rateLimitMs: 1000,
     dailySummaryHour: 8,
     quietHours: { enabled: false, start: 23, end: 7 },
+  })
+
+  it('lets operators clear and replace an hour without resetting the saved value', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ok(savedConfig())))
+    render(<NotificationsConfig />)
+    const hour = await screen.findByRole('spinbutton', { name: 'Daily Summary Hour' })
+    fireEvent.change(hour, { target: { value: '' } })
+    expect(hour.value).toBe('')
+    fireEvent.blur(hour)
+    expect(hour.value).toBe('8')
+
+    fireEvent.change(hour, { target: { value: '' } })
+    fireEvent.change(hour, { target: { value: '0' } })
+    fireEvent.blur(hour)
+    expect(hour.value).toBe('0')
   })
 
   it('keeps the configured-token hint after a rejected save and blocks Send Test on unsaved edits', async () => {
