@@ -39,7 +39,13 @@ const publishDirectory = (lockPath, candidate, ownerName, metadata) => {
   fs.mkdirSync(candidate, { mode: 0o700 });
   let published = false;
   try {
-    fs.writeFileSync(path.join(candidate, ownerName), metadata, { flag: 'wx', mode: 0o600 });
+    const descriptor = fs.openSync(path.join(candidate, ownerName), 'wx', 0o600);
+    try {
+      const bytes = Buffer.from(metadata);
+      if (fs.writeSync(descriptor, bytes) !== bytes.length) throw new Error('Incomplete lock owner write');
+    } finally {
+      fs.closeSync(descriptor);
+    }
     try { fs.renameSync(candidate, lockPath); } catch (error) {
       if (isOccupied(error)) return false;
       throw error;
