@@ -17,6 +17,10 @@ Pull requests that touch the Docker packaging (`Dockerfile`, `docker/`, `docker-
    `latest` only moves forward: CI runs for two quick successive version bumps can finish out of order, so after creating the release the workflow runs `scripts/should-promote-latest.sh`, which compares the new tag with the remote's `vX.Y.Z` tags and promotes `latest` only when the new version is the highest stable one. An older version released second therefore still gets its tag, GitHub Release and versioned image, but leaves `latest` on the newer release. The Release run's log line `Promote latest for vX.Y.Z: true|false` records the decision. Do not add a `concurrency` group to `release.yml`: GitHub keeps only one pending run per group and would silently drop a release.
 9. The image check is automated: the Docker Build workflow fails unless the pushed `vX.Y.Z` manifest lists both `linux/amd64` and `linux/arm64` and its checkout is the tag's commit. A successful **Publish release image** job is the confirmation. To read the index digest for Umbrel, see below.
 
+### Published image security
+
+After image publication succeeds, the Release workflow runs **Image Security** on the new versioned image. The scheduled and manual **Image Security** runs scan `latest`. Trivy checks the published linux/amd64 image and reports fixable HIGH and CRITICAL findings in the job summary. Findings fail the scan job after publication. Check **Publish release image** to confirm whether publication succeeded.
+
 ## Automation compatibility
 
 This is a version-bump PR workflow, not promotion from `main` into a second long-lived branch. A generic release helper that detects `main → main` and aborts does not support this repository's topology. Use the procedure above rather than creating a permanent release branch or redirecting the existing publication workflow. The release task owns pushing its temporary branch, opening and merging its PR, and verifying publication; a generic completion instruction that forbids pushing cannot complete this task.
@@ -31,7 +35,5 @@ The Umbrel manifests (`umbrel/docker-compose.yml`, `umbrel/umbrel-app.yml`) have
 2. Set `version:` in `umbrel/umbrel-app.yml` to the same `X.Y.Z` and write user-facing `releaseNotes` for the Umbrel update.
 3. Run `npm test`. `tests/umbrel-packaging-contract.test.js` checks, offline and without credentials, that the image is digest-pinned, that both manifests record the same version, that the selected release is not older than the gateway port migration, and that `APP_PORT`, `umbrel-app.yml` `port`, the Dockerfile `EXPOSE` and `ecosystem.config.cjs` `PORTS.API` all agree.
 4. Smoke-test the pinned image the way Umbrel runs it: start it with a fresh disposable data directory bound to `/app/data`, confirm `GET /` on the gateway port returns the dashboard and a protected API route returns HTTP 401, then read `data/operator-bootstrap-secret` from the mounted directory and complete operator enrollment. Restart the container against the same data directory and confirm the enrolled operator and configuration survive the upgrade path.
-
-After changing the pinned Umbrel digest, run **Actions → Image Security** so the new image's inventories and findings replace the old evidence; `scripts/verify-image-scan-evidence.js` rejects evidence whose Umbrel digest no longer matches the manifest (see `docs/IMAGE_SECURITY.md`).
 
 The Umbrel store copies these manifests verbatim, so a mismatch between the pinned version and the proxy port ships an installation that cannot reach its own dashboard.
