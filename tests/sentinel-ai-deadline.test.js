@@ -75,14 +75,22 @@ describe('Sentinel per-poll AI classification deadline', () => {
   });
 
   it('keeps AI results that finished and falls back only for the slow ones', async () => {
-    const { service, emitted } = makeService(makeItems(2), (item) => (
-      item.guid === 'g-0'
-        ? Promise.resolve({ category: 'other', severity: 'critical', summary: 'fast', suggestedAction: null })
-        : new Promise(() => {})
-    ));
+    const signals = [];
+    let signaled = false;
+    const { service, emitted } = makeService(makeItems(2), (item, _config, signal) => {
+      signals.push(signal);
+      if (item.guid === 'g-0') return Promise.resolve({ category: 'other', severity: 'critical', summary: 'fast', suggestedAction: null });
+      return new Promise((_resolve, reject) => signal?.addEventListener('abort', () => {
+        signaled = true;
+        reject(signal.reason);
+      }, { once: true }));
+    });
 
     await service.forcePoll();
 
+    assert.ok(signaled);
+    assert.equal(signals.length, 2);
+    assert.equal(signals[0], signals[1], 'the same deadline accompanies every item');
     const alerts = emitted.filter(([e]) => e === 'sentinel:alert').map(([, a]) => a);
     assert.deepEqual(alerts.map(a => [a.severity, a.summary]), [['critical', 'fast'], ['warning', 'selloff underway']]);
   });

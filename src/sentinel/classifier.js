@@ -116,20 +116,28 @@ const hasAIQuota = (maxPerHour) => {
  * Classify an item using AI (optional, rate-limited)
  * @param {Object} item - Normalized feed item
  * @param {{ enabled: boolean, maxPerHour: number }} aiConfig - AI classification config
+ * @param {AbortSignal} [deadlineSignal] - Shared poll deadline
  * @returns {Promise<{ category: string, severity: string, summary: string, suggestedAction: string } | null>}
  */
-const classifyByAI = async (item, aiConfig) => {
-  if (!aiConfig?.enabled) return null;
+const classifyByAI = async (item, aiConfig, deadlineSignal) => {
+  if (!aiConfig?.enabled || deadlineSignal?.aborted) return null;
 
   const maxPerHour = aiConfig.maxPerHour || 10;
   if (!hasAIQuota(maxPerHour)) return null;
 
   let timeout;
   try {
-    // Load active provider
-    const providersData = JSON.parse(await readFile(PROVIDERS_PATH, 'utf8'));
+    const controller = new AbortController();
+    const signal = deadlineSignal ? AbortSignal.any([deadlineSignal, controller.signal]) : controller.signal;
+    timeout = setTimeout(() => controller.abort(), 30_000);
+
+    const providersData = JSON.parse(await readFile(PROVIDERS_PATH, { encoding: 'utf8', signal }));
     const providers = providersData.providers || {};
-    const activeProvider = Object.values(providers).find(p => p.enabled && p.type === 'api');
+    const activeId = providersData.activeProvider;
+    const configured = typeof activeId === 'string' && Object.prototype.hasOwnProperty.call(providers, activeId)
+      ? providers[activeId] : null;
+    const isEnabledApi = (provider) => provider?.enabled && provider.type === 'api';
+    const activeProvider = isEnabledApi(configured) ? configured : Object.values(providers).find(isEnabledApi);
     if (!activeProvider) return null;
     const allowedOrigins = parseAllowedOrigins();
     if (!URL.canParse(activeProvider.endpoint) || !allowedOrigins.has(new URL(activeProvider.endpoint).origin)) return null;
@@ -159,12 +167,10 @@ Return:
   "suggestedAction": "<brief action suggestion for a crypto trader>"
 }`;
 
-    const controller = new AbortController();
-    timeout = setTimeout(() => controller.abort(), 30000);
-
     // Validate provider endpoint URL to prevent SSRF attacks (includes async DNS check).
-    const endpointValidation = await validateEndpointUrl(activeProvider.endpoint, { signal: controller.signal });
-    controller.signal.throwIfAborted();
+    signal.throwIfAborted();
+    const endpointValidation = await validateEndpointUrl(activeProvider.endpoint, { signal });
+    signal.throwIfAborted();
     if (!endpointValidation.valid) {
       classifierLogger.warn(`⚠️ Sentinel AI classification rejected: unsafe endpoint: ${endpointValidation.error}`, {
         action: 'classify',
@@ -190,7 +196,7 @@ Return:
         messages: [{ role: 'user', content: prompt }],
         stream: false,
       }),
-      signal: controller.signal,
+      signal,
     };
 
     // Validation awaited above: recheck and reserve synchronously so concurrent
@@ -203,6 +209,7 @@ Return:
     if (!response.ok) return null;
 
     const result = await response.json();
+    signal.throwIfAborted();
     const content = result.choices?.[0]?.message?.content || '';
     const jsonMatch = content.replace(/<think>[\s\S]*?<\/think>/g, '').match(/\{[\s\S]*\}/);
     if (!jsonMatch) return null;
@@ -222,6 +229,7 @@ Return:
       suggestedAction: sanitizeForTelegram(parsed.suggestedAction, 200),
     };
   } catch (err) {
+    if (deadlineSignal?.aborted) return null;
     classifierLogger.warn(`⚠️ Sentinel AI classification failed: ${err.message}`, {
       action: 'classify',
       error: err.message,

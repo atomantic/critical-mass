@@ -102,9 +102,13 @@ const createSecurityHeadersMiddleware = () => (req, res, next) => {
  */
 const createCorsMiddleware = (allowlist = []) => (req, res, next) => {
   const origin = req.headers?.origin;
+  res.vary('Origin');
   if (isGatewayOrigin(origin, allowlist)) {
-    if (origin) res.header('Access-Control-Allow-Origin', origin);
-    res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
+    if (origin) {
+      res.header('Access-Control-Allow-Origin', origin);
+      res.header('Access-Control-Allow-Credentials', 'true');
+    }
+    res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
     res.header('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-Operator-Bootstrap');
     if (req.method === 'OPTIONS') return res.sendStatus(204);
   }

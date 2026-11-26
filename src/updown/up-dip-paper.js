@@ -344,7 +344,7 @@ const createUpDipPaper = ({ getCandles, statePath, getHalfSpread, pick = pickCon
   /** Re-read the state file (after a restore) so in-memory state never overwrites it. */
   const reload = () => { load(); };
 
-  return { step, getStatus, start, stop, reload };
+  return { step, getStatus, start, stop, reload, isRunning: () => timer !== null };
 };
 
 module.exports = { createUpDipPaper, emptyState, hasTraded, isStamped };

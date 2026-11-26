@@ -804,6 +804,26 @@ describe('Manual Trade Import', () => {
     const buyFills = [makeFill({ tradeId: 'pair-buy-1', side: 'buy', price: 90000, size: 0.004 })];
     const sellFills = [makeFill({ tradeId: 'pair-sell-1', side: 'sell', price: 100000, size: 0.004 })];
 
+    for (const [exchange, productId, venueProduct, quote] of [
+      ['gemini', 'BTC-USD', 'btcusd', 'USD'],
+      ['gemini', 'BTC-USDC', 'btcusd', 'USD'],
+      ['cryptocom', 'BTC_USDT', 'BTC_USDT', 'USDT'],
+      ['coinbase', 'BTC-USDC', 'BTC-USDC', 'USDC'],
+    ]) {
+      it(`records reported fee assets and defaults missing ones to the ${exchange} ${productId} quote`, async () => {
+        const adapter = createFakeAdapter({ fillsByOrder: {
+          'buy-1': [{ ...buyFills[0], productId: venueProduct }],
+          'sell-1': [{ ...sellFills[0], productId: venueProduct, commissionAsset: 'BTC' }],
+        } });
+        const result = await createImporter({ exchange, fundConfig: { productId }, adapter })
+          .importPair({ buyOrderId: 'buy-1', sellOrderId: 'sell-1' });
+
+        assert.equal(result.success, true, result.error);
+        assert.equal(fillLedger.getFillsForOrder('buy-1')[0].feeAsset, quote);
+        assert.equal(fillLedger.getFillsForOrder('sell-1')[0].feeAsset, 'BTC');
+      });
+    }
+
     it('leaves zero buy rows in the ledger when the sell fetch fails', async () => {
       const adapter = createFakeAdapter({
         fillsByOrder: { 'buy-1': buyFills, 'sell-1': new Error('gateway timeout') },

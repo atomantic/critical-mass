@@ -362,24 +362,30 @@ describe('gateway backup writers', () => {
   const block = source.slice(start, source.indexOf('\n});', start) + '\n});'.length);
   const makeRunBackup = (events) => {
     const service = { getStatus: () => ({ running: false }), stop: () => {}, start: () => {} };
-    return new Function('deps', `const { performBackup, exchangeIPCMap, getConfiguredExchanges, drainPendingWrites, SCORECARD_JOURNAL_WRITE_LABEL, updownService, sentinelService, arbitrageService, btcFeedService, createContextLogger } = deps;\n${block}\nreturn runBackup;`)({
+    const book = (name, running) => ({
+      isRunning: () => running,
+      stop: () => { events.push(`stop:${name}`); },
+      start: () => { events.push(`start:${name}`); },
+    });
+    return new Function('deps', `const { performBackup, exchangeIPCMap, getConfiguredExchanges, drainPendingWrites, SCORECARD_JOURNAL_WRITE_LABEL, updownService, sentinelService, arbitrageService, upDipPaper, upDipShadow, btcFeedService, createContextLogger } = deps;\n${block}\nreturn runBackup;`)({
       performBackup, exchangeIPCMap: { coinbase: ipc() }, getConfiguredExchanges: () => ['coinbase'], drainPendingWrites, SCORECARD_JOURNAL_WRITE_LABEL: 'journal',
       updownService: service, sentinelService: service, arbitrageService: service, createContextLogger: () => logger,
+      upDipPaper: book('paper', true), upDipShadow: book('shadow', false),
       btcFeedService: { pauseHistory: async () => { events.push('pause'); }, resumeHistory: () => { events.push('resume'); } },
     });
   };
   for (const fails of [false, true]) {
-    it(`pauses BTC index history around a full archive that ${fails ? 'fails' : 'succeeds'}`, async () => {
+    it(`pauses paper books and BTC index history around a full archive that ${fails ? 'fails' : 'succeeds'}`, async () => {
       const events = [];
       await makeRunBackup(events)('full archive', () => {
         events.push('copy');
         if (fails) throw new Error('disk full');
         return { success: true };
       });
-      assert.deepEqual(events, ['pause', 'copy', 'resume']);
+      assert.deepEqual(events, ['stop:paper', 'stop:shadow', 'pause', 'copy', 'resume', 'start:paper']);
     });
   }
-  it('leaves BTC index history running during a fund-state snapshot', async () => {
+  it('leaves paper books and BTC index history alone during a fund-state snapshot', async () => {
     const events = [];
     await makeRunBackup(events)('fund state', () => { events.push('copy'); return { success: true }; }, { stopGatewayWriters: false });
     assert.deepEqual(events, ['copy']);
