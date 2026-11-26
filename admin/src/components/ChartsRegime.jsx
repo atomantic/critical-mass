@@ -11,13 +11,14 @@ import { pairQuery as buildPairQuery } from '../utils/api'
 import { deriveFillMarker } from '../utils/regimeFillMarker.mjs'
 import { deriveRegimeCumulativePnl } from '../utils/regimeFillGroups.mjs'
 import { apiGet } from '../utils/apiClient'
+import { readRegimeStatus } from '../utils/readRegimeStatus'
 import { pnlColorClass } from '../utils/pnlFormat.mjs'
 import { EMPTY_SNAPSHOT, nextRegimeStatusSeq } from '../utils/regimeStatusSnapshot.mjs'
 import { useFundStatusFreshness } from '../hooks/useFundStatusFreshness'
 
 const EMPTY_ORDERS = []
 
-function ChartsRegime({ exchange = 'coinbase', pair, fillDebounceMs = 1500 }) {
+function ChartsRegime({ exchange = 'coinbase', pair, fillDebounceMs = 1500, readInitialStatus = readRegimeStatus }) {
   const pairQuery = buildPairQuery(pair)
   const [localSnapshot, setLocalSnapshot] = useState(EMPTY_SNAPSHOT)
   const [config, setConfig] = useState(null)
@@ -103,7 +104,8 @@ function ChartsRegime({ exchange = 'coinbase', pair, fillDebounceMs = 1500 }) {
   const fetchData = useCallback(async () => {
     const session = readState.current
     if (!session?.active || session.inFlight) return
-    const readSeq = nextRegimeStatusSeq()
+    const getStatus = session.attempted ? readRegimeStatus : readInitialStatus
+    session.attempted = true
     const priorMarker = session.hasSnapshot ? session.loadedMarker : null
     const startSocketMarker = deriveFillMarker(socketStatusRef.current)
     session.inFlight = true
@@ -112,13 +114,13 @@ function ChartsRegime({ exchange = 'coinbase', pair, fillDebounceMs = 1500 }) {
     let readSucceeded = false
     try {
       const candlesQuery = pair ? `?granularity=ONE_MINUTE&limit=60&pair=${encodeURIComponent(pair)}` : '?granularity=ONE_MINUTE&limit=60'
-      const read = async (url, name) => {
-        const result = await apiGet(url, { signal: controller.signal })
+      const read = async (url, name, get = apiGet) => {
+        const result = await get(url, { signal: controller.signal })
         if (!result.ok) throw new Error(result.status ? `${name} fetch failed: HTTP ${result.status}` : result.error)
-        return result.data
+        return result
       }
       const results = await Promise.allSettled([
-        read(`/api/${exchange}/regime/status${pairQuery}`, 'Status'),
+        read(`/api/${exchange}/regime/status${pairQuery}`, 'Status', getStatus),
         read(`/api/${exchange}/regime/config${pairQuery}`, 'Config'),
         read(`/api/${exchange}/regime/fills/cycles${pairQuery}`, 'Fills'),
         read(`/api/${exchange}/candles${candlesQuery}`, 'Candles'),
@@ -127,7 +129,8 @@ function ChartsRegime({ exchange = 'coinbase', pair, fillDebounceMs = 1500 }) {
       if (!session.active) return
       const requiredFailure = results.slice(0, 3).find(result => result.status === 'rejected')
       if (requiredFailure) throw requiredFailure.reason
-      const [statusData, configData, fillsData] = results.slice(0, 3).map(result => result.value)
+      const { data: statusData, seq: readSeq } = results[0].value
+      const [configData, fillsData] = results.slice(1, 3).map(result => result.value.data)
       const candlesResult = results[3]
       const cacheResult = results[4]
       const statusMarker = deriveFillMarker(statusData.status)
@@ -158,12 +161,12 @@ function ChartsRegime({ exchange = 'coinbase', pair, fillDebounceMs = 1500 }) {
 
       const unavailable = candlesResult.status === 'rejected' || cacheResult.status === 'rejected'
       setHistoryUnavailable(unavailable)
-      if (candlesResult.status === 'fulfilled' && candlesResult.value.candles?.length) {
-        const candles = candlesResult.value.candles
+      if (candlesResult.status === 'fulfilled' && candlesResult.value.data.candles?.length) {
+        const candles = candlesResult.value.data.candles
         setHistoricalPrices(candles.map(c => ({ timestamp: c.timestamp, price: parseFloat(c.close), high: parseFloat(c.high), low: parseFloat(c.low) })).reverse())
         setHistoricalAtr(candles.map(c => ({ timestamp: c.timestamp, atr1m: parseFloat(c.high) - parseFloat(c.low), atr5m: null, realizedVol: null, volBaseline: null })).reverse())
       }
-      if (cacheResult.status === 'fulfilled' && cacheResult.value.data) initializeFromCache(cacheResult.value.data)
+      if (cacheResult.status === 'fulfilled' && cacheResult.value.data?.data) initializeFromCache(cacheResult.value.data.data)
     } catch (err) {
       if (!session.active) return
       if (!session.hasSnapshot) setError(err.message || 'Failed to load regime charts')
@@ -176,7 +179,7 @@ function ChartsRegime({ exchange = 'coinbase', pair, fillDebounceMs = 1500 }) {
         fetchFillsRef.current?.()
       }
     }
-  }, [exchange, pair, initializeFromCache]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [exchange, pair, initializeFromCache, readInitialStatus]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const fetchFills = useCallback(async () => {
     const session = readState.current
@@ -272,7 +275,7 @@ function ChartsRegime({ exchange = 'coinbase', pair, fillDebounceMs = 1500 }) {
   const market = status?.market || {}
   const position = status?.position || {}
   const regime = status?.regime || {}
-  const dryRunFilled = status?.dryRun?.filledOrders || EMPTY_ORDERS
+  const dryRunFilled = isDryRun ? (status?.dryRun?.filledOrders ?? EMPTY_ORDERS) : EMPTY_ORDERS
   const buyCount = isDryRun ? dryRunFilled.filter(f => f.side === 'buy').length : fillAggregates?.buyCount || 0
   const sellCount = isDryRun ? dryRunFilled.filter(f => f.side === 'sell').length : fillAggregates?.sellCount || 0
 

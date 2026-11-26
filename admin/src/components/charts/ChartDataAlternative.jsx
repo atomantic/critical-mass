@@ -1,22 +1,24 @@
 import Button from '../ui/Button'
-import { useEffect, useId, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { TABLE_PAGE_SIZE } from './chartDataText'
+
+const identity = row => row
+const EMPTY = []
 
 /**
  * Paginated native table. Rows are { id?, cells: string[] } or plain objects keyed by column.
  * Pagination controls are plain buttons so keyboard users can operate them, and the current
  * page is clamped (never reset) when live data shrinks the row count.
  */
-function DataTable({ caption, columns, rows, pageSize }) {
-  const [page, setPage] = useState(0)
+function DataTable({ caption, columns, rows, pageSize, page, setPage, formatRow }) {
   const pageCount = Math.max(1, Math.ceil(rows.length / pageSize))
   const safePage = Math.min(page, pageCount - 1)
   useEffect(() => {
     if (page !== safePage) setPage(safePage)
-  }, [page, safePage])
+  }, [page, safePage, setPage])
 
   const from = safePage * pageSize
-  const visible = rows.slice(from, from + pageSize)
+  const visible = rows.slice(from, from + pageSize).map(formatRow ?? identity)
 
   return (
     <div className="mt-2">
@@ -75,19 +77,27 @@ function DataTable({ caption, columns, rows, pageSize }) {
  * `summaryId` is exposed so the chart SVG can reference it via aria-describedby. The summary is
  * deliberately not an aria-live region so live ticks are not announced.
  */
-export default function ChartDataAlternative({ summaryId, summary = [], tables = [], pageSize = TABLE_PAGE_SIZE }) {
-  const baseId = useId()
+export default function ChartDataAlternative({ summaryId, summary = EMPTY, getTables, pageSize = TABLE_PAGE_SIZE }) {
+  const [open, setOpen] = useState(false)
+  const [pages, setPages] = useState({})
+  const activeTables = useMemo(() => open ? getTables?.() ?? EMPTY : EMPTY, [open, getTables])
   return (
     <div className="mt-2 text-xs text-gray-400">
       <div id={summaryId} data-chart-summary>
         {summary.map((line, i) => <p key={i} className="mb-0.5">{line}</p>)}
       </div>
-      <details className="mt-1" data-chart-data>
+      <details className="mt-1" data-chart-data onToggle={event => setOpen(event.currentTarget.open)}>
         <summary className="cursor-pointer text-gray-300 hover:text-gray-100 focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-blue-400 w-fit">
           View chart data
         </summary>
-        {tables.map((table, i) => (
-          <DataTable key={`${baseId}-${i}`} pageSize={pageSize} {...table} />
+        {activeTables.map((table, i) => (
+          <DataTable
+            key={i}
+            pageSize={pageSize}
+            page={pages[i] ?? 0}
+            setPage={page => setPages(previous => ({ ...previous, [i]: page }))}
+            {...table}
+          />
         ))}
       </details>
     </div>

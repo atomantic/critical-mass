@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { memo, useState, useMemo } from 'react'
 import { buildPnlGeometry, PNL_VIEW } from './cumulativePnlGeometry'
 import { formatCurrency } from './chartUtils'
 import { pnlColorClass } from '../../utils/pnlFormat.mjs'
@@ -52,4 +52,4 @@ function CumulativePnlChart({ points }) {
   )
 }
 
-export default CumulativePnlChart
+export default memo(CumulativePnlChart)

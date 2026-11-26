@@ -74,17 +74,14 @@ function RegimePriceChart({
       summary.push(`ATR trigger bands (${kFactor}x ATR of ${formatUsd(atr)}): anchor ${formatUsd(anchorPrice)}, upper trigger ${formatUsd(anchorPrice + distance)}, lower trigger ${formatUsd(anchorPrice - distance)}.`)
     }
     summary.push(describeRegimeIntervals(intervals, 'the latest sample'))
-    const priceRows = chartData.map(d => ({
-      time: formatStamp(d.timestamp),
-      price: isNum(d.price) ? formatUsd(d.price) : 'missing',
-    }))
     return {
       summary,
-      tables: [
+      getTables: () => [
         {
           caption: `Price samples from ${formatClock(start)} to ${formatClock(end)}`,
           columns: [{ key: 'time', label: 'Time' }, { key: 'price', label: 'Price (USD)' }],
-          rows: priceRows,
+          rows: chartData,
+          formatRow: d => ({ time: formatStamp(d.timestamp), price: isNum(d.price) ? formatUsd(d.price) : 'missing' }),
         },
         {
           caption: 'Regime intervals in the plotted window',
@@ -253,7 +250,7 @@ function RegimePriceChart({
           </g>
         )}
       </svg>
-      <ChartDataAlternative summaryId={summaryId} summary={textAlternative.summary} tables={textAlternative.tables} />
+      <ChartDataAlternative summaryId={summaryId} summary={textAlternative.summary} getTables={textAlternative.getTables} />
     </div>
   )
 }

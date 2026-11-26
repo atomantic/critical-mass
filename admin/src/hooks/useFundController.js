@@ -1,10 +1,11 @@
-import { useState, useEffect, useEffectEvent, useLayoutEffect, useRef } from 'react'
+import { useState, useEffect, useEffectEvent, useLayoutEffect, useCallback, useRef } from 'react'
 import { useRealtimeConnection } from './useTradeEvents'
 import useRegimeStateEvents from './useRegimeStateEvents'
 import useRealtimeRefresh from './useRealtimeRefresh'
 import findFund from '../utils/findFund'
 import { pairQuery as buildPairQuery } from '../utils/api'
 import { apiGet, apiPost, describeMutationFailure } from '../utils/apiClient'
+import { readRegimeStatus } from '../utils/readRegimeStatus'
 
 // Strategy-aware tab configuration
 const getTabsForStrategy = (strategy) => {
@@ -111,12 +112,23 @@ export default function useFundController({ location, navigate, addToast, isGlob
   const committedFundRef = useRef(selectedFund)
   const actionFenceRef = useRef({ navigationGeneration: 0, actionGeneration: 0 })
   const summaryRequestRef = useRef({ generation: 0, controller: null })
-  const statusRequestRef = useRef({ generation: 0, controller: null })
+  const statusRequestRef = useRef({ generation: 0, controller: null, routeSnapshot: null })
+  const pathname = location.pathname
+  const readInitialRegimeStatus = useCallback(async (url, options) => {
+    const snapshot = statusRequestRef.current.routeSnapshot
+    if (snapshot?.pathname === pathname && snapshot.url === url && Date.now() < snapshot.expiresAt) {
+      options?.signal?.throwIfAborted()
+      statusRequestRef.current.routeSnapshot = null
+      return snapshot.result
+    }
+    return readRegimeStatus(url, options)
+  }, [pathname])
 
   const invalidateStatusRead = () => {
     statusRequestRef.current.generation += 1
     statusRequestRef.current.controller?.abort()
     statusRequestRef.current.controller = null
+    statusRequestRef.current.routeSnapshot = null
   }
 
   useLayoutEffect(() => {
@@ -273,7 +285,7 @@ export default function useFundController({ location, navigate, addToast, isGlob
   }
 
   // Fetch regime status (for header controls)
-  const fetchRegimeStatus = async () => {
+  const fetchRegimeStatus = async (fresh = true) => {
     if (currentStrategy !== 'regime') return
     const reqFund = `${currentExchange}::${currentPair}`
     const navigationGeneration = actionFenceRef.current.navigationGeneration
@@ -281,12 +293,14 @@ export default function useFundController({ location, navigate, addToast, isGlob
     statusRequestRef.current.controller?.abort()
     const requestGeneration = ++statusRequestRef.current.generation
     statusRequestRef.current.controller = controller
+    statusRequestRef.current.routeSnapshot = null
     const isCurrent = () =>
       committedFundRef.current === reqFund &&
       actionFenceRef.current.navigationGeneration === navigationGeneration &&
       statusRequestRef.current.generation === requestGeneration
     try {
-      const result = await apiGet(`/api/${currentExchange}/regime/status${pairQuery()}`, { signal: controller.signal })
+      const url = `/api/${currentExchange}/regime/status${pairQuery()}`
+      const result = await readRegimeStatus(url, { signal: controller.signal, fresh })
       if (!isCurrent()) return
       const data = result.data
       if (!result.ok || typeof data?.status?.isRunning !== 'boolean') {
@@ -296,6 +310,9 @@ export default function useFundController({ location, navigate, addToast, isGlob
         setStatusError('Failed to fetch engine status')
         return
       }
+      // A lazy route may mount after the shell's transport has already settled.
+      // Its first read may reuse this stamped response for the same route visit.
+      if (!fresh) statusRequestRef.current.routeSnapshot = { url, pathname, result, expiresAt: Date.now() + 5000 }
       if (data.engineDown === true || data.status.engineDown === true) {
         setRegimeRunning(null)
         setRegimeDryRun(null)
@@ -472,7 +489,7 @@ export default function useFundController({ location, navigate, addToast, isGlob
   // One read per fund, then pushed `regime:state` events; reconciled on socket
   // reconnect and tab visibility instead of a timer (#1878).
   useEffect(() => {
-    if (pollRegime) fetchRegimeStatus()
+    if (pollRegime) fetchRegimeStatus(false)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pollRegime, currentExchange, currentPair, currentStrategy])
   useRegimeStateEvents({
@@ -512,7 +529,7 @@ export default function useFundController({ location, navigate, addToast, isGlob
     // Tabs
     tabs, isActiveTab, buildPath,
     // Reads
-    fetchExchanges, retryExchanges, fetchData, refreshFund, fetchRegimeStatus, handleExchangeChange,
+    fetchExchanges, retryExchanges, fetchData, refreshFund, fetchRegimeStatus, readInitialRegimeStatus, handleExchangeChange,
     // Lifecycle actions and their dialog state
     starting, stopping, resetting, closing, reopening,
     closeFundDialogOpen, setCloseFundDialogOpen, closeFundReason, setCloseFundReason,

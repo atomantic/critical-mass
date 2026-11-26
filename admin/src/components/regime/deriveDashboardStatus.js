@@ -1,6 +1,8 @@
 import { useMemo, useRef } from 'react'
 import { shareStructure } from '../../utils/structuralShare.mjs'
 
+const EMPTY_ORDERS = []
+
 // Select the status snapshot and panel inputs without changing fund/accounting data.
 export function deriveDashboardStatus(status, config) {
   const isDryRun = status?.isDryRun || config?.dryRun
@@ -11,7 +13,7 @@ export function deriveDashboardStatus(status, config) {
   const risk = status?.risk || {}
   const dryRunState = status?.dryRun || {}
   // Use pendingOrders from dryRunState for dry-run, from status for live
-  const pendingOrdersList = isDryRun ? (dryRunState?.pendingOrders || []) : (status?.pendingOrders || [])
+  const pendingOrdersList = isDryRun ? (dryRunState?.pendingOrders ?? EMPTY_ORDERS) : (status?.pendingOrders ?? EMPTY_ORDERS)
   // Only intents that actually need an operator: an in-flight dispatch is
   // reported by the engine but resolves itself within moments.
   const placementIntents = isDryRun ? [] : (status?.placementIntents || []).filter(i => i?.needsAttention)

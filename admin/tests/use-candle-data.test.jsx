@@ -951,3 +951,63 @@ describe('useCandleData display limit and live candle preservation', () => {
     expect(bucket60k.price).toBe(135)
   })
 })
+
+it('shares one history read and one missing-timeframe retry across 11 charts', async () => {
+  vi.useFakeTimers()
+  try {
+    const bar = { timestamp: 0, open: 100, high: 105, low: 95, close: 100 }
+    const first = makeFetchMock({ '1m': [bar] })
+    const retry = makeFetchMock({ '5m': [bar], '1w': [bar] })
+    const transport = vi.fn()
+      .mockImplementationOnce(first)
+      .mockImplementationOnce(retry)
+    vi.stubGlobal('fetch', transport)
+
+    const ready = renderHook(() => useCandleData('coinbase', null, null, { defaultInterval: '1m' }))
+    const missing = Array.from({ length: 10 }, (_, i) => renderHook(() =>
+      useCandleData('coinbase', null, null, { defaultInterval: i === 9 ? '1w' : '5m' })))
+    await act(async () => {})
+    expect(transport).toHaveBeenCalledTimes(1)
+    expect(ready.result.current.chartData).toHaveLength(1)
+    expect(missing.every(hook => hook.result.current.isLoading)).toBe(true)
+
+    missing[0].unmount()
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    expect(transport).toHaveBeenCalledTimes(2)
+    expect(missing.slice(1).every(hook => hook.result.current.chartData.length === 1)).toBe(true)
+  } finally {
+    cleanup()
+    vi.useRealTimers()
+  }
+})
+
+it('keeps idle chart data stable and flushes buffered ticks when the tab returns', async () => {
+  vi.useFakeTimers()
+  const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
+  try {
+    vi.stubGlobal('fetch', makeFetchMock({ '1m': [
+      { timestamp: 0, open: 100, high: 105, low: 95, close: 100 },
+    ] }))
+    const { result, rerender } = renderHook(({ tick }) => useCandleData('coinbase', tick, 1000, { defaultInterval: '1m' }), {
+      initialProps: { tick: null },
+    })
+    await act(async () => {})
+    const initial = result.current.chartData
+    expect(initial).toHaveLength(1)
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    expect(result.current.chartData).toBe(initial)
+
+    visibility.mockReturnValue('hidden')
+    act(() => document.dispatchEvent(new Event('visibilitychange')))
+    rerender({ tick: 120 })
+    await act(async () => { await vi.advanceTimersByTimeAsync(10000) })
+    expect(result.current.chartData).toBe(initial)
+
+    visibility.mockReturnValue('visible')
+    act(() => document.dispatchEvent(new Event('visibilitychange')))
+    expect(result.current.chartData[0].price).toBe(120)
+  } finally {
+    cleanup()
+    vi.useRealTimers()
+  }
+})

@@ -49,13 +49,13 @@ function ChartPlaceholder({ height, label }) {
   )
 }
 
-function RegimeDashboard({ exchange = 'coinbase', pair }) {
+function RegimeDashboard({ exchange = 'coinbase', pair, readInitialStatus }) {
   const pairQuery = buildPairQuery(pair)
   const { addToast } = useToast()
   const {
     status, config, loading, fillsLoading, chartLoading, presetsLoading, error, stale, retry, fillsUnavailable, liveFills, fillAggregates, presets, presetsError, retryPresets, isRunning, prevPriceRef,
     priceHistory, atrHistory, regimeHistory, fetchStatus, fetchConfig, fetchFills,
-  } = useRegimeDashboardData(exchange, pair, pairQuery)
+  } = useRegimeDashboardData(exchange, pair, pairQuery, readInitialStatus)
   const {
     dcaState, dcaStateError, retryDcaState, convertPreview, converting, showConvertConfirm, setShowConvertConfirm,
     handlePreviewConvert, handleExecuteConvert,
@@ -158,7 +158,6 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                 <CelestialVisualization
                   celestial={status.celestial}
                   pendingOrders={pendingOrdersList}
-                  currentPrice={market.lastPrice}
                   maxUsdcDeployed={config?.maxUsdcDeployed}
                   baseCurrency={asset}
                 />

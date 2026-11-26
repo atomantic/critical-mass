@@ -23,7 +23,7 @@ import useFundController from './hooks/useFundController'
 import { getBaseCurrency, getQuoteCurrency } from './utils/productId.mjs'
 
 const globalRoutes = [
-  { path: routePaths.overview, render: onAddFund => <Overview onAddFund={onAddFund} /> },
+  { path: routePaths.overview, render: props => <Overview {...props} /> },
   { path: routePaths.notifications, Page: NotificationsConfig },
   { path: routePaths.backups, Page: BackupRestore },
   { path: routePaths.systems, Page: Systems },
@@ -93,7 +93,7 @@ function AppContent() {
     summary, loading, error, summaryWanted, pollRegime,
     regimeRunning, regimeDryRun, regimeLifecycle, statusError, wsConnected,
     tabs, isActiveTab, buildPath,
-    fetchExchanges, retryExchanges, fetchData, refreshFund, fetchRegimeStatus, handleExchangeChange,
+    fetchExchanges, retryExchanges, fetchData, refreshFund, fetchRegimeStatus, readInitialRegimeStatus, handleExchangeChange,
     starting, stopping, resetting, closing, reopening,
     closeFundDialogOpen, setCloseFundDialogOpen, closeFundReason, setCloseFundReason,
     reopenFundDialogOpen, setReopenFundDialogOpen, resetDryRunConfirm, setResetDryRunConfirm,
@@ -229,7 +229,13 @@ function AppContent() {
               <Suspense fallback={<RouteLoadingFallback />}>
                 <Routes>
                   {globalRoutes.map(({ path, Page, props, render }) => (
-                    <Route key={path} path={path} element={Page ? <Page {...props} /> : render(openAddFund)} />
+                    <Route key={path} path={path} element={Page ? <Page {...props} /> : render({
+                      onAddFund: openAddFund,
+                      funds: exchanges,
+                      fundsLoaded: exchangesLoaded,
+                      fundsError: exchangesError,
+                      refreshFunds: fetchExchanges,
+                    })} />
                   ))}
 
                   {/* Pair-based routes - strategy determined from exchange config.
@@ -240,22 +246,22 @@ function AppContent() {
                   {isFundRoute && (<>
                     <Route path={routePaths.fund} element={
                       currentStrategy === 'regime'
-                        ? <RegimeDashboard key={`${currentExchange}-${currentPair}`} exchange={currentExchange} pair={currentPair} />
+                        ? <RegimeDashboard key={`${currentExchange}-${currentPair}`} exchange={currentExchange} pair={currentPair} readInitialStatus={readInitialRegimeStatus} />
                         : <Dashboard key={`${currentExchange}-${currentPair}`} summary={summary} onRefresh={refreshFund} exchange={currentExchange} pair={currentPair} />
                     } />
                     <Route path={routePaths.costBasis} element={
                       currentStrategy === 'regime'
-                        ? <CostBasisRegime key={`${currentExchange}-${currentPair}`} exchange={currentExchange} pair={currentPair} />
+                        ? <CostBasisRegime key={`${currentExchange}-${currentPair}`} exchange={currentExchange} pair={currentPair} readInitialStatus={readInitialRegimeStatus} />
                         : <CostBasisDCA key={`${currentExchange}-${currentPair}`} summary={summary} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} exchange={currentExchange} pair={currentPair} />
                     } />
                     <Route path={routePaths.transactions} element={
                       currentStrategy === 'regime'
-                        ? <TransactionsRegime key={`${currentExchange}-${currentPair}`} exchange={currentExchange} pair={currentPair} />
+                        ? <TransactionsRegime key={`${currentExchange}-${currentPair}`} exchange={currentExchange} pair={currentPair} readInitialStatus={readInitialRegimeStatus} />
                         : <TransactionsDCA transactions={summary?.transactions} baseCurrency={getBaseCurrency(summary?.config?.productId)} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />
                     } />
                     <Route path={routePaths.charts} element={
                       currentStrategy === 'regime'
-                        ? <ChartsRegime key={`${currentExchange}-${currentPair}`} exchange={currentExchange} pair={currentPair} />
+                        ? <ChartsRegime key={`${currentExchange}-${currentPair}`} exchange={currentExchange} pair={currentPair} readInitialStatus={readInitialRegimeStatus} />
                         : <ChartsDCA summary={summary} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />
                     } />
                     <Route path={routePaths.config} element={<ConfigEditor key={`${currentExchange}-${currentPair}`} config={summary?.config} regimeDefaults={summary?.regimeDefaults} loadError={error || (!loading && !summary?.config ? 'Configuration is unavailable' : null)} onRetry={fetchData} onSave={refreshFund} exchange={currentExchange} pair={currentPair} strategy={currentStrategy} engineRunning={regimeRunning} engineDryRun={regimeDryRun} onRestart={fetchRegimeStatus} />} />

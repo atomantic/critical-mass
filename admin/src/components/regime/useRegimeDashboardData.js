@@ -3,10 +3,11 @@ import { useRegimeEvents } from '../../hooks/useTradeEvents'
 import { useChartDataBuffer } from '../../hooks/useChartDataBuffer'
 import { createRequestOwner } from '../../utils/requestOwner.mjs'
 import { apiGet } from '../../utils/apiClient'
+import { readRegimeStatus } from '../../utils/readRegimeStatus'
 import { shareStructure } from '../../utils/structuralShare.mjs'
-import { EMPTY_SNAPSHOT, STATUS_STALE_MS, nextRegimeStatusSeq, toUnreachableStatus } from '../../utils/regimeStatusSnapshot.mjs'
+import { EMPTY_SNAPSHOT, STATUS_STALE_MS, toUnreachableStatus } from '../../utils/regimeStatusSnapshot.mjs'
 
-export default function useRegimeDashboardData(exchange, pair, pairQuery) {
+export default function useRegimeDashboardData(exchange, pair, pairQuery, readInitialStatus = readRegimeStatus) {
   const [localSnapshot, setLocalSnapshot] = useState(EMPTY_SNAPSHOT)
   // seq of the snapshot that went STATUS_STALE_MS without a successor
   const [silentSeq, setSilentSeq] = useState(null)
@@ -34,7 +35,9 @@ export default function useRegimeDashboardData(exchange, pair, pairQuery) {
   // the newest read may commit, so a slow older response cannot resurrect a
   // pre-fill snapshot over a newer one.
   const [fillsOwner] = useState(createRequestOwner)
-  const [statusOwner] = useState(createRequestOwner)
+  const [statusOwner] = useState(() => createRequestOwner({
+    readImpl: (url, { initialReader, ...options }) => (initialReader ?? readRegimeStatus)(url, options),
+  }))
   const [configOwner] = useState(createRequestOwner)
   useEffect(() => () => {
     fillsOwner.invalidate()
@@ -81,13 +84,16 @@ export default function useRegimeDashboardData(exchange, pair, pairQuery) {
 
   // Each resource keeps its last good snapshot independently. An unsuccessful
   // owned read records an error without replacing that snapshot with empty data.
-  const readSnapshot = useCallback(async (name, owner, commit) => {
+  const readSnapshot = useCallback(async (name, owner, commit, options) => {
     setReads(prev => ({ ...prev, [name]: { ...prev[name], state: 'loading' } }))
-    const { owned, ok, data } = await owner.read(`/api/${exchange}/regime/${name === 'fills' ? 'fills/cycles' : name}${pairQuery}`)
+    const { owned, ok, data, seq } = await owner.read(`/api/${exchange}/regime/${name === 'fills' ? 'fills/cycles' : name}${pairQuery}`, options)
     if (!owned) return false
     const value = name === 'fills' ? data : data?.[name]
     const valid = ok && (name === 'fills' ? Array.isArray(value?.detailFills) : value && typeof value === 'object')
-    if (valid) commit(value)
+    if (valid) {
+      if (name === 'status') commit(value, seq)
+      else commit(value)
+    }
     setReads(prev => ({ ...prev, [name]: valid
       ? { state: 'ready', hasData: true }
       : { ...prev[name], state: 'error', error: `${name === 'fills' ? 'Fills' : name === 'status' ? 'Status' : 'Configuration'} request failed` },
@@ -95,10 +101,11 @@ export default function useRegimeDashboardData(exchange, pair, pairQuery) {
     return Boolean(valid)
   }, [exchange, pairQuery])
 
-  const fetchStatus = useCallback(() => {
-    const seq = nextRegimeStatusSeq()
-    return readSnapshot('status', statusOwner, value => setLocalSnapshot({ status: value, seq }))
-  }, [readSnapshot, statusOwner])
+  const fetchStatus = useCallback((fresh = true) =>
+    readSnapshot('status', statusOwner, (value, seq) => setLocalSnapshot({ status: value, seq }), {
+      fresh, initialReader: fresh ? undefined : readInitialStatus,
+    }),
+  [readInitialStatus, readSnapshot, statusOwner])
 
   // The engine's process dying sends nothing to the browser, and the socket's
   // "Live" state only tracks the gateway. Mark a running snapshot silent once
@@ -194,7 +201,7 @@ export default function useRegimeDashboardData(exchange, pair, pairQuery) {
   useEffect(() => {
     setChartLoading(true)
     setPresetsLoading(true)
-    fetchStatus()
+    fetchStatus(false)
     fetchConfig()
     fetchFills()
     fetchPresets()

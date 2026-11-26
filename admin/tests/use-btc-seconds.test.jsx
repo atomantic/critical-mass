@@ -182,3 +182,21 @@ it('releases the room and every listener on unmount', async () => {
   expect(socket.rooms).toEqual([])
   expect(socket.count('btc-feed:update') + socket.count('connect')).toBe(0)
 })
+
+it('pauses clock-only updates while hidden and reconciles the age on return', async () => {
+  const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
+  try {
+    const { result } = renderHook(() => useBtcSeconds(300))
+    await reply(0)
+    visibility.mockReturnValue('hidden')
+    act(() => document.dispatchEvent(new Event('visibilitychange')))
+    await act(async () => { vi.advanceTimersByTime(5000) })
+    expect(result.current.ages.coinbase).toBe(400)
+
+    visibility.mockReturnValue('visible')
+    act(() => document.dispatchEvent(new Event('visibilitychange')))
+    expect(result.current.ages.coinbase).toBe(5400)
+  } finally {
+    visibility.mockRestore()
+  }
+})

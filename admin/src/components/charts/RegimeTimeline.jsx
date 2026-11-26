@@ -62,7 +62,7 @@ function RegimeTimeline({
         `Window: ${formatClock(timeStart)} to now (${formatClock(now)}).`,
         describeRegimeIntervals(intervals),
       ],
-      tables: [{
+      getTables: () => [{
         caption: `Regime intervals from ${formatClock(timeStart)} to now`,
         columns: REGIME_INTERVAL_COLUMNS,
         rows: regimeIntervalRows(intervals),
@@ -154,7 +154,7 @@ function RegimeTimeline({
           </g>
         )}
       </svg>
-      <ChartDataAlternative summaryId={summaryId} summary={textAlternative.summary} tables={textAlternative.tables} />
+      <ChartDataAlternative summaryId={summaryId} summary={textAlternative.summary} getTables={textAlternative.getTables} />
     </div>
   )
 }

@@ -35,7 +35,7 @@ function setAlerts(next) {
 async function refreshAgain() {
   await act(async () => {
     socket.fire('sentinel:status', {})
-    await vi.advanceTimersByTimeAsync(0)
+    await vi.advanceTimersByTimeAsync(3000)
   })
 }
 
@@ -150,8 +150,34 @@ it('re-reads once more when a change arrives while a read is in flight', async (
       : { ok: true, data: { items: [{ id: 'c1', title: 'Feed outage', severity: 'critical' }], total: 1, limit: 500, offset: 0 } }
   })
   render(<AlertBanner />)
-  await act(async () => { socket.fire('sentinel:alert', { id: 'c1' }) })
+  await act(async () => {
+    socket.fire('sentinel:alert', { id: 'c1' })
+    await vi.advanceTimersByTimeAsync(3000)
+  })
   expect(reads).toHaveLength(1)
   await act(async () => { release(); await vi.advanceTimersByTimeAsync(0) })
   expect(screen.getByRole('alert').textContent).toContain('1 critical alert: Feed outage')
+  expect(reads.filter(url => url.endsWith('/status'))).toHaveLength(2)
+})
+
+it('coalesces repeated status frames into a single trailing read after three seconds', async () => {
+  vi.useFakeTimers()
+  apiGet.mockClear()
+  setAlerts([])
+  render(<AlertBanner />)
+  await act(async () => {})
+  setAlerts([{ id: 'w1', title: 'Slow feed', severity: 'warning' }])
+
+  await act(async () => {
+    socket.fire('sentinel:status', {})
+    await vi.advanceTimersByTimeAsync(1000)
+    socket.fire('sentinel:status', {})
+    await vi.advanceTimersByTimeAsync(1999)
+    socket.fire('sentinel:status', {})
+  })
+  expect(apiGet).toHaveBeenCalledTimes(1)
+
+  await act(async () => { await vi.advanceTimersByTimeAsync(1) })
+  expect(apiGet.mock.calls.filter(([url]) => url.endsWith('/status'))).toHaveLength(2)
+  expect(screen.getByRole('status').textContent).toContain('1 warning: Slow feed')
 })
