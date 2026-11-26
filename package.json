@@ -30,6 +30,7 @@
     "test": "node scripts/test.js",
     "test:watch": "node scripts/test.js --watch",
     "test:changed": "node scripts/test.js --changed",
+    "test:browser-smoke": "node scripts/admin-react19-browser-smoke.js",
     "test:admin": "npm test --prefix admin",
     "lint:admin": "npm run lint --prefix admin",
     "test:all": "npm test && npm run test:admin",
