@@ -8,6 +8,7 @@ import useReducedMotion from '../../hooks/useReducedMotion'
 import useCanvasActive from '../../hooks/useCanvasActive'
 import { plural } from '../../utils/plural.mjs'
 
+const EMPTY_BODIES = []
 const MOTION_PAUSED_STORAGE_KEY = 'celestial-motion-paused'
 
 // Explicit operator choice wins over the OS preference; null means "follow
@@ -24,7 +25,7 @@ function readStoredMotionPreference() {
  * Card wrapper: header, 3D canvas container, and legend
  */
 const CelestialCard = ({ celestial, pendingOrders = [], currentPrice, maxUsdcDeployed, baseCurrency = 'BTC', lazyMount = false }) => {
-  const bodies = celestial?.bodies || []
+  const bodies = celestial?.bodies || EMPTY_BODIES
 
   const prefersReducedMotion = useReducedMotion()
   const [explicitMotionPaused, setExplicitMotionPaused] = useState(readStoredMotionPreference)

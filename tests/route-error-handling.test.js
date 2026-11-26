@@ -173,51 +173,60 @@ describe('route error handling (issue #530)', () => {
   });
 
   describe('pre-auth rate-limit path (requireAuth / operator-auth.js)', () => {
-    it('returns 429 JSON with a Retry-After header when requireAuth hits a busy KDF, instead of an unhandled rejection or HTML', async () => {
+    it('returns 429 JSON with Retry-After when the pre-auth KDF queue is full', async () => {
       const authFile = tmpAuthFile();
       seedPassword(authFile);
-      const original = crypto.scrypt;
+      const key = Buffer.from(readJSON(authFile).hash, 'hex');
       let release;
       let started;
       const hashing = new Promise((resolve) => { started = resolve; });
-      const scryptMock = (...args) => {
-        release = () => original(...args);
+      const scryptMock = (password, salt, length, callback) => {
+        if (release) return setImmediate(callback, null, key);
+        let pending = true;
+        release = () => {
+          if (!pending) return;
+          pending = false;
+          setImmediate(callback, null, key);
+        };
         started();
       };
       const realScrypt = crypto.scrypt;
       crypto.scrypt = scryptMock;
 
-      const auth = createOperatorAuth({ authFile, readJSON, writeJSON });
+      const auth = createOperatorAuth({ authFile, readJSON, writeJSON, trustProxy: true });
       const app = express();
+      let received = 0;
+      let queued;
+      const queueFilled = new Promise((resolve) => { queued = resolve; });
       app.use(express.json());
       auth.registerSessionRoutes(app);
+      app.use('/api', (req, res, next) => {
+        next();
+        if (++received === 16) queued();
+      });
       app.use('/api', auth.requireAuth);
       app.get('/api/protected', (req, res) => res.json({ success: true }));
       app.use((err, req, res, next) => errorMiddleware(err, req, res, next));
 
       const { server, baseUrl } = await listen(app);
+      const request = (peer) => fetch(`${baseUrl}/api/protected`, {
+        headers: { Authorization: `Bearer ${PASSWORD}`, 'X-Forwarded-For': `192.0.2.${peer}` },
+      });
+      const admitted = [request(1)];
       try {
-        // First Bearer-authenticated request starts hashing and hangs there;
-        // the second reaches requireAuth's unguarded `await authenticate()`
-        // while hashBusy is true — this must forward to the JSON error
-        // middleware (Express 5 auto-catches the rejected async middleware),
-        // not fall through to the built-in HTML handler.
-        const first = fetch(`${baseUrl}/api/protected`, { headers: { Authorization: `Bearer ${PASSWORD}` } });
         await hashing;
-        try {
-          const second = await fetch(`${baseUrl}/api/protected`, { headers: { Authorization: `Bearer ${PASSWORD}` } });
-          assert.equal(second.status, 429);
-          assert.match(second.headers.get('content-type') || '', /application\/json/);
-          assert.equal(second.headers.get('retry-after'), '1');
-          const body = await second.json();
-          assert.equal(body.success, false);
-          assert.equal(typeof body.error, 'string');
-          assert.doesNotMatch(body.error, /</); // no HTML markup leaked
-        } finally {
-          release();
-        }
-        assert.equal((await first).status, 200);
+        for (let peer = 2; peer <= 16; peer++) admitted.push(request(peer));
+        await queueFilled;
+        const overflow = await request(17);
+        assert.equal(overflow.status, 429);
+        assert.match(overflow.headers.get('content-type') || '', /application\/json/);
+        assert.equal(overflow.headers.get('retry-after'), '1');
+        assert.deepEqual(await overflow.json(), { success: false, error: 'Password verification queue is full; retry later' });
+        release();
+        assert.deepEqual((await Promise.all(admitted)).map(res => res.status), Array(16).fill(200));
       } finally {
+        release?.();
+        await Promise.allSettled(admitted);
         crypto.scrypt = realScrypt;
         await close(server);
       }

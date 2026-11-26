@@ -1,5 +1,6 @@
 import React from 'react'
-import { ConfigTooltip, REGIME_TOOLTIPS } from './RegimeHelp'
+import { ConfigTooltip } from './RegimeHelp'
+import { REGIME_TOOLTIPS } from './regimeTooltips'
 import { formatPriceByMagnitude } from '../charts/chartUtils'
 import { MACRO_COLORS } from './regimeStyles'
 

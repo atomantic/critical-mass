@@ -21,7 +21,7 @@ const { trackPendingWrite } = require('./pending-writes');
  *      writes through the user callback (e.g. fillLedger.persist()
  *      inside a retry that fired right before stop()).
  *
- * @returns {{ trackedSetTimeout: Function, cancelAll: () => number, size: () => number, isStopped: () => boolean }}
+ * @returns {{ trackedSetTimeout: Function, cancel: (id: ReturnType<typeof setTimeout>) => void, cancelAll: () => number, size: () => number, isStopped: () => boolean }}
  */
 const createTimerTracker = () => {
   const pending = new Set();

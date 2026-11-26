@@ -2,7 +2,7 @@
 
 ## Overview
 
-Critical-mass runs as 5 PM2 processes: a thin API gateway and 3 isolated engine processes plus the admin UI.
+Production runs a thin API gateway and three isolated engine processes. The gateway serves the built admin UI.
 
 ```
 ┌──────────────────────────────────┐
@@ -21,10 +21,10 @@ Critical-mass runs as 5 PM2 processes: a thin API gateway and 3 isolated engine 
 │ CB/Gem WS  │  │                │
 └────────────┘  └────────────────┘
 
-┌────────────┐  ┌────────────┐
-│ cm-cryptocom│  │ cm-ui      │
-│ IPC :5574   │  │ Vite dev   │
-└─────────────┘  └────────────┘
+┌─────────────┐
+│ cm-cryptocom│
+│ IPC :5574   │
+└─────────────┘
 ```
 
 ## IPC Layer (`src/ipc/`)
@@ -158,12 +158,12 @@ Fund health and the selected exchange summary retain `startup` (`state`, `error`
 
 ## PM2 Config
 
-Defined in `ecosystem.config.cjs` with 5 processes: `critical-mass` (gateway), `critical-mass-coinbase`, `critical-mass-gemini`, `critical-mass-cryptocom`, `critical-mass-ui`.
+Production selects `critical-mass` (gateway), `critical-mass-coinbase`, `critical-mass-gemini` and `critical-mass-cryptocom` from `ecosystem.config.cjs`. Set `CRITICAL_MASS_DEV_UI=1` and select `--only critical-mass-ui` to run the development UI separately under PM2.
 
 Native npm lifecycle commands use `scripts/pm2-stack.js`. They wait for the
 gateway stop command and verify its stopped state before stopping any engine.
 Start/restart recreates the stack to refresh environment settings, submits engine
-starts before the gateway/UI, and saves only when all five report online. This
+starts before the gateway, and saves only when all four report online. This
 PM2 status check is not a fund-readiness or migration check; upgrades still use
 the explicit procedure in [UPGRADE.md](../UPGRADE.md). Stop failures abort the
 sequence, and unrelated PM2 processes are left untouched. In Docker,
@@ -172,7 +172,7 @@ sequence, and unrelated PM2 processes are left untouched. In Docker,
 
 ## Development topology
 
-`npm run dev` (`scripts/dev.js`) supervises only two children: the gateway (`server.js`) and the Vite UI. The engines are separate PM2 processes that the gateway connects to as IPC clients; with none running, regime commands return HTTP 503 (`Engine unavailable: IPC not connected`). Start them first with `pm2 start ecosystem.config.cjs --only critical-mass-coinbase,critical-mass-gemini,critical-mass-cryptocom` and remove them with `pm2 delete` on the same names. Do not run the production `critical-mass`/`critical-mass-ui` processes at the same time (port conflict). Engines auto-resume configured funds, so use a separate development configuration with disabled or dry-run funds.
+`npm run dev` (`scripts/dev.js`) supervises only two children: the gateway (`server.js`) and the Vite UI. The engines are separate PM2 processes that the gateway connects to as IPC clients; with none running, regime commands return HTTP 503 (`Engine unavailable: IPC not connected`). Start them first with `pm2 start ecosystem.config.cjs --only critical-mass-coinbase,critical-mass-gemini,critical-mass-cryptocom` and remove them with `pm2 delete` on the same names. Use a different `PORT` for the development gateway if the production gateway is already running. Engines auto-resume configured funds, so use a separate development configuration with disabled or dry-run funds.
 
 ## Gateway startup order
 
@@ -278,9 +278,9 @@ Every start reapplies `max_size=20M`, `retain=5`, `compress=true` and
 failure warns without failing startup; retry startup when network access is
 available. Rotation is a PM2-wide module and also covers other managed apps.
 
-Docker and Umbrel bake the same module and settings into `/opt/pm2-home`,
-owned by UID 1000 and selected by `PM2_HOME`. `pm2-runtime` starts the module
-from this home alongside the stack; startup requires no module download.
+Docker and Umbrel images lock the module with PM2 under `/opt/pm2` and register
+it and its settings in `/opt/pm2-home`, owned by UID 1000 and selected by
+`PM2_HOME`. `pm2-runtime` starts the module from this home alongside the stack. Startup requires no module download.
 Keep this image-owned home outside the persistent `data/` and `logs/` mounts.
 PM2 rotates the files in the mounted logs directory, keeping five compressed
 archives per log. The default size check runs every 30 seconds, so a burst can

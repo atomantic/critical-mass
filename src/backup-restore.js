@@ -126,7 +126,7 @@ const inspectBackup = (filename, { paths: pathOverrides } = {}) => {
   if (!resolved.ok) return { success: false, error: resolved.error };
 
   const archive = inspectArchivePaths(resolved.zipPath);
-  if (!archive.ok) return { success: false, code: archive.code, error: archive.error };
+  if (archive.ok === false) return { success: false, code: archive.code, error: archive.error };
   const inspectLayout = (snapshot, destinationConfig) => {
     const layout = describeLayoutTranslation({ zipPath: resolved.zipPath, archive, snapshot, destinationConfig });
     const pathsToWrite = projectedArchivePaths(archive.entries, {
@@ -358,7 +358,7 @@ const checkRestorePreconditions = async (filename, { paths: pathOverrides, legac
   const integrityFailure = checkTailFailure(integrity, 'Archive integrity check failed');
   if (integrityFailure) return { ok: false, code: 'archive-corrupt', error: `Archive failed its integrity check: ${integrityFailure.error}. No files were changed.` };
   const archive = await inspectArchivePathsAsync(zipPath);
-  if (!archive.ok) return archive;
+  if (archive.ok === false) return archive;
   const { entries, members } = archive;
   const archivedJournals = dcaImportJournalPaths(entries);
   if (archivedJournals.length > 0) return { ok: false, ...archivedDcaImportRefusal(archivedJournals) };
@@ -440,7 +440,7 @@ const extractVerifiedArchive = (sourceZipPath, dataDir, logger) => {
     const pinnedZipPath = path.join(pinnedDir, 'archive.zip');
     fs.copyFileSync(sourceZipPath, pinnedZipPath, fs.constants.COPYFILE_FICLONE);
     const archive = inspectArchivePaths(pinnedZipPath);
-    if (!archive.ok) return { ok: false, code: archive.code, error: archive.error };
+    if (archive.ok === false) return { ok: false, code: archive.code, error: archive.error };
 
     stageDir = fs.mkdtempSync(path.join(dataDir, STAGE_PREFIX));
     const extracted = spawnSync('unzip', ['-o', '-q', pinnedZipPath, '-d', stageDir], { timeout: SPAWN_TIMEOUT_MS });

@@ -3,11 +3,10 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { execFileSync } = require('child_process');
 
 const { upDipPath } = require('./helpers/up-dip-path');
 const golden = require('./fixtures/up-dip-backtest-golden.json');
-const { buildFeatures, simulate, gridPicker } = require('../scripts/backtest-up-dip');
+const { buildFeatures, simulate, gridPicker, parseArgs, main } = require('../scripts/backtest-up-dip');
 const { standalone } = require('../scripts/research-up-selection');
 const { UP_DIP_PARAMS, decideUpDip } = require('../src/updown/up-dip-setup');
 const { createUpDipPaper } = require('../src/updown/up-dip-paper');
@@ -19,12 +18,18 @@ before(() => {
   features = buildFeatures(candles, UP_DIP_PARAMS);
 });
 const run = (minGainPct, options) => simulate(candles, features, 0, candles.length, { ...UP_DIP_PARAMS, minDropPct: 0.3, minGainPct }, options);
+const simulations = new Map();
+const baseline = (gain, halfSpread) => {
+  const cacheKey = `${gain}:${halfSpread}`;
+  if (!simulations.has(cacheKey)) simulations.set(cacheKey, run(gain, { halfSpread }));
+  return simulations.get(cacheKey);
+};
 const key = (c) => `${c.openedAt}-${c.closedAt}-${c.reason}`;
 
 describe('Up dip backtest costs', () => {
   for (const gain of [4, 40]) {
     it(`with no spread reproduces the results from before costs (${gain}% target)`, () => {
-      const { cycles, fills, maxDrawdown } = run(gain, { halfSpread: 0 });
+      const { cycles, fills, maxDrawdown } = baseline(gain, 0);
       assert.deepEqual(cycles.map((c) => [c.openedAt, c.closedAt, c.reason, c.floor, r6(c.pnl)]), golden[gain].cycles);
       assert.equal(fills.length, golden[gain].fills);
       assert.equal(r6(maxDrawdown), golden[gain].maxDrawdown);
@@ -37,7 +42,7 @@ describe('Up dip backtest costs', () => {
       position: input.position && { ...input.position, cost: input.position.cost - 0.5 * input.halfSpread * input.position.contracts } });
     const seen = {};
     for (const gain of [4, 40]) {
-      const free = run(gain, { halfSpread: 0 }).cycles;
+      const free = baseline(gain, 0).cycles;
       const real = run(gain, { halfSpread: 35, decide: spreadless }).cycles;
       assert.deepEqual(real.map(key), free.map(key));
       real.forEach((c, i) => {
@@ -50,14 +55,14 @@ describe('Up dip backtest costs', () => {
   });
 
   it('waits longer to exit when the spread is real', () => {
-    const exits = (h) => run(4, { halfSpread: h }).cycles.filter((c) => c.reason === 'exit');
+    const exits = (h) => baseline(4, h).cycles.filter((c) => c.reason === 'exit');
     assert.ok(exits(35).length < exits(0).length);
     for (const c of exits(35)) assert.ok(c.pnl > 0);
   });
 
   it('defaults to $35 a side', () => {
-    assert.deepEqual(run(4).cycles, run(4, { halfSpread: 35 }).cycles);
-    assert.notDeepEqual(run(4).cycles, run(4, { halfSpread: 0 }).cycles);
+    assert.deepEqual(run(4).cycles, baseline(4, 35).cycles);
+    assert.notDeepEqual(run(4).cycles, baseline(4, 0).cycles);
   });
 
   it('charges a standalone research trade too', () => {
@@ -93,31 +98,30 @@ describe('listed floors in a backtest', () => {
 });
 
 describe('the report', () => {
-  const build = (args) => {
+  const build = (t, args) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'up-dip-report-'));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
     const at = (name) => path.join(dir, name);
-    fs.writeFileSync(at('candles.json'), JSON.stringify(candles.slice(0, 9000)));
+    fs.writeFileSync(at('candles.json'), JSON.stringify(candles.slice(0, 3600)));
     fs.writeFileSync(at('orders.jsonl'), `${JSON.stringify({ range: [63300, 65300], expiry: '2026-06-06', fills: [{ side: 'buy', qty: 1, btc: 64300, amount: 501.99, time: '2026-06-02T10:00:00Z' }, { side: 'sell', qty: 1, btc: 64400, amount: 548.01, time: '2026-06-02T12:00:00Z', exit: 'closed' }], pnl: 46.02 })}\n`);
-    execFileSync(process.execPath, [path.join(__dirname, '../scripts/backtest-up-dip.js'), '--candles', at('candles.json'), '--orders', at('orders.jsonl'), '--from', '2026-06-01T00:00:00Z', '--split', '2026-06-04T00:00:00Z', '--to', '2026-06-07T00:00:00Z', '--out', at('report.json'), ...args], { encoding: 'utf8' });
+    main(['--candles', at('candles.json'), '--orders', at('orders.jsonl'), '--from', '2026-06-01T00:00:00Z', '--split', '2026-06-02T00:00:00Z', '--to', '2026-06-03T00:00:00Z', '--out', at('report.json'), ...args], () => {});
     return { dir, reportPath: at('report.json'), report: JSON.parse(fs.readFileSync(at('report.json'), 'utf8')) };
   };
 
-  it('records its spread and listing, which the book passes on', () => {
-    const { dir, reportPath, report } = build([]);
+  it('records its spread and listing, which the book passes on', t => {
+    const { dir, reportPath, report } = build(t, []);
     assert.deepEqual([report.spread, report.listing], [35, 'legacy']);
     const book = createUpDipPaper({ getCandles: () => [], getHalfSpread: () => 0, statePath: path.join(dir, 'b.json'), writeJSON: () => {}, backtestPath: reportPath });
     assert.deepEqual([book.getStatus().backtest.spread, book.getStatus().backtest.listing], [35, 'legacy']);
-    fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  it('takes both options', () => {
-    const { dir, report } = build(['--spread', '0', '--listing', 'grid']);
+  it('takes both options', t => {
+    const { report } = build(t, ['--spread', '0', '--listing', 'grid']);
     assert.deepEqual([report.spread, report.listing], [0, 'grid']);
-    fs.rmSync(dir, { recursive: true, force: true });
   });
 
   for (const bad of [['--spread', 'x'], ['--spread', '-1'], ['--listing', 'any']]) {
-    it(`refuses ${bad.join(' ')}`, () => assert.throws(() => build(bad)));
+    it(`refuses ${bad.join(' ')}`, () => assert.throws(() => parseArgs(bad), new RegExp(bad[0])));
   }
 
   it('from before costs reads as having no recorded spread', () => {

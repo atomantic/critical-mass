@@ -57,6 +57,7 @@ chmod 755 "$TMP_ROOT/bin/pm2-runtime"
 run_alpine 0:0 "$STORAGE_VOLUME" 'DATA_DIR=/workspace/data LOGS_DIR=/workspace/logs /bin/sh /prepare'
 run_alpine 0:0 "$STORAGE_VOLUME" 'test "$(stat -c "%u:%g" /workspace/data)" = 1000:1000; test "$(stat -c "%u:%g" /workspace/logs)" = 1000:1000; test "$(stat -c "%a" /workspace/data)" = 700; test "$(stat -c "%a" /workspace/logs)" = 700'
 
+# Keep test volumes isolated from the runtime image's pre-created storage.
 run_entrypoint() {
   local output="$1"
   local volume="$2"
@@ -64,7 +65,7 @@ run_entrypoint() {
   docker run --rm --network none --user 1000:1000 \
     --mount "type=bind,source=$ENTRYPOINT,target=/docker-entrypoint.sh,readonly" \
     --mount "type=bind,source=$TMP_ROOT/bin,target=/tmp/critical-mass-bin,readonly" \
-    --mount "type=volume,source=$volume,target=/app" \
+    --mount "type=volume,source=$volume,target=/app,volume-nocopy" \
     -e PATH=/tmp/critical-mass-bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     "$@" \
     --entrypoint /bin/sh "$NODE_IMAGE" /docker-entrypoint.sh >"$output" 2>&1
