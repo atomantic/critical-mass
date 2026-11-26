@@ -5,12 +5,11 @@
     "noEmit": true,
     "target": "ES2024",
     "resolveJsonModule": true,
-    "module": "CommonJS",
-    "moduleResolution": "node",
-    "baseUrl": ".",
+    "module": "NodeNext",
+    "types": ["node"],
     "paths": {
       "*": [
-        "*"
+        "./*"
       ]
     }
   },

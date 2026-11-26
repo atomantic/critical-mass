@@ -829,22 +829,23 @@
  */
 
 /**
- * @typedef {Object} TransactionRecord
- * @property {string} Date - Transaction date
- * @property {string} Type - Transaction type
- * @property {string} Price - Price as string
- * @property {string} 'BTC Amount' - BTC amount as string
- * @property {string} 'USDC Amount' - USDC amount as string
- * @property {string} Fees - Fees as string
- * @property {string} Rebates - Rebates as string
- * @property {string} 'Net Fees' - Net fees as string
- * @property {string} 'Order ID' - Order ID
- * @property {string} 'Fund Size' - Fund size as string
- * @property {string} 'BTC Reserves' - BTC reserves as string
- * @property {string} 'Outstanding USDC' - Outstanding USDC as string
- * @property {string} 'Outstanding BTC' - Outstanding BTC as string
- * @property {string} 'Total Fees' - Total fees as string
- * @property {string} 'Total Rebates' - Total rebates as string
+ * @typedef {{
+ *   Date: string,
+ *   Type: string,
+ *   Price: string,
+ *   'BTC Amount': string,
+ *   'USDC Amount': string,
+ *   Fees: string,
+ *   Rebates: string,
+ *   'Net Fees': string,
+ *   'Order ID': string,
+ *   'Fund Size': string,
+ *   'BTC Reserves': string,
+ *   'Outstanding USDC': string,
+ *   'Outstanding BTC': string,
+ *   'Total Fees': string,
+ *   'Total Rebates': string,
+ * }} TransactionRecord
  */
 
 // ============================================================================
