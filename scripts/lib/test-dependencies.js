@@ -12,13 +12,14 @@ const GLOBAL_INPUTS = new Set([
 ]);
 
 function localImports(file, text) {
-  const ts = require('typescript');
+  // TypeScript 7 ships the CLI separately from the stable JavaScript AST API.
+  const ts = require('@typescript/typescript6');
   const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, false);
   const imports = [];
   const paths = [];
   // Some integration tests pass their entry point to a child process or read
   // it as a fixture. Record exact paths here, without module resolution.
-  /** @param {readonly import('typescript').Expression[]} args */
+  /** @param {readonly import('@typescript/typescript6').Expression[]} args */
   function addFilePath([root, ...parts]) {
     if (!root || !ts.isIdentifier(root) || root.text !== '__dirname' ||
         !parts.length || !parts.every(ts.isStringLiteralLike) || parts.some(part => path.isAbsolute(part.text))) return;

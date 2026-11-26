@@ -1,0 +1,1 @@
+- Upgrade the backend typecheck to TypeScript 7.0.2, refresh its diagnostic baseline, and preserve changed-test selection.

@@ -131,9 +131,11 @@ function main(argv) {
   const baselinePath = path.resolve(optionValue(argv, '--baseline') || path.join(REPO_ROOT, 'typecheck-baseline.json'));
   const projectDir = path.dirname(project);
 
+  const compilerPackage = require.resolve('typescript/package.json');
+  const compiler = path.resolve(path.dirname(compilerPackage), require(compilerPackage).bin.tsc);
   const tsc = spawnSync(
     process.execPath,
-    [require.resolve('typescript/bin/tsc'), '--noEmit', '--pretty', 'false', '-p', project],
+    [compiler, '--noEmit', '--pretty', 'false', '-p', project],
     { cwd: projectDir, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
   );
   if (tsc.error) {
