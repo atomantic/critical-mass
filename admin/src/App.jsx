@@ -1,4 +1,4 @@
-import { Component, useState, useEffect, useLayoutEffect, useRef, lazy, Suspense } from 'react'
+import { Component, useState, useEffect, useLayoutEffect, useRef, Suspense } from 'react'
 import { Routes, Route, Link, useLocation, useNavigate, Navigate, matchPath } from './lib/router'
 import AppHeader from './components/shell/AppHeader'
 import FundSubNav from './components/shell/FundSubNav'
@@ -6,29 +6,12 @@ import FundLifecycleDialogs from './components/shell/FundLifecycleDialogs'
 import Button from './components/ui/Button'
 import RetryBanner from './components/ui/RetryBanner'
 
-const Dashboard = lazy(() => import('./components/Dashboard'))
-const ConfigEditor = lazy(() => import('./components/ConfigEditor'))
-const TransactionsDCA = lazy(() => import('./components/TransactionsDCA'))
-const TransactionsRegime = lazy(() => import('./components/TransactionsRegime'))
-const ChartsDCA = lazy(() => import('./components/ChartsDCA'))
-const ChartsRegime = lazy(() => import('./components/ChartsRegime'))
-const CostBasisDCA = lazy(() => import('./components/CostBasisDCA'))
-const CostBasisRegime = lazy(() => import('./components/CostBasisRegime'))
-const Backtest = lazy(() => import('./components/Backtest'))
-const Optimizer = lazy(() => import('./components/Optimizer'))
-const Overview = lazy(() => import('./components/Overview'))
-const KeysConfig = lazy(() => import('./components/KeysConfig'))
-const NotificationsConfig = lazy(() => import('./components/NotificationsConfig'))
-const BackupRestore = lazy(() => import('./components/BackupRestore'))
-const RegimeDashboard = lazy(() => import('./components/RegimeDashboard'))
-const Systems = lazy(() => import('./components/Systems'))
-const AIProviders = lazy(() => import('./components/ai/Providers'))
-const LogViewer = lazy(() => import('./components/LogViewer'))
-const GatewayAccess = lazy(() => import('./components/GatewayAccess'))
-const UpDownDashboard = lazy(() => import('./components/updown/Dashboard'))
-const ScorecardAnalysis = lazy(() => import('./components/updown/ScorecardAnalysis'))
-const SentinelDashboard = lazy(() => import('./components/sentinel/Dashboard'))
-const ArbitrageDashboard = lazy(() => import('./components/arbitrage/Dashboard'))
+import {
+  routePaths, Dashboard, ConfigEditor, TransactionsDCA, TransactionsRegime, ChartsDCA, ChartsRegime,
+  CostBasisDCA, CostBasisRegime, Backtest, Optimizer, Overview, KeysConfig, NotificationsConfig,
+  BackupRestore, RegimeDashboard, Systems, AIProviders, LogViewer, GatewayAccess, UpDownDashboard,
+  ScorecardAnalysis, SentinelDashboard, ArbitrageDashboard,
+} from './routeChunks'
 import AlertBanner from './components/sentinel/AlertBanner'
 import { ToastProvider, useToast, tradeEventToToast } from './components/Toast'
 import { useTradeEvents } from './hooks/useTradeEvents'
@@ -36,17 +19,17 @@ import useFundController from './hooks/useFundController'
 import { getBaseCurrency, getQuoteCurrency } from './utils/productId.mjs'
 
 const globalRoutes = [
-  { path: '/', render: onAddFund => <Overview onAddFund={onAddFund} /> },
-  { path: '/notifications', Page: NotificationsConfig },
-  { path: '/backups', Page: BackupRestore },
-  { path: '/systems', Page: Systems },
-  { path: '/ai', Page: AIProviders },
-  { path: '/updown/analysis', Page: ScorecardAnalysis },
-  { path: '/updown', Page: UpDownDashboard },
-  { path: '/sentinel', Page: SentinelDashboard },
-  { path: '/arbitrage', Page: ArbitrageDashboard },
-  { path: '/gateway', Page: GatewayAccess },
-  { path: '/gateway/logs', Page: LogViewer, props: { processName: 'critical-mass' } },
+  { path: routePaths.overview, render: onAddFund => <Overview onAddFund={onAddFund} /> },
+  { path: routePaths.notifications, Page: NotificationsConfig },
+  { path: routePaths.backups, Page: BackupRestore },
+  { path: routePaths.systems, Page: Systems },
+  { path: routePaths.ai, Page: AIProviders },
+  { path: routePaths.updownAnalysis, Page: ScorecardAnalysis },
+  { path: routePaths.updown, Page: UpDownDashboard },
+  { path: routePaths.sentinel, Page: SentinelDashboard },
+  { path: routePaths.arbitrage, Page: ArbitrageDashboard },
+  { path: routePaths.gateway, Page: GatewayAccess },
+  { path: routePaths.gatewayLogs, Page: LogViewer, props: { processName: 'critical-mass' } },
 ]
 
 class RouteErrorBoundary extends Component {
@@ -251,39 +234,39 @@ function AppContent() {
                       different fund — this guarantees fresh state and re-fetched
                       data instead of stale data from the previous fund. */}
                   {isFundRoute && (<>
-                    <Route path="/:exchange/:pair" element={
+                    <Route path={routePaths.fund} element={
                       currentStrategy === 'regime'
                         ? <RegimeDashboard key={`${currentExchange}-${currentPair}`} exchange={currentExchange} pair={currentPair} />
                         : <Dashboard key={`${currentExchange}-${currentPair}`} summary={summary} onRefresh={refreshFund} exchange={currentExchange} pair={currentPair} />
                     } />
-                    <Route path="/:exchange/:pair/cost-basis" element={
+                    <Route path={routePaths.costBasis} element={
                       currentStrategy === 'regime'
                         ? <CostBasisRegime key={`${currentExchange}-${currentPair}`} exchange={currentExchange} pair={currentPair} />
                         : <CostBasisDCA key={`${currentExchange}-${currentPair}`} summary={summary} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} exchange={currentExchange} pair={currentPair} />
                     } />
-                    <Route path="/:exchange/:pair/transactions" element={
+                    <Route path={routePaths.transactions} element={
                       currentStrategy === 'regime'
                         ? <TransactionsRegime key={`${currentExchange}-${currentPair}`} exchange={currentExchange} pair={currentPair} />
                         : <TransactionsDCA transactions={summary?.transactions} baseCurrency={getBaseCurrency(summary?.config?.productId)} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />
                     } />
-                    <Route path="/:exchange/:pair/charts" element={
+                    <Route path={routePaths.charts} element={
                       currentStrategy === 'regime'
                         ? <ChartsRegime key={`${currentExchange}-${currentPair}`} exchange={currentExchange} pair={currentPair} />
                         : <ChartsDCA summary={summary} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />
                     } />
-                    <Route path="/:exchange/:pair/config" element={<ConfigEditor key={`${currentExchange}-${currentPair}`} config={summary?.config} regimeDefaults={summary?.regimeDefaults} loadError={error || (!loading && !summary?.config ? 'Configuration is unavailable' : null)} onRetry={fetchData} onSave={refreshFund} exchange={currentExchange} pair={currentPair} strategy={currentStrategy} engineRunning={regimeRunning} engineDryRun={regimeDryRun} onRestart={fetchRegimeStatus} />} />
+                    <Route path={routePaths.config} element={<ConfigEditor key={`${currentExchange}-${currentPair}`} config={summary?.config} regimeDefaults={summary?.regimeDefaults} loadError={error || (!loading && !summary?.config ? 'Configuration is unavailable' : null)} onRetry={fetchData} onSave={refreshFund} exchange={currentExchange} pair={currentPair} strategy={currentStrategy} engineRunning={regimeRunning} engineDryRun={regimeDryRun} onRestart={fetchRegimeStatus} />} />
 
                     {/* DCA-only routes (backtest, optimizer) */}
                     {simpleDcaEnabled && currentStrategy !== 'regime' && <>
-                      <Route path="/:exchange/:pair/backtest" element={<Backtest key={`${currentExchange}:${currentPair}`} summary={summary} exchange={currentExchange} pair={currentPair} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />} />
-                      <Route path="/:exchange/:pair/optimizer" element={<Optimizer key={`${currentExchange}:${currentPair}`} exchange={currentExchange} pair={currentPair} />} />
+                      <Route path={routePaths.backtest} element={<Backtest key={`${currentExchange}:${currentPair}`} summary={summary} exchange={currentExchange} pair={currentPair} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />} />
+                      <Route path={routePaths.optimizer} element={<Optimizer key={`${currentExchange}:${currentPair}`} exchange={currentExchange} pair={currentPair} />} />
                     </>}
 
                     {/* API Keys - in sub-nav tabs */}
-                    <Route path="/:exchange/:pair/keys" element={<KeysConfig key={currentExchange} exchange={currentExchange} funds={exchanges.filter(e => e.name === currentExchange)} onSave={fetchExchanges} />} />
+                    <Route path={routePaths.keys} element={<KeysConfig key={currentExchange} exchange={currentExchange} funds={exchanges.filter(e => e.name === currentExchange)} onSave={fetchExchanges} />} />
 
                     {/* PM2 Logs - per exchange engine */}
-                    <Route path="/:exchange/:pair/logs" element={<LogViewer processName={`critical-mass-${currentExchange}`} />} />
+                    <Route path={routePaths.logs} element={<LogViewer processName={`critical-mass-${currentExchange}`} />} />
 
                   </>)}
 
@@ -294,11 +277,11 @@ function AppContent() {
                       ) : !exchangesLoaded ? (
                         <RouteLoadingFallback />
                       ) : (
-                        <Navigate to={currentPair ? `/${currentExchange}/${currentPair}` : '/'} replace />
+                        <Navigate to={currentPair ? `/${currentExchange}/${currentPair}` : routePaths.overview} replace />
                       )
                     } />
                   )}
-                  <Route path="*" element={<Navigate to="/" replace />} />
+                  <Route path="*" element={<Navigate to={routePaths.overview} replace />} />
                 </Routes>
               </Suspense>
             </RouteErrorBoundary>
