@@ -18,6 +18,7 @@ macroModule.createMacroRegime = (_exchange, config) => {
   const signal = nextSignal;
   return {
     getState: () => ({}),
+    getMultipliers: () => ({ sizeMult: signal.sizeMult, tpMult: 1, offsetMult: 1 }),
     getAutoSizeMult: deployedRatio => {
       signal.ratios.push(deployedRatio);
       return computeAutoSizeMultiplier({ score: signal.score, deployedRatio,
@@ -35,9 +36,9 @@ after(() => {
   isolated.cleanup();
 });
 
-const setup = ({ score = 0, ready = true, fresh = true, enabled = true,
+const setup = ({ score = 0, ready = true, fresh = true, enabled = true, sizeMult = 1,
   balance = 1000, allocated = 0, cancel = undefined } = {}) => {
-  const signal = { score, ready, fresh, ratios: [] };
+  const signal = { score, ready, fresh, sizeMult, ratios: [] };
   nextSignal = signal;
   const eng = createRegimeEngine('coinbase', `__test1783_${engines.length}__`,
     { dryRun: false, productId: 'BTC-USDC' }, {});
@@ -87,6 +88,15 @@ describe('ladder auto-aggressiveness engine integration (#1783)', () => {
     await eng._test.evaluateEntryTrigger();
     assert.equal(placed.length, 1);
     assert.ok(Math.abs(sum(placed[0]) - 500) <= 0.02);
+  });
+
+  it('pauses automatic ladder placement for a zero macro size', async () => {
+    const { eng, placed, signal } = setup({ sizeMult: 0 });
+    await eng._test.evaluateEntryTrigger();
+    assert.equal(placed.length, 0);
+    signal.sizeMult = 1;
+    await eng._test.evaluateEntryTrigger();
+    assert.equal(placed.length, 1);
   });
 
   for (const disabled of [{ enabled: false }, { ready: false }, { fresh: false }]) {
