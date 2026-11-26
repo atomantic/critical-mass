@@ -246,12 +246,13 @@ export default function useFundController({ location, navigate, addToast }) {
   // Handle exchange change from selector - update URL with pair
   const handleExchangeChange = (newExchange, newPair) => {
     const newStrategy = resolveStrategy(exchanges?.find(e => e.name === newExchange))
-    setLastExchange(newExchange)
     // Preserve the current tab subpath only if it exists in the new strategy's tab list
     const currentTab = pathParts[2] || ''
     const newTabs = getTabsForStrategy(newStrategy)
     const tabValid = currentTab === '' || newTabs.some(t => t.path === `/${currentTab}`)
-    navigate(`/${newExchange}/${newPair}${tabValid && currentTab ? `/${currentTab}` : ''}`)
+    navigate(`/${newExchange}/${newPair}${tabValid && currentTab ? `/${currentTab}` : ''}`, {
+      onNavigate: () => setLastExchange(newExchange),
+    })
   }
 
   const pairQuery = () => buildPairQuery(currentPair)

@@ -84,6 +84,7 @@ describe('config save response handling', () => {
     stubSave(503, { persisted: true, applied: false, config: action === 'toggle' ? saved.regime : saved, error: 'engine unavailable' })
     const onSave = vi.fn()
     render(<ConfigEditor config={config} strategy="regime" onSave={onSave} />)
+    if (action === 'full save') fireEvent.change(screen.getByLabelText('Min Order Size ($)'), { target: { value: '12' } })
     fireEvent.click(action === 'toggle' ? screen.getByRole('switch', { name: 'Enabled' }) : screen.getByRole('button', { name: /Save Configuration/ }))
     await screen.findByText(/Restart the engine to apply it/)
     expect(screen.getByRole('switch', { name: 'Enabled' }).getAttribute('aria-checked')).toBe('true')
@@ -212,8 +213,8 @@ describe('dry-run restart', () => {
     if (options.method === 'PUT') return save()
     return response(200, { presets: {} })
   }))
-  const saveEdit = () => {
-    fireEvent.change(screen.getByLabelText('Min Order Size ($)'), { target: { value: '12' } })
+  const saveEdit = (value = '12') => {
+    fireEvent.change(screen.getByLabelText('Min Order Size ($)'), { target: { value } })
     fireEvent.click(screen.getByRole('button', { name: /Save Configuration/ }))
   }
 
@@ -235,11 +236,11 @@ describe('dry-run restart', () => {
     render(<ConfigEditor config={config} strategy="regime" />)
     saveEdit()
     await screen.findByText(STALE)
-    saveEdit()
+    saveEdit('13')
     await waitFor(() => expect(fetch.mock.calls.filter(([, o]) => o?.method === 'PUT')).toHaveLength(2))
     await waitFor(() => expect(screen.getAllByText(STALE)).toHaveLength(1))
     applied = true
-    saveEdit()
+    saveEdit('14')
     await screen.findByText('Configuration saved!')
     expect(screen.queryByText(STALE)).toBeNull()
   })
@@ -285,6 +286,7 @@ describe('configuration and restart serialization (issue #1747)', () => {
     }))
     renderMismatch()
     const restart = screen.getByRole('button', { name: 'Restart Engine' })
+    if (action === 'full save') fireEvent.change(screen.getByLabelText('Min Order Size ($)'), { target: { value: '12' } })
     const control = action === 'full save' ? screen.getByRole('button', { name: 'Save Configuration' }) : screen.getByRole('switch', { name: action })
     act(() => {
       control.dispatchEvent(new MouseEvent('click', { bubbles: true }))
@@ -323,6 +325,7 @@ describe('configuration and restart serialization (issue #1747)', () => {
     }))
     renderMismatch()
     const restart = screen.getByRole('button', { name: 'Restart Engine' })
+    fireEvent.change(screen.getByLabelText('Min Order Size ($)'), { target: { value: '12' } })
     const save = screen.getByRole('button', { name: 'Save Configuration' })
     const dryRun = screen.getByRole('switch', { name: 'Dry Run' })
     const enabled = screen.getByRole('switch', { name: 'Enabled' })

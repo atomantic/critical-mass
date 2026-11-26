@@ -44,7 +44,7 @@ describe('ConfigEditor shared write gate (#455)', () => {
     await act(async () => put.resolve(response(200, {})))
     await waitFor(() => expect(screen.getByRole('switch', { name: 'Dry Run' }).disabled).toBe(false))
     expect(screen.getByLabelText('Min Order Size ($)').matches(':disabled')).toBe(false)
-    expect(save.disabled).toBe(false)
+    expect(save.disabled).toBe(true)
   })
 
   it('a pending toggle autosave locks Save, the other toggle and the DCA fields, and releases them when it settles', async () => {
@@ -60,7 +60,7 @@ describe('ConfigEditor shared write gate (#455)', () => {
     expect(writes('PATCH')).toHaveLength(1)
     expect(writes('PUT')).toHaveLength(0)
     await act(async () => patch.resolve(response(200, {})))
-    expect(screen.getByRole('button', { name: /Save Configuration/ }).disabled).toBe(false)
+    expect(screen.getByRole('button', { name: /Save Configuration/ }).disabled).toBe(true)
     expect(screen.getByLabelText('Product ID').matches(':disabled')).toBe(false)
   })
 
@@ -86,13 +86,14 @@ describe('ConfigEditor zero-valued and defaulted fields (#868, #1983)', () => {
     expect(empty).toEqual([])
   })
 
-  it('a saved 0 is shown as 0 rather than the default, and an untouched form saves an empty payload', async () => {
+  it('a saved 0 is shown as 0 rather than the default, and an untouched form cannot be saved', async () => {
     vi.stubGlobal('fetch', vi.fn(async (url, o = {}) => response(200, o.method ? {} : { presets })))
     render(<ConfigEditor config={{ productId: 'BTC-USD', regime: { harvestScale: 0, trendScale: 0 } }} regimeDefaults={REGIME_DEFAULTS} strategy="regime" />)
     expect(screen.getByLabelText('Trend Scale').value).toBe('0')
-    fireEvent.click(screen.getByRole('button', { name: /Save Configuration/ }))
-    await screen.findByText('Configuration saved!')
-    expect(JSON.parse(writes('PUT')[0][1].body)).toEqual({})
+    const save = screen.getByRole('button', { name: /Save Configuration/ })
+    expect(save.disabled).toBe(true)
+    fireEvent.click(save)
+    expect(writes('PUT')).toHaveLength(0)
   })
 
   it('clearing a number field commits nothing (no coerced 0); a valid entry does', async () => {
@@ -100,9 +101,10 @@ describe('ConfigEditor zero-valued and defaulted fields (#868, #1983)', () => {
     render(<ConfigEditor config={{ productId: 'BTC-USD', regime: { minOrderSizeUsdc: 5 } }} strategy="regime" />)
     fireEvent.change(screen.getByLabelText('Min Order Size ($)'), { target: { value: '' } })
     expect(screen.queryByText('Unsaved changes')).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: /Save Configuration/ }))
-    await screen.findByText('Configuration saved!')
-    expect(JSON.parse(writes('PUT')[0][1].body)).toEqual({})
+    const save = screen.getByRole('button', { name: /Save Configuration/ })
+    expect(save.disabled).toBe(true)
+    fireEvent.click(save)
+    expect(writes('PUT')).toHaveLength(0)
     fireEvent.change(screen.getByLabelText('Min Order Size ($)'), { target: { value: '7' } })
     expect(screen.getByText('Unsaved changes')).toBeTruthy()
   })

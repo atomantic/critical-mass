@@ -1,5 +1,5 @@
 import React from 'react'
-import { cleanup, fireEvent, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { renderWithToasts as render } from './renderWithToasts'
 import ConfigEditor from '../src/components/ConfigEditor'
@@ -8,7 +8,7 @@ vi.mock('../src/utils/productId.mjs', () => ({ getBaseCurrency: () => 'BTC', get
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
 const initialPresets = {
-  conservative: { kFactor: 0.8 },
+  conservative: { kFactor: 0.8, minIntervalMs: 120000 },
   moderate: { kFactor: 1 },
   aggressive: { kFactor: 1.2 },
   maximum: { kFactor: 1.4 },
@@ -39,6 +39,11 @@ describe('ConfigEditor preset save lifecycle', () => {
 
     await screen.findByRole('button', { name: /Conservative/ })
     editConservativeFactor()
+    const presetControls = within(screen.getByRole('region', { name: 'Global presets' }))
+    const duration = presetControls.getByLabelText('Min Interval')
+    expect(duration.value).toBe('2')
+    expect(presetControls.getByLabelText('Min Interval unit').value).toBe('min')
+    fireEvent.change(duration, { target: { value: '1.5' } })
     fireEvent.click(screen.getByRole('button', { name: /Save Presets/ }))
 
     const factor = screen.getByLabelText('k Factor')
@@ -55,7 +60,9 @@ describe('ConfigEditor preset save lifecycle', () => {
     fireEvent.click(screen.getByRole('button', { name: /Save Configuration/ }))
     await waitFor(() => expect(fetchMock.mock.calls.filter(([url, options]) => String(url).includes('/config') && options.method === 'PUT')).toHaveLength(1))
 
-    const confirmed = { ...initialPresets, conservative: { kFactor: 1.1 } }
+    const request = fetchMock.mock.calls.find(([url, options]) => String(url).includes('/presets/aggressiveness') && options.method === 'PUT')
+    const confirmed = { ...initialPresets, conservative: { kFactor: 1.1, minIntervalMs: 90000 } }
+    expect(JSON.parse(request[1].body)).toEqual(confirmed)
     save.resolve(response(200, { presets: confirmed }))
     await waitFor(() => {
       const saveButton = screen.getByRole('button', { name: 'Save Presets' })

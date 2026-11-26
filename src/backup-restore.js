@@ -271,9 +271,10 @@ const resolveRestoreSnapshot = ({ legacy, readManifest, readArchivedOverride, le
  * @param {Object} params.snapshot
  * @param {{config: Object, base: Object}} params.destination - Destination effective + base config
  * @param {boolean} params.acceptFundRemoval
+ * @param {string[]|null} params.acknowledgedRemovedFunds
  * @returns {{ok: true, override: Object, droppedFields: Array<string>} | {ok: false, code: string, error: string}}
  */
-const planRestoreConfig = ({ snapshot, destination, acceptFundRemoval }) => {
+const planRestoreConfig = ({ snapshot, destination, acceptFundRemoval, acknowledgedRemovedFunds }) => {
   const rebuilt = reconstructConfigOverride({
     snapshot,
     baseConfig: destination.base,
@@ -281,13 +282,17 @@ const planRestoreConfig = ({ snapshot, destination, acceptFundRemoval }) => {
   });
   if (!rebuilt.ok) return { ok: false, code: 'config-snapshot-invalid', error: rebuilt.error };
   const removedFunds = diffSnapshotAgainstConfig({ snapshot, effectiveConfig: destination.config });
-  if (removedFunds.length > 0 && !acceptFundRemoval) {
-    const describe = removedFunds.map(({ exchange, pair }) => `${exchange}/${pair}`).join(', ');
+  const removedKeys = removedFunds.map(({ exchange, pair }) => `${exchange}/${pair}`);
+  const removalAllowed = acknowledgedRemovedFunds === null
+    ? acceptFundRemoval
+    : removedKeys.every(key => acknowledgedRemovedFunds.includes(key));
+  if (removedFunds.length > 0 && !removalAllowed) {
+    const describe = removedKeys.join(', ');
     return {
       ok: false,
       code: 'fund-removal-unacknowledged',
       error: `Restoring this archive would remove ${removedFunds.length} fund${removedFunds.length === 1 ? "" : "s"} this machine currently runs that the archive does not carry (${describe}). `
-        + 'They may still hold on-disk state or a live exchange order. Pass acceptFundRemoval to proceed. No files were changed.',
+        + 'They may still hold on-disk state or a live exchange order. Review and acknowledge the funds to proceed. No files were changed.',
     };
   }
   return { ok: true, override: rebuilt.override, droppedFields: rebuilt.droppedFields ?? [] };
@@ -340,9 +345,10 @@ const parseArchiveJson = (raw, name) => {
  * @param {Object|null} [options.legacyBaseConfig]
  * @param {boolean} [options.acceptLegacyWithoutBase]
  * @param {boolean} [options.acceptFundRemoval]
+ * @param {string[]|null} [options.acknowledgedRemovedFunds] - Fund keys reviewed by the operator
  * @returns {Promise<{ok: true} | {ok: false, code?: string, error: string}>}
  */
-const checkRestorePreconditions = async (filename, { paths: pathOverrides, legacyBaseConfig = null, acceptLegacyWithoutBase = false, acceptFundRemoval = false } = {}) => {
+const checkRestorePreconditions = async (filename, { paths: pathOverrides, legacyBaseConfig = null, acceptLegacyWithoutBase = false, acceptFundRemoval = false, acknowledgedRemovedFunds = null } = {}) => {
   if (legacyBaseConfig !== null && (typeof legacyBaseConfig !== 'object' || Array.isArray(legacyBaseConfig))) {
     return { ok: false, code: 'legacy-base-invalid', error: 'legacyBaseConfig must be the source machine\'s config.json object' };
   }
@@ -378,7 +384,7 @@ const checkRestorePreconditions = async (filename, { paths: pathOverrides, legac
   const { snapshot } = resolvedSnapshot;
 
   if (snapshot) {
-    const planned = planRestoreConfig({ snapshot, destination, acceptFundRemoval });
+    const planned = planRestoreConfig({ snapshot, destination, acceptFundRemoval, acknowledgedRemovedFunds });
     if (!planned.ok) return planned;
   }
 
@@ -494,12 +500,13 @@ const extractVerifiedArchive = (sourceZipPath, dataDir, logger) => {
  * @param {boolean} [options.acceptFundRemoval] - Explicit operator acknowledgement that
  *   funds this machine currently runs but the archive does not carry will be removed
  *   from the destination configuration (issue #533).
+ * @param {string[]|null} [options.acknowledgedRemovedFunds] - Fund keys reviewed by the operator
  * @param {{info: Function, warn: Function, error: Function}} [options.logger] - Context logger
  * @returns {{ success: boolean, filesRestored?: number, configRestored?: boolean,
  *   legacy?: boolean, droppedFields?: Array<string>, error?: string, code?: string,
  *   rolledBack?: boolean, recovery?: Object }}
  */
-const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null, acceptLegacyWithoutBase = false, acceptFundRemoval = false, logger = SILENT_LOGGER } = {}) => {
+const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null, acceptLegacyWithoutBase = false, acceptFundRemoval = false, acknowledgedRemovedFunds = null, logger = SILENT_LOGGER } = {}) => {
   if (legacyBaseConfig !== null && (typeof legacyBaseConfig !== 'object' || Array.isArray(legacyBaseConfig))) {
     return { success: false, code: 'legacy-base-invalid', error: 'legacyBaseConfig must be the source machine\'s config.json object' };
   }
@@ -553,7 +560,7 @@ const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null
     /** @type {Array<string>} */
     let droppedFields = [];
     if (snapshot) {
-      const planned = planRestoreConfig({ snapshot, destination, acceptFundRemoval });
+      const planned = planRestoreConfig({ snapshot, destination, acceptFundRemoval, acknowledgedRemovedFunds });
       if (!planned.ok) return abort(planned.error, planned.code);
       override = planned.override;
       droppedFields = planned.droppedFields;

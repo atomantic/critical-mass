@@ -48,6 +48,7 @@ describe('disclosure cards', () => {
   it('opens the card named by a rejected save and keeps unrelated cards collapsed', async () => {
     stub(400, { error: 'regime.momentumMult must be between 0.1 and 5' })
     mount({ momentumMult: 99 })
+    fireEvent.change(screen.getByLabelText('Max Open Orders'), { target: { value: '9' } })
     fireEvent.click(screen.getByRole('button', { name: /Save Configuration/ }))
     await screen.findByText(/must be between 0.1 and 5/)
     expect(card('Regime Detection').open).toBe(true)
@@ -81,14 +82,14 @@ describe('disclosure cards', () => {
     }
   })
 
-  it('opening and saving an untouched form sends an empty payload', async () => {
+  it('opening a card leaves the untouched form clean', async () => {
     stub()
     mount({ staleDataMs: 45000 })
     fireEvent.click(card('System Health').querySelector('summary'))
-    fireEvent.click(screen.getByRole('button', { name: /Save Configuration/ }))
-    await screen.findByText('Configuration saved!')
-    const [, options] = fetch.mock.calls.find(([, o]) => o?.method === 'PUT')
-    expect(JSON.parse(options.body)).toEqual({})
+    const save = screen.getByRole('button', { name: /Save Configuration/ })
+    expect(save.disabled).toBe(true)
+    fireEvent.click(save)
+    expect(fetch.mock.calls.some(([, o]) => o?.method === 'PUT')).toBe(false)
   })
 
   it('makes Product ID read-only for an existing fund', () => {

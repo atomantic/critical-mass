@@ -105,11 +105,11 @@ it('config editor shows Presets unavailable for a failed read and shows the edit
     ? (down ? fail(500) : ok({ presets: PRESETS })) : ok({})))
   render(<ConfigEditor config={{ productId: 'BTC-USD', regime: { enabled: false } }} strategy="regime" />)
   expect((await screen.findByText(/Presets unavailable/))).toBeTruthy()
-  expect(screen.queryByText('Aggressiveness Presets')).toBeNull()
+  expect(screen.queryByText('Global Aggressiveness Presets')).toBeNull()
   down = false
   const alert = screen.getByText(/Presets unavailable/).closest('[role="alert"]')
   fireEvent.click(alert.querySelector('button'))
-  expect(await screen.findByText('Aggressiveness Presets')).toBeTruthy()
+  expect(await screen.findByText('Global Aggressiveness Presets')).toBeTruthy()
   expect(screen.queryByText(/Presets unavailable/)).toBeNull()
 })
 

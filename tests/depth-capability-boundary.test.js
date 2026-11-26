@@ -17,7 +17,7 @@ before(async () => {
   const { rolldown } = await import(pathToFileURL(adminRequire.resolve('rolldown')).href)
   for (const name of ['ConfigEditor', 'NotificationsConfig']) {
     const bundle = await rolldown({ input: path.join(__dirname, `../admin/src/components/${name}.jsx`),
-      external: id => id === 'react' || id === '../utils/productId.mjs' || id === './Toast' || id === './ui/Button' || id === '../hooks/useRealtimeRefresh', transform: { jsx: 'react' } })
+      external: id => id === 'react' || id === '../utils/productId.mjs' || id === './Toast' || id === './ui/Button' || id === '../hooks/useRealtimeRefresh' || id === '../lib/router', transform: { jsx: 'react' } })
     try { compiled.set(name, (await bundle.generate({ format: 'cjs' })).output[0].code) }
     finally { await bundle.close() }
   }
@@ -49,6 +49,7 @@ function view(name, props = {}, notificationConfig = {}) {
       if (id === '../utils/productId.mjs') return { getBaseCurrency: () => 'BTC', getQuoteCurrency: () => 'USDC' }
       if (id === './ui/Button') return 'button'
       if (id === '../hooks/useRealtimeRefresh') return asHookModule(() => {})
+      if (id === '../lib/router') return { useUnsavedChanges() {} }
       if (id === './Toast') return { useNotify: () => () => null, useToast: () => ({ addToast: () => null, removeToast() {} }) }
       throw new Error(`Unexpected fixture import: ${id}`)
     },
@@ -83,11 +84,18 @@ for (const entryMode of ['reactive', 'ladder']) describe(`depth capability bound
       assert.ok(spread && flash, 'working safety controls remain editable')
       spread.props.onChange(35)
       flash.props.onChange(4)
-    } else assert.match(text(tree), /Ladder mode bypasses tail event checks/)
+    } else {
+      assert.match(text(tree), /Ladder mode bypasses tail event checks/)
+      const save = button(page.render(), 'Save Configuration')
+      assert.equal(save.props.disabled, true)
+      await save.props.onClick()
+      assert.equal(page.requests.some(request => request.method === 'PUT'), false)
+      return
+    }
     await button(page.render(), 'Save Configuration').props.onClick()
     // Only edited keys are sent (#1395); depth keys never are.
     const body = page.requests.find(request => request.method === 'PUT').body
-    assert.deepEqual(body, entryMode === 'reactive' ? { regime: { maxSpreadBps: 35, flashMoveMult: 4 } } : {})
+    assert.deepEqual(body, { regime: { maxSpreadBps: 35, flashMoveMult: 4 } })
     assert.equal(config.regime.minDepthUsdc, 4321, 'legacy readback remains unmodified')
   })
 })

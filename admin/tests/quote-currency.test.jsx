@@ -16,7 +16,7 @@ vi.mock('../src/lib/realtime', () => ({
   getRealtimeClient: () => ({ on: () => {}, off: () => {}, subscribe: () => {}, unsubscribe: () => {} }),
 }))
 vi.mock('../src/components/celestial/CelestialVisualization', () => ({ default: () => <div /> }))
-vi.mock('../src/lib/router', () => ({ Link: ({ children }) => <div>{children}</div>, useNavigate: () => vi.fn() }))
+vi.mock('../src/lib/router', async (importOriginal) => ({ ...await importOriginal(), Link: ({ children }) => <div>{children}</div>, useNavigate: () => vi.fn() }))
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 

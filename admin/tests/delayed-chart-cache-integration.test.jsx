@@ -221,7 +221,7 @@ describe('Delayed chart cache integration with ChartsRegime', () => {
       })
     })
 
-    expect(await screen.findByText('Engine Running')).toBeTruthy()
+    expect(await screen.findByText('Current Price:')).toBeTruthy()
 
     // Verify RegimePriceChart received both cached 100 and live 120
     expect(chartCaptures.priceChartProps).not.toBeNull()

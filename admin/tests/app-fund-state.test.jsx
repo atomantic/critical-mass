@@ -1,9 +1,11 @@
 import React from 'react'
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest'
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import App from '../src/App'
 import ConfigEditor from '../src/components/ConfigEditor'
 import { BrowserRouter } from '../src/lib/router'
+
+HTMLDialogElement.prototype.showModal = function () { this.open = true }
 
 // Keep App, router, fund selector and ConfigEditor real. Socket traffic is the
 // only mocked UI boundary: all HTTP below is synthetic and never leaves jsdom.
@@ -117,7 +119,7 @@ it('never renders or writes A config while B loads, then saves only B values wit
   await act(async () => summaryB.resolve(response({ config: config(222) })))
   const input = await screen.findByLabelText('Base Size (USDC)')
   expect(input.value).toBe('222')
-  expect(saveButton().disabled).toBe(false)
+  expect(saveButton().disabled).toBe(true)
   expectUnknownStatus()
   fireEvent.change(input, { target: { value: '333' } })
   fireEvent.click(saveButton())
@@ -129,6 +131,36 @@ it('never renders or writes A config while B loads, then saves only B values wit
   await act(async () => statusB.resolve(response(status(false, false, 'closed'))))
   expect(await screen.findByRole('button', { name: 'Reopen', exact: true })).toBeTruthy()
   expect(screen.queryByRole('button', { name: 'Restart Engine' })).toBeNull()
+})
+
+it('keeps an unsaved fund draft when tab navigation is cancelled and leaves when confirmed', async () => {
+  mount()
+  const input = await screen.findByLabelText('Base Size (USDC)')
+  fireEvent.change(input, { target: { value: '123' } })
+  const charts = screen.getByRole('link', { name: 'Charts' })
+  fireEvent.click(charts)
+  expect(await screen.findByRole('dialog', { name: 'Discard Unsaved Changes?' })).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: 'Keep Editing' }))
+  expect(input.value).toBe('123')
+  expect(window.location.pathname).toMatch(/\/config$/)
+  fireEvent.click(charts)
+  fireEvent.click(screen.getByRole('button', { name: 'Discard Changes' }))
+  expect(window.location.pathname).toMatch(/\/charts$/)
+})
+
+it('returns focus to the mobile link when the operator keeps an unsaved draft', async () => {
+  mount()
+  const input = await screen.findByLabelText('Base Size (USDC)')
+  fireEvent.change(input, { target: { value: '123' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Toggle menu' }))
+  const mobile = screen.getAllByRole('navigation', { name: 'Sections' }).at(-1)
+  const link = within(mobile).getByRole('link', { name: 'Backups' })
+  link.focus()
+  fireEvent.click(link)
+  fireEvent.click(screen.getByRole('button', { name: 'Keep Editing' }))
+  expect(link.isConnected).toBe(true)
+  expect(document.activeElement).toBe(link)
+  expect(input.value).toBe('123')
 })
 
 it('keeps fund-view navigation reachable beside the populated running dry-run controls', async () => {

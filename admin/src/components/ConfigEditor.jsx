@@ -1,4 +1,4 @@
-import { FormInput, FormSelect, SectionCard } from './config/ConfigFormControls'
+import { DurationInput, FormInput, FormSelect, SectionCard } from './config/ConfigFormControls'
 import { VolatilityClockCard, RegimeScalingCard, EntryModeLadderCard, TakeProfitCard, RegimeDetectionCard, CelestialHierarchyCard, MacroRegimeCard, TpAutoManagementCard, RiskCapsCard, OrderExecutionCard, SafetyTailEventsCard, SystemHealthCard } from './config/RegimeConfigCards'
 import { describeConfigSaveError } from '../utils/configSaveError.mjs'
 import { apiGet, apiPost, apiPut, apiPatch } from '../utils/apiClient'
@@ -6,6 +6,7 @@ import { errorFieldKeys } from '../utils/regimeCardState.mjs'
 import { buildSavePayload } from '../utils/configSavePayload.mjs'
 import { INTERVAL_OPTIONS } from '../utils/intervals.mjs'
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { useUnsavedChanges } from '../lib/router'
 import ToggleSwitch from './ToggleSwitch'
 import { useNotify, useToast } from './Toast'
 import Button from './ui/Button'
@@ -32,14 +33,19 @@ function ConfigEditor({ config: initialConfig, regimeDefaults, onSave, exchange 
     dismissRestartWarning() // one warning at a time; the newest supersedes
     restartWarningRef.current = notify('warning', message, { sticky: true })
   }
-  const [isDirty, setIsDirty] = useState(false)
+  // Instant-apply toggles own these fields, including their optimistic values.
+  const { enabled, dryRun, regime, ...fundDraft } = config ?? {}
+  const { enabled: regimeEnabled, ...regimeDraft } = regime ?? {}
+  const savePayload = buildSavePayload({ ...fundDraft, regime: regime && regimeDraft }, baselineRef.current)
+  const isDirty = Object.keys(savePayload).length > 0
   // Regime fields the server named in the last rejected save; their card stays open.
   const [errorKeys, setErrorKeys] = useState([])
   const [presets, setPresets] = useState(null)
   const [editingPresets, setEditingPresets] = useState(null)
   const [presetsError, setPresetsError] = useState(null)
-  const [presetsDirty, setPresetsDirty] = useState(false)
+  const presetsDirty = JSON.stringify(presets) !== JSON.stringify(editingPresets)
   const [savingPresets, setSavingPresets] = useState(false)
+  useUnsavedChanges(isDirty || presetsDirty || savingPresets || saving)
   const pendingPresetSaveRef = useRef(false)
   const [expandedPresets, setExpandedPresets] = useState(new Set())
   const prevExchangeRef = useRef(exchange)
@@ -57,11 +63,11 @@ function ConfigEditor({ config: initialConfig, regimeDefaults, onSave, exchange 
   // (isDirty is never set for a toggle) and snap the UI back to stale state.
   const pendingWriteRef = useRef(0)
   // Apply a server-confirmed value to both the draft and its baseline.
-  const adoptSaved = updater => {
+  const adoptSaved = useCallback(updater => {
     baselineRef.current = updater(baselineRef.current)
     setConfig(updater)
-  }
-  const loadDraft = next => adoptSaved(() => next)
+  }, [])
+  const loadDraft = useCallback(next => adoptSaved(() => next), [adoptSaved])
 
   // Determine if showing regime config based on URL strategy prop
   const isRegime = strategy === 'regime'
@@ -74,10 +80,9 @@ function ConfigEditor({ config: initialConfig, regimeDefaults, onSave, exchange 
       prevStrategyRef.current = strategy
       if (initialConfig) {
         loadDraft(initialConfig)
-        setIsDirty(false)
       }
     }
-  }, [exchange, strategy, initialConfig])
+  }, [exchange, strategy, initialConfig, loadDraft])
 
   // A regime fund needs an engine restart to apply a dryRun change whenever the
   // saved config diverges from the mode the running engine actually started in.
@@ -96,7 +101,6 @@ function ConfigEditor({ config: initialConfig, regimeDefaults, onSave, exchange 
   useEffect(() => {
     if (!initialConfig) {
       loadDraft(undefined)
-      setIsDirty(false)
       return
     }
     if (initialConfig && !isDirty && pendingWriteRef.current === 0) {
@@ -111,7 +115,7 @@ function ConfigEditor({ config: initialConfig, regimeDefaults, onSave, exchange 
     const data = result.ok ? result.data : null
     if (data?.presets) {
       setPresets(data.presets)
-      setEditingPresets(JSON.parse(JSON.stringify(data.presets)))
+      setEditingPresets(data.presets)
       setPresetsError(null)
     } else if (result.ok) setPresetsError('Presets unavailable')
     else setPresetsError(result.status >= 400 ? `Presets unavailable (HTTP ${result.status})` : 'Presets unavailable: request failed')
@@ -149,7 +153,6 @@ function ConfigEditor({ config: initialConfig, regimeDefaults, onSave, exchange 
       ...prev,
       [level]: { ...prev[level], [key]: value },
     }))
-    setPresetsDirty(true)
   }
 
   const handleSavePresets = async () => {
@@ -160,11 +163,9 @@ function ConfigEditor({ config: initialConfig, regimeDefaults, onSave, exchange 
       const result = await apiPut('/api/presets/aggressiveness', editingPresets, { allowEmpty: true })
       if (result.ok) {
         const data = result.data
-        if (data) {
-          setPresets(data.presets)
-          setEditingPresets(JSON.parse(JSON.stringify(data.presets)))
-        }
-        setPresetsDirty(false)
+        const savedPresets = data?.presets ?? editingPresets
+        setPresets(savedPresets)
+        setEditingPresets(savedPresets)
         notify('success', 'Presets saved!')
       } else {
         const reason = result.data?.errors?.join(', ') || (result.status ? '' : result.error)
@@ -179,8 +180,7 @@ function ConfigEditor({ config: initialConfig, regimeDefaults, onSave, exchange 
   const handleResetPresets = () => {
     if (pendingPresetSaveRef.current) return
     if (presets) {
-      setEditingPresets(JSON.parse(JSON.stringify(presets)))
-      setPresetsDirty(false)
+      setEditingPresets(presets)
     }
   }
 
@@ -195,7 +195,6 @@ function ConfigEditor({ config: initialConfig, regimeDefaults, onSave, exchange 
 
   const handleChange = (key, value) => {
     setConfig(prev => ({ ...prev, [key]: value }))
-    setIsDirty(true)
   }
 
   // Handler for nested regime config changes
@@ -204,7 +203,6 @@ function ConfigEditor({ config: initialConfig, regimeDefaults, onSave, exchange 
       ...prev,
       regime: { ...prev.regime, [key]: value }
     }))
-    setIsDirty(true)
   }
 
   // Get regime config with defaults
@@ -220,26 +218,23 @@ function ConfigEditor({ config: initialConfig, regimeDefaults, onSave, exchange 
   )
 
   const handleSave = async () => {
-    if (pendingWriteRef.current > 0) return // a toggle (or another save) is already in flight
+    if (!isDirty || pendingWriteRef.current > 0) return
     pendingWriteRef.current += 1
     setSaving(true)
-    const payload = buildSavePayload(config, baselineRef.current)
     setErrorKeys([])
     try {
-      const res = await apiPut(`/api/${exchange}/config${pairQuery}`, payload, { allowEmpty: true })
+      const res = await apiPut(`/api/${exchange}/config${pairQuery}`, savePayload, { allowEmpty: true })
       const result = res.data || {}
       if (res.ok) {
-        if (result.config) loadDraft(result.config)
+        loadDraft(result.config ?? config)
         dismissRestartWarning()
         notify('success', 'Configuration saved!')
-        setIsDirty(false)
         onSave?.()
       } else if (result.persisted === true) {
         // Persistence succeeded even though the live engine rejected or missed
         // propagation. Keep the authoritative saved value and tell the operator
         // that a restart is required; reverting here would display stale state.
-        if (result.config) loadDraft(result.config)
-        setIsDirty(false)
+        loadDraft(result.config ?? config)
         warnRestartNeeded('Configuration saved, but the live engine is still using the previous settings. Restart the engine to apply it.')
         onSave?.()
       } else {
@@ -256,7 +251,6 @@ function ConfigEditor({ config: initialConfig, regimeDefaults, onSave, exchange 
     setErrorKeys([])
     if (initialConfig) {
       loadDraft(initialConfig)
-      setIsDirty(false)
     }
   }
 
@@ -442,7 +436,7 @@ function ConfigEditor({ config: initialConfig, regimeDefaults, onSave, exchange 
               variant={isDirty ? 'primary' : 'primary-muted'}
               className="font-medium"
               onClick={handleSave}
-              disabled={locked}
+              disabled={locked || !isDirty}
             >
               {saving ? 'Saving...' : 'Save Configuration'}
             </Button>
@@ -464,9 +458,10 @@ function ConfigEditor({ config: initialConfig, regimeDefaults, onSave, exchange 
       </div>
 
       <div className="bg-gray-800 rounded-lg p-4">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-4">
-          <h2 className="shrink-0 text-lg font-semibold">Bot Configuration</h2>
-          <div className="flex flex-wrap items-start gap-3 w-full min-w-0 md:w-auto md:max-w-lg">
+        <h2 className="text-lg font-semibold mb-3">Bot Configuration</h2>
+        <fieldset className="rounded-lg border border-gray-700 p-3 mb-4">
+          <legend className="px-1 text-sm font-medium text-gray-300">Instant-apply controls</legend>
+          <div className="flex flex-wrap items-start gap-3 w-full min-w-0 md:max-w-lg">
             <div className="min-w-0 flex-1 basis-48">
               <ToggleSwitch
                 label="Enabled"
@@ -485,7 +480,7 @@ function ConfigEditor({ config: initialConfig, regimeDefaults, onSave, exchange 
               colorOn="bg-yellow-500"
             />
           </div>
-        </div>
+        </fieldset>
 
         {restartNeeded && (
           <div className="mb-3 p-2 rounded-sm text-sm bg-amber-900/40 border border-amber-700 text-amber-200 flex items-center justify-between gap-3">
@@ -693,42 +688,37 @@ function ConfigEditor({ config: initialConfig, regimeDefaults, onSave, exchange 
 
         {/* Regime Engine Settings - 2-column card grid */}
         {isRegime && (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            {/* Every card up to (but excluding) Aggressiveness Presets sits inside
-                this fieldset, same rationale as the DCA one above: one disabled
-                boolean gates the whole fund config, and display:contents lets its
-                children remain direct grid items so the lg:col-span-2 cards still
-                span correctly. Presets are a sibling outside it — global preset
-                editing (savingPresets) stays independent of this save/toggle gate. */}
-            <fieldset disabled={locked} className="contents">
+          <fieldset disabled={locked} className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <VolatilityClockCard config={config} regimeConfig={regimeConfig} defaults={regimeDefaults} quoteCurrency={quoteCurrency} handleChange={handleChange} handleRegimeChange={handleRegimeChange} productIdLocked={Boolean(initialConfig?.productId)} />
+            <RegimeScalingCard regimeConfig={regimeConfig} defaults={regimeDefaults} handleRegimeChange={handleRegimeChange} />
+            <EntryModeLadderCard regimeConfig={regimeConfig} defaults={regimeDefaults} quoteCurrency={quoteCurrency} handleRegimeChange={handleRegimeChange} />
+            <TakeProfitCard regimeConfig={regimeConfig} defaults={regimeDefaults} baseCurrency={baseCurrency} handleRegimeChange={handleRegimeChange} />
+            <RegimeDetectionCard regimeConfig={regimeConfig} defaults={regimeDefaults} handleRegimeChange={handleRegimeChange} disclosure={disclosure} />
+            <CelestialHierarchyCard regimeConfig={regimeConfig} defaults={regimeDefaults} baseCurrency={baseCurrency} handleRegimeChange={handleRegimeChange} />
+            <MacroRegimeCard regimeConfig={regimeConfig} defaults={regimeDefaults} handleRegimeChange={handleRegimeChange} disclosure={disclosure} />
+            <TpAutoManagementCard regimeConfig={regimeConfig} defaults={regimeDefaults} handleRegimeChange={handleRegimeChange} />
+            <RiskCapsCard regimeConfig={regimeConfig} defaults={regimeDefaults} baseCurrency={baseCurrency} quoteCurrency={quoteCurrency} handleRegimeChange={handleRegimeChange} />
+            <OrderExecutionCard regimeConfig={regimeConfig} defaults={regimeDefaults} handleRegimeChange={handleRegimeChange} disclosure={disclosure} />
+            <SafetyTailEventsCard regimeConfig={regimeConfig} defaults={regimeDefaults} handleRegimeChange={handleRegimeChange} disclosure={disclosure} />
+            <SystemHealthCard regimeConfig={regimeConfig} defaults={regimeDefaults} handleRegimeChange={handleRegimeChange} disclosure={disclosure} />
+          </fieldset>
+        )}
+      </div>
 
-              <VolatilityClockCard config={config} regimeConfig={regimeConfig} defaults={regimeDefaults} quoteCurrency={quoteCurrency} handleChange={handleChange} handleRegimeChange={handleRegimeChange} productIdLocked={Boolean(initialConfig?.productId)} />
-              <RegimeScalingCard regimeConfig={regimeConfig} defaults={regimeDefaults} handleRegimeChange={handleRegimeChange} />
-              <EntryModeLadderCard regimeConfig={regimeConfig} defaults={regimeDefaults} quoteCurrency={quoteCurrency} handleRegimeChange={handleRegimeChange} />
-              <TakeProfitCard regimeConfig={regimeConfig} defaults={regimeDefaults} baseCurrency={baseCurrency} handleRegimeChange={handleRegimeChange} />
-              <RegimeDetectionCard regimeConfig={regimeConfig} defaults={regimeDefaults} handleRegimeChange={handleRegimeChange} disclosure={disclosure} />
-              <CelestialHierarchyCard regimeConfig={regimeConfig} defaults={regimeDefaults} baseCurrency={baseCurrency} handleRegimeChange={handleRegimeChange} />
-              <MacroRegimeCard regimeConfig={regimeConfig} defaults={regimeDefaults} handleRegimeChange={handleRegimeChange} disclosure={disclosure} />
-              <TpAutoManagementCard regimeConfig={regimeConfig} defaults={regimeDefaults} handleRegimeChange={handleRegimeChange} />
-              <RiskCapsCard regimeConfig={regimeConfig} defaults={regimeDefaults} baseCurrency={baseCurrency} quoteCurrency={quoteCurrency} handleRegimeChange={handleRegimeChange} />
-              <OrderExecutionCard regimeConfig={regimeConfig} defaults={regimeDefaults} handleRegimeChange={handleRegimeChange} disclosure={disclosure} />
-              <SafetyTailEventsCard regimeConfig={regimeConfig} defaults={regimeDefaults} handleRegimeChange={handleRegimeChange} disclosure={disclosure} />
-              <SystemHealthCard regimeConfig={regimeConfig} defaults={regimeDefaults} handleRegimeChange={handleRegimeChange} disclosure={disclosure} />
-            </fieldset>
-
-            {/* Aggressiveness Presets Editor — full width */}
-            {presetsError && !editingPresets && (
-              <div role="alert" className="lg:col-span-2 flex items-center gap-3 text-sm text-yellow-400">
-                <span>{presetsError}</span>
-                <Button variant="secondary" size="xs" onClick={() => loadPresets()}>Retry</Button>
+      {isRegime && (
+        <section aria-label="Global presets" className="mt-6 bg-gray-800 rounded-lg p-4">
+          {presetsError && !editingPresets && (
+            <div role="alert" className="flex items-center gap-3 text-sm text-yellow-400">
+              <span>{presetsError}</span>
+              <Button variant="secondary" size="xs" onClick={() => loadPresets()}>Retry</Button>
+            </div>
+          )}
+          {editingPresets && (
+            <SectionCard title="Global Aggressiveness Presets">
+              <div className="text-xs text-gray-400 mb-3">
+                These presets are shared across all regime funds. Save Presets updates them separately from this fund.
               </div>
-            )}
-            {editingPresets && (
-              <SectionCard title="Aggressiveness Presets" className="lg:col-span-2">
-                <div className="text-xs text-gray-400 mb-3">
-                  Customize the parameter values applied by each aggressiveness level on the dashboard.
-                </div>
-                <fieldset disabled={savingPresets} className="contents">
+              <fieldset disabled={savingPresets} className="contents">
                 <div className="space-y-2">
                   {[
                     { id: 'conservative', label: 'Conservative', color: 'text-green-400' },
@@ -741,8 +731,10 @@ function ConfigEditor({ config: initialConfig, regimeDefaults, onSave, exchange 
                     return (
                       <div key={id} className="bg-gray-800/60 rounded-lg overflow-hidden">
                         <button
+                          type="button"
+                          aria-expanded={isExpanded}
                           onClick={() => togglePresetExpanded(id)}
-                          className="w-full flex items-center justify-between px-3 py-2 hover:bg-gray-700/50 transition-colors"
+                          className="min-h-10 w-full flex items-center justify-between px-3 py-2 hover:bg-gray-700/50 transition-colors"
                         >
                           <span className={`text-sm font-medium ${color}`}>{label}</span>
                           <span className="text-gray-500 text-xs">{isExpanded ? '▼' : '▶'}</span>
@@ -751,12 +743,12 @@ function ConfigEditor({ config: initialConfig, regimeDefaults, onSave, exchange 
                           <div className="px-3 pb-3">
                             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                               <FormInput label="k Factor" value={params.kFactor} onChange={(v) => handlePresetParamChange(id, 'kFactor', v)} type="number" />
-                              <FormInput label="Min Interval (ms)" value={params.minIntervalMs} onChange={(v) => handlePresetParamChange(id, 'minIntervalMs', v)} type="number" />
-                              <FormInput label="Max Interval (ms)" value={params.maxIntervalMs} onChange={(v) => handlePresetParamChange(id, 'maxIntervalMs', v)} type="number" />
+                              <DurationInput label="Min Interval" value={params.minIntervalMs} onChange={(v) => handlePresetParamChange(id, 'minIntervalMs', v)} />
+                              <DurationInput label="Max Interval" value={params.maxIntervalMs} onChange={(v) => handlePresetParamChange(id, 'maxIntervalMs', v)} />
                               <FormInput label="Entry Offset (bps)" value={params.entryOffsetBps} onChange={(v) => handlePresetParamChange(id, 'entryOffsetBps', v)} type="number" />
                               <FormInput label="Entry Offset Up (bps)" value={params.entryOffsetUpBps} onChange={(v) => handlePresetParamChange(id, 'entryOffsetUpBps', v)} type="number" />
                               <FormInput label="Entry Offset Down (bps)" value={params.entryOffsetDownBps} onChange={(v) => handlePresetParamChange(id, 'entryOffsetDownBps', v)} type="number" />
-                              <FormInput label="Order Stale Floor (ms)" value={params.orderStaleMs} onChange={(v) => handlePresetParamChange(id, 'orderStaleMs', v)} type="number" />
+                              <DurationInput label="Order Stale Floor" value={params.orderStaleMs} onChange={(v) => handlePresetParamChange(id, 'orderStaleMs', v)} />
                               <FormInput label="Caution Scale" value={params.cautionScale} onChange={(v) => handlePresetParamChange(id, 'cautionScale', v)} type="number" />
                               <FormInput label="Trend Scale" value={params.trendScale} onChange={(v) => handlePresetParamChange(id, 'trendScale', v)} type="number" />
                               <FormInput label="Max Cycle Buys" value={params.maxCycleBuys} onChange={(v) => handlePresetParamChange(id, 'maxCycleBuys', v)} type="number" />
@@ -789,13 +781,11 @@ function ConfigEditor({ config: initialConfig, regimeDefaults, onSave, exchange 
                     </Button>
                   )}
                 </div>
-                </fieldset>
-              </SectionCard>
-            )}
-          </div>
-        )}
-
-      </div>
+              </fieldset>
+            </SectionCard>
+          )}
+        </section>
+      )}
 
       {/* Warning - more compact */}
       <p className="mt-3 text-xs text-gray-400">
