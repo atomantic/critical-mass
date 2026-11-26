@@ -49,6 +49,7 @@ it('restores focus on Escape and exposes the trigger-to-options relationship', (
         : [initial, () => {}]
     },
     useRef: () => ({ current: trigger }),
+    useCallback: callback => callback,
     useEffect: effect => effect(),
     // Geometry is covered by the browser/admin tests; this synthetic DOM only
     // supplies the event listeners needed to verify dismissal semantics.
@@ -58,6 +59,7 @@ it('restores focus on Escape and exposes the trigger-to-options relationship', (
   // Invoke the actual component with an open menu and a minimal synthetic DOM
   // event target. React elements let this test inspect the rendered semantics.
   const originalUseState = testReact.useState
+  const originalUseCallback = testReact.useCallback
   const originalUseRef = testReact.useRef
   const originalUseEffect = testReact.useEffect
   const originalUseLayoutEffect = testReact.useLayoutEffect
@@ -87,7 +89,7 @@ it('restores focus on Escape and exposes the trigger-to-options relationship', (
     assert.equal(menuClosed, false)
     assert.equal(trigger.focusCalls, 1, 'outside pointer dismissal must not steal focus')
   } finally {
-    Object.assign(testReact, { useState: originalUseState, useRef: originalUseRef, useEffect: originalUseEffect, useLayoutEffect: originalUseLayoutEffect })
+    Object.assign(testReact, { useState: originalUseState, useCallback: originalUseCallback, useRef: originalUseRef, useEffect: originalUseEffect, useLayoutEffect: originalUseLayoutEffect })
     delete global.document
   }
 })
