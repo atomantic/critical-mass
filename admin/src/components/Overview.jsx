@@ -1,12 +1,10 @@
 import Button from './ui/Button'
 import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react'
 import { Link } from '../lib/router'
-import { useNavigate } from '../lib/routerContext'
 import { ExternalLink } from './icons'
 import { useMultiRegimeStatuses } from '../hooks/useTradeEvents'
 import { getBaseCurrency, getQuoteCurrency } from '../utils/productId.mjs'
 import { formatCurrency, formatPrice, formatAsset } from './charts/chartUtils'
-import AddFundModal from './AddFundModal'
 import ClosedFundCard from './ClosedFundCard'
 import { EXCHANGE_ICONS, EXCHANGE_COLORS } from './exchangeStyles'
 import { REGIME_COLORS, HEALTH_COLORS } from './regime/regimeStyles'
@@ -40,14 +38,12 @@ const getEngineStatus = (isRunning, isDryRun, lifecycle, engineDown) => {
 // independent status entries.
 const fundKey = (ex) => `${ex.name}::${ex.pair || ex.productId || ex.name || 'default'}`
 
-function Overview() {
-  const navigate = useNavigate()
+function Overview({ onAddFund }) {
   const [exchanges, setExchanges] = useState([])
   const [snapshotMap, setSnapshotMap] = useState({})
   const [statusState, setStatusState] = useState({})
   const [exchangesError, setExchangesError] = useState(null)
   const [loading, setLoading] = useState(true)
-  const [addFundOpen, setAddFundOpen] = useState(false)
   const loadOwnerRef = useRef(0)
   const abortControllerRef = useRef(null)
   const snapshotMapRef = useRef(snapshotMap)
@@ -57,11 +53,6 @@ function Overview() {
   const ownersRef = useRef(new Map())
   const fallbackStatusesRef = useRef(new Map())
 
-  const refreshExchanges = async () => {
-    // A failed read leaves the existing exchange list as-is; caller UI isn't gated on this.
-    const result = await apiGet('/api/exchanges')
-    if (result.ok) setExchanges(result.data.exchanges || [])
-  }
 
   const getOrCreateOwner = useCallback((ex) => {
     const key = fundKey(ex)
@@ -429,24 +420,13 @@ function Overview() {
       <div className="flex items-center justify-between mb-4">
         <h1 className="text-xl font-bold text-white">Funds</h1>
         <Button
-          onClick={() => setAddFundOpen(true)}
+          onClick={onAddFund}
           variant="primary" size="compact" className="font-medium"
           title="Create a new trading fund on an existing exchange"
         >
           + Add Fund
         </Button>
       </div>
-
-      <AddFundModal
-        open={addFundOpen}
-        onClose={() => setAddFundOpen(false)}
-        exchanges={exchanges}
-        onCreated={async ({ exchange, pair }) => {
-          await refreshExchanges()
-          // Navigate to the new fund's config page so the operator can review/enable it
-          navigate(`/${exchange}/${pair}/config`)
-        }}
-      />
 
       {exchangesError && (
         <div role="alert" className="flex items-center justify-between gap-3 rounded-lg border border-red-700 bg-red-900/20 p-4 mb-4 text-red-200">

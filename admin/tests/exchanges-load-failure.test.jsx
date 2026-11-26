@@ -76,5 +76,6 @@ it('fund created but list refresh fails: success toast, refresh warning, modal c
   expect(await screen.findByText(/Fund created: coinbase\/ETH-USDC/)).toBeTruthy()
   expect(await screen.findByText('Fund list not refreshed')).toBeTruthy()
   expect(created).toBe(true)
+  expect(window.location.pathname).toBe('/coinbase/BTC-USDC/config')
   await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Add Fund' })).toBeNull())
 })
