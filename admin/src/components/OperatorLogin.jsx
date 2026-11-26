@@ -1,6 +1,7 @@
 import Button from './ui/Button'
 import { useEffect, useState } from 'react'
 import { apiGet, apiPost, apiPut, onUnauthorized } from '../utils/apiClient'
+import { pauseRealtimeClient, reconnectRealtimeClient } from '../lib/realtime'
 
 export default function OperatorLogin({ children }) {
   const [status, setStatus] = useState('loading')
@@ -16,7 +17,10 @@ export default function OperatorLogin({ children }) {
   // check. If a session expires or a password change revokes it, the mounted
   // SPA must return to sign-in instead of merely showing API errors while
   // continuing to render privileged controls.
-  useEffect(() => onUnauthorized(() => setStatus('anonymous')), [])
+  useEffect(() => onUnauthorized(() => {
+    pauseRealtimeClient()
+    setStatus('anonymous')
+  }), [])
 
   const checkSession = async () => {
     setStatus('loading')
@@ -31,7 +35,12 @@ export default function OperatorLogin({ children }) {
       setRequired(session.required)
       setBootstrapRequired(Boolean(session.bootstrapRequired))
       setBootstrapSecretRequired(Boolean(session.bootstrapSecretRequired))
-      setStatus(session.required && !session.authenticated ? 'anonymous' : 'authenticated')
+      if (session.required && !session.authenticated) {
+        pauseRealtimeClient()
+        setStatus('anonymous')
+      } else {
+        setStatus('authenticated')
+      }
     } catch {
       setStatus('unreachable')
     }
@@ -51,7 +60,7 @@ export default function OperatorLogin({ children }) {
     const headers = {}
     if (bootstrapRequired && bootstrapSecret) headers['X-Operator-Bootstrap'] = bootstrapSecret
     const send = bootstrapRequired ? apiPut : apiPost
-    const result = await send(bootstrapRequired ? '/api/auth/password' : '/api/auth/session', { password }, { headers, allowEmpty: true })
+    const result = await send(bootstrapRequired ? '/api/auth/password' : '/api/auth/session', { password }, { headers, notifyUnauthorized: false })
     if (!result.ok) {
       if (result.status === 0) {
         setError('Could not reach the gateway. Your password was not checked — try again.')
@@ -70,6 +79,7 @@ export default function OperatorLogin({ children }) {
     setBootstrapSecret('')
     setRequired(true)
     setBootstrapRequired(false)
+    reconnectRealtimeClient()
     setStatus('authenticated')
   }
 

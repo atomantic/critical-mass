@@ -1,14 +1,21 @@
 /** @vitest-environment jsdom */
 import React from 'react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { renderWithToasts as render } from './renderWithToasts'
 import GatewayAccess from '../src/components/GatewayAccess'
 
 vi.mock('../src/lib/router', () => ({ Link: ({ children, ...props }) => <a {...props}>{children}</a> }))
 
+beforeEach(() => {
+  HTMLDialogElement.prototype.showModal = function () { this.open = true }
+  HTMLDialogElement.prototype.close = function () { this.open = false }
+})
+
 afterEach(() => {
   cleanup()
+  delete HTMLDialogElement.prototype.showModal
+  delete HTMLDialogElement.prototype.close
   vi.unstubAllGlobals()
   vi.useRealTimers()
 })
@@ -36,7 +43,20 @@ describe('GatewayAccess', () => {
     expect(screen.queryByText('Require sign-in')).toBeNull()
   })
 
-  it('sends the current password for password changes and removal', async () => {
+  it('shows a rejected current password in the reset dialog', async () => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ required: true }) })
+      .mockResolvedValueOnce({ ok: false, status: 401, json: async () => ({ error: 'Current password is required to reset it' }) })
+    vi.stubGlobal('fetch', fetch)
+    render(<GatewayAccess />)
+    fireEvent.change(await screen.findByLabelText('Current password'), { target: { value: 'incorrect' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Reset password' }))
+    const dialog = within(screen.getByRole('dialog'))
+    fireEvent.click(dialog.getByRole('button', { name: 'Reset password' }))
+    expect((await dialog.findByRole('alert')).textContent).toContain('Current password is required to reset it')
+  })
+
+  it('sends the current password for changes and only resets after confirmation', async () => {
     const fetch = vi.fn()
       .mockResolvedValueOnce({ ok: true, json: async () => ({ required: true }) })
       .mockResolvedValueOnce({ ok: true, json: async () => ({}) })
@@ -55,13 +75,22 @@ describe('GatewayAccess', () => {
     expect(await screen.findByText('Password changed.')).toBeTruthy()
 
     fireEvent.change(screen.getByLabelText('Current password'), { target: { value: 'old-secret' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Reset password' }))
+    const dialog = screen.getByRole('dialog', { name: 'Reset operator password?' })
+    expect(dialog.textContent).toContain('signs out all browsers')
+    expect(fetch).toHaveBeenCalledTimes(2)
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(fetch).toHaveBeenCalledTimes(2)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reset password' }))
     vi.stubGlobal('setTimeout', vi.fn())
     await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Remove password' }))
+      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Reset password' }))
       await Promise.resolve()
     })
     expect(fetch).toHaveBeenCalledTimes(3)
     expect(JSON.parse(fetch.mock.calls[2][1].body)).toEqual({ password: 'old-secret' })
-    expect(screen.getByText(/Password removed\. The gateway will ask you to create a new one/)).toBeTruthy()
+    expect(screen.getByText(/Password reset\. Create a new operator password/)).toBeTruthy()
   })
 })
