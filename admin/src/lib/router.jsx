@@ -2,9 +2,8 @@
 // history-backed provider, flat <Routes>/<Route> matching, <Navigate>, <Link>,
 // useNavigate and useLocation. Export names match react-router-dom so call
 // sites only change their import path.
-import { Children, Fragment, createContext, isValidElement, useCallback, useContext, useEffect, useMemo, useState } from 'react'
-
-const RouterContext = createContext(null)
+import { Children, Fragment, isValidElement, useCallback, useEffect, useMemo, useState } from 'react'
+import { RouterContext, useRouter, useNavigate, useLocation } from './routerContext'
 
 const readLocation = () => {
   const { pathname, search, hash } = window.location
@@ -32,15 +31,6 @@ export function BrowserRouter({ children }) {
   const value = useMemo(() => ({ location, navigate }), [location, navigate])
   return <RouterContext.Provider value={value}>{children}</RouterContext.Provider>
 }
-
-function useRouter(hookName) {
-  const router = useContext(RouterContext)
-  if (!router) throw new Error(`${hookName} must be used within a <BrowserRouter>`)
-  return router
-}
-
-export const useLocation = () => useRouter('useLocation').location
-export const useNavigate = () => useRouter('useNavigate').navigate
 
 export function Navigate({ to, replace = false }) {
   const navigate = useNavigate()
@@ -98,7 +88,7 @@ const safeDecode = (segment) => {
 // regardless of declaration order (e.g. /updown/analysis beats /:exchange/:pair):
 // one point per segment, +10 static, +3 param, -2 for a splat. Ties keep
 // declaration order.
-export function scorePath(path) {
+function scorePath(path) {
   const segments = `/${path}`.replace(/\/+/g, '/').split('/')
   const hasSplat = segments.includes('*')
   return segments
@@ -109,7 +99,7 @@ export function scorePath(path) {
 // Static segments compare case-insensitively (react-router's default), params
 // capture one decoded segment, a trailing `*` swallows the rest, and trailing
 // slashes on the pathname are ignored.
-export function matchPath(path, pathname) {
+function matchPath(path, pathname) {
   const patternSegments = splitPath(path)
   const pathSegments = splitPath(pathname).map(safeDecode)
   const params = {}
@@ -137,7 +127,7 @@ function collectRoutes(children) {
   })
 }
 
-export function rankRoutes(routes) {
+function rankRoutes(routes) {
   return routes
     .map((route, index) => ({ route, index, score: scorePath(route.path ?? '') }))
     .sort((a, b) => b.score - a.score || a.index - b.index)

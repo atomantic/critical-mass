@@ -20,6 +20,7 @@ const { findInvalidManualTradesReason } = require('./persisted-payload-validatio
 
 /**
  * @typedef {Object} ManualTrade
+ * @property {number} [buyQuoteAmount] - Quote amount of the buy fills
  * @property {string} id
  * @property {string} sellOrderId
  * @property {number} sellPrice

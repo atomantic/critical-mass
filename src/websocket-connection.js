@@ -50,11 +50,12 @@ const toError = (event, url) => {
  * Open a connection. The socket class is resolved at call time so a test can
  * substitute `globalThis.WebSocket`.
  * @param {string} url
- * @param {{ headers?: Record<string, string> }} [init] - handshake headers (Node's undici WebSocket)
+ * @param {import('undici-types').WebSocketInit} [init] - handshake options
  * @returns {WebSocketConnection}
  */
 const connectWebSocket = (url, init) => {
-  const WebSocketImpl = globalThis.WebSocket;
+  // Node's constructor accepts request headers in addition to the DOM overload.
+  const WebSocketImpl = /** @type {typeof globalThis.WebSocket & {new(url: string, options: import('undici-types').WebSocketInit): WebSocket}} */ (globalThis.WebSocket);
   if (typeof WebSocketImpl !== 'function') {
     throw new Error('global WebSocket is unavailable; Node.js 22 or newer is required');
   }

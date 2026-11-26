@@ -7,7 +7,7 @@ import { buildSavePayload } from '../utils/configSavePayload.mjs'
 import { INTERVAL_OPTIONS } from '../utils/intervals.mjs'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import ToggleSwitch from './ToggleSwitch'
-import { useNotify, useToast } from './Toast'
+import { useNotify, useToast } from './useToast'
 import Button from './ui/Button'
 import { getBaseCurrency, getQuoteCurrency } from '../utils/productId.mjs'
 
@@ -57,11 +57,11 @@ function ConfigEditor({ config: initialConfig, regimeDefaults, onSave, exchange 
   // (isDirty is never set for a toggle) and snap the UI back to stale state.
   const pendingWriteRef = useRef(0)
   // Apply a server-confirmed value to both the draft and its baseline.
-  const adoptSaved = updater => {
+  const adoptSaved = useCallback(updater => {
     baselineRef.current = updater(baselineRef.current)
     setConfig(updater)
-  }
-  const loadDraft = next => adoptSaved(() => next)
+  }, [])
+  const loadDraft = useCallback(next => adoptSaved(() => next), [adoptSaved])
 
   // Determine if showing regime config based on URL strategy prop
   const isRegime = strategy === 'regime'
@@ -77,7 +77,7 @@ function ConfigEditor({ config: initialConfig, regimeDefaults, onSave, exchange 
         setIsDirty(false)
       }
     }
-  }, [exchange, strategy, initialConfig])
+  }, [exchange, strategy, initialConfig, loadDraft])
 
   // A regime fund needs an engine restart to apply a dryRun change whenever the
   // saved config diverges from the mode the running engine actually started in.

@@ -104,6 +104,7 @@ const stepFlushSetup = (state, bar, params = FLUSH_SETUP_PARAMS) => {
   const closeTs = bar.timestamp + MINUTE_MS;
 
   if (s.phase === 'active') {
+    /** @type {NonNullable<FlushSetupState['lastExit']>['reason']|null} */
     let reason = null;
     let price = null;
     // Stop first: inside one 1m bar we cannot know which side printed first,
@@ -253,6 +254,7 @@ const createFlushSetupTracker = (params = FLUSH_SETUP_PARAMS) => {
    */
   const update = (candleAggregator) => {
     const c1m = candleAggregator.getCandles('1m') || [];
+    /** @type {NonNullable<ReturnType<typeof stepFlushSetup>['event']>[]} */
     const events = [];
     if (c1m.length === 0) return { state, events };
     const c15m = candleAggregator.getCandles('15m') || [];

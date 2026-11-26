@@ -35,16 +35,6 @@ module.exports = {
         OPERATOR_BOOTSTRAP_SECRET_FILE: process.env.OPERATOR_BOOTSTRAP_SECRET_FILE,
         NODE_OPTIONS: "--dns-result-order=ipv4first", // Force IPv4 for API stability (IPv6 rotates)
       },
-      env_production: {
-        NODE_ENV: "production",
-        PORT: PORTS.API,
-        COINBASE_IPC_PORT: PORTS.COINBASE_IPC,
-        GEMINI_IPC_PORT: PORTS.GEMINI_IPC,
-        CRYPTOCOM_IPC_PORT: PORTS.CRYPTOCOM_IPC,
-        OPERATOR_BOOTSTRAP_SECRET: process.env.OPERATOR_BOOTSTRAP_SECRET,
-        OPERATOR_BOOTSTRAP_SECRET_FILE: process.env.OPERATOR_BOOTSTRAP_SECRET_FILE,
-        NODE_OPTIONS: "--dns-result-order=ipv4first",
-      },
       watch: false,
       autorestart: true,
       max_restarts: 10,
@@ -63,12 +53,6 @@ module.exports = {
       cwd: __dirname,
       interpreter: "node",
       env: {
-        NODE_ENV: "production",
-        EXCHANGE_NAME: "coinbase",
-        EXCHANGE_IPC_PORT: PORTS.COINBASE_IPC,
-        NODE_OPTIONS: "--dns-result-order=ipv4first",
-      },
-      env_production: {
         NODE_ENV: "production",
         EXCHANGE_NAME: "coinbase",
         EXCHANGE_IPC_PORT: PORTS.COINBASE_IPC,
@@ -96,11 +80,6 @@ module.exports = {
         GEMINI_IPC_PORT: PORTS.GEMINI_IPC,
         NODE_OPTIONS: "--dns-result-order=ipv4first",
       },
-      env_production: {
-        NODE_ENV: "production",
-        GEMINI_IPC_PORT: PORTS.GEMINI_IPC,
-        NODE_OPTIONS: "--dns-result-order=ipv4first",
-      },
       watch: false,
       autorestart: true,
       max_restarts: 10,
@@ -123,11 +102,6 @@ module.exports = {
         CRYPTOCOM_IPC_PORT: PORTS.CRYPTOCOM_IPC,
         NODE_OPTIONS: "--dns-result-order=ipv4first",
       },
-      env_production: {
-        NODE_ENV: "production",
-        CRYPTOCOM_IPC_PORT: PORTS.CRYPTOCOM_IPC,
-        NODE_OPTIONS: "--dns-result-order=ipv4first",
-      },
       watch: false,
       autorestart: true,
       max_restarts: 10,
@@ -140,7 +114,7 @@ module.exports = {
       log_date_format: "YYYY-MM-DD HH:mm:ss",
       merge_logs: true,
     },
-    {
+    ...(process.env.CRITICAL_MASS_DEV_UI === "1" ? [{
       name: "critical-mass-ui",
       script: `${__dirname}/admin/node_modules/vite/bin/vite.js`,
       cwd: `${__dirname}/admin`,
@@ -155,6 +129,6 @@ module.exports = {
       autorestart: true,
       max_restarts: 5,
       min_uptime: "10s",
-    },
-  ],
+    }] : []),
+  ].map(app => app.env.NODE_ENV === "production" ? { ...app, env_production: app.env } : app),
 };

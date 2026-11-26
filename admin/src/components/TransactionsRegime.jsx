@@ -33,7 +33,7 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
   const reader = useMemo(() => createTransactionsReader(), [])
   const revision = useRef(null)
   const fund = `${exchange}:${pair || ''}`
-  const selection = useMemo(() => ({}), [fund])
+  const selection = useMemo(() => ({ fund }), [fund])
   const settledCycleSearch = searchQuery.selection === selection ? searchQuery.value : ''
   const activeFund = useRef(fund)
   activeFund.current = fund

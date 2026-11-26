@@ -1,10 +1,10 @@
 import { memo, useId, useMemo } from 'react'
 import { areaPath, extent, formatTime, linePath, linearScale, max, min, timeScale } from '../../lib/chart-math'
-import { formatPriceCompact, regimeZones } from './chartUtils'
+import { formatPriceCompact, regimeZones, solidAxis } from './chartUtils'
 import InfoTooltip from '../InfoTooltip'
 import ChartDataAlternative from './ChartDataAlternative'
-import { Axis, solidAxis } from './primitives/Axis'
-import { useElementSize } from './primitives/Responsive'
+import { Axis } from './primitives/Axis'
+import { useElementSize } from './primitives/chartMeasurement'
 import {
   REGIME_INTERVAL_COLUMNS,
   buildRegimeIntervals,

@@ -11,18 +11,29 @@ export default [
     languageOptions: {
       ecmaVersion: 'latest',
       sourceType: 'module',
-      globals: { ...globals.browser, ...globals.node, ...globals.vitest },
       parserOptions: { ecmaFeatures: { jsx: true } },
     },
     plugins: {
       'react-hooks': reactHooks,
-      'react-refresh': reactRefresh,
     },
     rules: {
       'react-hooks/rules-of-hooks': 'error',
       'react-hooks/exhaustive-deps': 'warn',
-      'react-refresh/only-export-components': ['warn', { allowConstantExport: true }],
       'no-unused-vars': ['error', { varsIgnorePattern: '^(_|React$)', args: 'none', ignoreRestSiblings: true, caughtErrorsIgnorePattern: '^_' }],
     },
+  },
+  {
+    files: ['src/**/*.{js,jsx,mjs}'],
+    languageOptions: { globals: globals.browser },
+    plugins: { 'react-refresh': reactRefresh },
+    rules: { 'react-refresh/only-export-components': ['warn', { allowConstantExport: true }] },
+  },
+  {
+    files: ['tests/**/*.{js,jsx,mjs}'],
+    languageOptions: { globals: { ...globals.browser, ...globals.node, ...globals.vitest } },
+  },
+  {
+    files: ['*.js'],
+    languageOptions: { globals: globals.node },
   },
 ];

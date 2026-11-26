@@ -49,7 +49,7 @@ const newCandle = (price, timestamp, volume = 0) => ({
 
 /**
  * Create a candle aggregator instance
- * @returns {{processTick: (price: number, timestamp: number, volume?: number) => string[], getCandles: (timeframe: string) => Array<{open: number, high: number, low: number, close: number, volume: number, timestamp: number}>, seedCandles: (timeframe: string, candles: Array<{open: number, high: number, low: number, close: number, volume: number, timestamp: number}>) => void, getCurrentCandle: (timeframe: string) => {open: number, high: number, low: number, close: number, volume: number, timestamp: number} | null}}
+ * @returns {{processTick: (price: number, timestamp: number, volume?: number) => string[], getCandles: (timeframe: string) => Array<{open: number, high: number, low: number, close: number, volume: number, timestamp: number}>, seedCandles: (timeframe: string, candles: Array<{open: number, high: number, low: number, close: number, volume: number, timestamp: number}>, now?: number, opts?: {boundaryInclusive?: boolean}) => void, getCurrentCandle: (timeframe: string) => {open: number, high: number, low: number, close: number, volume: number, timestamp: number} | null}}
  */
 const createCandleAggregator = () => {
   /** @type {Record<string, Array<{open: number, high: number, low: number, close: number, volume: number, timestamp: number}>>} */

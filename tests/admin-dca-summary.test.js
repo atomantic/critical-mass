@@ -52,7 +52,7 @@ before(async () => {
       './ui/ConfirmDialog': () => null,
       './ui/touchTarget': { TOUCH_TARGET: 'min-h-11' },
       '../utils/requestOwner.mjs': { createRequestOwner: () => ({}) },
-      './Toast': { useToast: () => ({ addToast() {} }) },
+      './useToast': { useToast: () => ({ addToast() {} }) },
       './regime/useDcaConversion': { fetchConvertPreview: async () => null },
       './charts/chartUtils': { formatCurrency: n => `$${n.toFixed(2)}`, formatPrice: String, formatAsset: String },
       '../utils/productId.mjs': { getBaseCurrency: () => 'ETH', getQuoteCurrency: () => 'USDC' },

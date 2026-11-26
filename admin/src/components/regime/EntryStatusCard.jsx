@@ -1,5 +1,6 @@
 import React from 'react'
-import { ConfigTooltip, REGIME_TOOLTIPS } from './RegimeHelp'
+import { ConfigTooltip } from './RegimeHelp'
+import { REGIME_TOOLTIPS } from './regimeTooltips'
 
 export default function EntryStatusCard({ healthMode, regimeMode, celestial, macroEnabled, maxCelestialBodies, macro, trendScale }) {
   const isTrend = regimeMode === 'TREND'

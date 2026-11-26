@@ -507,7 +507,7 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
     applyHeikinAshi(map, sortedBucketKeys)
 
     lastBucketKeyRef.current = sortedBucketKeys.length ? sortedBucketKeys[sortedBucketKeys.length - 1] : null
-  }, [bucketMs, sourceCandleMs, applyHeikinAshi])
+  }, [bucketMs, applyHeikinAshi])
 
   /**
    * Merge fetched historical candles into the canonical source sequence,

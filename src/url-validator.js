@@ -330,6 +330,7 @@ const DEFAULT_MAX_RESPONSE_BYTES = 20 * 1024 * 1024; // 20MB
  * @returns {Record<string,string>}
  */
 function stripAuthHeaders(headers) {
+  /** @type {Record<string, string>} */
   const out = {};
   for (const key of Object.keys(headers)) {
     if (key.toLowerCase() === 'authorization') continue;

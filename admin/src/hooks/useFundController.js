@@ -1,4 +1,4 @@
-import { useState, useEffect, useLayoutEffect, useRef } from 'react'
+import { useState, useEffect, useEffectEvent, useLayoutEffect, useRef } from 'react'
 import { useRealtimeConnection } from './useTradeEvents'
 import useRegimeStateEvents from './useRegimeStateEvents'
 import useRealtimeRefresh from './useRealtimeRefresh'
@@ -163,9 +163,11 @@ export default function useFundController({ location, navigate, addToast }) {
       setResetting(false)
     }
 
+    const summaryRequest = summaryRequestRef.current
+    const statusRequest = statusRequestRef.current
     return () => {
-      summaryRequestRef.current.controller?.abort()
-      statusRequestRef.current.controller?.abort()
+      summaryRequest.controller?.abort()
+      statusRequest.controller?.abort()
     }
   }, [selectedFund])
 
@@ -466,8 +468,9 @@ export default function useFundController({ location, navigate, addToast }) {
   }
 
   // Initial load of exchanges (with auto-select on first load)
+  const loadInitialExchanges = useEffectEvent(() => fetchExchanges(true))
   useEffect(() => {
-    fetchExchanges(true)
+    loadInitialExchanges()
   }, [])
 
   // Remember the last visited exchange so non-exchange pages (Overview) can build tab links

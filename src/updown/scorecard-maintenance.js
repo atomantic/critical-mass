@@ -112,6 +112,11 @@ const describeLockOwner = (directory) => {
 // shutdown drain) silently and forever. Fail with the recovery pointer instead.
 // `signal` lets a stopping writer cancel its waits, so a backup or shutdown
 // drain is not held behind them for the full timeout.
+/**
+ * @param {string} directory
+ * @param {Function} operation
+ * @param {{timeoutMs?: number, signal?: AbortSignal}} [options]
+ */
 const withScorecardLock = async (directory, operation, { timeoutMs = DEFAULT_LOCK_WAIT_MS, signal } = {}) => {
   const deadline = Date.now() + timeoutMs
   let release
@@ -146,7 +151,7 @@ const validateJsonl = (content) => {
   }
 }
 
-const atomicPublish = (file, content, validate = () => {}) => {
+const atomicPublish = (file, content, validate = (/** @type {string} */ _content) => {}) => {
   validate(content)
   atomicWriteSync(file, content)
 }

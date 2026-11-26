@@ -1,6 +1,9 @@
 // Chart utilities - formatting, layout and palette shared by the admin charts
 import { bisectLeft } from '../../lib/chart-math'
 
+// One colour for the domain bar, tick lines and outlined labels.
+export const solidAxis = (color) => ({ stroke: color, domainFill: color, textFill: color, textStroke: color })
+
 export { formatUsd, formatPercent, formatLocalStamp, formatBytes } from '../../utils/format.mjs'
 
 // Compact currency formatting for axes

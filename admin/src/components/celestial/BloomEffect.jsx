@@ -22,10 +22,7 @@ const BloomEffect = ({ threshold = 0.7, strength = 0.35, radius = 0.5, smoothWid
 
   useEffect(() => {
     const composer = new EffectComposer(gl)
-    const bloom = new UnrealBloomPass(new Vector2(1, 1), strength, radius, threshold)
-    if (bloom.highPassUniforms?.smoothWidth) {
-      bloom.highPassUniforms.smoothWidth.value = smoothWidth
-    }
+    const bloom = new UnrealBloomPass(new Vector2(1, 1))
     composer.addPass(new RenderPass(scene, camera))
     composer.addPass(bloom)
     composer.addPass(new OutputPass())

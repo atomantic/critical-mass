@@ -3,6 +3,7 @@ const assert = require('node:assert/strict')
 const path = require('node:path')
 const vm = require('node:vm')
 const { createRequire } = require('node:module')
+const { computeTooltipPosition } = require('../admin/src/components/tooltipPosition.mjs')
 const { pathToFileURL } = require('node:url')
 
 const adminRequire = createRequire(path.join(__dirname, '..', 'admin', 'package.json'))
@@ -14,11 +15,11 @@ before(async () => {
   const { rolldown } = await import(pathToFileURL(adminRequire.resolve('rolldown')).href)
   const bundle = await rolldown({
     input: path.join(__dirname, '..', 'admin', 'src', 'components', 'InfoTooltip.jsx'),
-    external: () => true,
+    external: (id, _parent, isResolved) => !isResolved && !id.startsWith('.') && !path.isAbsolute(id),
     transform: { jsx: 'react' },
   })
   let code
-  try { code = (await bundle.generate({ format: 'cjs' })).output[0].code } finally { await bundle.close() }
+  try { code = (await bundle.generate({ format: 'cjs', exports: 'named' })).output[0].code } finally { await bundle.close() }
   const m = { exports: {} }
   vm.runInNewContext(code, { module: m, exports: m.exports, require: adminRequire, console, React })
   mod = m.exports
@@ -60,7 +61,7 @@ describe('InfoTooltip', () => {
       for (const triggerLeft of [0, vw / 2, vw - 12]) {
         it(`keeps popup inside ${vw}px viewport (${align}, trigger x=${triggerLeft})`, () => {
           const vp = { width: vw, height: 640 }
-          const p = mod.computeTooltipPosition({ trigger: rect(triggerLeft, 300), popup: { height: 120 }, viewport: vp, align, maxWidth: 320 })
+          const p = computeTooltipPosition({ trigger: rect(triggerLeft, 300), popup: { height: 120 }, viewport: vp, align, maxWidth: 320 })
           assert.ok(p.left >= 0 && p.left + p.width <= vw)
           assert.ok(p.top >= 0 && p.top + Math.min(120, p.maxHeight) <= vp.height)
         })
@@ -70,9 +71,9 @@ describe('InfoTooltip', () => {
 
   it('flips below near the top and scrolls when taller than the viewport', () => {
     const vp = { width: 360, height: 400 }
-    const below = mod.computeTooltipPosition({ trigger: rect(10, 4), popup: { height: 100 }, viewport: vp })
+    const below = computeTooltipPosition({ trigger: rect(10, 4), popup: { height: 100 }, viewport: vp })
     assert.ok(below.top >= 16)
-    const tall = mod.computeTooltipPosition({ trigger: rect(10, 200), popup: { height: 900 }, viewport: vp })
+    const tall = computeTooltipPosition({ trigger: rect(10, 200), popup: { height: 900 }, viewport: vp })
     assert.equal(tall.maxHeight, 384)
     assert.equal(tall.top, 8)
   })
