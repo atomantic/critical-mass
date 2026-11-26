@@ -1,7 +1,8 @@
 import React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { BrowserRouter, Link, NavLink, Navigate, Route, Routes, useLocation, useNavigate, useUnsavedChanges } from '../src/lib/router'
+import { BrowserRouter, Link, NavLink, Navigate, Route, Routes } from '../src/lib/router'
+import { useLocation, useNavigate, useUnsavedChanges } from '../src/lib/routerContext'
 
 // Mirrors the shape of admin/src/App.jsx's route table, including its
 // declaration order: param routes are declared BEFORE the static

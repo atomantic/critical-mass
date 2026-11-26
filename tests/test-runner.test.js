@@ -11,7 +11,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const { defaultChildArgs, parseSelection, selectChangedTests, ROOT_PREFIX } = require('../scripts/test');
+const { defaultChildArgs, parseSelection, ROOT_PREFIX } = require('../scripts/test');
 
 const REPO_ROOT = path.join(__dirname, '..');
 
@@ -19,7 +19,7 @@ const REPO_ROOT = path.join(__dirname, '..');
 //   leak     - create a file and a directory in TMPDIR, never clean them, exit 0
 //   fail     - same, then exit 3
 //   hold     - announce READY, wait for the control file `release`, then exit 0
-//   graceful - announce READY; on SIGINT/SIGTERM wait 400ms (still running),
+//   graceful - announce READY; on SIGINT/SIGTERM wait for the test to acknowledge the signal,
 //              record whether TMPDIR still exists, then exit 0
 //   stubborn - announce READY and ignore SIGINT/SIGTERM
 //   descendant[-fail] - exit with an unref'ed listener still in the owned group
@@ -42,10 +42,15 @@ if (mode === 'leak' || mode === 'fail') {
   }, 20);
 } else if (mode === 'graceful') {
   fs.writeFileSync(path.join(tmp, 'fixture.txt'), 'x');
-  const stop = () => setTimeout(() => {
-    fs.writeFileSync(path.join(control, 'witness'), fs.existsSync(tmp) ? 'root-present' : 'root-gone');
-    process.exit(0);
-  }, 400);
+  const stop = () => {
+    console.log('SIGNALLED');
+    const timer = setInterval(() => {
+      if (!fs.existsSync(path.join(control, 'release'))) return;
+      clearInterval(timer);
+        fs.writeFileSync(path.join(control, 'witness'), fs.existsSync(tmp) ? 'root-present' : 'root-gone');
+      process.exit(0);
+    }, 5);
+  };
   process.on('SIGINT', stop);
   process.on('SIGTERM', stop);
   setInterval(() => {}, 1000);
@@ -120,14 +125,17 @@ describe('scripts/test.js runner lifecycle', () => {
     spawned.add(proc);
     let out = '';
     let notifyReady;
+    let notifySignal;
+    const signalled = new Promise((resolve) => { notifySignal = resolve; });
     const ready = new Promise((resolve) => { notifyReady = resolve; });
     proc.stdout.on('data', (chunk) => {
       out += chunk;
       const match = out.match(/READY (\S+)/);
       if (match) notifyReady(match[1]);
+      if (out.includes('SIGNALLED')) notifySignal(true);
     });
     const exit = new Promise((resolve) => proc.on('close', (code, signal) => resolve({ code, signal })));
-    return { proc, ready, exit, output: () => out };
+    return { proc, ready, exit, signalled: Promise.race([signalled, exit.then(() => false)]), output: () => out };
   }
 
   const ownedRoots = () => fs.readdirSync(parent).filter((name) => name.startsWith(ROOT_PREFIX));
@@ -171,6 +179,9 @@ describe('scripts/test.js runner lifecycle', () => {
       const root = await run.ready;
       assert.ok(fs.existsSync(root));
       run.proc.kill(signal);
+      assert.equal(await run.signalled, true, 'child acknowledged the forwarded signal');
+      assert.ok(fs.existsSync(root), 'root stays available during shutdown');
+      fs.writeFileSync(path.join(control, 'release'), '');
       const result = await run.exit;
 
       assert.equal(result.code, 0, 'runner reports the child\'s own exit status after it stops');
@@ -184,7 +195,7 @@ describe('scripts/test.js runner lifecycle', () => {
   }
 
   it('escalates to SIGKILL for a child that ignores the signal, then cleans up', async () => {
-    const run = start('stubborn', { KILL_GRACE_MS: '300' });
+    const run = start('stubborn', { KILL_GRACE_MS: '50' });
     const root = await run.ready;
     run.proc.kill('SIGTERM');
     const result = await run.exit;
@@ -268,14 +279,31 @@ describe('scripts/test.js runner lifecycle', () => {
     assert.throws(() => defaultChildArgs(['tests/nope.test.js']), /path not found/);
   });
 
-  it('maps changed files to relevant tests', () => {
-    const tests = ['tests/a.test.js', 'tests/b.test.js', 'tests/c.test.js'];
-    const text = { 'tests/a.test.js': "require('../src/fill-ledger')", 'tests/b.test.js': 'nothing', 'tests/c.test.js': 'x' };
-    const read = (f) => text[f];
-    assert.deepEqual(selectChangedTests(['tests/c.test.js', 'src/fill-ledger.js', 'README.md'], tests, read),
-      ['tests/a.test.js', 'tests/c.test.js']);
-    assert.deepEqual(selectChangedTests(['tests/gone.test.js', 'docs/x.md', 'admin/src/fill-ledger.js'], tests, read), []);
-    assert.deepEqual(selectChangedTests(['engines/zzz.js'], tests, read), []);
+  it('walks static imports through entry points, scripts, helpers and circular references', () => {
+    const { selectChangedTests } = require('../scripts/lib/test-dependencies');
+    const sources = {
+      'tests/route.test.js': "require('../server'); require('./helpers/route')",
+      'tests/cli.test.js': "import '../index.js'; path.join(__dirname, '..', 'scripts', 'entry.js')",
+      'tests/other.test.js': "// require('../src/coinbase/api'); const label = 'api';\npath.join(__dirname, '..');",
+      'tests/helpers/route/index.js': "export { route } from '../../../scripts/route.mjs'",
+      'scripts/entry.js': '',
+      'scripts/route.mjs': "export const route = import('../server.js')",
+      'server.js': "require('./src/coinbase/api')",
+      'src/coinbase/api.js': "require('../../server')",
+      'index.js': "require.resolve('./shared/other/api')",
+      'shared/other/api.js': '',
+    };
+    const tests = Object.keys(sources).filter(file => file.endsWith('.test.js'));
+    const pick = (...changed) => selectChangedTests(changed, tests, [...Object.keys(sources), ...changed],
+      file => sources[file]);
+    assert.deepEqual(pick('src/coinbase/api.js'), ['tests/route.test.js']);
+    assert.deepEqual(pick('server.js', 'scripts/route.mjs', 'tests/helpers/route/index.js'), ['tests/route.test.js']);
+    assert.deepEqual(pick('index.js', 'tests/other.test.js', 'docs/x.md'), ['tests/cli.test.js', 'tests/other.test.js']);
+    assert.deepEqual(pick('scripts/entry.js'), ['tests/cli.test.js']);
+    assert.deepEqual(pick('server.js', 'scripts/unmapped.js'), []);
+    assert.deepEqual(pick('server.js', 'tests/isolated-data-root.js'), []);
+    delete sources['src/coinbase/api.js'];
+    assert.deepEqual(pick('src/coinbase/api.js'), ['tests/route.test.js']);
   });
 
   it('the actual CLI accepts forwarded selection and reporter options', { timeout: 10000 }, async () => {

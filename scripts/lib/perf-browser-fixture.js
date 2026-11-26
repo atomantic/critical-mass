@@ -28,7 +28,7 @@ async function stopChild(child) {
   await done;
   clearTimeout(timer);
 }
-async function startBrowserFixture() {
+async function startBrowserFixture({ fills = 30000, buildUi = true } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-browser-perf-'));
   const engines = [];
   let gateway;
@@ -43,15 +43,21 @@ async function startBrowserFixture() {
     for (const file of ['server.js', 'package.json', 'ecosystem.config.cjs', 'config.example.json', 'src', 'shared']) {
       fs.cpSync(path.join(ROOT, file), path.join(dir, file), { recursive: true });
     }
-    fs.mkdirSync(path.join(dir, 'admin'));
-    for (const file of ['src', 'public', 'index.html', 'package.json', 'vite.config.js', 'tailwind.config.js', 'postcss.config.js']) {
-      if (fs.existsSync(path.join(ROOT, 'admin', file))) fs.cpSync(path.join(ROOT, 'admin', file), path.join(dir, 'admin', file), { recursive: true });
+    fs.symlinkSync(fs.realpathSync(path.join(ROOT, 'node_modules')), path.join(dir, 'node_modules'), 'dir');
+    if (buildUi) {
+      fs.mkdirSync(path.join(dir, 'admin'));
+      for (const file of ['src', 'public', 'index.html', 'package.json', 'vite.config.js', 'tailwind.config.js', 'postcss.config.js']) {
+        if (fs.existsSync(path.join(ROOT, 'admin', file))) fs.cpSync(path.join(ROOT, 'admin', file), path.join(dir, 'admin', file), { recursive: true });
+      }
+      fs.symlinkSync(fs.realpathSync(path.join(ROOT, 'admin/node_modules')), path.join(dir, 'admin/node_modules'), 'dir');
+      // Fixture-only introspection; production bundles never expose this handle.
+      fs.appendFileSync(path.join(dir, 'admin/src/main.jsx'), '\nimport { getRealtimeClient } from "./lib/realtime"; window.__perfSocket = getRealtimeClient;\n');
+      const build = spawn(process.execPath, [path.join(dir, 'admin/node_modules/vite/bin/vite.js'), 'build'], { cwd: path.join(dir, 'admin'), env: childEnv(), stdio: 'ignore' });
+      if ((await once(build, 'exit'))[0] !== 0) throw new Error('fixture UI build failed');
+    } else {
+      fs.mkdirSync(path.join(dir, 'admin/dist'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'admin/dist/index.html'), '<!doctype html><title>Synthetic audit fixture</title>');
     }
-    for (const part of ['', 'admin']) fs.symlinkSync(fs.realpathSync(path.join(ROOT, part, 'node_modules')), path.join(dir, part, 'node_modules'), 'dir');
-    // Fixture-only introspection; production bundles never expose this handle.
-    fs.appendFileSync(path.join(dir, 'admin/src/main.jsx'), '\nimport { getRealtimeClient } from "./lib/realtime"; window.__perfSocket = getRealtimeClient;\n');
-    const build = spawn(process.execPath, [path.join(dir, 'admin/node_modules/vite/bin/vite.js'), 'build'], { cwd: path.join(dir, 'admin'), env: childEnv(), stdio: 'ignore' });
-    if ((await once(build, 'exit'))[0] !== 0) throw new Error('fixture UI build failed');
     const config = JSON.parse(fs.readFileSync(path.join(dir, 'config.example.json')));
     config.exchanges = {};
     for (const [exchange, pair] of FUNDS) {
@@ -61,7 +67,7 @@ async function startBrowserFixture() {
     config.global = { simpleDcaEnabled: false, backup: { enabled: false }, sentinel: { enabled: false } };
     fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify(config));
     fs.mkdirSync(path.join(dir, 'data'));
-    const ledger = syntheticFills(30000).map(fill => ({ ...fill, rawExchangeResponse: 'synthetic-detail-only'.repeat(10) }));
+    const ledger = syntheticFills(fills).map(fill => ({ ...fill, rawExchangeResponse: 'synthetic-detail-only'.repeat(10) }));
     require(path.join(dir, 'src/logger')).createContextLogger = () => ({ info() {}, warn() {}, error() {} });
     const { createIPCServer } = require(path.join(dir, 'src/ipc/ipc-server'));
     const { createTransactionsReadView } = require(path.join(dir, 'src/transactions-regime-query'));

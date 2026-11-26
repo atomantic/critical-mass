@@ -46,7 +46,7 @@ const toEs256Key = (pem) => {
  * Extra `header` fields (kid, nonce) follow alg/typ.
  * @param {Record<string, unknown>} claims
  * @param {string | Buffer | import('crypto').KeyObject} key - HS256 secret, or the ES256 private key as PEM text
- * @param {{ algorithm: 'HS256' | 'ES256', header?: Record<string, unknown>, expiresIn?: number, audience?: string, issuer?: string }} options
+ * @param {{ algorithm?: 'HS256' | 'ES256', header?: Record<string, unknown>, expiresIn?: number, audience?: string, issuer?: string }} [options]
  * @returns {string} compact JWS
  */
 const signJwt = (claims, key, { algorithm, header = {}, expiresIn, audience, issuer } = {}) => {

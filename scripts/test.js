@@ -105,50 +105,22 @@ function parseSelection(extraArgs, cwd = process.cwd()) {
   return { options, files: [...new Set(files)] };
 }
 
-const SOURCE_DIRS = ['src/', 'shared/', 'engines/'];
-
-/**
- * Pick the tests relevant to a set of changed files: changed test files that
- * still exist, plus tests whose text mentions the basename of a changed
- * src/shared/engines file. Empty when nothing matches (caller runs everything).
- * @param {string[]} changed repo-relative, forward-slash paths
- * @param {string[]} testFiles repo-relative test paths
- * @param {(file: string) => string} readText
- */
-function selectChangedTests(changed, testFiles, readText) {
-  const norm = (f) => f.split(path.sep).join('/');
-  const tests = new Set(testFiles.map(norm));
-  const picked = new Set();
-  const names = new Set();
-  for (const file of changed.map(norm)) {
-    if (tests.has(file)) picked.add(file);
-    else if (SOURCE_DIRS.some((d) => file.startsWith(d)) && /\.[cm]?[jt]sx?$/.test(file)) {
-      names.add(path.basename(file).replace(/\.[^.]+$/, ''));
-    }
-  }
-  if (names.size) {
-    for (const test of tests) {
-      if (picked.has(test)) continue;
-      const text = readText(test);
-      for (const name of names) if (text.includes(name)) { picked.add(test); break; }
-    }
-  }
-  return [...picked].sort();
-}
-
-/** Files changed vs origin/main (or main), plus uncommitted and untracked ones. Null when git cannot say. */
-function gitChangedFiles() {
+/** Changes relative to the merge base, including local edits and new files. */
+function gitTestInputs() {
   const { spawnSync } = require('child_process');
   const git = (args) => {
     const r = spawnSync('git', args, { cwd: REPO_ROOT, encoding: 'utf8' });
-    return r.status === 0 ? r.stdout.split('\n').filter(Boolean) : null;
+    return r.status === 0 ? r.stdout.split('\0').filter(Boolean) : null;
   };
   const base = ['origin/main', 'main'].find((ref) => git(['rev-parse', '--verify', '--quiet', ref]));
   if (!base) return null;
-  const parts = [git(['diff', '--name-only', `${base}...HEAD`]), git(['diff', '--name-only', 'HEAD']),
-    git(['ls-files', '--others', '--exclude-standard'])];
-  if (parts.some((p) => p === null)) return null;
-  return [...new Set(parts.flat())];
+  const branch = git(['diff', '--name-only', '--no-renames', '-z', `${base}...HEAD`]);
+  const local = git(['diff', '--name-only', '--no-renames', '-z', 'HEAD']);
+  const untracked = git(['ls-files', '--others', '--exclude-standard', '-z']);
+  const tracked = git(['ls-files', '--cached', '-z']);
+  if (!branch || !local || !untracked || !tracked) return null;
+  const changed = [...new Set([...branch, ...local, ...untracked])];
+  return { changed, inventory: [...tracked, ...changed] };
 }
 
 /** Default child command: the documented node --test invocation. */
@@ -162,9 +134,14 @@ function defaultChildArgs(extraArgs) {
 function applyChanged(extraArgs) {
   if (!extraArgs.includes('--changed')) return extraArgs;
   const rest = extraArgs.filter((a) => a !== '--changed');
-  const changed = gitChangedFiles();
-  const picked = changed ? selectChangedTests(changed, allTestFiles(),
-    (f) => fs.readFileSync(path.join(REPO_ROOT, f), 'utf8')) : [];
+  const inputs = gitTestInputs();
+  const picked = inputs ? require('./lib/test-dependencies').selectChangedTests(
+    inputs.changed, allTestFiles().map((file) => file.split(path.sep).join('/')), inputs.inventory,
+    (file) => {
+      try { return fs.readFileSync(path.join(REPO_ROOT, file), 'utf8'); }
+      catch (error) { if (error.code !== 'ENOENT' && error.code !== 'EISDIR') throw error; }
+    },
+  ) : [];
   if (picked.length) {
     console.error(`test runner: ${picked.length} changed/related test file(s)`);
     return [...rest, ...picked.map((f) => path.join(REPO_ROOT, f))];
@@ -278,7 +255,7 @@ function runOwned(options = {}) {
   });
 }
 
-module.exports = { runOwned, defaultChildArgs, parseSelection, selectChangedTests, ROOT_PREFIX };
+module.exports = { runOwned, defaultChildArgs, parseSelection, ROOT_PREFIX };
 
 if (require.main === module) {
   runOwned({ extraArgs: process.argv.slice(2) }).then((code) => process.exit(code));

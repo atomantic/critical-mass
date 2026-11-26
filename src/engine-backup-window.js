@@ -24,7 +24,7 @@ const registerEngineBackupHandlers = (registry, {
   regimeEngines, getMarketFunds, stopMarketServices, drainMarketStarts,
   drainPendingWrites, startMarketService, drainStarts = async () => {},
   pauseBuffers = () => {}, resumeBuffers = () => {}, logger,
-  onGatewayDisconnect = () => {}, isShuttingDown = () => false,
+  onGatewayDisconnect = (/** @type {() => void} */ _listener) => {}, isShuttingDown = () => false,
   setTimer = setTimeout, clearTimer = clearTimeout, now = Date.now,
 }) => {
   let paused = null;

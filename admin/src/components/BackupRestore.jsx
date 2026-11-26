@@ -1,10 +1,11 @@
+import NumberInput from './ui/NumberInput'
 import { useState, useEffect, useRef } from 'react'
 import { formatBytes } from '../utils/format.mjs'
 import { plural } from '../utils/plural.mjs'
 import { apiGet, apiPost, apiPut, apiDelete, describeMutationFailure } from '../utils/apiClient'
 import ConfirmDialog from './ui/ConfirmDialog'
 import Button from './ui/Button'
-import { useNotify, useToast } from './Toast'
+import { useNotify, useToast } from './useToast'
 
 const INTERVAL_OPTIONS = [
   { label: '6 hours', value: 6 * 60 * 60 * 1000 },
@@ -458,11 +459,10 @@ function BackupRestore() {
               </div>
               <div>
                 <label htmlFor="backup-max-count" className="block text-sm font-medium text-gray-300 mb-1">Max Backups</label>
-                <input
+                <NumberInput
                   id="backup-max-count"
-                  type="number"
                   value={config.maxBackups}
-                  onChange={e => updateConfig(prev => ({ ...prev, maxBackups: Math.max(1, Math.min(30, parseInt(e.target.value) || 7)) }))}
+                  onChange={value => updateConfig(prev => ({ ...prev, maxBackups: Math.max(1, Math.min(30, Math.trunc(value))) }))}
                   min={1}
                   max={30}
                   className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-hidden focus:border-blue-500"
@@ -471,11 +471,10 @@ function BackupRestore() {
               </div>
               <div>
                 <label htmlFor="fund-state-max-count" className="block text-sm font-medium text-gray-300 mb-1">Fund-State Snapshots</label>
-                <input
+                <NumberInput
                   id="fund-state-max-count"
-                  type="number"
                   value={config.fundStateMaxBackups}
-                  onChange={e => updateConfig(prev => ({ ...prev, fundStateMaxBackups: Math.max(1, Math.min(168, parseInt(e.target.value) || 24)) }))}
+                  onChange={value => updateConfig(prev => ({ ...prev, fundStateMaxBackups: Math.max(1, Math.min(168, Math.trunc(value))) }))}
                   min={1}
                   max={168}
                   className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-hidden focus:border-blue-500"

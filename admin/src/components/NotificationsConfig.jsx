@@ -1,9 +1,10 @@
 import { DurationInput } from './config/ConfigFormControls'
+import NumberInput from './ui/NumberInput'
 import Button from './ui/Button'
 import { useState, useEffect, useRef } from 'react'
 import { apiGet, apiPost, apiPut, describeMutationFailure } from '../utils/apiClient'
 import useRealtimeRefresh from '../hooks/useRealtimeRefresh'
-import { useNotify } from './Toast'
+import { useNotify } from './useToast'
 
 const EVENT_GROUPS = {
   'Critical': [
@@ -354,14 +355,10 @@ function NotificationsConfig() {
                 />
                 <div>
                   <label htmlFor="daily-summary-hour" className="block text-sm font-medium text-gray-300 mb-1">Daily Summary Hour</label>
-                  <input
+                  <NumberInput
                     id="daily-summary-hour"
-                    type="number"
                     value={config.dailySummaryHour}
-                    onChange={e => {
-                      const hour = parseInt(e.target.value, 10)
-                      updateConfig(prev => ({ ...prev, dailySummaryHour: Number.isNaN(hour) ? 20 : hour }))
-                    }}
+                    onChange={value => updateConfig(prev => ({ ...prev, dailySummaryHour: Math.trunc(value) }))}
                     min={0}
                     max={23}
                     className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-hidden focus:border-blue-500"
@@ -394,17 +391,13 @@ function NotificationsConfig() {
                   <div className="grid grid-cols-2 gap-4 ml-14">
                     <div>
                       <label htmlFor="quiet-hours-start" className="block text-sm text-gray-400 mb-1">Start Hour</label>
-                      <input
+                      <NumberInput
                         id="quiet-hours-start"
-                        type="number"
                         value={config.quietHours.start}
-                        onChange={e => {
-                          const hour = parseInt(e.target.value, 10)
-                          updateConfig(prev => ({
-                            ...prev,
-                            quietHours: { ...prev.quietHours, start: Number.isNaN(hour) ? 23 : hour },
-                          }))
-                        }}
+                        onChange={value => updateConfig(prev => ({
+                          ...prev,
+                          quietHours: { ...prev.quietHours, start: Math.trunc(value) },
+                        }))}
                         min={0}
                         max={23}
                         className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-hidden focus:border-blue-500"
@@ -412,17 +405,13 @@ function NotificationsConfig() {
                     </div>
                     <div>
                       <label htmlFor="quiet-hours-end" className="block text-sm text-gray-400 mb-1">End Hour</label>
-                      <input
+                      <NumberInput
                         id="quiet-hours-end"
-                        type="number"
                         value={config.quietHours.end}
-                        onChange={e => {
-                          const hour = parseInt(e.target.value, 10)
-                          updateConfig(prev => ({
-                            ...prev,
-                            quietHours: { ...prev.quietHours, end: Number.isNaN(hour) ? 7 : hour },
-                          }))
-                        }}
+                        onChange={value => updateConfig(prev => ({
+                          ...prev,
+                          quietHours: { ...prev.quietHours, end: Math.trunc(value) },
+                        }))}
                         min={0}
                         max={23}
                         className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-hidden focus:border-blue-500"

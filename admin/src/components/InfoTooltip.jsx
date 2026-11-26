@@ -1,30 +1,10 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-
-const MARGIN = 8
-const GAP = 8
-
-// Compute a viewport-bounded fixed position for a popup anchored to a trigger.
-// `align` is only a preference: the result is always clamped inside the viewport.
-export function computeTooltipPosition({ trigger, popup, viewport, align = 'center', maxWidth = 208 }) {
-  const width = Math.max(0, Math.min(maxWidth, viewport.width - MARGIN * 2))
-  let left = align === 'left' ? trigger.left
-    : align === 'right' ? trigger.right - width
-    : trigger.left + trigger.width / 2 - width / 2
-  left = Math.max(MARGIN, Math.min(left, viewport.width - MARGIN - width))
-
-  const maxHeight = Math.max(0, viewport.height - MARGIN * 2)
-  const height = Math.min(popup.height, maxHeight)
-  const spaceAbove = trigger.top - GAP - MARGIN
-  const spaceBelow = viewport.height - trigger.bottom - GAP - MARGIN
-  let top = spaceAbove >= height || spaceAbove >= spaceBelow ? trigger.top - GAP - height : trigger.bottom + GAP
-  top = Math.max(MARGIN, Math.min(top, viewport.height - MARGIN - height))
-  return { left, top, width, maxHeight }
-}
+import { computeTooltipPosition, MARGIN } from './tooltipPosition.mjs'
 
 const WIDTHS = { 'w-52': 208, 'w-72': 288, 'w-80': 320 }
 
-// Info icon + help popup. Closed content is not mounted, so it never affects layout.
+// Closed content is not mounted, so it never affects layout.
 export default function InfoTooltip({ tip, label = 'More information', align = 'center', width = 'w-52', iconClassName = 'w-3 h-3', className = 'ml-1' }) {
   const [open, setOpen] = useState(false)
   const [pos, setPos] = useState(null)

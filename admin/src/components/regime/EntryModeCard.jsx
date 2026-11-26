@@ -1,6 +1,7 @@
 import React from 'react'
 import { plural } from '../../utils/plural.mjs'
-import { ConfigTooltip, REGIME_TOOLTIPS } from './RegimeHelp'
+import { ConfigTooltip } from './RegimeHelp'
+import { REGIME_TOOLTIPS } from './regimeTooltips'
 
 export default function EntryModeCard({ entryMode, ladder, autoSwitch, ladderAutoSwitch }) {
   return (

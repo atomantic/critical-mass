@@ -4,31 +4,37 @@ require('../src/runtime-env').loadRuntimeEnv();
 const { spawn } = require('node:child_process');
 const { createInterface } = require('node:readline');
 const path = require('node:path');
+const { PORTS } = require('../ecosystem.config.cjs');
 const { stopProcessGroup } = require('./lib/process-group');
 
 const SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'];
 // Allow the gateway's 30-second drain before forcing its watch group to stop.
 const KILL_GRACE_MS = 40000;
 
-function developmentChildren(root = path.resolve(__dirname, '..'), env = process.env) {
-  const admin = path.join(root, 'admin');
-  const vitePackage = require.resolve('vite/package.json', { paths: [admin] });
-  return [
-    {
+function developmentChildren(root = path.resolve(__dirname, '..'), env = process.env, target) {
+  const port = env.PORT || String(PORTS.API);
+  const children = [];
+  if (target !== 'ui') {
+    children.push({
       name: 'server',
       command: process.execPath,
       args: ['--watch', 'server.js'],
       cwd: root,
-      env: { ...env, VITE_API_PORT: '5570' },
-    },
-    {
+      env: { ...env, PORT: port },
+    });
+  }
+  if (target !== 'server') {
+    const admin = path.join(root, 'admin');
+    const vitePackage = require.resolve('vite/package.json', { paths: [admin] });
+    children.push({
       name: 'ui',
       command: process.execPath,
       args: [path.join(path.dirname(vitePackage), 'bin', 'vite.js')],
       cwd: admin,
-      env: { ...env, VITE_PORT: '5571', VITE_API_PORT: '5570' },
-    },
-  ];
+      env: { ...env, VITE_PORT: env.VITE_PORT || String(PORTS.UI), VITE_API_PORT: env.VITE_API_PORT || port },
+    });
+  }
+  return children;
 }
 
 /** Inject fixture child specs and an event emitter to test without application state. */
@@ -67,7 +73,7 @@ function launch(children, { signals = process, stdout = process.stdout, stderr =
   const listeners = SIGNALS.map(signal => {
     const listener = () => shutdown(signal);
     signals.on(signal, listener);
-    return [signal, listener];
+    return { signal, listener };
   });
 
   const completions = children.map(spec => new Promise(resolve => {
@@ -90,7 +96,7 @@ function launch(children, { signals = process, stdout = process.stdout, stderr =
       return;
     }
     running.add(child);
-    for (const [stream, output] of [[child.stdout, stdout], [child.stderr, stderr]]) {
+    for (const { stream, output } of [{ stream: child.stdout, output: stdout }, { stream: child.stderr, output: stderr }]) {
       createInterface({ input: stream, crlfDelay: Infinity }).on('line', line => {
         output.write('[' + spec.name + '] ' + line + '\n');
       });
@@ -113,13 +119,13 @@ function launch(children, { signals = process, stdout = process.stdout, stderr =
   }));
 
   return Promise.all(completions).then(results => {
-    for (const [signal, listener] of listeners) signals.off(signal, listener);
+    for (const { signal, listener } of listeners) signals.off(signal, listener);
     return !failed && results.every(Boolean) ? 0 : 1;
   });
 }
 
 if (require.main === module) {
-  Promise.resolve().then(() => launch(developmentChildren())).then(code => {
+  Promise.resolve().then(() => launch(developmentChildren(undefined, undefined, process.argv[2]))).then(code => {
     process.exitCode = code;
   }).catch(error => {
     console.error('[dev] ' + error.message);

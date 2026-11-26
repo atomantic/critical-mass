@@ -126,7 +126,7 @@ const getStateFile = (exchange, pair) => path.join(resolveFundDataDir(exchange, 
  * Read + validate one fund's on-disk envelope.
  * @param {string} stateFile - Path to the fund's state file
  * @param {string} key - Fund key, for log context
- * @param {{info: Function, warn: Function}} logger - Context logger
+ * @param {{info: Function, warn: Function, error: Function}} logger - Context logger
  * @returns {ExchangeDryRunState|null} The fund's state, or null when absent/cleared/unusable
  */
 const readFundStateFile = (stateFile, key, logger) => {
@@ -239,7 +239,7 @@ const readLegacyFundMap = (logger) => {
  * engine has already written. Both key forms the legacy writer produced are
  * accepted: the composite `exchange::pair` and the bare `exchange`.
  * @param {string} exchange - Exchange name
- * @param {string} [pair] - Pair name
+ * @param {string|undefined} pair - Pair name
  * @param {string} resolvedPair - Pair the fund directory actually resolved to
  * @param {{info: Function, warn: Function}} logger - Context logger
  * @returns {ExchangeDryRunState|null}

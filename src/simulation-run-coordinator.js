@@ -16,11 +16,16 @@ class SimulationRunCoordinator {
     this.lastRefresh = new Map();
   }
 
+  /**
+   * @template T
+   * @param {{resourceKey: string, requestKey: string, forceRefresh?: boolean}} request
+   * @param {() => T|PromiseLike<T>} run
+   */
   start({ resourceKey, requestKey, forceRefresh = false }, run) {
     const active = this.active.get(resourceKey);
     if (active) {
       return {
-        accepted: false,
+        accepted: /** @type {const} */ (false),
         status: 409,
         code: 'SIMULATION_ALREADY_RUNNING',
         error: 'A simulation is already running for this fund',
@@ -30,7 +35,7 @@ class SimulationRunCoordinator {
     }
     if (this.active.size >= this.maxActive) {
       return {
-        accepted: false,
+        accepted: /** @type {const} */ (false),
         status: 429,
         code: 'SIMULATION_CAPACITY_REACHED',
         error: 'Simulation capacity is currently full',
@@ -41,7 +46,7 @@ class SimulationRunCoordinator {
     const lastRefresh = this.lastRefresh.get(resourceKey);
     if (forceRefresh && lastRefresh !== undefined && now - lastRefresh < this.refreshCooldownMs) {
       return {
-        accepted: false,
+        accepted: /** @type {const} */ (false),
         status: 429,
         code: 'SIMULATION_REFRESH_COOLDOWN',
         error: 'A fresh market-data simulation was requested too recently',
@@ -54,7 +59,7 @@ class SimulationRunCoordinator {
     this.active.set(resourceKey, { requestKey, startedAt: now });
     const cleanup = () => this.active.delete(resourceKey);
     promise.then(cleanup, cleanup);
-    return { accepted: true, promise, requestKey };
+    return { accepted: /** @type {const} */ (true), promise, requestKey };
   }
 
   status(resourceKey) {

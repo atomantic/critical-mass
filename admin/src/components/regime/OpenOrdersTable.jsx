@@ -274,6 +274,7 @@ function OpenOrdersTable({
                       ${buy.sizeUsdc?.toFixed(2)}
                     </td>
                     <td className="py-1 pr-2"></td>
+                    <td className="py-1 pr-2"></td>
                     <td className="text-right py-1 font-mono text-xs text-gray-400">
                       {formatTimestamp(buy.filledAt)}
                     </td>

@@ -8,7 +8,7 @@ import { apiGet, apiPost, describeMutationFailure as mutationError } from '../ut
 import { getBaseCurrency, getQuoteCurrency } from '../utils/productId.mjs'
 import { runUnaccountedFillsScan, describeScanProgress } from '../utils/unaccountedFillsScan.mjs'
 import { pnlColorClass, signedPrefix } from '../utils/pnlFormat.mjs'
-import { useNotify } from './Toast'
+import { useNotify } from './useToast'
 
 const STATUS_COLORS = {
   sell_recorded: 'bg-blue-600/30 text-blue-400 border-blue-500/30',
@@ -107,6 +107,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
   // Shared
   const [importNote, setImportNote] = useState('')
   const [importing, setImporting] = useState(false)
+  const [importError, setImportError] = useState(null)
   // Trade ids with a status check / recovery request in flight. Per trade, so
   // finishing one row's request never re-enables another row mid-request.
   const [checking, setChecking] = useState({})
@@ -200,6 +201,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
   }
 
   const openImportModal = (order) => {
+    setImportError(null)
     setImportModal(order)
     setImportTab('orphan')
     setSelectedMatch(null)
@@ -226,24 +228,23 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
   // Handle orphan sell import (existing flow)
   const handleImportOrphanSell = async () => {
     if (!importModal) return
+    const body = {
+      sellOrderId: importModal.orderId,
+      note: importNote,
+    }
+    if (importMode === 'place') {
+      const price = parseFloat(recoveryBuyPrice)
+      if (!Number.isFinite(price) || price <= 0) {
+        setImportError('Recovery buy price must be a positive number')
+        return
+      }
+      body.recoveryBuyPrice = price
+    } else if (existingBuyOrderId) {
+      body.existingBuyOrderId = existingBuyOrderId
+    }
+
     setImporting(true)
     try {
-      const body = {
-        sellOrderId: importModal.orderId,
-        note: importNote,
-      }
-      if (importMode === 'place' && recoveryBuyPrice) {
-        const px = parseFloat(recoveryBuyPrice)
-        if (!Number.isFinite(px) || px <= 0) {
-          setError('Recovery buy price must be a positive number')
-          setImporting(false)
-          return
-        }
-        body.recoveryBuyPrice = px
-      } else if (importMode === 'link' && existingBuyOrderId) {
-        body.existingBuyOrderId = existingBuyOrderId
-      }
-
       const result = await apiPost(`/api/${exchange}/regime/manual-trade${pairQuery}`, body)
       if (result.ok) {
         setImportModal(null)
@@ -596,7 +597,12 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
                             id="recovery-buy-price"
                             type="number"
                             value={recoveryBuyPrice}
-                            onChange={(e) => setRecoveryBuyPrice(e.target.value)}
+                            onChange={(e) => {
+                              setRecoveryBuyPrice(e.target.value)
+                              setImportError(null)
+                            }}
+                            aria-invalid={Boolean(importError)}
+                            aria-describedby={importError ? 'manual-trade-import-error' : undefined}
                             placeholder={`Price per ${baseCurrency}`}
                             className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded-sm text-xs text-gray-300"
                           />
@@ -751,6 +757,9 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
               </div>
 
               {/* Action buttons */}
+              {importError && importTab === 'orphan' && importMode === 'place' && (
+                <p id="manual-trade-import-error" role="alert" className="mb-2 text-xs text-red-400">{importError}</p>
+              )}
               <div className="flex gap-2">
                 <Button
                   onClick={handleImport}

@@ -3,7 +3,7 @@ import { useState, useEffect, useRef } from 'react'
 import ConfirmDialog from './ui/ConfirmDialog'
 import { plural } from '../utils/plural.mjs'
 import { apiGet, apiPost, apiPut, apiDelete, describeMutationFailure } from '../utils/apiClient'
-import { useNotify } from './Toast'
+import { useNotify } from './useToast'
 
 const EXCHANGE_DISPLAY_NAMES = { coinbase: 'Coinbase', gemini: 'Gemini', cryptocom: 'Crypto.com' }
 
@@ -147,7 +147,7 @@ function KeysConfig({ exchange, funds = [], onSave }) {
         setStatusAnnouncement('')
       }
     }
-  }, [testResult])
+  }, [testResult, exchangeName])
 
   const handleChange = (key, value) => {
     if (writePendingRef.current) return
@@ -358,10 +358,11 @@ function KeysConfig({ exchange, funds = [], onSave }) {
               {field.type === 'textarea' ? (
                 <textarea
                   id={field.key}
-                  value={keys[field.key] || ''}
+                  value={showSecrets ? keys[field.key] || '' : (keys[field.key] ? '••••••••' : '')}
+                  readOnly={!showSecrets}
                   disabled={writePending}
-                  onChange={(e) => handleChange(field.key, e.target.value)}
-                  placeholder={placeholder}
+                  onChange={showSecrets ? (e) => handleChange(field.key, e.target.value) : undefined}
+                  placeholder={showSecrets ? placeholder : 'Choose Show Secrets to edit the private key'}
                   rows={5}
                   className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white font-mono text-sm focus:outline-hidden focus:border-blue-500 resize-none"
                 />

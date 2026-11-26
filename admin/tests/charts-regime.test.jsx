@@ -1,7 +1,8 @@
 import React, { Component } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
-import ChartsRegime, { deriveFillMarker } from '../src/components/ChartsRegime'
+import ChartsRegime from '../src/components/ChartsRegime'
+import { deriveFillMarker } from '../src/utils/regimeFillMarker.mjs'
 import { STATUS_STALE_MS } from '../src/utils/regimeStatusSnapshot.mjs'
 
 const fixture = vi.hoisted(() => ({ initializeFromCache: vi.fn(), status: null, statusSeq: null, connected: false }))

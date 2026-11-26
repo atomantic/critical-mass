@@ -110,6 +110,7 @@ const createRealtimeBus = ({
   /** @type {Set<import('./ipc/ws-server').WebSocketConnection>} */
   const live = new Set();
   let closing = false;
+  let credentialRevision = 0;
   /** @type {Promise<void> | null} */
   let closePromise = null;
   /** @type {(() => void) | null} */
@@ -360,11 +361,12 @@ const createRealtimeBus = ({
     if (refusing()) return refuseUpgrade(socket, 503);
     const refusal = handshakeRefusal(req);
     if (refusal) return refuseUpgrade(socket, refusal.status, refusal.headers);
+    const revision = credentialRevision;
     Promise.resolve()
       .then(() => authorize(req))
       .then((allowed) => {
         if (refusing()) return refuseUpgrade(socket, 503);
-        if (!allowed) return refuseUpgrade(socket, 401);
+        if (!allowed || revision !== credentialRevision) return refuseUpgrade(socket, 401);
         acceptUpgrade(req, socket, head, { maxPayload }, (connection) => register(connection, req));
       }, (err) => {
         // Rate-limited or busy credential checks carry their HTTP status.
@@ -420,6 +422,7 @@ const createRealtimeBus = ({
     }),
     /** Close every connection now (credential change); clients reconnect and re-authenticate. */
     disconnectSockets: (code = 1008, reason = 'Operator credentials changed') => {
+      credentialRevision += 1;
       for (const socket of [...sockets.values()]) socket.disconnect(code, reason);
     },
     /**

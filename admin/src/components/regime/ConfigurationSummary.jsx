@@ -1,6 +1,7 @@
 import React from 'react'
 import AggressivenessControl from './AggressivenessControl'
-import { ConfigTooltip, CONFIG_TOOLTIPS } from './RegimeHelp'
+import { ConfigTooltip } from './RegimeHelp'
+import { CONFIG_TOOLTIPS } from './regimeTooltips'
 
 function ConfigurationSummary({ config, exchange, pairQuery, fetchConfig, presets, presetsLoading, presetsError, retryPresets, addToast }) {
   return (

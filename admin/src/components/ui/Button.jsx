@@ -59,9 +59,6 @@ const SIZES = {
   'responsive-xs': 'px-1.5 md:px-2 py-0.5 md:py-1 text-2xs md:text-xs',
 }
 
-export const BUTTON_VARIANTS = Object.keys(VARIANTS)
-export const BUTTON_SIZES = Object.keys(SIZES)
-
 export default function Button({
   variant = 'primary',
   size = 'md',

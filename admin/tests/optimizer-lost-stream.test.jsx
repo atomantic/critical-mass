@@ -9,7 +9,7 @@ const socket = {
 const emit = (e, d) => [...(handlers.get(e) || [])].forEach(h => h(d))
 
 vi.mock('../src/lib/realtime', () => ({ getRealtimeClient: () => socket }))
-vi.mock('../src/components/Toast', () => ({ useToast: () => ({ addToast: vi.fn() }) }))
+vi.mock('../src/components/useToast', () => ({ useToast: () => ({ addToast: vi.fn() }) }))
 
 import Optimizer from '../src/components/Optimizer'
 
