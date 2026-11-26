@@ -112,7 +112,7 @@ describe('tp-optimizer minimum spread (tpMaxPercent >= tpMinPercent * 1.5)', () 
     const adjustment = optimizer._calculateAdjustment();
 
     assert.equal(adjustment.tpMinPercent, 0.2);
-    assert.equal(adjustment.tpMaxPercent, 0.3, 'tpMax must be forced up to exactly 1.5x the floored tpMin');
+    assert.equal(adjustment.tpMaxPercent, adjustment.tpMinPercent * 1.5);
   });
 });
 
@@ -159,6 +159,48 @@ describe('tp-optimizer rate limiting (tpMaxChangePercent)', () => {
     assert.equal(adjustment.tpMinPercent, 2.5);
     assert.equal(adjustment.tpMaxPercent, 5.0);
     assert.match(adjustment.reason, /^percentile_based/);
+  });
+
+  it('restores the spread after rate limiting values from a narrow configured range', () => {
+    const optimizer = makeOptimizer({ tpMaxChangePercent: 25, tpMinPercent: 0.17, tpMaxPercent: 0.2 });
+    feedCycles(optimizer, 4.9, 15);
+    const adjustment = optimizer._calculateAdjustment();
+    assert.equal(adjustment.tpMinPercent, 0.2125);
+    assert.ok(adjustment.tpMaxPercent >= adjustment.tpMinPercent * 1.5);
+  });
+
+  it('clamps a stale configuration back within the absolute bounds', () => {
+    const optimizer = makeOptimizer({
+      tpMaxChangePercent: 25, tpAbsoluteMin: 0.2, tpAbsoluteMax: 1.0,
+      tpMinPercent: 0.02, tpMaxPercent: 4,
+    });
+    feedCycles(optimizer, 1.0, 15);
+    const adjustment = optimizer._calculateAdjustment();
+    assert.equal(adjustment.tpMinPercent, 0.2);
+    assert.equal(adjustment.tpMaxPercent, 1.0);
+  });
+});
+
+describe('TP evaluation intervals', () => {
+  it('decays compressed volatility samples once per interval when no adjustment is needed', (t) => {
+    const start = 1_700_000_000_000;
+    t.mock.timers.enable({ apis: ['Date'], now: start });
+    const optimizer = makeOptimizer({
+      tpAutoManaged: true, tpVolEvaluationMinutes: 30, tpMinPercent: 0.85, tpMaxPercent: 1.425,
+    });
+    const sample = { atr5m: 1, lastPrice: 800, realizedVol: 1, volBaseline: 1 }; // 1% implied TP
+    for (let i = 0; i < 52; i++) optimizer.recordVolatilitySample(sample);
+    const weight = () => optimizer.exportState().volHistogram.reduce((total, bucket) => total + bucket.weight, 0);
+    assert.equal(weight(), 2);
+
+    t.mock.timers.tick(30 * 60_000);
+    assert.equal(optimizer.evaluateVol(), null);
+    assert.equal(optimizer.getStatus().lastVolEvaluationTime, start + 30 * 60_000);
+    assert.equal(weight(), 1.9);
+    t.mock.timers.tick(60_000);
+    assert.equal(optimizer.recordVolatilitySample(sample), null);
+    assert.equal(weight(), 2.9);
+    assert.equal(optimizer.getStatus().lastVolEvaluationTime, start + 30 * 60_000);
   });
 });
 

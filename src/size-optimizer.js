@@ -3,7 +3,7 @@
  * Size Optimizer Module
  *
  * Dynamically adjusts position sizing parameters based on:
- * - Available USDC balance
+ * - Fund equity at cost
  * - Historical cycle data (steps used, capital deployed)
  * - Target capital utilization
  *
@@ -11,13 +11,13 @@
  * - Calculates optimal baseSizeUsdc for target utilization
  * - Optionally adjusts maxCycleBuys based on historical buy depth
  * - Evaluates for a new size adjustment at cycle-completion boundaries
- *   (recordCycle()), fed the real adapter balance
+ *   (recordCycle()), fed equity based on the real adapter balance
  * - Rate-limited adjustments with safety bounds
  * - State persistence for continuity across restarts
  */
 
 const { BASE_SIZE_USDC_BOUNDS } = require('./regime-sizing-contract');
-const { roundUSDC } = require('./volatility-utils');
+const { clamp, roundUSDC } = require('./volatility-utils');
 const { createContextLogger } = require('./logger');
 const { createAdjustmentHistory } = require('./adjustment-history');
 
@@ -26,7 +26,7 @@ const { createAdjustmentHistory } = require('./adjustment-history');
  * @property {number} stepsUsed - Number of buys used in cycle
  * @property {number} capitalDeployed - USDC deployed in cycle
  * @property {number} completedAt - Timestamp when cycle completed
- * @property {number} availableBalance - Available USDC at cycle completion
+ * @property {number} availableBalance - Fund equity in USDC at cycle completion
  */
 
 /**
@@ -43,7 +43,8 @@ const { createAdjustmentHistory } = require('./adjustment-history');
  * @property {Object} stats - Current statistics
  * @property {number} lastEvaluationTime - Last evaluation timestamp
  * @property {number} lastEvaluationCycle - Cycle count at last evaluation
- * @property {number} lastKnownBalance - Last known USDC balance
+ * @property {number} lastKnownBalance - Last known fund equity in USDC
+ * @property {'fund-equity'} [balanceBasis] - Distinguishes equity from legacy free-quote readings
  * @property {Array<{timestamp: number, baseSizeUsdc: number, maxUsdcDeployed: number, reason: string}>} adjustmentHistory
  */
 
@@ -99,7 +100,7 @@ const createSizeOptimizer = (exchange, config, callbacks = {}, productId) => {
     updateStatistics();
 
     // Track balance for change detection
-    if (cycleData.availableBalance > 0) {
+    if (Number.isFinite(cycleData.availableBalance) && cycleData.availableBalance > 0) {
       lastKnownBalance = cycleData.availableBalance;
     }
 
@@ -172,14 +173,8 @@ const createSizeOptimizer = (exchange, config, callbacks = {}, productId) => {
       return null;
     }
 
-    // No real balance has ever been observed yet (every recordCycle() call so
-    // far arrived with availableBalance <= 0 — e.g. a failed/unavailable
-    // exchange balance fetch — so lastKnownBalance is still its 0 initial
-    // value, never a verified reading). Evaluating against 0 here would floor
-    // baseSizeUsdc to sizeAbsoluteMinBase and (unlike the deliberate,
-    // explicit balance=0 case covered by calculateAdjustment's own tests)
-    // slash maxUsdcDeployed to 0 with no real signal behind it. Skip this
-    // evaluation and wait for a verified balance instead (issue #694 item 2).
+    // A missing or unattributable balance does not establish fund equity.
+    // Wait for a verified reading before making a sizing decision (#694).
     if (lastKnownBalance <= 0) {
       return null;
     }
@@ -208,20 +203,21 @@ const createSizeOptimizer = (exchange, config, callbacks = {}, productId) => {
 
   /**
    * Calculate new sizing values
-   * @param {number} availableBalance - Available USDC balance
+   * @param {number} fundEquity - Fund equity in USDC
    * @returns {SizeAdjustment|null}
    */
-  const calculateAdjustment = (availableBalance) => {
+  const calculateAdjustment = (fundEquity) => {
     // Safety bounds from config or defaults
     // Configured clamp, additionally bounded by the shared save contract so the
     // output always round-trips through manual config saves.
     const absoluteMinBase = Math.max(BASE_SIZE_USDC_BOUNDS.min, config.sizeAbsoluteMinBase || 10);
     const absoluteMaxBase = Math.min(BASE_SIZE_USDC_BOUNDS.max, config.sizeAbsoluteMaxBase || 500);
     const targetUtilization = config.sizeTargetUtilization || 0.90; // 90% by default
-    const maxChangePercent = config.sizeMaxChangePercent || 25;
+    const maxChangeFraction = (config.sizeMaxChangePercent || 25) / 100;
 
     // Current values
     const currentBaseSizeUsdc = config.baseSizeUsdc;
+    const currentMaxUsdcDeployed = config.maxUsdcDeployed;
     const currentMaxCycleBuys = config.maxCycleBuys;
 
     // Total step multiplier for current max buys. Assumes factor=1.0 per step:
@@ -230,8 +226,7 @@ const createSizeOptimizer = (exchange, config, callbacks = {}, productId) => {
     // that's still budget-capped.
     const totalMultiplier = currentMaxCycleBuys;
 
-    // Target deployment based on available balance
-    const targetDeployment = availableBalance * targetUtilization;
+    const targetDeployment = fundEquity * targetUtilization;
 
     // Calculate optimal base size
     // baseSizeUsdc * totalMultiplier = targetDeployment (in HARVEST mode, scale=1.0)
@@ -241,22 +236,18 @@ const createSizeOptimizer = (exchange, config, callbacks = {}, productId) => {
     proposedBaseSizeUsdc = Math.max(absoluteMinBase, Math.min(proposedBaseSizeUsdc, absoluteMaxBase));
 
     // Rate limiting - max change per adjustment
-    const maxChange = currentBaseSizeUsdc * (maxChangePercent / 100);
-    let newBaseSizeUsdc = proposedBaseSizeUsdc;
-    let reason = 'balance_based';
-
-    if (Math.abs(newBaseSizeUsdc - currentBaseSizeUsdc) > maxChange) {
-      newBaseSizeUsdc = newBaseSizeUsdc > currentBaseSizeUsdc
-        ? currentBaseSizeUsdc + maxChange
-        : currentBaseSizeUsdc - maxChange;
-      reason = 'rate_limited';
-    }
-
-    // Round to 2 decimal places
-    newBaseSizeUsdc = roundUSDC(newBaseSizeUsdc);
-
-    // Calculate new maxUsdcDeployed to match
-    const newMaxUsdcDeployed = roundUSDC(availableBalance * targetUtilization);
+    const limitChange = (proposed, current) => {
+      if (current <= 0) return proposed;
+      const maxChange = current * maxChangeFraction;
+      return clamp(proposed, current - maxChange, current + maxChange);
+    };
+    const limitedBase = limitChange(proposedBaseSizeUsdc, currentBaseSizeUsdc);
+    const limitedDeployment = limitChange(targetDeployment, currentMaxUsdcDeployed);
+    const reason = limitedBase !== proposedBaseSizeUsdc || limitedDeployment !== targetDeployment
+      ? 'rate_limited'
+      : 'balance_based';
+    const newBaseSizeUsdc = roundUSDC(limitedBase);
+    const newMaxUsdcDeployed = roundUSDC(limitedDeployment);
 
     // Optionally adjust max cycle buys based on historical data
     let newMaxCycleBuys = undefined;
@@ -274,7 +265,9 @@ const createSizeOptimizer = (exchange, config, callbacks = {}, productId) => {
     }
 
     // Check if values actually changed (beyond 1% threshold)
-    const baseChanged = Math.abs(newBaseSizeUsdc - currentBaseSizeUsdc) / currentBaseSizeUsdc > 0.01;
+    const baseChanged = currentBaseSizeUsdc > 0
+      ? Math.abs(newBaseSizeUsdc - currentBaseSizeUsdc) / currentBaseSizeUsdc > 0.01
+      : newBaseSizeUsdc !== currentBaseSizeUsdc;
     const deployChanged = config.maxUsdcDeployed > 0
       ? Math.abs(newMaxUsdcDeployed - config.maxUsdcDeployed) / config.maxUsdcDeployed > 0.01
       : newMaxUsdcDeployed !== config.maxUsdcDeployed;
@@ -357,6 +350,7 @@ const createSizeOptimizer = (exchange, config, callbacks = {}, productId) => {
     },
     lastEvaluationTime,
     lastEvaluationCycle,
+    balanceBasis: 'fund-equity',
     lastKnownBalance,
     adjustmentHistory: adjustmentHistory.export(),
   });
@@ -380,7 +374,7 @@ const createSizeOptimizer = (exchange, config, callbacks = {}, productId) => {
 
     lastEvaluationTime = state.lastEvaluationTime || Date.now();
     lastEvaluationCycle = state.lastEvaluationCycle || 0;
-    lastKnownBalance = state.lastKnownBalance || 0;
+    lastKnownBalance = state.balanceBasis === 'fund-equity' ? state.lastKnownBalance || 0 : 0;
 
     adjustmentHistory.import(state.adjustmentHistory);
 

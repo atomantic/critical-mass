@@ -1,0 +1,4 @@
+- Keep trend protection active while directional pressure persists, and use the configured number of readings to confirm a trend.
+- Honor a macro size multiplier of zero for new automatic entries, warm the 200-hour EMA with a longer candle window, and apply hysteresis across macro mode changes.
+- Size positions from fund equity, including open positions and resting buys, and limit deployment cap changes per adjustment.
+- Age TP optimizer samples on schedule, keep adjusted TP values within their bounds, and report held-back asset value at the target sell price.

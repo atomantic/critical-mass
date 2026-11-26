@@ -268,6 +268,25 @@ describe('createEntryEvaluator (issue #1980)', () => {
     assert.deepEqual(calls, ['captureEntryAdmission']);
   });
 
+  it('halts automatic entries at zero macro size, including a halt during preflight', async () => {
+    let sizeMult = 0;
+    const macroRegime = { getMultipliers: () => ({ sizeMult, tpMult: 1, offsetMult: 1 }) };
+    const { api, calls, live } = make({ macroRegime });
+    await api.evaluateEntryTrigger();
+    await api.evaluateLadderEntry();
+    assert.ok(!calls.some((call) => Array.isArray(call) && call[0] === 'getAccountBalance'));
+
+    live.adapter.getAccountBalance = async () => {
+      sizeMult = 0;
+      return { available: 1000 };
+    };
+    sizeMult = 1;
+    await api.evaluateEntryTrigger();
+    sizeMult = 1;
+    await api.evaluateLadderEntry();
+    assert.ok(!calls.some((call) => Array.isArray(call) && ['placeEntryBid', 'placeLadderOrders'].includes(call[0])));
+  });
+
   it('the trigger routes to the ladder path in ladder mode and stays reactive once a reactive position is open', async () => {
     const { api, calls, positionState } = make({ config: {
       entryMode: 'ladder', minIntervalMs: 0, maxIntervalMs: 1, kFactor: 1, entryOffsetBps: 5,

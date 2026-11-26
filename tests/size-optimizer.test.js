@@ -5,7 +5,7 @@
  * capital cap src/risk-manager.js enforces, so the size optimizer can raise
  * the very limit that's supposed to bound it. None of the clamps that guard
  * this write-back — the absolute base-size bounds, the per-adjustment rate
- * limiter, and the (deliberately unbounded) maxUsdcDeployed formula — had
+ * limiter, and the maxUsdcDeployed formula — had
  * test coverage. This pins the exact clamp boundaries and the refuse-to-write
  * cases.
  */
@@ -78,6 +78,7 @@ describe('size-optimizer rate limiting (sizeMaxChangePercent)', () => {
 
     assert.ok(adjustment);
     assert.equal(adjustment.baseSizeUsdc, 125); // 100 + 100 * 25%
+    assert.equal(adjustment.maxUsdcDeployed, 1250);
     assert.match(adjustment.reason, /^rate_limited/);
   });
 
@@ -89,13 +90,14 @@ describe('size-optimizer rate limiting (sizeMaxChangePercent)', () => {
 
     assert.ok(adjustment);
     assert.equal(adjustment.baseSizeUsdc, 75); // 100 - 100 * 25%
+    assert.equal(adjustment.maxUsdcDeployed, 750);
     assert.match(adjustment.reason, /^rate_limited/);
   });
 
   it('never triggers rate_limited for a move that stays within the allowed change', () => {
     // Balance chosen so the natural (unclamped) proposal sits close to the
     // current baseSizeUsdc: 500 * 0.9 / 10 = 45, within 25% of 40.
-    const optimizer = makeOptimizer({ sizeMaxChangePercent: 25, baseSizeUsdc: 40 });
+    const optimizer = makeOptimizer({ sizeMaxChangePercent: 25, baseSizeUsdc: 40, maxUsdcDeployed: 500 });
 
     const adjustment = optimizer._calculateAdjustment(500);
 
@@ -106,13 +108,13 @@ describe('size-optimizer rate limiting (sizeMaxChangePercent)', () => {
 });
 
 // ============================================================================
-// maxUsdcDeployed: deliberately unbounded — pin the formula, not a cap
+// maxUsdcDeployed: utilization target without an absolute size ceiling
 // ============================================================================
-describe('size-optimizer maxUsdcDeployed formula (deliberately unbounded — no cap, no rate limit)', () => {
-  it('always equals roundUSDC(availableBalance * sizeTargetUtilization)', () => {
+describe('size-optimizer maxUsdcDeployed target', () => {
+  it('uses fund equity times target utilization when initializing the cap', () => {
     // maxUsdcDeployed starts far from every proposed value below so the
     // >1% deployChanged threshold always fires and an adjustment is returned.
-    const optimizer = makeOptimizer({ sizeTargetUtilization: 0.8, maxUsdcDeployed: 1 });
+    const optimizer = makeOptimizer({ sizeTargetUtilization: 0.8, maxUsdcDeployed: 0 });
     const balances = [500, 12_345.678, 987_654_321];
 
     for (const balance of balances) {
@@ -123,7 +125,7 @@ describe('size-optimizer maxUsdcDeployed formula (deliberately unbounded — no 
   });
 
   it('is not clamped even when it would exceed sizeAbsoluteMaxBase (a base-size-only bound)', () => {
-    const optimizer = makeOptimizer({ maxUsdcDeployed: 1 });
+    const optimizer = makeOptimizer({ maxUsdcDeployed: 0 });
 
     const adjustment = optimizer._calculateAdjustment(1_000_000); // maxUsdcDeployed = 900,000, base clamps to 500
 
@@ -289,6 +291,16 @@ describe('size-optimizer exportState / importState round trip', () => {
     assert.equal(targetStatus.lastKnownBalance, sourceStatus.lastKnownBalance);
     assert.equal(targetStatus.lastKnownBalance, 5200);
   });
+
+  it('keeps historical cycles while discarding legacy free-quote balance samples for sizing', () => {
+    const optimizer = makeOptimizer();
+    optimizer.recordCycle({ stepsUsed: 4, capitalDeployed: 300, completedAt: 1_700_000_000_000, availableBalance: 5000 });
+    const { balanceBasis, ...legacy } = optimizer.exportState();
+    optimizer.importState(legacy);
+    const status = optimizer.getStatus();
+    assert.equal(status.totalCycleCount, 1);
+    assert.equal(status.lastKnownBalance, 0);
+  });
 });
 
 const { REGIME_DEFAULTS } = require('../src/config-utils');
@@ -309,10 +321,10 @@ describe('size-optimizer output round-trips through the shared save contract (#8
   const repro1 = { baseSizeUsdc: 1000, sizeAbsoluteMaxBase: 2000, maxUsdcDeployed: 10000, maxCycleBuys: 10 };
   const repro2 = { baseSizeUsdc: 100, maxUsdcDeployed: 1000, maxCycleBuys: 10 };
 
-  it('repro 1: base 1250 / cap 22500 passes validateRegimeConfig', () => {
+  it('repro 1: base 1250 / rate-limited cap 12500 passes validateRegimeConfig', () => {
     const adj = optimizerOutput(repro1, 25000);
     assert.equal(adj.baseSizeUsdc, 1250);
-    assert.equal(adj.maxUsdcDeployed, 22500);
+    assert.equal(adj.maxUsdcDeployed, 12500);
     const result = validateRegimeConfig({ ...REGIME_DEFAULTS, ...repro1, ...adj, maxCycleBuys: 10 });
     assert.deepEqual(result.errors, []);
   });
@@ -329,7 +341,7 @@ describe('size-optimizer output round-trips through the shared save contract (#8
     const opt = makeOptimizer({ sizeMaxChangePercent: 25 });
     const low = opt._calculateAdjustment(50); // low positive balance
     assert.equal(low.baseSizeUsdc, 75, 'rate limited to -25% of 100');
-    assert.equal(low.maxUsdcDeployed, roundUSDC(50 * 0.9), 'cap stays wallet derived, not raised to 1000');
+    assert.equal(low.maxUsdcDeployed, 750, 'cap is also rate limited to -25%');
     const high = makeOptimizer({ sizeMaxChangePercent: 100000, sizeAbsoluteMaxBase: 300 })._calculateAdjustment(1e9);
     assert.equal(high.baseSizeUsdc, 300);
   });
@@ -341,6 +353,12 @@ describe('size-optimizer output round-trips through the shared save contract (#8
 
   it('handles a zero current cap without NaN', () => {
     const adj = makeOptimizer({ maxUsdcDeployed: 0 })._calculateAdjustment(1000);
+    assert.equal(adj.maxUsdcDeployed, 900);
+  });
+
+  it('initializes a zero base even when the deployment cap stays unchanged', () => {
+    const adj = makeOptimizer({ baseSizeUsdc: 0, maxUsdcDeployed: 900 })._calculateAdjustment(1000);
+    assert.equal(adj.baseSizeUsdc, 90);
     assert.equal(adj.maxUsdcDeployed, 900);
   });
 });

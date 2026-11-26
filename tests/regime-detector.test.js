@@ -248,40 +248,41 @@ describe('Regime transition - CAUTION to HARVEST', () => {
 // CAUTION -> TREND (confirmed trend)
 // ============================================================================
 describe('Regime transition - CAUTION to TREND (confirmed)', () => {
-  it('transitions to TREND after sustained directional momentum', () => {
-    const config = createTestConfig({ trendConfirmationPeriods: 3 });
-    const det = createRegimeDetector('test', config);
-
-    // Move to CAUTION first
-    det.classify(createMarketState({
-      realizedVol: 1.0,
-      volBaseline: 0.5,
-    }));
-    assert.equal(det.getMode(), 'CAUTION');
-
-    // Now push sustained momentum with VWAP distance >= 2.0
-    // vwapDistance = (100300 - 100000)/100 = 3.0 > 2.0
-    // Each call adds to momentum history (direction: 'up')
-    // Need trendConfirmationPeriods=3 consistent readings AND trendConfirmationCount >= 3
-    // We need multiple readings in momentum history + trendConfirmationCount to build up
-    const trendMarket = createMarketState({
-      realizedVol: 1.0,
-      volBaseline: 0.5,
-      lastPrice: 100300,
-      vwap: 100000,
-      atr1m: 100,
-    });
-
-    // Each classify call accumulates momentum history.
-    // trendConfirmationPeriods=3 means we need at least 3 consistent readings
-    // AND trendConfirmationCount >= 3.
-    // Since the first call already moved us to CAUTION, we call classify
-    // enough times to fill momentum history and count.
-    let mode;
-    for (let i = 0; i < 6; i++) {
-      mode = det.classify(trendMarket);
+  it('confirms on exactly N consecutive aligned readings, including windows beyond ten', () => {
+    for (const periods of [3, 12]) {
+      const det = createRegimeDetector('test', createTestConfig({ trendConfirmationPeriods: periods }));
+      det.forceTransition('CAUTION', 'test setup');
+      const trendMarket = createMarketState({ lastPrice: 100300, momentum: { magnitude: 200, direction: 'up' } });
+      for (let i = 1; i < periods; i++) assert.equal(det.classify(trendMarket), 'CAUTION');
+      assert.equal(det.classify(trendMarket), 'TREND');
+      assert.equal(det.getState().trendConfirmationCount, periods);
     }
-    assert.equal(mode, 'TREND');
+  });
+
+  it('uses candle momentum and resets confirmation when its direction disagrees with VWAP', () => {
+    const det = createRegimeDetector('test', createTestConfig());
+    const rising = createMarketState({ lastPrice: 100300, momentum: { magnitude: 200, direction: 'up' } });
+    const falling = { ...rising, momentum: { magnitude: 150, direction: 'down' } };
+    assert.equal(det.classify(createMarketState({ momentum: rising.momentum })), 'CAUTION');
+    assert.equal(det.getState().lastMomentumMag, 20);
+    assert.equal(det.classify(rising), 'CAUTION');
+    assert.equal(det.classify(rising), 'CAUTION');
+    assert.equal(det.classify(falling), 'CAUTION');
+    assert.equal(det.getState().trendConfirmationCount, 0);
+    assert.equal(det.classify(rising), 'CAUTION');
+  });
+
+  it('retains direct and forced TREND on the first qualifying reading', () => {
+    const trending = createMarketState({ realizedVol: 1.5, lastPrice: 100500 });
+    for (const force of [false, true]) {
+      const det = createRegimeDetector('test', createTestConfig({ trendConfirmationPeriods: 12 }));
+      if (force) det.forceTransition('TREND', 'flash move');
+      else assert.equal(det.classify(trending), 'TREND');
+      assert.equal(det.getState().trendConfirmationCount, 12);
+      assert.equal(det.classify({ ...trending, realizedVol: 0.5 }), 'TREND');
+      assert.equal(det.allowsEntries(), false);
+      assert.equal(det.classify(createMarketState()), 'CAUTION');
+    }
   });
 });
 
@@ -688,7 +689,7 @@ describe('restored regime warmup (#1298)', () => {
   const trending = () => createMarketState({ lastPrice: 100300 });
 
   it('keeps TREND and forbids entries through and beyond the fresh window', () => {
-    for (const periods of [1, 3, 5]) {
+    for (const periods of [1, 3, 5, 12]) {
       const transitions = [];
       const det = createRegimeDetector('test', createTestConfig({ trendConfirmationPeriods: periods }), {
         onTransition: (...args) => transitions.push(args),
@@ -716,6 +717,13 @@ describe('restored regime warmup (#1298)', () => {
     }
     assert.equal(det.classify(createMarketState()), 'TREND');
     assert.equal(det.classify(createMarketState()), 'TREND');
+    assert.equal(det.classify(createMarketState()), 'CAUTION');
+  });
+
+  it('can relax a restored trend after a window longer than ten readings', () => {
+    const det = createRegimeDetector('test', createTestConfig({ trendConfirmationPeriods: 12 }));
+    det.restoreState({ mode: 'TREND' });
+    for (let i = 0; i < 11; i++) assert.equal(det.classify(createMarketState()), 'TREND');
     assert.equal(det.classify(createMarketState()), 'CAUTION');
   });
 

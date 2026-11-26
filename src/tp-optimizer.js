@@ -12,6 +12,7 @@
 
 const { createContextLogger } = require('./logger');
 const { createAdjustmentHistory } = require('./adjustment-history');
+const { clamp } = require('./volatility-utils');
 
 /**
  * @typedef {Object} CycleRecord
@@ -146,6 +147,7 @@ const createTpOptimizer = (exchange, config, callbacks = {}, productId) => {
     for (const bucket of volHistogram) {
       bucket.weight *= TIME_DECAY_ALPHA;
     }
+    percentileCacheValid = false;
   };
 
   /**
@@ -338,14 +340,11 @@ const createTpOptimizer = (exchange, config, callbacks = {}, productId) => {
 
     // Calculate new values
     const adjustment = calculateAdjustment();
+    lastEvaluationTime = now;
+    lastEvaluationCycle = totalSampleCount;
+    applyTimeDecay();
 
     if (adjustment) {
-      lastEvaluationTime = now;
-      lastEvaluationCycle = totalSampleCount;
-
-      // Apply time decay to histogram after evaluation
-      applyTimeDecay();
-
       recordAdjustment(adjustment, now);
     }
 
@@ -401,14 +400,13 @@ const createTpOptimizer = (exchange, config, callbacks = {}, productId) => {
     if (totalSampleCount + totalVolSampleCount < minSamples) return null;
 
     const adjustment = calculateAdjustment();
+    lastVolEvaluationTime = now;
+    applyTimeDecay();
 
     if (adjustment) {
-      lastVolEvaluationTime = now;
       // Also update cycle eval time so cycle-path evaluate() doesn't immediately re-fire
       lastEvaluationTime = now;
       lastEvaluationCycle = totalSampleCount;
-
-      applyTimeDecay();
 
       recordAdjustment(adjustment, now);
     }
@@ -435,6 +433,8 @@ const createTpOptimizer = (exchange, config, callbacks = {}, productId) => {
     const absoluteMin = config.tpAbsoluteMin || 0.05;
     const absoluteMax = config.tpAbsoluteMax || 5.0;
     const maxChangePercent = config.tpMaxChangePercent || 25;
+    if (absoluteMin * 1.5 > absoluteMax) return null;
+    const minCeiling = Math.max(absoluteMin, absoluteMax * 0.5);
 
     // Volatility adjustment factor
     // Higher vol = wider TP, lower vol = tighter TP
@@ -444,17 +444,8 @@ const createTpOptimizer = (exchange, config, callbacks = {}, productId) => {
 
     // Calculate proposed values
     // Min TP at p25, Max TP at p75, with vol adjustment and safety margins
-    let proposedTpMin = percentiles.p25 * volFactor * 0.8;
-    let proposedTpMax = percentiles.p75 * volFactor * 1.2;
-
-    // Apply absolute bounds
-    proposedTpMin = Math.max(absoluteMin, Math.min(proposedTpMin, absoluteMax * 0.5));
-    proposedTpMax = Math.max(proposedTpMin * 1.5, Math.min(proposedTpMax, absoluteMax));
-
-    // Ensure minimum spread
-    if (proposedTpMax < proposedTpMin * 1.5) {
-      proposedTpMax = proposedTpMin * 1.5;
-    }
+    const proposedTpMin = clamp(percentiles.p25 * volFactor * 0.8, absoluteMin, minCeiling);
+    const proposedTpMax = clamp(percentiles.p75 * volFactor * 1.2, proposedTpMin * 1.5, absoluteMax);
 
     // Rate limiting - max change per adjustment
     const maxMinChange = currentTpMin * (maxChangePercent / 100);
@@ -480,15 +471,20 @@ const createTpOptimizer = (exchange, config, callbacks = {}, productId) => {
       reason = 'rate_limited';
     }
 
-    // Round to 4 decimal places (single division avoids floating-point noise)
-    newTpMin = Math.round(newTpMin * 10000) / 10000;
-    newTpMax = Math.round(newTpMax * 10000) / 10000;
+    // Bounds and spread take priority if the current configuration makes the
+    // rate limits incompatible. Round the spread floor upward as needed.
+    newTpMin = clamp(Math.round(newTpMin * 10000) / 10000, absoluteMin, minCeiling);
+    const roundedSpreadFloor = Math.ceil(Math.round(newTpMin * 10000) * 1.5) / 10000;
+    const spreadFloor = Math.min(Math.max(newTpMin * 1.5, roundedSpreadFloor), absoluteMax);
+    newTpMax = clamp(Math.round(newTpMax * 10000) / 10000, spreadFloor, absoluteMax);
 
     // Check if values actually changed (beyond 0.01% threshold)
     const minChanged = Math.abs(newTpMin - currentTpMin) > 0.01;
     const maxChanged = Math.abs(newTpMax - currentTpMax) > 0.01;
 
-    if (!minChanged && !maxChanged) {
+    const currentBoundsValid = currentTpMin >= absoluteMin && currentTpMax <= absoluteMax
+      && currentTpMax >= currentTpMin * 1.5;
+    if (!minChanged && !maxChanged && currentBoundsValid) {
       return null;
     }
 

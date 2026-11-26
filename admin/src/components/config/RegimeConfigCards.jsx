@@ -213,7 +213,7 @@ export function MacroRegimeCard({ regimeConfig, defaults, handleRegimeChange, di
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 mb-4">
             <DurationInput label="Update Interval" hint="How often to re-score macro (1-10 min)" value={fv('macroUpdateIntervalMs')} onChange={(v) => handleRegimeChange('macroUpdateIntervalMs', v)} />
             <FormInput label="Suggestion Delay (hours)" hint="Stable long-term bias divergence before an advisory (0.01–720). Never changes sizing automatically." value={fv('aggressivenessSuggestionHours')} onChange={(v) => handleRegimeChange('aggressivenessSuggestionHours', v)} type="number" />
-            <FormInput label="Hysteresis" hint="Score buffer to prevent mode chatter (1-20)" value={fv('macroHysteresis')} onChange={(v) => handleRegimeChange('macroHysteresis', v)} type="number" />
+            <FormInput label="Hysteresis" hint="Score buffer to prevent mode chatter (0–20)" value={fv('macroHysteresis')} onChange={(v) => handleRegimeChange('macroHysteresis', v)} type="number" />
             <FormInput label="Accumulation Threshold" hint="Score below this = ACCUMULATION" value={fv('macroAccumulationThreshold')} onChange={(v) => handleRegimeChange('macroAccumulationThreshold', v)} type="number" />
             <FormInput label="Decline Threshold" hint="Score below this = DECLINE" value={fv('macroDeclineThreshold')} onChange={(v) => handleRegimeChange('macroDeclineThreshold', v)} type="number" />
             <FormInput label="Markup Threshold" hint="Score above this = MARKUP" value={fv('macroMarkupThreshold')} onChange={(v) => handleRegimeChange('macroMarkupThreshold', v)} type="number" />
@@ -222,7 +222,7 @@ export function MacroRegimeCard({ regimeConfig, defaults, handleRegimeChange, di
             <div className="bg-green-900/15 border border-green-800/30 rounded-sm p-3">
               <div className="text-xs text-green-400 font-medium mb-2">Accumulation (buying dips harder)</div>
               <div className="grid grid-cols-3 gap-2">
-                <FormInput label="Size" hint="0.1-3.0" value={fv('macroAccumulationSizeMult')} onChange={(v) => handleRegimeChange('macroAccumulationSizeMult', v)} type="number" />
+                <FormInput label="Size" hint="0 pauses new automatic entries. Otherwise use 0.1–3.0." value={fv('macroAccumulationSizeMult')} onChange={(v) => handleRegimeChange('macroAccumulationSizeMult', v)} type="number" />
                 <FormInput label="TP" hint="Tighter" value={fv('macroAccumulationTpMult')} onChange={(v) => handleRegimeChange('macroAccumulationTpMult', v)} type="number" />
                 <FormInput label="Offset" hint="Tighter" value={fv('macroAccumulationOffsetMult')} onChange={(v) => handleRegimeChange('macroAccumulationOffsetMult', v)} type="number" />
               </div>
@@ -230,7 +230,7 @@ export function MacroRegimeCard({ regimeConfig, defaults, handleRegimeChange, di
             <div className="bg-yellow-900/15 border border-yellow-800/30 rounded-sm p-3">
               <div className="text-xs text-yellow-400 font-medium mb-2">Markup (uptrend — reduce exposure)</div>
               <div className="grid grid-cols-3 gap-2">
-                <FormInput label="Size" hint="0.1-3.0" value={fv('macroMarkupSizeMult')} onChange={(v) => handleRegimeChange('macroMarkupSizeMult', v)} type="number" />
+                <FormInput label="Size" hint="0 pauses new automatic entries. Otherwise use 0.1–3.0." value={fv('macroMarkupSizeMult')} onChange={(v) => handleRegimeChange('macroMarkupSizeMult', v)} type="number" />
                 <FormInput label="TP" hint="Wider" value={fv('macroMarkupTpMult')} onChange={(v) => handleRegimeChange('macroMarkupTpMult', v)} type="number" />
                 <FormInput label="Offset" hint="Wider" value={fv('macroMarkupOffsetMult')} onChange={(v) => handleRegimeChange('macroMarkupOffsetMult', v)} type="number" />
               </div>
@@ -238,7 +238,7 @@ export function MacroRegimeCard({ regimeConfig, defaults, handleRegimeChange, di
             <div className="bg-red-900/15 border border-red-800/30 rounded-sm p-3">
               <div className="text-xs text-red-400 font-medium mb-2">Decline (capitulation — conservative)</div>
               <div className="grid grid-cols-3 gap-2">
-                <FormInput label="Size" hint="0.1-3.0" value={fv('macroDeclineSizeMult')} onChange={(v) => handleRegimeChange('macroDeclineSizeMult', v)} type="number" />
+                <FormInput label="Size" hint="0 pauses new automatic entries. Otherwise use 0.1–3.0." value={fv('macroDeclineSizeMult')} onChange={(v) => handleRegimeChange('macroDeclineSizeMult', v)} type="number" />
                 <FormInput label="TP" hint="Tighter" value={fv('macroDeclineTpMult')} onChange={(v) => handleRegimeChange('macroDeclineTpMult', v)} type="number" />
                 <FormInput label="Offset" hint="Wider" value={fv('macroDeclineOffsetMult')} onChange={(v) => handleRegimeChange('macroDeclineOffsetMult', v)} type="number" />
               </div>
