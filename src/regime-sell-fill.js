@@ -265,7 +265,7 @@ const createSellFillBooking = ({
     // and whole-inventory rule (issue #770) as the normal path, using
     // mergeSnapshot.assetOnOrder — the frozen size the cancelled/fired TP
     // was actually placed for (snapshotted before assetOnOrder is cleared
-    // to 0 on cancel, both in the buy-merge race above and in
+    // to 0 on cancel, both in the buy-merge race and in
     // bookExecutionDuringCancel's roll-up snapshots). Deliberately does
     // NOT pass `fillData.isPartialFill`: every caller that reaches this
     // branch via buildPartialFillData (the #227/#368 immediate
