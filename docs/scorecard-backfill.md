@@ -14,8 +14,9 @@ timeframe to adaptive training.
 
 The live contract scorecard uses the Coinbase BTC marks supplied to UpDown as
 a proxy for the app's contract index. It records the first observed bound touch
-or settles against a fresh expiry mark, comparing proceeds after the app fee
-with the modeled entry cost. Recovery can use retained journal prices and ticks
+and closes those listing terms through expiry, or settles against a fresh
+expiry mark. It compares proceeds after the app fee with the modeled entry
+cost. Recovery can use retained journal prices and ticks
 received during startup. A feed gap can hide touches between observed marks.
 
 The retired `GET /api/updown/candles` route returned Crypto.com candles and had

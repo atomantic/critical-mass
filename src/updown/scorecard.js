@@ -453,7 +453,6 @@ const buildExpiredRecord = (prediction, window) => ({
  * @param {Array<Object|null>} records
  * @param {number} now
  * @param {Array<{price: number, timestamp: number}>} [recentTicks]
- * @returns {{pending: Array<{prediction: Object, targetTs: number, remainingMs: number}>, elapsed: Array<{prediction: Object, targetTs: number, settlementTs: number|null, exitPrice: number|null, knockout?: 'target'|'stop', expired?: boolean}>}}
  */
 const findUnsettledContractPredictions = (records, now, recentTicks = []) => {
   const predictions = []
@@ -461,6 +460,7 @@ const findUnsettledContractPredictions = (records, now, recentTicks = []) => {
     .filter(tick => Number.isFinite(tick.timestamp) && Number.isFinite(tick.price) && tick.price > 0)
     .map(tick => ({ ts: tick.timestamp, price: tick.price }))
   const settled = new Set()
+  const knockouts = new Map()
   for (const record of records) {
     if (!record) continue
     const ts = Date.parse(record.ts)
@@ -473,6 +473,17 @@ const findUnsettledContractPredictions = (records, now, recentTicks = []) => {
           Number.isFinite(expiry) && expiry > ts) {
         predictions.push(record)
       }
+    } else if (record.type === 'contract_knockout') {
+      const { contract, price } = record
+      if (!contract || !Number.isFinite(price) || price <= 0 || !Number.isFinite(ts)
+          || !Number.isFinite(contract.expiry) || ts > now || ts >= contract.expiry) continue
+      const knockout = contractTouch(contract, price)
+      if (!knockout) continue
+      prices.push({ ts, price })
+      const key = contractKey(contract)
+      if (!knockouts.has(key) || ts < knockouts.get(key).ts) {
+        knockouts.set(key, { contract, ts, price, knockout, recorded: true })
+      }
     } else if (record.type === 'expired') {
       if (record.window === 'contract' && record.predictionId) settled.add(record.predictionId)
     } else if (record.type === 'outcome') {
@@ -483,24 +494,40 @@ const findUnsettledContractPredictions = (records, now, recentTicks = []) => {
     }
   }
   prices.sort((a, b) => a.ts - b.ts)
+  // Look for the first sampled touch for each listing from its earliest known
+  // entry, including entries whose outcome was already written by an old build.
+  const firstEntries = new Map()
+  for (const { contract, price, ts } of predictions) {
+    if (!validContractEntry(contract, price)) continue
+    const key = contractKey(contract)
+    const entryTs = Date.parse(ts)
+    if (!firstEntries.has(key) || entryTs < firstEntries.get(key).ts) {
+      firstEntries.set(key, { contract, ts: entryTs })
+    }
+  }
+  for (const [key, { contract, ts }] of firstEntries) {
+    const limit = Math.min(now, contract.expiry - 1, (knockouts.get(key)?.ts ?? Infinity) - 1)
+    for (let i = firstPriceIndexAt(prices, ts + 1); i < prices.length && prices[i].ts <= limit; i++) {
+      const mark = prices[i]
+      const knockout = contractTouch(contract, mark.price)
+      if (!knockout) continue
+      knockouts.set(key, { contract, ...mark, knockout, recorded: false })
+      break
+    }
+  }
+
   const pending = []
   const elapsed = []
-  const touchesByContract = new Map()
   for (const prediction of predictions) {
     if (settled.has(prediction.id)) continue
     const { contract } = prediction
     const targetTs = Number(contract.expiry)
     if (validContractEntry(contract, prediction.price)) {
-      const key = contractKey(contract)
-      let touches = touchesByContract.get(key)
-      if (!touches) {
-        touches = prices.filter(p => p.ts < targetTs && p.ts <= now && contractTouch(contract, p.price))
-        touchesByContract.set(key, touches)
-      }
-      const touch = touches[firstPriceIndexAt(touches, Date.parse(prediction.ts) + 1)]
+      const touch = knockouts.get(contractKey(contract))
       if (touch) {
-        elapsed.push({ prediction, targetTs, settlementTs: touch.ts, exitPrice: touch.price,
-          knockout: contractTouch(contract, touch.price) })
+        if (Date.parse(prediction.ts) < touch.ts) {
+          elapsed.push({ prediction, targetTs, settlementTs: touch.ts, exitPrice: touch.price, knockout: touch.knockout })
+        }
         continue
       }
     }
@@ -518,8 +545,15 @@ const findUnsettledContractPredictions = (records, now, recentTicks = []) => {
       expired: mark == null && now - targetTs > MAX_EVAL_LAG_MS,
     })
   }
-  return { pending, elapsed }
+  return { pending, elapsed, knockouts }
 }
+
+const knockoutRecord = (contract, ts, price) => ({
+  type: 'contract_knockout',
+  ts: new Date(ts).toISOString(),
+  contract,
+  price,
+})
 
 /**
  * Compute per-UTC-hour accuracy (minimum 5 samples) from evaluated outcomes.
@@ -574,6 +608,7 @@ const createScorecard = ({ io, lastPriceFn, contractFn, recentTicksFn = () => []
   const pendingTimeouts = new Set()
   // One live subscription and expiry timer per set of contract terms.
   const pendingContracts = new Map()
+  const knockedOutContracts = new Map()
 
   /** @type {NodeJS.Timeout | null} */
   let sampleInterval = null
@@ -717,10 +752,10 @@ const createScorecard = ({ io, lastPriceFn, contractFn, recentTicksFn = () => []
     return true
   }
 
-  const settleContracts = (predictions, exitPrice, opts) => {
+  const settleContracts = (predictions, exitPrice, opts, marker) => {
     const outcomes = predictions.map(prediction => buildContractOutcomeRecord(prediction, exitPrice, opts)).filter(Boolean)
     if (outcomes.length === 0) return
-    persistBatch(outcomes)
+    persistBatch(marker ? [marker, ...outcomes] : outcomes)
     outcomeBuffer.push(...outcomes)
     if (outcomeBuffer.length > BUFFER_SIZE) {
       outcomeBuffer.splice(0, outcomeBuffer.length - BUFFER_SIZE)
@@ -785,6 +820,11 @@ const createScorecard = ({ io, lastPriceFn, contractFn, recentTicksFn = () => []
     if (!validContractEntry(contract, prediction.price)) return
     const { expiry } = contract
     const key = contractKey(contract)
+    const now = Date.now()
+    for (const [closedKey, expiresAt] of knockedOutContracts) {
+      if (expiresAt <= now) knockedOutContracts.delete(closedKey)
+    }
+    if (knockedOutContracts.has(key)) return
     let pending = pendingContracts.get(key)
     if (!pending) {
       const predictions = []
@@ -807,14 +847,11 @@ const createScorecard = ({ io, lastPriceFn, contractFn, recentTicksFn = () => []
       if (ts < expiry && !knockout) continue
       const eligible = predictions.filter(p => Date.parse(p.ts) < ts)
       if (eligible.length === 0) continue
-      settleContracts(eligible, price, { ts: new Date(ts).toISOString(), knockout })
-      if (eligible.length === predictions.length) {
-        cancel()
-        pendingContracts.delete(key)
-      } else {
-        // Keep the same array captured by the expiry callback.
-        predictions.splice(0, predictions.length, ...predictions.filter(p => Date.parse(p.ts) >= ts))
-      }
+      if (knockout) knockedOutContracts.set(key, expiry)
+      cancel()
+      pendingContracts.delete(key)
+      settleContracts(eligible, price, { ts: new Date(ts).toISOString(), knockout },
+        knockout ? knockoutRecord(contract, ts, price) : null)
     }
   }
 
@@ -1127,6 +1164,12 @@ const createScorecard = ({ io, lastPriceFn, contractFn, recentTicksFn = () => []
     const now = Date.now()
     const { pending, elapsed } = findUnsettledPredictions(allRecords, now)
     const contractRecovery = findUnsettledContractPredictions(allRecords, now, recentTicksFn())
+    for (const [key, touch] of contractRecovery.knockouts) {
+      if (touch.contract.expiry > now) {
+        knockedOutContracts.set(key, touch.contract.expiry)
+        if (!touch.recorded) persistRecord(knockoutRecord(touch.contract, touch.ts, touch.price))
+      }
+    }
 
     let backfilled = 0
     // Fell due during the downtime with no recorded mark, but still inside the
@@ -1340,6 +1383,7 @@ const createScorecard = ({ io, lastPriceFn, contractFn, recentTicksFn = () => []
     }
     pendingTimeouts.clear()
     pendingContracts.clear()
+    knockedOutContracts.clear()
     computeSignalsFn = null
     scorecardLogger.info(`ℹ️ 📊 Scorecard stopped predictions=${totalPredictions} evaluated=${outcomeBuffer.length}`, {
       action: 'stop',

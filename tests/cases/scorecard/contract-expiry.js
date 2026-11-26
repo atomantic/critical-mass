@@ -50,7 +50,7 @@ describe('contract scorecard settles at configured expiry', () => {
       ts: new Date(predictionTs + 1).toISOString(),
     }), null)
     const planned = findUnsettledContractPredictions([prediction], predictionTs + 10_000)
-    assert.deepEqual(planned, { pending: [], elapsed: [] })
+    assert.deepEqual(planned, { pending: [], elapsed: [], knockouts: new Map() })
   })
 
   it('compares in-range expiry proceeds with the entry cost for either direction', () => {
@@ -104,6 +104,18 @@ describe('contract scorecard settles at configured expiry', () => {
     assert.equal(settlement.knockout, 'stop')
   })
 
+  it('keeps a knocked-out listing closed after restart even when the original entries aged out', () => {
+    const later = { ...makePrediction(expiry), ts: new Date(predictionTs + 120_000).toISOString() }
+    const marker = {
+      type: 'contract_knockout', ts: new Date(predictionTs + 60_000).toISOString(),
+      price: 90, contract: later.contract,
+    }
+    const plan = findUnsettledContractPredictions([marker, later], predictionTs + 150_000)
+    assert.deepEqual(plan.pending, [])
+    assert.deepEqual(plan.elapsed, [])
+    assert.equal([...plan.knockouts.values()][0].knockout, 'stop')
+  })
+
   it('journals a live knockout once and ignores a later recovery', async (t) => {
     const start = Date.now()
     const records = []
@@ -119,10 +131,13 @@ describe('contract scorecard settles at configured expiry', () => {
     await scorecard.start(() => null)
     scorecard.recordPrediction({ type: 'BUY', score: 30 }, 'interval')
     scorecard.observePrice(90, start + 30_000)
+    scorecard.recordPrediction({ type: 'BUY', score: 30 }, 'interval')
+    scorecard.observePrice(120, start + 40_000)
     scorecard.observePrice(120, start + 60_000)
     await new Promise(resolve => setImmediate(resolve))
     const outcomes = records.filter(r => r.window === 'contract')
     assert.equal(outcomes.length, 1)
+    assert.equal(records.filter(r => r.type === 'contract_knockout').length, 1)
     assert.equal(outcomes[0].contractOutcome, 'loss')
     assert.equal(scorecard.getMetrics().contractAware.wins, 0)
   })

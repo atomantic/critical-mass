@@ -70,7 +70,12 @@ const tfAt = (candles, i) => {
     else m15.push({ ...c, timestamp: t });
   }
   m15.pop();
-  return { '1m': candles.slice(Math.max(0, i - 179), i + 1), '15m': m15 };
+  const hour = 60 * MIN;
+  const startHour = Math.floor(candles[0].timestamp / hour) * hour;
+  const h1 = Array.from({ length: 20 }, (_, n) => ({
+    ...candles[0], timestamp: startHour - (20 - n) * hour,
+  }));
+  return { '1m': candles.slice(Math.max(0, i - 179), i + 1), '15m': m15, '1h': h1 };
 };
 const priceAt = (i) => (i < 400 ? 65000 : i < 430 ? 65000 - (i - 400) * 22 : 64340 + (i - 430) * 15);
 
