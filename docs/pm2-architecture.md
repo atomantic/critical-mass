@@ -278,9 +278,9 @@ Every start reapplies `max_size=20M`, `retain=5`, `compress=true` and
 failure warns without failing startup; retry startup when network access is
 available. Rotation is a PM2-wide module and also covers other managed apps.
 
-Docker and Umbrel bake the same module and settings into `/opt/pm2-home`,
-owned by UID 1000 and selected by `PM2_HOME`. `pm2-runtime` starts the module
-from this home alongside the stack; startup requires no module download.
+Docker and Umbrel images lock the module with PM2 under `/opt/pm2` and register
+it and its settings in `/opt/pm2-home`, owned by UID 1000 and selected by
+`PM2_HOME`. `pm2-runtime` starts the module from this home alongside the stack. Startup requires no module download.
 Keep this image-owned home outside the persistent `data/` and `logs/` mounts.
 PM2 rotates the files in the mounted logs directory, keeping five compressed
 archives per log. The default size check runs every 30 seconds, so a burst can

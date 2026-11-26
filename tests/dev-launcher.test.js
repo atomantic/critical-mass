@@ -35,7 +35,7 @@ for (const exitCode of [0, 7]) {
     const io = capture();
     assert.equal(await launch([
       fixture('server', 'process.exit(' + exitCode + ')'),
-      fixture('ui', "setTimeout(() => console.log('finished independently'), 150)"),
+      fixture('ui', "setTimeout(() => console.log('finished independently'), 30)"),
     ], io), exitCode === 0 ? 0 : 1);
     assert.match(io.output(), /finished independently/);
   });
@@ -190,7 +190,7 @@ for (const mode of [0, 7, 'signal']) {
     assert.deepEqual(io.signals.eventNames(), []);
     if (mode === 0) {
       assert.equal(signalDuringClose, true);
-      await new Promise(resolve => setTimeout(resolve, 150));
+      await new Promise(resolve => setTimeout(resolve, 30));
       assert.equal(io.errors(), '', 'no escalation timer may survive close');
     }
   });
