@@ -6,6 +6,8 @@
  * and an indicator series by comparing swing highs/lows in both.
  */
 
+const SWING_ORDER = 3;
+
 /**
  * Find swing highs and lows in a value series
  * A swing high at index i means values[i] > all values in [i-order, i+order]
@@ -14,7 +16,7 @@
  * @param {number} [order=3] - Number of bars on each side to confirm swing
  * @returns {{highs: Array<{index: number, value: number}>, lows: Array<{index: number, value: number}>}}
  */
-const findSwings = (values, order = 3) => {
+const findSwings = (values, order = SWING_ORDER) => {
   const highs = [];
   const lows = [];
 
@@ -38,6 +40,28 @@ const findSwings = (values, order = 3) => {
 };
 
 /**
+ * Compare the latest two swings of the same kind. Each oscillator pivot must
+ * be within the price pivot's confirmation window.
+ * @param {Array<{index: number, value: number}>} prices
+ * @param {Array<{index: number, value: number}>} oscillator
+ * @param {'bearish'|'bullish'} type
+ */
+const alignedDivergence = (prices, oscillator, type) => {
+  if (prices.length < 2 || oscillator.length < 2) return null;
+  const [p1, p2] = prices.slice(-2);
+  const [i1, i2] = oscillator.slice(-2);
+  if (Math.abs(p1.index - i1.index) > SWING_ORDER || Math.abs(p2.index - i2.index) > SWING_ORDER) return null;
+
+  const sign = type === 'bearish' ? 1 : -1;
+  const priceMove = sign * (p2.value - p1.value);
+  const indicatorMove = sign * (i1.value - i2.value);
+  if (priceMove <= 0 || indicatorMove <= 0) return null;
+  const priceDelta = priceMove / p1.value;
+  const indDelta = Math.abs(i1.value) > 1e-8 ? indicatorMove / Math.abs(i1.value) : 0;
+  return { index: Math.max(p2.index, i2.index), type, strength: Math.min(1, (priceDelta + indDelta) * 5) };
+};
+
+/**
  * Core swing divergence detection between a price series and any indicator series.
  * Uses epsilon-safe delta normalisation so it works for both bounded (RSI 0-100)
  * and unbounded/signed indicators (MACD histogram).
@@ -52,29 +76,10 @@ const detectSwingDivergence = (recentCloses, recentIndicator, preFilter = null) 
   const priceSwings = findSwings(recentCloses);
   const indSwings = findSwings(recentIndicator);
 
-  // Bearish: price higher highs + indicator lower highs
-  if (priceSwings.highs.length >= 2 && indSwings.highs.length >= 2) {
-    const ph = priceSwings.highs.slice(-2);
-    const ih = indSwings.highs.slice(-2);
-    if (ph[1].value > ph[0].value && ih[1].value < ih[0].value) {
-      const priceDelta = (ph[1].value - ph[0].value) / ph[0].value;
-      const indDelta = Math.abs(ih[0].value) > 1e-8 ? (ih[0].value - ih[1].value) / Math.abs(ih[0].value) : 0;
-      return { type: 'bearish', strength: Math.min(1, (priceDelta + indDelta) * 5) };
-    }
-  }
-
-  // Bullish: price lower lows + indicator higher lows
-  if (priceSwings.lows.length >= 2 && indSwings.lows.length >= 2) {
-    const pl = priceSwings.lows.slice(-2);
-    const il = indSwings.lows.slice(-2);
-    if (pl[1].value < pl[0].value && il[1].value > il[0].value) {
-      const priceDelta = (pl[0].value - pl[1].value) / pl[0].value;
-      const indDelta = Math.abs(il[0].value) > 1e-8 ? (il[1].value - il[0].value) / Math.abs(il[0].value) : 0;
-      return { type: 'bullish', strength: Math.min(1, (priceDelta + indDelta) * 5) };
-    }
-  }
-
-  return { type: 'none', strength: 0 };
+  const bearish = alignedDivergence(priceSwings.highs, indSwings.highs, 'bearish');
+  const bullish = alignedDivergence(priceSwings.lows, indSwings.lows, 'bullish');
+  const latest = bullish && (!bearish || bullish.index > bearish.index) ? bullish : bearish;
+  return latest ? { type: latest.type, strength: latest.strength } : { type: 'none', strength: 0 };
 };
 
 /**

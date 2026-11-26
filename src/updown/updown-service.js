@@ -44,7 +44,8 @@ const isFreshPrice = (price, lastTickAt, now = Date.now(), maxAgeMs = PRICE_STAL
   lastTickAt > 0 && now - lastTickAt >= 0 && now - lastTickAt <= maxAgeMs;
 
 /**
- * Adjust the original result without letting transient ticks create or cancel a direction.
+ * Adjust the composite score while preserving the engine's multi-factor confidence.
+ * Transient ticks cannot create or cancel a direction.
  */
 const applyTickMomentumAdjustment = (result, tickMomentum, position) => {
   // A flush-setup BUY is a rule decision with its own exit, not a composite
@@ -67,7 +68,6 @@ const applyTickMomentumAdjustment = (result, tickMomentum, position) => {
     const gated = applyUpOnlyGate(adjustedRaw, result.trendGate?.open !== false, position);
     const candidate = resolveNoTradeZoneType(gated, result.noTradeZone, position);
     result.type = preventTickCreatedSignal(typeBeforeTick, candidate);
-    result.confidence = Math.round(Math.min(1, Math.abs(result.score) / 60) * 100) / 100;
   }
 };
 
@@ -92,12 +92,7 @@ const createUpDownService = (io, deps) => {
   };
   const signalEngineFactory = deps.createSignalEngine ?? createSignalEngine;
   const signalEngine = signalEngineFactory(candleAdapter);
-  // Issue #212C: the scorecard's 60s sampler must NOT share prevIndicators with the
-  // live 5s cycle — createSignalEngine mutates prevIndicators on every computeSignals
-  // call for crossover detection (stoch/MACD), so two consumers sharing one engine
-  // instance race: whichever fires first "consumes" the crossover and the other sees
-  // stale (post-cross) state. A dedicated instance over the same read-only candle
-  // adapter gives the sampler its own crossover memory without affecting the live cycle.
+  // The live and scorecard samplers maintain independent signal stability and flush setup state.
   const scorecardSignalEngine = signalEngineFactory(candleAdapter);
   const perpBook = createPerpBook({}, livePerpCosts());
   const scorecardFactory = deps.createScorecard ?? createScorecard;
@@ -289,7 +284,7 @@ const createUpDownService = (io, deps) => {
         pnl,
         contract: contract.expiry ? contract : null,
         tickMomentum,
-        perp: perpBook.snapshot(price),
+        perp: perpBook.snapshot(numericPrice),
       });
     }
   };
@@ -361,7 +356,7 @@ const createUpDownService = (io, deps) => {
     const metrics = scorecard.getMetrics();
 
     // Feature 7: Feed adaptive weights back to signal engine (both instances stay
-    // in sync on weights — only crossover memory is intentionally kept separate).
+    // in sync on weights).
     if (metrics.adaptiveWeights) {
       signalEngine.setIndicatorWeights(metrics.adaptiveWeights);
       scorecardSignalEngine.setIndicatorWeights(metrics.adaptiveWeights);

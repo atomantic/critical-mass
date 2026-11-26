@@ -54,6 +54,21 @@ describe('detectDivergence (price vs RSI)', () => {
     assert.ok(Math.abs(result.strength - 135 / 152) < 1e-9, `strength ${result.strength}`);
   });
 
+  it('requires both oscillator pivots to be within three bars of their price pivots', () => {
+    const closes = series(100, { 7: 105, 12: 110 });
+    const divergence = (pivots) => detectDivergence(closes, series(50, pivots)).type;
+    assert.equal(divergence({ 4: 60, 15: 55 }), 'bearish');
+    assert.equal(divergence({ 3: 60, 15: 55 }), 'none');
+    assert.equal(divergence({ 4: 60, 16: 55 }), 'none');
+  });
+
+  it('returns the more recently confirmed divergence in either direction', () => {
+    const closes = series(100, { 3: 105, 6: 95, 11: 110, 15: 90 });
+    const rsi = series(50, { 3: 60, 6: 40, 11: 55, 15: 45 });
+    assert.equal(detectDivergence(closes, rsi).type, 'bullish');
+    assert.equal(detectDivergence(closes.map(c => 200 - c), rsi.map(r => 100 - r)).type, 'bearish');
+  });
+
   it('returns none when price and indicator agree (both higher highs)', () => {
     const closes = series(100, { 5: 105, 14: 110 });
     const rsi = series(50, { 5: 55, 14: 60 });

@@ -125,6 +125,19 @@ describe('stabilizeSignal — SELL/EXIT persistence (not 5s flicker)', () => {
     assert.equal(confirmed.type, 'SELL');
   });
 
+  it('holds SELL until the opposite BUY has persisted for the entry window', () => {
+    const sell = step('SELL', -20, createStabilityState(), T0);
+    const held = step('SELL', -20, sell.state, T0 + MIN_EXIT_MS);
+    const start = T0 + MIN_EXIT_MS + 5_000;
+    const pending = step('BUY', 20, held.state, start);
+    assert.equal(pending.type, 'SELL');
+    assert.equal(pending.state.pendingType, 'BUY');
+    const early = step('BUY', 20, pending.state, start + MIN_ENTER_MS - 1);
+    assert.equal(early.type, 'SELL');
+    assert.equal(step('BUY', 20, early.state, start + MIN_ENTER_MS).type, 'BUY');
+    assert.equal(step('NEUTRAL', EXIT_SELL_SCORE + 1, pending.state, start + 5_000).type, 'NEUTRAL');
+  });
+
   it('publishes STRONG_BUY and STRONG_SELL immediately', () => {
     const buy = step('STRONG_BUY', 32, createStabilityState(), T0);
     assert.equal(buy.type, 'STRONG_BUY');

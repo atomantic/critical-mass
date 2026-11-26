@@ -10,6 +10,7 @@ const {
   calculateSwingRange,
   updateEMABaseline,
   calculateMomentum,
+  calculateMomentumAcceleration,
   calculateAllMetrics,
   applyMarketMetrics,
   calculateVolExpansion,
@@ -304,13 +305,15 @@ describe('calculateVWAP', () => {
     assert.equal(calculateVWAP([]), 0);
   });
 
-  it('falls back to last close when no candles within period', () => {
-    const oldTimestamp = Date.now() - 24 * 60 * 60 * 1000; // 24h ago
+  it('uses the last historical bar as the inclusive end of the window', () => {
+    const end = Date.UTC(2020, 0, 1);
+    const cutoff = end - 4 * 60 * 60 * 1000;
     const candles = [
-      mkCandle(100, 110, 90, 105, 100, oldTimestamp),
+      mkCandle(90, 90, 90, 90, 999, cutoff - 1),
+      mkCandle(100, 100, 100, 100, 1, cutoff),
+      mkCandle(120, 120, 120, 120, 3, end),
     ];
-    const vwap = calculateVWAP(candles, 4);
-    assert.equal(vwap, 105); // last candle close
+    assert.equal(calculateVWAP(candles, 4), 115);
   });
 
   it('calculates correct VWAP for recent candles', () => {
@@ -334,6 +337,26 @@ describe('calculateVWAP', () => {
     const vwap = calculateVWAP(candles, 4);
     // TP = (110+90+100)/3 = 100, volume=1 (default)
     assert.ok(Math.abs(vwap - 100) < 0.01);
+  });
+});
+
+describe('calculateMomentumAcceleration', () => {
+  const momentum = (closes) => calculateMomentumAcceleration(closes.map(close => mkCandle(close, close, close, close)));
+
+  it('keeps constant price steps steady in both directions', () => {
+    const linear = Array.from({ length: 11 }, (_, i) => 100 + i);
+    assert.equal(momentum(linear).acceleration, 'neutral');
+    assert.equal(momentum(linear.toReversed()).acceleration, 'neutral');
+  });
+
+  it('compares per-bar rates and preserves the reported cumulative returns', () => {
+    const result = momentum([100, 101, 102, 103, 104, 105, 106, 107, 109, 111, 113]);
+    assert.equal(result.direction, 'up');
+    assert.equal(result.acceleration, 'accelerating');
+    assert.equal(result.roc3, 6 / 107 * 100);
+    assert.equal(result.roc10, 13);
+    assert.equal(momentum([120, 119, 118, 117, 116, 115, 114, 113, 111, 109, 107]).acceleration, 'accelerating');
+    assert.equal(momentum([100, 102, 104, 106, 108, 110, 112, 114, 115, 116, 117]).acceleration, 'fading');
   });
 });
 

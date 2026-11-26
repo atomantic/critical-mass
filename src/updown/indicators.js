@@ -82,14 +82,14 @@ const calculateRSI = (closes, period = 14) => {
  * @param {Array<{high: number, low: number, close: number}>} candles - Candle data (oldest first)
  * @param {number} [kPeriod=14] - %K lookback period
  * @param {number} [dPeriod=3] - %D smoothing period (SMA of %K)
- * @returns {{k: number, d: number}} Both 0-100 (zeros if insufficient data)
+ * @returns {{k: number, d: number}|null} Both 0-100 once the full %D window is available
  */
 const calculateStochastic = (candles, kPeriod = 14, dPeriod = 3) => {
-  if (!candles || candles.length < kPeriod) return { k: 0, d: 0 };
+  if (!candles || candles.length < kPeriod + dPeriod - 1) return null;
 
   // Calculate raw %K values for enough periods to compute %D
   const kValues = [];
-  const startIdx = Math.max(kPeriod - 1, candles.length - dPeriod - kPeriod);
+  const startIdx = candles.length - dPeriod;
 
   for (let i = startIdx; i < candles.length; i++) {
     const window = candles.slice(i - kPeriod + 1, i + 1);
@@ -104,13 +104,10 @@ const calculateStochastic = (candles, kPeriod = 14, dPeriod = 3) => {
     kValues.push(k);
   }
 
-  if (kValues.length === 0) return { k: 0, d: 0 };
-
   const currentK = kValues[kValues.length - 1];
 
   // %D is SMA of last dPeriod %K values
-  const dSlice = kValues.slice(-dPeriod);
-  const d = dSlice.reduce((sum, v) => sum + v, 0) / dSlice.length;
+  const d = kValues.reduce((sum, v) => sum + v, 0) / dPeriod;
 
   return { k: currentK, d };
 };
@@ -320,7 +317,7 @@ const calculateMACDHistogramSeries = (closes, fast = 12, slow = 26, signalPeriod
  * @returns {{adx: number, plusDI: number, minusDI: number, trending: boolean}}
  */
 const calculateADX = (candles, period = 14) => {
-  if (!candles || candles.length < period * 2 + 1) {
+  if (!candles || candles.length < period * 2) {
     return { adx: 0, plusDI: 0, minusDI: 0, trending: false };
   }
 
@@ -366,8 +363,8 @@ const calculateADX = (candles, period = 14) => {
   // Compute DI values and DX for Wilder's smoothing of ADX
   const dxValues = [];
 
-  for (let i = period; i < trList.length; i++) {
-    if (i > period) {
+  for (let i = period - 1; i < trList.length; i++) {
+    if (i >= period) {
       smoothTR = smoothTR - smoothTR / period + trList[i];
       smoothPlusDM = smoothPlusDM - smoothPlusDM / period + plusDM[i];
       smoothMinusDM = smoothMinusDM - smoothMinusDM / period + minusDM[i];
@@ -378,10 +375,6 @@ const calculateADX = (candles, period = 14) => {
     const diSum = pDI + mDI;
     const dx = diSum > 0 ? (Math.abs(pDI - mDI) / diSum) * 100 : 0;
     dxValues.push({ dx, pDI, mDI });
-  }
-
-  if (dxValues.length < period) {
-    return { adx: 0, plusDI: 0, minusDI: 0, trending: false };
   }
 
   // First ADX = average of first `period` DX values
