@@ -37,7 +37,7 @@ const backtestLogger = (exchange, pair, route) => createContextLogger({
 
 /**
  * @param {import('express').Express} app
- * @param {{io: Object, readJSON: Function, writeJSON: Function, DATA_DIR: string, trackBackgroundWork?: (work: Promise<void>) => unknown}} deps
+ * @param {{io: Object, readJSON: Function, writeJSON: Function, DATA_DIR: string, simulationCoordinator?: SimulationRunCoordinator, trackBackgroundWork?: (work: Promise<void>) => unknown}} deps
  */
 module.exports = (app, deps) => {
   const { io, readJSON, writeJSON, DATA_DIR, trackBackgroundWork = () => {}, simulationCoordinator = new SimulationRunCoordinator() } = deps;
@@ -71,7 +71,7 @@ module.exports = (app, deps) => {
       resourceKey: `prices:${exchange}`,
       requestKey: JSON.stringify({ exchange, intervals, intervalType }),
     }, () => backtestEngine.getPriceData(intervals, intervalType, exchange, { freshness }));
-    if (!admission.accepted) return rejectAdmission(res, admission);
+    if (admission.accepted === false) return rejectAdmission(res, admission);
     const prices = await admission.promise;
     res.json({
       success: true, count: prices.length, intervalType, exchange, prices,
@@ -120,7 +120,7 @@ module.exports = (app, deps) => {
       intervalBuyAmount, sellMarkupPercent, holdbackPercent, feePercent, rebatePercent,
       intervals, intervalType, fundSize, exchange, productId,
     }));
-    if (!admission.accepted) return rejectAdmission(res, admission);
+    if (admission.accepted === false) return rejectAdmission(res, admission);
     const results = await admission.promise;
 
     logger.info(`ℹ️ [${exchange}/${pair}] Backtest complete: ROI ${results.metrics.roi.toFixed(2)}%, ${results.metrics.sellsFilled}/${results.metrics.totalSells} sells filled`, {
@@ -225,7 +225,7 @@ module.exports = (app, deps) => {
         }
       },
     }));
-    if (!admission.accepted) return rejectAdmission(res, admission);
+    if (admission.accepted === false) return rejectAdmission(res, admission);
 
     logger.info(`ℹ️ [${exchange}] Running optimizer for ${productId} with fund size: $${fundSize} (${combinations} combinations)`, {
       action: 'optimizer-start',

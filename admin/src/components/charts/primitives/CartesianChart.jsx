@@ -5,7 +5,8 @@ import { ChartContext } from './chartContext'
 import { ClipRect, Grid } from './Grid'
 import { Legend } from './Legend'
 import { ReferenceLine } from './ReferenceLine'
-import { Responsive, localPoint, svgId, useElementSize } from './Responsive'
+import { Responsive } from './Responsive'
+import { localPoint, svgId, useElementSize } from './chartMeasurement'
 import { TooltipContent } from './Tooltip'
 
 const DEFAULT_MARGIN = { top: 5, right: 5, bottom: 5, left: 5 }

@@ -144,8 +144,9 @@ function createDashboard({ apy: apyOverrides = {}, intercept } = {}) {
     '../hooks/useChartDataBuffer': {
       useChartDataBuffer: () => ({ priceHistory: [], atrHistory: [], regimeHistory: [], initializeFromCache() {} }),
     },
-    './regime/RegimeHelp': { CONFIG_TOOLTIPS: {}, ConfigTooltip: () => null },
-    './Toast': { useToast: () => ({ addToast: toast => toasts.push(toast) }) },
+    './regime/RegimeHelp': { ConfigTooltip: () => null },
+    './regime/regimeTooltips': { CONFIG_TOOLTIPS: {}, REGIME_TOOLTIPS: {} },
+    './useToast': { useToast: () => ({ addToast: toast => toasts.push(toast) }) },
     '../utils/productId.mjs': { getBaseCurrency: () => 'BTC', getQuoteCurrency: () => 'USD' },
     '../utils/actionFailure.mjs': { describeActionFailure: (status, body) => body?.error || body?.message || `HTTP ${status}` },
     '../../utils/actionFailure.mjs': { describeActionFailure: (status, body) => body?.error || body?.message || `HTTP ${status}` },

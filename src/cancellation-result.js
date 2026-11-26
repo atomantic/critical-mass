@@ -8,7 +8,7 @@
  */
 const classifyBodyTpCancellation = (result) => {
   if (result.cancelled) {
-    return result.filledSize > 0 ? 'cancelled_with_execution' : 'cancelled';
+    return Number(result.filledSize) > 0 ? 'cancelled_with_execution' : 'cancelled';
   }
   return result.filled ? 'filled' : 'unresolved';
 };

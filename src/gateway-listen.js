@@ -24,7 +24,7 @@ const tailscaleIpv4s = (nets = os.networkInterfaces()) => {
   const out = []
   for (const addrs of Object.values(nets || {})) {
     for (const a of addrs || []) {
-      const family = a.family === 4 || a.family === 'IPv4'
+      const family = String(a.family) === '4' || a.family === 'IPv4'
       if (!family || a.internal) continue
       if (isTailscaleIpv4(a.address)) out.push(a.address)
     }
@@ -147,7 +147,7 @@ const bindGatewayListeners = ({ hosts, port, server, createServer, onExtra = () 
     }
     s.once('error', onError)
     s.once('listening', onListening)
-    s.listen(port, host)
+    s.listen(Number(port), host)
   }))
   return Promise.all(bound).then(
     () => listeners.slice(1).map(({ server: s }) => s),

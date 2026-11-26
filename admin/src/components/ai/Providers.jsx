@@ -4,7 +4,7 @@ import ModalDialog from '../ModalDialog'
 import DestructiveConfirmation from '../DestructiveConfirmation'
 import { apiGet, apiPost, apiPut, apiDelete, describeMutationFailure } from '../../utils/apiClient'
 import { createRunLifecycle, RUN_NOTICE } from '../../utils/runLifecycle.mjs'
-import { useNotify } from '../Toast'
+import { useNotify } from '../useToast'
 
 const PROVIDER_TYPES = { cli: 'CLI (unavailable)', api: 'API' }
 
@@ -99,8 +99,6 @@ export default function AIProviders() {
     })
   }
 
-  useEffect(() => { loadData() }, [])
-
   // The lifecycle owner holds every runner timer and in-flight read; unmounting
   // invalidates its generation so no pending continuation can revive polling on
   // a detached view. Server-side work is only cancelled by an explicit Stop.
@@ -165,6 +163,7 @@ export default function AIProviders() {
   // Keep the lifecycle owner's run-list refresh pointed at the current closure
   // without rebuilding the owner (and losing its generation) on every render.
   useEffect(() => { loadDataRef.current = loadData })
+  useEffect(() => { loadDataRef.current() }, [])
 
   const handleSetActive = async (id) => {
     await runMutation('active', () => apiPut('/api/providers/active', { id }, { allowEmpty: true }), () => setActiveProviderId(id))
@@ -757,7 +756,7 @@ function ProviderForm({ provider, onClose, onSave }) {
   // Sync modelsText when provider changes (e.g., switching between providers in modal)
   useEffect(() => {
     setModelsText((provider?.models || []).join(', '))
-  }, [provider?.id])
+  }, [provider?.id, provider?.models])
 
   const availableModels = formData.models || []
 

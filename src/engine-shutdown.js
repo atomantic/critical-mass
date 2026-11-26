@@ -206,11 +206,12 @@ const createEngineShutdown = ({
         }
       });
       for (let i = 0; i < results.length; i++) {
-        if (results[i].status === 'rejected') {
+        const result = results[i];
+        if (result.status === 'rejected') {
           const fundKey = engineEntries[i][0];
-          shutdownLogger?.error?.(`❌ Engine stop failed for ${fundKey}: ${results[i].reason.message}`, {
+          shutdownLogger?.error?.(`❌ Engine stop failed for ${fundKey}: ${result.reason.message}`, {
             fundKey,
-            error: results[i].reason.message,
+            error: result.reason.message,
           });
         }
       }

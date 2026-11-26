@@ -33,10 +33,12 @@ async function main() {
     });
     server.listen(0, '127.0.0.1');
     await once(server, 'listening');
+    const address = server.address();
+    assert.ok(address && typeof address !== 'string', 'Smoke server must have a TCP address');
     browser = await startChrome();
     browser.on('Runtime.exceptionThrown', () => errors.push('uncaught browser exception'));
     browser.on('Runtime.consoleAPICalled', event => { if (event.type === 'error') errors.push('browser console error'); });
-    await browser.call('Page.navigate', { url: 'http://127.0.0.1:' + server.address().port + '/tests/react19-smoke.html' });
+    await browser.call('Page.navigate', { url: 'http://127.0.0.1:' + address.port + '/tests/react19-smoke.html' });
     const waitFor = async expression => {
       for (let i = 0; i < 300; i++) {
         assert.deepEqual(errors, []);
