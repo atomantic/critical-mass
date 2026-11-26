@@ -307,21 +307,9 @@ IDs, order IDs, quantities, fees and buy-to-sell consumption records with
 `data/<exchange>/<pair>/fill-ledger.json`. Confirm the export covers the required
 dates and includes every page and partial fill before using it as repair input.
 
-`scripts/fetch-cryptocom-trades.js` and `scripts/diff-cryptocom-ledger.js` are
-historical CRO_USD investigation tools, not exchange/pair-selectable commands.
-The fetch script fixes the product and inception date in its source and writes
-`data/cryptocom/CRO_USD/exchange-trades.json`; setting `EXCHANGE` or `PAIR` above
-does not retarget it.
-
 ### Step 4: Prepare a targeted repair
 
 There is no general-purpose rectification command in this playbook.
-`scripts/cryptocom-rectify-from-exchange.js` is a one-time CRO_USD incident repair:
-it hardcodes historical order/body IDs and a 100 CRO dust threshold. With
-`--apply` it replaces that fund's ledger, clears `closed-trades.json`, and writes
-FIFO-derived position values. It does **not** derive the current cycle-pair P&L
-contract. Do not use it as a generic remedy, even for a new CRO_USD discrepancy;
-changing the exchange name in a PM2 command does not change its write targets.
 
 For a new repair:
 

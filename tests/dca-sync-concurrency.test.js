@@ -15,7 +15,7 @@ const { getPendingWrites } = require('../src/pending-writes');
 
 const EXCHANGE = 'coinbase';
 const PAIR = 'ETH-USDC';
-const modulePaths = ['../src/dca-engine', '../src/routes/exchange-routes', '../src/routes/legacy-routes'];
+const modulePaths = ['../src/dca-engine', '../src/routes/exchange-routes'];
 const clearModules = () => { for (const name of modulePaths) delete require.cache[require.resolve(name)]; };
 let engine, durable, placements, releaseSync, syncEntered, scopes;
 
@@ -69,17 +69,17 @@ beforeEach(() => {
 
 afterEach(() => { mock.restoreAll(); clearModules(); });
 
-const invokeSyncRoute = async legacy => {
+const invokeSyncRoute = async () => {
   const handlers = {};
   const app = {};
   for (const method of ['get', 'put', 'patch', 'post', 'delete']) {
     app[method] = (route, handler) => { handlers[`${method} ${route}`] = handler; };
   }
-  require(legacy ? '../src/routes/legacy-routes' : '../src/routes/exchange-routes')(app, {});
+  require('../src/routes/exchange-routes')(app, {});
   const response = { statusCode: 200, body: null,
     status(code) { this.statusCode = code; return this; },
     json(body) { this.body = body; return this; } };
-  await handlers[legacy ? 'post /api/sync' : 'post /api/:exchange/sync'](
+  await handlers['post /api/:exchange/sync'](
     { params: { exchange: EXCHANGE }, query: { pair: PAIR } }, response,
     error => { throw error; },
   );
@@ -87,17 +87,14 @@ const invokeSyncRoute = async legacy => {
   assert.equal(response.body.success, true);
   assert.equal(response.body.filledOrders, 1);
   assert.ok(Number.isFinite(Date.parse(response.body.lastSyncTime)));
-  if (!legacy) {
-    assert.equal(response.body.exchange, EXCHANGE);
-    assert.equal(response.body.pair, PAIR);
-  }
+  assert.equal(response.body.exchange, EXCHANGE);
+  assert.equal(response.body.pair, PAIR);
   return response.body;
 };
 
-for (const entry of ['checkStatus', 'syncFundOrders', 'exchange sync route', 'legacy sync route']) {
+for (const entry of ['checkStatus', 'syncFundOrders', 'exchange sync route']) {
   it(`${entry} serializes reconciliation with failed-sell retries`, { timeout: 5000 }, async () => {
-    const sync = entry === 'exchange sync route' ? invokeSyncRoute(false)
-      : entry === 'legacy sync route' ? invokeSyncRoute(true) : engine[entry](EXCHANGE, PAIR);
+    const sync = entry === 'exchange sync route' ? invokeSyncRoute() : engine[entry](EXCHANGE, PAIR);
     await syncEntered;
     const retry = engine.retryFailedSell(EXCHANGE, PAIR, 'failed-buy');
     // Flush runnable promise callbacks while the exchange response is withheld.

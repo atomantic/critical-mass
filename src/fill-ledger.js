@@ -263,10 +263,8 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
   // non-negative holdback on the next load, so it is never touched twice.
   // Deliberately NOT auto-persisted here — same reasoning as the netFee
   // backfill just below: `quiet`/no-quiet is a logging hint, not an
-  // ownership signal (several read-only scripts, e.g.
-  // scripts/analyze-unaccounted.js, construct a non-quiet ledger purely
-  // to inspect it), so writing back from inside load() would make ANY
-  // caller — not just the owning engine — a second, uncoordinated writer
+  // ownership signal. Read-only callers can construct a non-quiet ledger.
+  // Writing back from inside load() could make such a caller an uncoordinated writer
   // of a live fund's ledger file, racing a running engine's own persists
   // (issue #779). The repair rides along on the
   // owning engine's own next dirtying persist() instead, the same way

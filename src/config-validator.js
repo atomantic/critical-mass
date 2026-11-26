@@ -383,7 +383,7 @@ const REGIME_CROSS_FIELD_PARTNERS = {
  * Sanitize + value-validate a nested `regime` config update in one shared step.
  * Every entry point that can persist into `regime.*` — the dedicated
  * `PUT /api/:exchange/regime/config`, the full-config `PUT /api/:exchange/config`
- * and legacy `PUT /api/config`, and fund creation's regime seed — must route
+ * and fund creation's regime seed — must route
  * through this before persistence or IPC. Without it, a value rejected by one
  * save surface (e.g. `maxDrawdownPercent: 999`, outside the documented 0-100
  * range) could still be persisted and forwarded to the live engine through

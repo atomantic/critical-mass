@@ -1,0 +1,1 @@
+- Removed obsolete order cancellation and corrective buy tools, incident-specific exchange scripts, and unused Coinbase-only API routes. Fund operations use the exchange-scoped API.

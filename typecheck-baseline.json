@@ -80,7 +80,6 @@
   "src/routes/config-update.js": 3,
   "src/routes/exchange-routes.js": 9,
   "src/routes/keys-routes.js": 3,
-  "src/routes/legacy-routes.js": 1,
   "src/routes/regime-routes.js": 4,
   "src/routes/route-utils.js": 8,
   "src/routes/sentinel-routes.js": 1,
