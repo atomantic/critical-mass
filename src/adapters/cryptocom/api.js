@@ -1043,9 +1043,8 @@ const createCryptocomAdapter = (keysPath = null) => {
         liquidityIndicator: raw.taker_side || raw.liquidity_indicator || 'TAKER',
       }];
     });
-    // The scan walks a range fixed when it started; placement-evidence needs
-    // that upper bound to tell whether the history reaches past an earlier
-    // read. Non-enumerable so the array still compares and serializes as before.
+    // The request range stops at scan start. The exchange may still be indexing
+    // trades up to this bound. Keep it non-enumerable for array consumers.
     Object.defineProperty(fills, 'coveredThrough', { value: Number(scan.endNs / NS_PER_MS) });
     return fills;
   };

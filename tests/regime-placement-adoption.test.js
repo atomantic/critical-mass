@@ -167,9 +167,10 @@ describe('automatic placement recovery from exchange evidence', () => {
     const intent = placementIntents.recordPlacementIntent({ exchange: 'coinbase', pair: PAIR, action: 'entry_bid', side: 'buy', price: 120, size: 0.9, sizeUsdc: 108 });
     return ageIntent(intent.id, { instanceId: 'a-process-that-died' });
   };
-  const withExchange = ({ openOrders = [], fills = [], order = null } = {}) => {
+  const withExchange = ({ openOrders = [], fills, order = null } = {}) => {
     adapter.getOpenOrders = async () => openOrders;
-    adapter.getReconciliationFills = async () => fills;
+    // A larger unrelated trade proves the exchange has indexed a fill since the open-order read.
+    adapter.getReconciliationFills = async () => fills ?? [{ tradeId: 'recent', orderId: 'other', side: 'sell', price: 120, size: 10, timestamp: Date.now() }];
     adapter.getOrder = async (orderId) => order ?? { orderId, side: 'BUY', status: 'OPEN', filledSize: 0 };
   };
 
@@ -179,6 +180,13 @@ describe('automatic placement recovery from exchange evidence', () => {
     await engine._test.reconcilePendingPlacements();
     assert.equal(placementIntents.loadPlacementIntents('coinbase', PAIR).length, 0);
     assert.equal(executor.getPendingCounts().total, 0);
+  });
+
+  it('keeps a stranded intent on disk while the exchange has no indexed fills', async () => {
+    const intent = strandedEntry();
+    withExchange({ fills: [] });
+    await engine._test.reconcilePendingPlacements();
+    assert.ok(placementIntents.loadPlacementIntents('coinbase', PAIR).some(i => i.id === intent.id));
   });
 
   it('adopts the one resting order that matches an intent with no client order id', async () => {

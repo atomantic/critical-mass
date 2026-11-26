@@ -195,15 +195,9 @@ const findPlacementOnExchange = async ({ adapter, productId, intent, isKnownOrde
 
   /** @type {Map<string, Array<import('./types').ReconciliationFill>>} */
   const untrackedFills = new Map();
-  const fillsRequestedAt = clock();
   const fills = await adapter.getReconciliationFills(productId, intent.createdAt - CREATED_BEFORE_INTENT_MS);
   // A partial history cannot prove that the placement never filled.
   if (fills?.incomplete) return inconclusive('the exchange returned an incomplete fill history');
-  // A history read reaches the present when requested unless the adapter
-  // reports an earlier bound (`coveredThrough`, ms). Only a history reaching
-  // past the first open-order read accounts for an order that filled just
-  // before that read.
-  const fillsCoveredThrough = Number.isFinite(fills?.coveredThrough) ? fills.coveredThrough : fillsRequestedAt;
   for (const fill of fills ?? []) {
     if (!fill?.orderId || fill.side !== side || isKnownTrade(fill.tradeId) || isKnownOrder(fill.orderId)) continue;
     if (candidates.has(fill.orderId)) continue;
@@ -228,7 +222,10 @@ const findPlacementOnExchange = async ({ adapter, productId, intent, isKnownOrde
   }
 
   if (candidates.size === 0) {
-    if (!(fillsCoveredThrough >= firstOpenReadAt)) {
+    // The requested range can extend beyond what the exchange has indexed.
+    // A trade on either side, even one already in the ledger, dates the history.
+    const hasRecentTrade = fills?.some(fill => Number.isFinite(fill?.timestamp) && fill.timestamp >= firstOpenReadAt);
+    if (!hasRecentTrade || (Number.isFinite(fills.coveredThrough) && fills.coveredThrough < firstOpenReadAt)) {
       return inconclusive('the fill history does not yet reach past the open-order read');
     }
     // An order that filled between the reads can be missing from the first
