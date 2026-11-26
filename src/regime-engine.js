@@ -782,16 +782,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   /**
    * Record cycle completion for Size optimizer
    *
-   * Feeds the optimizer the REAL available quote balance (the same
-   * adapter.getAccountBalance() reading the ladder/entry preflight below use)
-   * rather than config.maxUsdcDeployed. Passing the cap back in makes
-   * calculateAdjustment() treat the cap itself as "spare" balance and ratchet
-   * maxUsdcDeployed down toward zero on every evaluation, compounding across
-   * cycles (issue #694) — the optimizer's own maxUsdcDeployed formula is
-   * deliberately unbounded/un-rate-limited (see tests/size-optimizer.test.js),
-   * so it trusted whatever balance it was given completely.
+   * Build the optimizer's equity input from verified free quote and open fund
+   * commitments. Feeding the configured cap back in would shrink it on every
+   * evaluation (#694).
    *
-   * @param {Object} cycleData - Data about the completed cycle
+   * @param {{stepsUsed: number, capitalDeployed: number, closedCoreTpOrderId?: string}} cycleData
    * @returns {Promise<void>}
    */
   const recordCycleForSizeOptimizer = (cycleData) => fencedWrite(`engine-size-optimizer:${fundLabel}`, async () => {
@@ -842,7 +837,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     const quoteBalance = (!balanceAmbiguous && typeof adapter.getAccountBalance === 'function')
       ? await lookupOrNull('getAccountBalance', quoteCurrency, adapter.getAccountBalance(quoteCurrency))
       : null;
-    const availableBalance = quoteBalance ? (parseFloat(quoteBalance.available) || 0) : 0;
+    const availableQuote = quoteBalance ? Number(quoteBalance.available ?? NaN) : NaN;
 
     // This now runs AFTER resetCycle() at every call site (issue #694) —
     // every caller awaits resetCycle() but then invokes this
@@ -860,11 +855,30 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       if (balanceAmbiguous) {
         sizeOptimizer.invalidateBalance();
       }
+      // Open bodies are valued at cost. The wallet's free quote already
+      // excludes live buy holds, so add the remaining commitments once.
+      // Paper orders never reduce that wallet's quoted available balance.
+      let fundEquity = 0;
+      if (Number.isFinite(availableQuote) && availableQuote >= 0) {
+        fundEquity = availableQuote;
+        if (!isDryRun) {
+          // If reset failed after a legacy core sale, its old aggregate cost
+          // can still be in positionState even though the fill was booked.
+          const soldCoreAwaitingReset = cycleData.closedCoreTpOrderId
+            && positionState.activeTpOrderId === cycleData.closedCoreTpOrderId;
+          fundEquity += soldCoreAwaitingReset ? getOpenBodyCost() : getAllocatedCapital();
+          // Partial-fill booking shrinks these tracked rows by the cost
+          // booked into a body, so sizeUsdc is already the remaining hold.
+          for (const order of [...(positionState.pendingEntryOrders || []), ...(positionState.pendingLadderOrders || [])]) {
+            fundEquity += order.sizeUsdc || 0;
+          }
+        }
+      }
       const adjustment = sizeOptimizer.recordCycle({
         stepsUsed: cycleData.stepsUsed || 0,
         capitalDeployed: cycleData.capitalDeployed || 0,
         completedAt: Date.now(),
-        availableBalance,
+        availableBalance: fundEquity,
       });
 
       if (adjustment) {
@@ -2681,14 +2695,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     return { success: true, message: `Resumed, peak reset to $${currentEquity.toFixed(2)}` };
   };
 
+  const getOpenBodyCost = () => (positionState.celestialBodies || [])
+    .reduce((sum, body) => sum + (body.costBasis || 0), 0);
+
   /**
    * Compute allocated capital defensively: use totalCostBasis but floor at
    * celestial body sum in case totalCostBasis is stale (e.g. after mode switch).
    */
-  const getAllocatedCapital = () => {
-    const bodiesCost = (positionState.celestialBodies || []).reduce((sum, b) => sum + (b.costBasis || 0), 0);
-    return Math.max(positionState.totalCostBasis || 0, bodiesCost);
-  };
+  const getAllocatedCapital = () => Math.max(positionState.totalCostBasis || 0, getOpenBodyCost());
 
   /**
    * A ladder placement normally owns the ladder lock start to finish, so no

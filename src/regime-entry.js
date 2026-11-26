@@ -184,7 +184,9 @@ const createEntryEvaluator = ({
   const evaluateLadderEntry = async () => {
     // Fund lifecycle guard: when draining/closed, never place new entries
     if (positionState.lifecycle && positionState.lifecycle !== LIFECYCLE.ACTIVE) return;
-    const isAdmitted = captureEntryAdmission();
+    const isFundAdmitted = captureEntryAdmission();
+    const isAdmitted = () => isFundAdmitted() && allowsMacroEntries();
+    if (!allowsMacroEntries()) return;
 
     // Skip if in insufficient funds cooldown
     if (Date.now() < insufficientFundsCooldownUntil) return;
@@ -346,12 +348,15 @@ const createEntryEvaluator = ({
     logger.info(`⏸️ [${exchange}] Insufficient funds — pausing entries for ${cooldownMs / 1000}s`);
   };
 
+  const allowsMacroEntries = () => !macroRegime || macroRegime.getMultipliers().sizeMult > 0;
+
   /**
    * Execute entry
    * @param {string} triggerType - What triggered the entry
-   * @param {() => boolean} isAdmitted - Entry admission captured when the evaluation began (#1009)
+   * @param {() => boolean} isFundAdmitted - Entry admission captured when the evaluation began (#1009)
    */
-  const executeEntry = async (triggerType, isAdmitted) => {
+  const executeEntry = async (triggerType, isFundAdmitted) => {
+    const isAdmitted = () => isFundAdmitted() && allowsMacroEntries();
     const regime = regimeDetector.getMode();
 
     // Calculate size (apply macro multiplier to sizing)
@@ -365,6 +370,7 @@ const createEntryEvaluator = ({
 
     // Apply macro regime size multiplier, then the minimum-size floor / last-order rule
     const macroMult = macroRegime ? macroRegime.getMultipliers() : { sizeMult: 1.0, tpMult: 1.0, offsetMult: 1.0 };
+    if (macroMult.sizeMult === 0) return;
     const minSize = config.minOrderSizeUsdc || exchangeConfig.minOrderSize || 1;
     const remainingBudget = roundUSDC(Math.max(0, config.maxUsdcDeployed - positionState.totalCostBasis));
     // Auto-aggressiveness (Phase 3): depression-score multiplier damped by the capital governor

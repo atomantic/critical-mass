@@ -11,6 +11,7 @@ const {
   createMacroRegime,
 } = require('../src/macro-regime');
 const { calculateEMA } = require('../src/volatility-utils');
+const { validateRegimeConfig } = require('../src/config-validator');
 
 // ============================================================================
 // Helpers
@@ -44,7 +45,7 @@ const createMockAdapter = ({ hourlyCandles = [], dailyCandles = [] } = {}) => ({
 /**
  * Build a default config with sensible test defaults
  */
-const defaultConfig = () => ({
+const defaultConfig = (overrides = {}) => ({
   macroHysteresis: 5,
   macroDeclineThreshold: -50,
   macroAccumulationThreshold: -15,
@@ -59,6 +60,7 @@ const defaultConfig = () => ({
   macroDeclineTpMult: 0.7,
   macroDeclineOffsetMult: 1.5,
   macroUpdateIntervalMs: 300000,
+  ...overrides,
 });
 
 // ============================================================================
@@ -247,6 +249,16 @@ describe('classifyMacroMode', () => {
     assert.equal(classifyMacroMode(-60, 'MARKUP', hyst, thresholds), 'DECLINE');
   });
 
+  it('crosses the destination hysteresis band when skipping modes', () => {
+    assert.equal(classifyMacroMode(-12, 'DECLINE', hyst, thresholds), 'ACCUMULATION');
+    assert.equal(classifyMacroMode(38, 'DECLINE', hyst, thresholds), 'RANGING');
+    assert.equal(classifyMacroMode(38, 'ACCUMULATION', hyst, thresholds), 'RANGING');
+    assert.equal(classifyMacroMode(41, 'DECLINE', hyst, thresholds), 'MARKUP');
+    assert.equal(classifyMacroMode(-18, 'MARKUP', hyst, thresholds), 'RANGING');
+    assert.equal(classifyMacroMode(-53, 'MARKUP', hyst, thresholds), 'ACCUMULATION');
+    assert.equal(classifyMacroMode(-56, 'MARKUP', hyst, thresholds), 'DECLINE');
+  });
+
   it('MARKUP transitions to ACCUMULATION if score drops to that band', () => {
     // Below markup-hyst AND below accumulation but above decline
     assert.equal(classifyMacroMode(-30, 'MARKUP', hyst, thresholds), 'ACCUMULATION');
@@ -336,6 +348,14 @@ describe('createMacroRegime: multipliers', () => {
     assert.equal(m.sizeMult, 0.4);
     assert.equal(m.tpMult, 0.7);
     assert.equal(m.offsetMult, 1.5);
+  });
+
+  it('preserves a saved zero-size override in DECLINE', () => {
+    const config = defaultConfig({ macroDeclineSizeMult: 0 });
+    assert.deepEqual(validateRegimeConfig(config).errors, []);
+    const regime = createMacroRegime('test', config, createMockAdapter(), 'BTC-USDC');
+    regime.restoreState({ mode: 'DECLINE', score: -70, lastUpdate: Date.now() });
+    assert.deepEqual(regime.getMultipliers(), { sizeMult: 0, tpMult: 0.7, offsetMult: 1.5 });
   });
 
   it('uses fallback defaults when config multipliers are absent', () => {
@@ -454,6 +474,36 @@ describe('createMacroRegime: update()', () => {
     assert.equal(state.mode, 'RANGING');
     // With flat candles all at 100k, all EMAs converge to 100k => score ~0
     assert.ok(Math.abs(state.score) < 10, `flat candles should yield near-zero score, got ${state.score}`);
+  });
+
+  it('requests enough hourly candles to warm EMA(200) when the forming bar is omitted', async () => {
+    const adapter = {
+      getCandles: async (_product, start, end, granularity) => {
+        if (granularity === 'ONE_DAY') return generateCandles(25, 100000);
+        const hours = (end - start) / 3600;
+        assert.ok(hours >= 250);
+        return generateCandles(hours - 1, 90000, 50);
+      },
+    };
+    const regime = createMacroRegime('test', defaultConfig(), adapter, 'BTC-USDC');
+    await regime.update();
+    const state = regime.getState();
+    assert.ok(state.emas.h200 > 0);
+    assert.ok(state.emas.h21 > state.emas.h50 && state.emas.h50 > state.emas.h200);
+  });
+
+  it('uses zero for configured hysteresis and accumulation threshold', async () => {
+    const config = defaultConfig({ macroHysteresis: 0, macroAccumulationThreshold: 0 });
+    assert.deepEqual(validateRegimeConfig(config).errors, []);
+    const adapter = createMockAdapter({
+      hourlyCandles: generateCandles(250, 100000),
+      dailyCandles: generateCandles(25, 100000),
+    });
+    const regime = createMacroRegime('test', config, adapter, 'BTC-USDC');
+    await regime.update(99900);
+    assert.equal(regime.getMode(), 'ACCUMULATION');
+    await regime.update(100100);
+    assert.equal(regime.getMode(), 'RANGING');
   });
 
   it('detects MARKUP with strong uptrend candles', async () => {

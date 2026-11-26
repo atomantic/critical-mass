@@ -273,8 +273,8 @@ const validateRegimeConfig = (config) => {
   }
 
   // Macro Regime validation
-  if (config.macroHysteresis !== undefined && (config.macroHysteresis < 1 || config.macroHysteresis > 20)) {
-    errors.push('macroHysteresis must be between 1 and 20');
+  if (config.macroHysteresis !== undefined && (config.macroHysteresis < 0 || config.macroHysteresis > 20)) {
+    errors.push('macroHysteresis must be between 0 and 20');
   }
   if (config.macroDeclineThreshold !== undefined && config.macroAccumulationThreshold !== undefined
     && config.macroDeclineThreshold >= config.macroAccumulationThreshold) {
@@ -293,6 +293,7 @@ const validateRegimeConfig = (config) => {
     'macroDeclineSizeMult', 'macroDeclineTpMult', 'macroDeclineOffsetMult',
   ];
   for (const field of macroMultFields) {
+    if (field.endsWith('SizeMult') && config[field] === 0) continue;
     if (config[field] !== undefined && (config[field] < 0.1 || config[field] > 3.0)) {
       errors.push(`${field} must be between 0.1 and 3.0`);
     }

@@ -48,9 +48,7 @@ const createRegimeDetector = (exchange, config, callbacks = {}, productId) => {
   /** @type {RegimeState} */
   let state = createInitialRegimeState();
 
-  /** @type {Array<{direction: string, timestamp: number}>} */
-  let momentumHistory = [];
-  let warmingUp = false;
+  let warmupReadingsRemaining = 0;
 
   /**
    * Classify current regime based on market conditions
@@ -74,32 +72,32 @@ const createRegimeDetector = (exchange, config, callbacks = {}, productId) => {
     state.lastMomentumMag = momentum.magnitude;
 
     const prevMode = state.mode;
+    const trendConfirmed = updateTrendConfirmation(momentum.direction, vwapDistance);
     let newMode = prevMode;
 
     // Transition logic based on current mode
     if (prevMode === 'HARVEST') {
-      newMode = classifyFromHarvest(volExpansion, momentum, vwapDistance);
+      newMode = classifyFromHarvest(volExpansion, momentum);
     } else if (prevMode === 'CAUTION') {
-      newMode = classifyFromCaution(volExpansion, momentum, vwapDistance);
+      newMode = classifyFromCaution(volExpansion, momentum, vwapDistance, trendConfirmed);
     } else if (prevMode === 'TREND') {
-      newMode = classifyFromTrend(volExpansion, momentum, vwapDistance);
+      newMode = trendConfirmed ? 'TREND' : 'CAUTION';
     }
 
     // Fresh readings may tighten protection immediately; relaxing a restored
     // regime must wait for a complete post-restore confirmation window.
-    if (warmingUp) {
-      if (momentumHistory.length < config.trendConfirmationPeriods) {
+    if (warmupReadingsRemaining > 0) {
+      warmupReadingsRemaining--;
+      if (warmupReadingsRemaining > 0) {
         if (prevMode === 'TREND' || (prevMode === 'CAUTION' && newMode === 'HARVEST')) {
           newMode = prevMode;
         }
-      } else {
-        warmingUp = false;
       }
     }
 
     // Handle transition
     if (newMode !== prevMode) {
-      transition(newMode, buildTransitionReason(volExpansion, momentum, vwapDistance));
+      transition(newMode, buildTransitionReason(volExpansion, momentum, vwapDistance), momentum.direction);
     }
 
     return state.mode;
@@ -109,10 +107,9 @@ const createRegimeDetector = (exchange, config, callbacks = {}, productId) => {
    * Classify from HARVEST mode
    * @param {number} volExpansion - Volatility expansion ratio
    * @param {{magnitude: number, direction: string}} momentum - Momentum signal
-   * @param {number} vwapDistance - VWAP distance in ATR units
    * @returns {RegimeMode}
    */
-  const classifyFromHarvest = (volExpansion, momentum, vwapDistance) => {
+  const classifyFromHarvest = (volExpansion, momentum) => {
     // Check for sudden spike (HARVEST -> TREND directly)
     if (volExpansion > 2.0 && momentum.magnitude > 2 * config.momentumMult * 10) {
       return 'TREND';
@@ -132,40 +129,23 @@ const createRegimeDetector = (exchange, config, callbacks = {}, productId) => {
    * @param {number} volExpansion - Volatility expansion ratio
    * @param {{magnitude: number, direction: string}} momentum - Momentum signal
    * @param {number} vwapDistance - VWAP distance in ATR units
+   * @param {boolean} trendConfirmed - Whether directional pressure persisted
    * @returns {RegimeMode}
    */
-  const classifyFromCaution = (volExpansion, momentum, vwapDistance) => {
+  const classifyFromCaution = (volExpansion, momentum, vwapDistance, trendConfirmed) => {
     // Check for return to calm (CAUTION -> HARVEST)
     if (volExpansion < config.volContractionMult &&
         momentum.magnitude < config.momentumMult * 5 &&
         Math.abs(vwapDistance) < 1.0) {
-      state.trendConfirmationCount = 0;
       return 'HARVEST';
     }
 
     // Check for trend confirmation (CAUTION -> TREND)
-    if (isTrendConfirmed(momentum, vwapDistance)) {
+    if (trendConfirmed) {
       return 'TREND';
     }
 
     return 'CAUTION';
-  };
-
-  /**
-   * Classify from TREND mode
-   * @param {number} volExpansion - Volatility expansion ratio
-   * @param {{magnitude: number, direction: string}} momentum - Momentum signal
-   * @param {number} vwapDistance - VWAP distance in ATR units
-   * @returns {RegimeMode}
-   */
-  const classifyFromTrend = (volExpansion, momentum, vwapDistance) => {
-    // Check for trend weakening (TREND -> CAUTION)
-    if (!isTrendConfirmed(momentum, vwapDistance) || Math.abs(vwapDistance) < 1.0) {
-      state.trendConfirmationCount = 0;
-      return 'CAUTION';
-    }
-
-    return 'TREND';
   };
 
   /**
@@ -174,14 +154,12 @@ const createRegimeDetector = (exchange, config, callbacks = {}, productId) => {
    * @returns {{magnitude: number, direction: string}} magnitude is in basis points of lastPrice
    */
   const calculateMomentumSignal = (marketState) => {
-    const { lastPrice, vwap, tradeImbalance } = marketState;
-
-    // Use VWAP divergence as momentum proxy, expressed in basis points of
-    // lastPrice so the signal is comparable across assets at very different
-    // price scales (BTC ~$100k vs. CRO ~$0.10) instead of a fixed dollar amount.
-    const vwapDelta = lastPrice - vwap;
-    const magnitude = lastPrice > 0 ? Math.abs(vwapDelta) / lastPrice * 10000 : 0;
-    const direction = vwapDelta > 0 ? 'up' : vwapDelta < 0 ? 'down' : 'neutral';
+    const { lastPrice, vwap, momentum, tradeImbalance } = marketState;
+    // Older callers may only supply price and VWAP. Candle momentum, when
+    // present, is already in price units and uses the same basis-point scale.
+    const delta = lastPrice - vwap;
+    const magnitude = (momentum?.magnitude ?? Math.abs(delta)) / lastPrice * 10000;
+    const direction = momentum?.direction ?? (delta > 0 ? 'up' : delta < 0 ? 'down' : 'neutral');
 
     // Factor in trade imbalance if available
     let adjustedMagnitude = magnitude;
@@ -194,53 +172,29 @@ const createRegimeDetector = (exchange, config, callbacks = {}, productId) => {
       }
     }
 
-    // Record momentum history
-    momentumHistory.push({ direction, timestamp: Date.now() });
-
-    // Keep last 10 readings
-    if (momentumHistory.length > 10) {
-      momentumHistory.shift();
-    }
-
     return { magnitude: adjustedMagnitude, direction };
   };
 
   /**
-   * Check if trend is confirmed
-   * @param {{magnitude: number, direction: string}} momentum - Current momentum
+   * Track consecutive readings with directional pressure and VWAP displacement.
+   * @param {string} direction - Current momentum direction
    * @param {number} vwapDistance - VWAP distance
    * @returns {boolean}
    */
-  const isTrendConfirmed = (momentum, vwapDistance) => {
-    // Need sustained directional pressure
-    if (Math.abs(vwapDistance) < 2.0) {
-      state.trendConfirmationCount = 0;
-      return false;
-    }
-
-    // Check momentum history for consistency
-    const recentMomentum = momentumHistory.slice(-config.trendConfirmationPeriods);
-    if (recentMomentum.length < config.trendConfirmationPeriods) {
-      return false;
-    }
-
+  const updateTrendConfirmation = (direction, vwapDistance) => {
     const expectedDirection = vwapDistance > 0 ? 'up' : 'down';
-    const consistent = recentMomentum.every(m => m.direction === expectedDirection);
-
-    if (consistent) {
-      // A restored TREND is already established. The fresh consistent window
-      // confirms it without imposing a second confirmation-count warmup.
-      if (warmingUp && state.mode === 'TREND') {
-        state.trendConfirmationCount = config.trendConfirmationPeriods;
-      } else {
-        state.trendConfirmationCount++;
-      }
-      state.trendDirection = expectedDirection;
-      return state.trendConfirmationCount >= config.trendConfirmationPeriods;
+    if (Math.abs(vwapDistance) < 2.0 || direction !== expectedDirection) {
+      state.trendConfirmationCount = 0;
+      state.trendDirection = null;
+      return false;
     }
 
-    state.trendConfirmationCount = 0;
-    return false;
+    if (state.trendDirection && state.trendDirection !== direction) {
+      state.trendConfirmationCount = 0;
+    }
+    state.trendDirection = expectedDirection;
+    state.trendConfirmationCount = Math.min(state.trendConfirmationCount + 1, config.trendConfirmationPeriods);
+    return state.trendConfirmationCount >= config.trendConfirmationPeriods;
   };
 
   /**
@@ -258,10 +212,18 @@ const createRegimeDetector = (exchange, config, callbacks = {}, productId) => {
    * Transition to new regime
    * @param {RegimeMode} newMode - New regime mode
    * @param {string} reason - Transition reason
+   * @param {string} [direction] - Direction at the transition, if known
    */
-  const transition = (newMode, reason) => {
+  const transition = (newMode, reason, direction) => {
     const prevMode = state.mode;
     state.mode = newMode;
+    if (newMode === 'TREND') {
+      state.trendConfirmationCount = config.trendConfirmationPeriods;
+      state.trendDirection = direction === 'up' || direction === 'down' ? direction : null;
+    } else if (newMode === 'HARVEST' || prevMode === 'TREND') {
+      state.trendConfirmationCount = 0;
+      state.trendDirection = null;
+    }
     state.since = Date.now();
     state.transitionCount++;
 
@@ -345,8 +307,7 @@ const createRegimeDetector = (exchange, config, callbacks = {}, productId) => {
    */
   const reset = () => {
     state = createInitialRegimeState();
-    momentumHistory = [];
-    warmingUp = false;
+    warmupReadingsRemaining = 0;
   };
 
   /**
@@ -363,8 +324,7 @@ const createRegimeDetector = (exchange, config, callbacks = {}, productId) => {
       since: Date.now(),
     };
 
-    momentumHistory = [];
-    warmingUp = true;
+    warmupReadingsRemaining = config.trendConfirmationPeriods;
     state.trendConfirmationCount = 0;
 
     logger.info(`📂 [${exchange}] Restored regime state: mode=${state.mode}, transitions=${state.transitionCount}`, {

@@ -216,6 +216,7 @@ describe('restored TREND engine protection (#1298)', () => {
       Object.assign(eng._getMarketState(), {
         lastPrice: 100, bid: 99.99, ask: 100.01, vwap: 103, atr1m: 1,
         realizedVol: 0.5, volBaseline: 0.5,
+        momentum: { magnitude: 0.5, direction: 'down' },
       });
       await eng._test.updateMetrics();
       Object.assign(eng._test.getHealth(), { mode: 'ACTIVE', reason: null });

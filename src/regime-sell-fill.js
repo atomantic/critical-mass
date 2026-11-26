@@ -982,7 +982,10 @@ const createSellFillBooking = ({
       await resetCycle();
     } finally {
       if (sizeOptimizerCycleData) {
-        recordCycleForSizeOptimizer(sizeOptimizerCycleData).catch(() => {}).finally(resaveAfterSizeOptimizerLive);
+        recordCycleForSizeOptimizer({
+          ...sizeOptimizerCycleData,
+          closedCoreTpOrderId: fillData.orderId,
+        }).catch(() => {}).finally(resaveAfterSizeOptimizerLive);
       }
     }
     saveLiveState();

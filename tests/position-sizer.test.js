@@ -274,7 +274,8 @@ describe('calculateTakeProfitSize', () => {
     assert.ok(result.sellQty > 0);
     assert.ok(result.holdbackQty > 0);
     assert.ok(result.profitUsdc > 0);
-    assert.ok(result.profitAssetValue > 0);
+    assert.equal(result.profitAssetValue, result.holdbackQty * 110000);
+    assert.ok(Math.abs(result.profitAssetValue - 50) < 0.01);
     // sellQty + holdbackQty should approximate totalBTC (rounding may cause tiny diff)
     const total = result.sellQty + result.holdbackQty;
     assert.ok(Math.abs(total - 0.01) < 0.000001, `sellQty + holdbackQty ~ 0.01: ${total}`);
