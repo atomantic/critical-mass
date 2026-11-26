@@ -1,0 +1,1 @@
+- Entry orders stay tracked across temporary exchange errors and pending cancellations. Recovery books partial fills on expired orders, and expired ladder rungs release their reserved budget.
