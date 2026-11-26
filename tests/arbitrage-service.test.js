@@ -6,6 +6,7 @@ const os = require('node:os');
 const { createArbitrageService } = require('../src/arbitrage/arbitrage-service');
 const { createArbitrageSettings, validateArbitrageConfigUpdate, ARBITRAGE_DEFAULTS } = require('../src/config-settings/arbitrage');
 const { tradeEvents } = require('../src/trade-events');
+const registerArbitrageRoutes = require('../src/routes/arbitrage-routes');
 
 const MARKETS = [
   { symbol: 'BTCUSD', base: 'BTC', quote: 'USD' },
@@ -19,7 +20,7 @@ const HEALTHY = {
 };
 const SLIPPED = { ...HEALTHY, BTCCAD: { bids: [[67_100, 0.5]], asks: [[67_200, 0.5], [134_500, 5]] } };
 
-const makeService = ({ configOverrides = {}, markets = MARKETS, fx = null } = {}) => {
+const makeService = ({ configOverrides = {}, markets = MARKETS, fx = null, usePublicSources = false, savedState = null } = {}) => {
   let books = HEALTHY;
   let fail = false;
   const source = {
@@ -50,21 +51,43 @@ const makeService = ({ configOverrides = {}, markets = MARKETS, fx = null } = {}
   const emitted = [];
   const writes = [];
   const service = createArbitrageService({ to: (room) => ({ emit: (event, payload) => emitted.push({ room, event, payload }) }) }, {
-    readJSON: () => null,
+    readJSON: () => savedState,
     writeJSON: (file, state) => writes.push({ file, state: JSON.parse(JSON.stringify(state)) }),
     DATA_DIR: os.tmpdir(),
     getArbitrageConfig: () => config,
-    sources: { kraken: source },
+    sources: usePublicSources ? undefined : { kraken: source },
     sleep: async () => {},
     fetchReferenceFx: async () => fx || {},
   });
   return {
     service,
+    config,
     emitted,
     writes,
     setBooks: (next) => { books = next; },
     setFail: (value) => { fail = value; },
   };
+};
+
+const configEndpoint = (service, config) => {
+  let handler;
+  registerArbitrageRoutes({
+    get: () => {},
+    post: () => {},
+    delete: () => {},
+    put: (route, callback) => {
+      assert.equal(route, '/api/arbitrage/config');
+      handler = callback;
+    },
+  }, {
+    arbitrageService: service,
+    getArbitrageConfig: () => config,
+    updateArbitrageConfig: ({ venues, ...updates }) => {
+      Object.assign(config, updates);
+      for (const [id, patch] of Object.entries(venues || {})) Object.assign(config.venues[id], patch);
+    },
+  });
+  return (body) => handler({ body }, { json: (result) => assert.equal(result.success, true) }, (err) => { throw err; });
 };
 
 const captureTradeEvents = () => {
@@ -104,7 +127,7 @@ describe('arbitrage service episodes', () => {
 
     const ping = capture.events.find((e) => e.type === 'arbitrage_opportunity');
     assert.ok(ping, 'opportunity notifies');
-    assert.match(ping.message, /Kraken: buy BTC via BTC\/CAD, sell via BTC\/USD/);
+    assert.match(ping.message, /^ARBITRAGE Kraken: buy BTC via BTC\/CAD, sell via BTC\/USD/);
     assert.match(ping.message, /no orders placed/);
     assert.equal(capture.events.filter((e) => e.type === 'arbitrage_dislocation').length, 0);
 
@@ -133,6 +156,140 @@ describe('arbitrage service episodes', () => {
     assert.equal(kraken.ok, false);
   });
 
+  it('silently closes a disabled venue immediately and requires fresh confirmation after re-enabling it', async (t) => {
+    capture = captureTradeEvents();
+    const { service, config, emitted, writes, setBooks } = makeService();
+    t.after(() => service.stop());
+    const update = configEndpoint(service, config);
+    setBooks(SLIPPED);
+    await service.forcePoll();
+    await service.forcePoll();
+    const [open] = service.getAlerts({ status: 'open' });
+
+    await update({ pollIntervalMs: 30_000 });
+    assert.equal(service.getAlerts({ status: 'open' })[0].id, open.id, 'an interval change keeps the episode open');
+    await update({ venues: { kraken: { enabled: false } } });
+    const [closed] = service.getAlerts({ status: 'closed' });
+    assert.equal(closed.id, open.id);
+    assert.equal(closed.closeReason, 'venue disabled');
+    assert.ok(closed.closedAt);
+    assert.equal(service.getStatus().openOpportunities, 0);
+    assert.equal(service.getSnapshot().venues.kraken, undefined);
+    assert.equal(writes.at(-1).state.alerts[0].closeReason, 'venue disabled');
+    assert.ok(emitted.some(({ event, payload }) => event === 'arbitrage:alert' && payload.closeReason === 'venue disabled'));
+    assert.deepEqual(capture.events.map(({ type }) => type), ['arbitrage_opportunity']);
+    const writeCount = writes.length;
+    await service.forcePoll();
+    assert.equal(writes.length, writeCount);
+
+    await update({ venues: { kraken: { enabled: true } } });
+    await service.forcePoll();
+    assert.equal(service.getStatus().openOpportunities, 0);
+    await service.forcePoll();
+    assert.notEqual(service.getAlerts({ status: 'open' })[0].id, open.id);
+  });
+
+  it('preserves episodes during maintenance and closes them silently when the monitor is disabled', async () => {
+    capture = captureTradeEvents();
+    const { service, config, writes, setBooks } = makeService();
+    setBooks(SLIPPED);
+    await service.forcePoll();
+    await service.forcePoll();
+
+    service.stop({ preserveAlerts: true });
+    assert.equal(service.getStatus().openOpportunities, 1);
+    await configEndpoint(service, config)({ enabled: false });
+
+    assert.equal(service.getStatus().running, false);
+    assert.equal(service.getStatus().openOpportunities, 0);
+    assert.equal(writes.at(-1).state.alerts[0].closeReason, 'monitor stopped');
+    assert.deepEqual(capture.events.map(({ type }) => type), ['arbitrage_opportunity']);
+  });
+
+  it('closes persisted open episodes even when starting with the monitor already disabled', () => {
+    const { service, writes } = makeService({
+      configOverrides: { enabled: false },
+      savedState: { alerts: [{ venue: 'kraken', status: 'open', type: 'opportunity' }] },
+    });
+    service.start();
+    assert.equal(service.getStatus().openOpportunities, 0);
+    assert.equal(writes[0].state.alerts[0].closeReason, 'monitor stopped');
+  });
+
+  it('closes open episodes when the running monitor stops', async (t) => {
+    capture = captureTradeEvents();
+    const { service, writes, setBooks } = makeService();
+    t.after(() => service.stop());
+    service.start();
+    setBooks(SLIPPED);
+    await service.forcePoll();
+    await service.forcePoll();
+    assert.equal(service.getStatus().openOpportunities, 1);
+
+    service.stop();
+    assert.equal(service.getStatus().running, false);
+    assert.equal(service.getStatus().openOpportunities, 0);
+    assert.equal(writes.at(-1).state.alerts[0].closeReason, 'monitor stopped');
+    assert.deepEqual(capture.events.map(({ type }) => type), ['arbitrage_opportunity']);
+  });
+
+  it('rebuilds Gemini market discovery when quote currencies change through the config route', async (t) => {
+    let symbolRequests = 0;
+    const oldRequestStarted = Promise.withResolvers();
+    const releaseOldRequest = Promise.withResolvers();
+    t.mock.method(globalThis, 'fetch', async (url) => {
+      const { hostname, pathname } = new URL(url);
+      assert.equal(hostname, 'api.gemini.com');
+      if (pathname === '/v1/symbols') {
+        symbolRequests++;
+        if (symbolRequests === 3) {
+          oldRequestStarted.resolve();
+          await releaseOldRequest.promise;
+        }
+        return Response.json(['btcusd', 'btcgusd']);
+      }
+      assert.match(pathname, /^\/v1\/book\/btc(?:usd|gusd)$/);
+      return Response.json({ bids: [{ price: '95990', amount: '2' }], asks: [{ price: '96010', amount: '2' }] });
+    });
+    const { service, config } = makeService({
+      usePublicSources: true,
+      configOverrides: {
+        quoteCurrencies: ['USD'],
+        venues: { gemini: { enabled: true, takerFeeBps: 40 } },
+      },
+    });
+    t.after(() => service.stop());
+    const update = configEndpoint(service, config);
+    const pairs = () => service.getSnapshot().venues.gemini.analysis.pairs.map(({ pair }) => pair).sort();
+    await service.forcePoll();
+    assert.deepEqual(pairs(), ['BTC/USD']);
+
+    await update({ quoteCurrencies: ['USD', 'GUSD'] });
+    await service.forcePoll();
+    assert.deepEqual(pairs(), ['BTC/GUSD', 'BTC/USD']);
+    assert.equal(symbolRequests, 2);
+
+    await update({ pollIntervalMs: 30_000 });
+    await service.forcePoll();
+    assert.deepEqual(pairs(), ['BTC/GUSD', 'BTC/USD']);
+    assert.equal(symbolRequests, 2, 'an unrelated update keeps the market cache');
+
+    await update({ quoteCurrencies: ['USD'] });
+    const oldPoll = service.forcePoll();
+    try {
+      await Promise.race([oldRequestStarted.promise, oldPoll.then(() => assert.fail('a quote removal must refresh markets'))]);
+      await update({ quoteCurrencies: ['USD', 'GUSD'] });
+      await service.forcePoll();
+      assert.deepEqual(pairs(), ['BTC/GUSD', 'BTC/USD']);
+    } finally {
+      releaseOldRequest.resolve();
+      await oldPoll;
+    }
+    await service.forcePoll();
+    assert.deepEqual(pairs(), ['BTC/GUSD', 'BTC/USD']);
+    assert.equal(symbolRequests, 4, 'the old request cannot replace the current cache');
+  });
+
   it('clearAlerts keeps open episodes and dismiss marks one alert', async () => {
     const { service, setBooks } = makeService({ configOverrides: { closeAfterPolls: 1 } });
     setBooks(SLIPPED);
@@ -150,6 +307,7 @@ describe('arbitrage service episodes', () => {
   });
 
   it('raises watch-only alerts only for a no-round-trip pair whose book is tight', async () => {
+    capture = captureTradeEvents();
     const markets = [...MARKETS, { symbol: 'BTCEUR', base: 'BTC', quote: 'EUR' }];
     const { service, setBooks } = makeService({ markets, fx: { EUR: 1.1 } });
     // Gemini-shaped: an empty-looking EUR book with a ~27% spread whose bid
@@ -166,6 +324,7 @@ describe('arbitrage service episodes', () => {
     const open = service.getAlerts({ status: 'open' });
     assert.deepEqual(open.map((a) => `${a.type}:${a.pair}`), ['dislocation:BTC/EUR']);
     assert.equal(open[0].severity, 'info');
+    assert.match(capture.events.find(({ type }) => type === 'arbitrage_dislocation').message, /^Price dislocation \(watch only\) Kraken BTC\/EUR/);
   });
 
   it('does nothing while disabled', async () => {

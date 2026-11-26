@@ -70,7 +70,7 @@ module.exports = (app, deps) => {
     },
     arbitrageService && {
       name: 'Arbitrage',
-      stop: () => arbitrageService.stop(),
+      stop: () => arbitrageService.stop({ preserveAlerts: true }),
       resume: () => {
         arbitrageService.reloadState();
         arbitrageService.start();

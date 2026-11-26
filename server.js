@@ -252,7 +252,7 @@ const runBackup = (kind, create, { stopGatewayWriters = true } = {}) => performB
     const wasRunning = service.getStatus().running;
     return {
       name,
-      stop: () => service.stop(),
+      stop: () => name === 'Arbitrage' ? service.stop({ preserveAlerts: true }) : service.stop(),
       resume: () => wasRunning ? service.start() : undefined,
     };
   }), { name: 'BTC index history', stop: () => btcFeedService.pauseHistory(), resume: () => btcFeedService.resumeHistory() }] : [],

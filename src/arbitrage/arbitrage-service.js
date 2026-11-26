@@ -65,13 +65,6 @@ const createArbitrageService = (io, deps) => {
   } = deps;
   const stateFilePath = path.join(DATA_DIR, STATE_FILE);
 
-  /** @type {Record<string, any>|null} */
-  let sources = deps.sources || null;
-  const getSources = () => {
-    if (!sources) sources = createVenueSources({ knownCurrencies: getArbitrageConfig().quoteCurrencies });
-    return sources;
-  };
-
   /** @type {NodeJS.Timeout|null} */
   let pollTimer = null;
   /** @type {NodeJS.Timeout|null} */
@@ -90,6 +83,18 @@ const createArbitrageService = (io, deps) => {
 
   /** @type {Map<string, { markets: any[], fetchedAt: number }>} */
   const marketCache = new Map();
+  /** @type {Record<string, any>|null} */
+  let sources = null;
+  let sourceQuoteCurrencies = '';
+  const getSources = (config) => {
+    const quoteCurrencies = config.quoteCurrencies.join(',');
+    if (!sources || sourceQuoteCurrencies !== quoteCurrencies) {
+      sources = deps.sources || createVenueSources({ knownCurrencies: config.quoteCurrencies });
+      sourceQuoteCurrencies = quoteCurrencies;
+      marketCache.clear();
+    }
+    return sources;
+  };
   /** @type {{ rates: Record<string, number>, fetchedAt: number|null, error: string|null }} */
   let referenceFx = { rates: {}, fetchedAt: null, error: null };
   /** @type {{ at: string|null, venues: Record<string, any> }} */
@@ -124,14 +129,15 @@ const createArbitrageService = (io, deps) => {
   const emit = (event, payload) => io.to(ROOM).emit(event, payload);
 
   /** @returns {Promise<void>} */
-  const refreshReferenceFx = async (config) => {
+  const refreshReferenceFx = async (config, isCurrent) => {
     if (!config.referenceFx.enabled) { referenceFx = { rates: {}, fetchedAt: null, error: null }; return; }
     if (referenceFx.fetchedAt && now() - referenceFx.fetchedAt < config.referenceFx.refreshMs) return;
     try {
-      referenceFx = { rates: await fetchReferenceFx(config.homeCurrency), fetchedAt: now(), error: null };
+      const rates = await fetchReferenceFx(config.homeCurrency);
+      if (isCurrent()) referenceFx = { rates, fetchedAt: now(), error: null };
     } catch (err) {
       // Keep the last good rates; they are only indicative.
-      referenceFx = { ...referenceFx, error: err.message };
+      if (isCurrent()) referenceFx = { ...referenceFx, error: err.message };
     }
   };
 
@@ -139,8 +145,7 @@ const createArbitrageService = (io, deps) => {
    * Read one venue: markets (cached), the books its plan needs, and the analysis.
    * @returns {Promise<Object>}
    */
-  const pollVenue = async (id, config, isCurrent) => {
-    const source = getSources()[id];
+  const pollVenue = async (id, source, config, isCurrent) => {
     const venueConfig = config.venues[id];
     const startedAt = now();
     const result = { id, label: source?.label || id, ok: false, error: null, at: null, failedBooks: [], analysis: null, durationMs: null };
@@ -149,6 +154,7 @@ const createArbitrageService = (io, deps) => {
       let cached = marketCache.get(id);
       if (!cached || now() - cached.fetchedAt > MARKETS_TTL_MS) {
         cached = { markets: await source.listMarkets(), fetchedAt: now() };
+        if (!isCurrent()) return result;
         marketCache.set(id, cached);
       }
       const plan = planVenue({
@@ -161,8 +167,8 @@ const createArbitrageService = (io, deps) => {
       const books = {};
       let first = true;
       for (const symbol of plan.requiredSymbols) {
-        if (!isCurrent()) return result;
         if (!first && source.minRequestSpacingMs) await sleep(source.minRequestSpacingMs);
+        if (!isCurrent()) return result;
         first = false;
         try {
           books[symbol] = await source.fetchBook(symbol, config.bookDepth);
@@ -284,7 +290,7 @@ const createArbitrageService = (io, deps) => {
         type: 'arbitrage_opportunity',
         exchange: 'arbitrage',
         message: [
-          `*ARBITRAGE* ${tg(alert.venueLabel)}: buy BTC via ${tg(m.buyPair)}, sell via ${tg(m.sellPair)}`,
+          `ARBITRAGE ${tg(alert.venueLabel)}: buy BTC via ${tg(m.buyPair)}, sell via ${tg(m.sellPair)}`,
           `Net ${fmtBps(m.netBps)} after taker fees at ${fmtUsd(m.notionalUsd)} (est. profit ${fmtUsd(m.profitUsd)})`,
           `${tg(alert.pair)} implied ${fmtUsd(m.impliedMid)} vs venue median ${fmtUsd(m.medianImplied)} (${fmtBps(m.deviationBps)})`,
           'Monitoring only: no orders placed.',
@@ -295,7 +301,7 @@ const createArbitrageService = (io, deps) => {
       tradeEvents.emit('trade', {
         type: 'arbitrage_dislocation',
         exchange: 'arbitrage',
-        message: `*Price dislocation (watch only)* ${tg(alert.venueLabel)} ${tg(alert.pair)}: ${fmtBps(m.edgeBps)} top-of-book edge at reference FX. Not executable on venue: no ${tg(alert.pair.split('/')[1])} conversion market there.`,
+        message: `Price dislocation (watch only) ${tg(alert.venueLabel)} ${tg(alert.pair)}: ${fmtBps(m.edgeBps)} top-of-book edge at reference FX. Not executable on venue: no ${tg(alert.pair.split('/')[1])} conversion market there.`,
       });
     }
   };
@@ -307,6 +313,27 @@ const createArbitrageService = (io, deps) => {
       exchange: 'arbitrage',
       message: `Arbitrage ${alert.type} closed: ${tg(alert.venueLabel)} ${tg(alert.pair)} after ${minutes} min (peak ${alert.type === 'opportunity' ? `${fmtBps(alert.peak.netBps)}, ${fmtUsd(alert.peak.profitUsd)}` : fmtBps(alert.peak.edgeBps ?? alert.peak.deviationBps)})`,
     });
+  };
+
+  const closeInactiveAlerts = (config, stopped = !config.enabled) => {
+    const isInactive = (venue) => stopped || !config.venues[venue]?.enabled;
+    for (const key of conditions.keys()) {
+      if (isInactive(key.split(':')[1])) conditions.delete(key);
+    }
+    for (const venue of Object.keys(snapshot.venues)) {
+      if (isInactive(venue)) delete snapshot.venues[venue];
+    }
+    const at = new Date(now()).toISOString();
+    let changed = false;
+    for (const alert of alerts) {
+      if (alert.status !== 'open' || !isInactive(alert.venue)) continue;
+      alert.status = 'closed';
+      alert.closedAt = at;
+      alert.closeReason = stopped ? 'monitor stopped' : 'venue disabled';
+      changed = true;
+      emit('arbitrage:alert', alert);
+    }
+    return changed;
   };
 
   /**
@@ -391,9 +418,11 @@ const createArbitrageService = (io, deps) => {
     if (!config.enabled || !isCurrent()) return;
     const startedAt = now();
     try {
-      await refreshReferenceFx(config);
+      await refreshReferenceFx(config, isCurrent);
+      if (!isCurrent()) return;
+      const pollSources = getSources(config);
       const venueIds = VENUE_IDS.filter((id) => config.venues[id]?.enabled);
-      const results = await Promise.all(venueIds.map((id) => pollVenue(id, config, isCurrent)));
+      const results = await Promise.all(venueIds.map((id) => pollVenue(id, pollSources[id], config, isCurrent)));
       if (!isCurrent()) return;
 
       const venues = {};
@@ -439,11 +468,18 @@ const createArbitrageService = (io, deps) => {
 
   const start = () => {
     const config = getArbitrageConfig();
+    if (running) return;
+    if (closeInactiveAlerts(config)) {
+      try {
+        persistState();
+      } catch (err) {
+        arbitrageLogger.error(`❌ Could not save inactive arbitrage alerts: ${err.message}`, { action: 'start' });
+      }
+    }
     if (!config.enabled) {
       arbitrageLogger.info('ℹ️ Arbitrage monitor disabled', { action: 'start', enabled: false });
       return;
     }
-    if (running) return;
     running = true;
     lifecycleGeneration++;
     pollTimer = setInterval(() => { poll(); }, config.pollIntervalMs);
@@ -453,19 +489,40 @@ const createArbitrageService = (io, deps) => {
     });
   };
 
-  const stop = () => {
-    const wasRunning = running;
+  const pausePolling = () => {
     running = false;
     lifecycleGeneration++;
     activePoll = null;
     if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
     if (initialPollTimeout) { clearTimeout(initialPollTimeout); initialPollTimeout = null; }
+  };
+
+  const stop = ({ preserveAlerts = false } = {}) => {
+    const wasRunning = running;
+    pausePolling();
+    const changed = !preserveAlerts && closeInactiveAlerts(getArbitrageConfig(), true);
     persistState();
+    if (changed) emit('arbitrage:status', getStatus());
     if (wasRunning) arbitrageLogger.info('ℹ️ Arbitrage monitor stopped', { action: 'stop' });
+  };
+
+  const applyConfig = () => {
+    const config = getArbitrageConfig();
+    // Cancel the old poll before refreshing market discovery or closing episodes.
+    pausePolling();
+    getSources(config);
+    closeInactiveAlerts(config);
+    try {
+      persistState();
+    } finally {
+      start();
+      emit('arbitrage:status', getStatus());
+    }
   };
 
   const getStatus = () => {
     const config = getArbitrageConfig();
+    const venueSources = sources || getSources(config);
     return {
       dashboardVersion: ARBITRAGE_DASHBOARD_VERSION,
       running,
@@ -484,7 +541,7 @@ const createArbitrageService = (io, deps) => {
         const v = snapshot.venues[id];
         return {
           id,
-          label: v?.label || getSources()[id]?.label || id,
+          label: v?.label || venueSources[id]?.label || id,
           enabled: Boolean(config.venues[id]?.enabled),
           takerFeeBps: config.venues[id]?.takerFeeBps,
           ok: v ? v.ok : null,
@@ -542,6 +599,7 @@ const createArbitrageService = (io, deps) => {
   return {
     start,
     stop,
+    applyConfig,
     reloadState: loadState,
     getStatus,
     getSnapshot,

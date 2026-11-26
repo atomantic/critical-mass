@@ -59,23 +59,17 @@ module.exports = (app, deps) => {
     if (errors.length) return res.status(400).json({ success: false, errors });
     if (Object.keys(value).length === 0) return res.status(400).json({ success: false, error: 'No settings to update' });
     updateArbitrageConfig(value);
-    // Restart so a new interval or enable flag takes effect; stop() persists alert state.
-    let stopError = null;
     try {
-      arbitrageService.stop();
+      arbitrageService.applyConfig();
     } catch (err) {
-      stopError = err;
-    }
-    arbitrageService.start();
-    routeLogger('/api/arbitrage/config').info('ℹ️ Arbitrage config updated via API', { action: 'update-config', keys: Object.keys(value) });
-    if (stopError) {
       return res.status(500).json({
         success: false,
         config: getArbitrageConfig(),
         persistence: { configSaved: true, alertStateSaved: false },
-        error: `Config saved and monitor restarted, but alert state could not be written: ${stopError.message}`,
+        error: `Config saved and monitor restarted, but alert state could not be written: ${err.message}`,
       });
     }
+    routeLogger('/api/arbitrage/config').info('ℹ️ Arbitrage config updated via API', { action: 'update-config', keys: Object.keys(value) });
     res.json({ success: true, config: getArbitrageConfig(), persistence: { configSaved: true, alertStateSaved: true } });
   }));
 };
