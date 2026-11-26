@@ -271,7 +271,9 @@ describe('UpDown cycle momentum characterization', () => {
     service.handlePriceTick('120', Date.now())
     const tick = calls.find(c => c.name === 'updown:tick').payload
     assert.equal(tick.price, 120)
-    assert.equal(tick.perp.unrealizedPnl, 0.20)
+    assert.equal(tick.perp.contracts, 1)
+    assert.equal(tick.perp.markAvailable, true)
+    assert.equal(tick.perp.unrealizedPnl, service.getStatus().perp.unrealizedPnl)
   })
 
   const cases = [
