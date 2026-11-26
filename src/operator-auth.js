@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const net = require('net');
 const fs = require('fs');
 const path = require('path');
+const { atomicWriteSync } = require('./durable-write');
 const { signJwt, verifyHs256Jwt } = require('./jwt');
 const { isLoopbackHost } = require('./gateway-listen');
 const { log } = require('./logger');
@@ -13,6 +14,7 @@ const MAX_PASSWORD_BYTES = 256;
 const ATTEMPT_WINDOW_MS = 60_000;
 const MAX_ATTEMPTS = 5;
 const MAX_TRACKED_PEERS = 1024;
+const MAX_PASSWORD_HASH_JOBS = 16;
 const MIN_BOOTSTRAP_SECRET_LENGTH = 32;
 const BOOTSTRAP_HEADER = 'x-operator-bootstrap';
 const PROXY_HEADERS = ['x-forwarded-for', 'forwarded', 'via', 'x-real-ip', 'x-forwarded-proto', 'x-forwarded-port', 'x-forwarded-server'];
@@ -86,8 +88,9 @@ const submittedSecret = (body = {}) => {
   return typeof value === 'string' ? value : '';
 };
 
-// A single active KDF and no waiting queue bound CPU/memory across all peers.
-let hashBusy = false;
+// Keep one active KDF across all peers, with a bounded FIFO for concurrent requests.
+let pendingPasswordHashes = 0;
+let passwordHashTail = Promise.resolve();
 const authError = (status, message, headers) => Object.assign(new Error(message), { status, headers });
 const checkPasswordSize = (password) => {
   if (Buffer.byteLength(password) > MAX_PASSWORD_BYTES) {
@@ -96,21 +99,22 @@ const checkPasswordSize = (password) => {
 };
 const hashPassword = async (password, saltHex) => {
   checkPasswordSize(password);
-  // Thrown with no try/catch in every caller (including requireAuth on the
-  // unauthenticated pre-auth path) — the JSON error middleware in server.js
-  // is what turns this into a response. Retry-After matches the sibling
-  // limitAttempts 429 so both rate-limit paths behave consistently (#530).
-  if (hashBusy) throw authError(429, 'Password verification is busy; retry later', { 'Retry-After': '1' });
-  hashBusy = true;
-  try {
-    return await new Promise((resolve, reject) => {
-      crypto.scrypt(password, Buffer.from(saltHex, 'hex'), 32, (error, key) => {
-        if (error) return reject(error);
-        resolve(key.toString('hex'));
-      });
+  if (pendingPasswordHashes >= MAX_PASSWORD_HASH_JOBS) {
+    throw authError(429, 'Password verification queue is full; retry later', { 'Retry-After': '1' });
+  }
+  pendingPasswordHashes += 1;
+  const job = passwordHashTail.then(() => new Promise((resolve, reject) => {
+    crypto.scrypt(password, Buffer.from(saltHex, 'hex'), 32, (error, key) => {
+      if (error) return reject(error);
+      resolve(key.toString('hex'));
     });
+  }));
+  // Preserve the job error for its caller and let the next queued job start.
+  passwordHashTail = job.then(() => undefined, () => undefined);
+  try {
+    return await job;
   } finally {
-    hashBusy = false;
+    pendingPasswordHashes -= 1;
   }
 };
 
@@ -181,14 +185,15 @@ const loadOrCreateLocalSecret = (file) => {
       return existing;
     }
   } catch { /* missing or unreadable: generate a fresh one */ }
-  const secret = crypto.randomBytes(32).toString('hex');
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, `${secret}\n`, { mode: 0o600 });
-  fs.chmodSync(file, 0o600);
-  return secret;
+  return createLocalSecret(file);
 };
 
-const isBootstrapState = (record, unreadable) => !(record?.salt && record?.hash) && !unreadable;
+const createLocalSecret = (file) => {
+  const secret = crypto.randomBytes(32).toString('hex');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  atomicWriteSync(file, `${secret}\n`);
+  return secret;
+};
 
 const createOperatorAuth = ({
   authFile = null,
@@ -278,18 +283,6 @@ const createOperatorAuth = ({
     throw new Error(`OPERATOR_BOOTSTRAP_SECRET must be at least ${MIN_BOOTSTRAP_SECRET_LENGTH} bytes`);
   }
 
-  if (isBootstrapState(record, authFileUnreadable) && !bootstrapSecret && !localBootstrapSecretFile) {
-    log('WARN', '🔐 Operator bootstrap is open to loopback requests. A local reverse proxy must send X-Forwarded-For with the real client address; otherwise set OPERATOR_BOOTSTRAP_SECRET.');
-  }
-
-  // Locality cannot be proven from headers (a bare reverse proxy adds none), so
-  // the generated file is the only proof a host operator can give.
-  let localBootstrapSecret = '';
-  if (localBootstrapSecretFile && !bootstrapSecret && isBootstrapState(record, authFileUnreadable)) {
-    localBootstrapSecret = loadOrCreateLocalSecret(localBootstrapSecretFile);
-    log('WARN', `🔐 Operator enrollment requires the bootstrap secret in ${localBootstrapSecretFile} (owner-only; enter it in the setup screen).`);
-  }
-
   const hasPassword = () => Boolean(record?.salt && record?.hash);
   const isBootstrapping = () => !hasPassword() && !authFileUnreadable;
   const isRequired = () => true;
@@ -299,6 +292,17 @@ const createOperatorAuth = ({
   const hasRemoteBootstrap = () => Boolean(
     !authFileUnreadable && bootstrapSecretHash && bootstrapSecretHash !== record?.bootstrapConsumedHash
   );
+  if (isBootstrapping() && !hasRemoteBootstrap() && !localBootstrapSecretFile) {
+    log('WARN', '🔐 Operator bootstrap is open to loopback requests. A local reverse proxy must send X-Forwarded-For with the real client address; otherwise set OPERATOR_BOOTSTRAP_SECRET.');
+  }
+
+  // Locality cannot be proven from headers (a bare reverse proxy adds none), so
+  // the generated file is the only proof a host operator can give.
+  let localBootstrapSecret = '';
+  if (localBootstrapSecretFile && !hasRemoteBootstrap() && isBootstrapping()) {
+    localBootstrapSecret = loadOrCreateLocalSecret(localBootstrapSecretFile);
+    log('WARN', `🔐 Operator enrollment requires the bootstrap secret in ${localBootstrapSecretFile} (owner-only; enter it in the setup screen).`);
+  }
 
   // Sessions are signed with a random per-install key that is independent of the
   // password hash, and carry the epoch they were minted in. Bumping the epoch
@@ -346,16 +350,7 @@ const createOperatorAuth = ({
   );
 
   const persist = (next) => {
-    if (!authFile || !writeJSON) {
-      record = next;
-      return;
-    }
-    if (!next) {
-      try { fs.unlinkSync(authFile); } catch { /* missing is the cleared state */ }
-      record = next;
-      return;
-    }
-    writeJSON(authFile, next);
+    if (authFile && writeJSON) writeJSON(authFile, next);
     record = next;
   };
 
@@ -470,6 +465,7 @@ const createOperatorAuth = ({
         bootstrapConsumedHash: bootstrapSecretHash || record?.bootstrapConsumedHash || null,
       });
       onPasswordChanged?.();
+      localBootstrapSecret = '';
       for (const file of [bootstrapSecretFile, localBootstrapSecretFile]) {
         if (!file) continue;
         try { fs.unlinkSync(file); } catch { /* already consumed in the auth record */ }
@@ -484,23 +480,29 @@ const createOperatorAuth = ({
       if (!hasPassword()) {
         return res.json({ authenticated: false, required: true, bootstrapRequired: true });
       }
+      const previousRecord = record;
       if ((await authenticate(req.headers, peerOf(req), req.operatorAttemptReserved))?.source === 'session' && !requestOriginMatches(req)) {
         return res.status(403).json({ error: 'Request origin is not authorized' });
       }
       const currentPassword = submittedSecret(req.body);
       if (!await passwordMatches(currentPassword)) {
-        return res.status(401).json({ error: 'Current password is required to remove it' });
+        return res.status(401).json({ error: 'Current password is required to reset it' });
       }
       refundAttempt(req);
+      if (record !== previousRecord) throw authError(409, 'Operator password changed; retry with current credentials');
+      const nextLocalSecret = localBootstrapSecretFile && !hasRemoteBootstrap()
+        ? createLocalSecret(localBootstrapSecretFile)
+        : '';
       persist({
         state: 'bootstrap',
         bootstrapConsumedHash: record.bootstrapConsumedHash || null,
         updatedAt: new Date().toISOString(),
       });
+      localBootstrapSecret = nextLocalSecret;
+      onPasswordRemoved?.();
       res.clearCookie(COOKIE_NAME, { httpOnly: true, sameSite: 'strict', path: '/' });
       log('INFO', '🔐 Operator password cleared — local bootstrap is required');
       res.json({ authenticated: false, required: true, bootstrapRequired: true });
-      onPasswordRemoved?.();
     });
 
     app.delete('/api/auth/session', async (req, res) => {

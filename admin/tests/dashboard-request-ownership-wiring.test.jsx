@@ -29,7 +29,7 @@ vi.mock('../src/components/updown/ContractSetup', () => ({ default: () => null }
 vi.mock('../src/components/updown/TradeHistory', () => ({ default: () => null }))
 vi.mock('../src/components/updown/ScorecardPanel', () => ({ default: () => null }))
 vi.mock('../src/components/updown/TimeframeGrid', () => ({ default: () => null }))
-vi.mock('../src/components/updown/TimeWarningBanner', () => ({ parseExpiry: () => NaN, default: () => null }))
+vi.mock('../src/components/updown/TimeWarningBanner', () => ({ default: () => null }))
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); realtime.handlers.clear() })
 const json = (body, ok = true) => ({ ok, status: ok ? 200 : 500, json: async () => body })

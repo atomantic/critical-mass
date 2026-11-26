@@ -4,16 +4,17 @@
   "description": "Multi-exchange BTC accumulation engine with celestial position management",
   "main": "index.js",
   "engines": {
-    "node": ">=22.12.0"
+    "node": ">=26.0.0"
   },
   "scripts": {
     "start": "node scripts/pm2-stack.js start",
     "dev": "node scripts/dev.js",
-    "dev:server": "VITE_API_PORT=5570 node --watch server.js",
-    "dev:ui": "cd admin && VITE_PORT=5571 VITE_API_PORT=5570 npm run dev",
+    "dev:server": "node scripts/dev.js server",
+    "dev:ui": "node scripts/dev.js ui",
     "build": "cd admin && npm run build",
     "test:docker-storage": "scripts/docker-storage-smoke-test.sh",
     "test:docker-seed": "scripts/docker-seed-config-smoke-test.sh",
+    "test:docker-stop-order": "scripts/docker-stop-order-smoke-test.sh",
     "pm2:start": "node scripts/pm2-stack.js start",
     "pm2:stop": "node scripts/pm2-stack.js stop",
     "pm2:restart": "node scripts/pm2-stack.js start",
@@ -29,6 +30,7 @@
     "test": "node scripts/test.js",
     "test:watch": "node scripts/test.js --watch",
     "test:changed": "node scripts/test.js --changed",
+    "test:browser-smoke": "node scripts/admin-react19-browser-smoke.js",
     "test:admin": "npm test --prefix admin",
     "lint:admin": "npm run lint --prefix admin",
     "test:all": "npm test && npm run test:admin",
@@ -52,7 +54,8 @@
     "express": "5.3.0"
   },
   "devDependencies": {
-    "@types/node": "22.20.5",
+    "@types/express": "5.0.6",
+    "@types/node": "26.6.11",
     "typescript": "5.9.3"
   }
 }

@@ -123,7 +123,8 @@ class WebSocketConnection extends EventEmitter {
 
     socket.setNoDelay(true);
     socket.setTimeout(0);
-    socket.on('data', (chunk) => this._onData(chunk));
+    // The upgraded TCP socket has no text encoding set.
+    socket.on('data', (chunk) => this._onData(/** @type {Buffer} */ (chunk)));
     socket.on('error', (err) => this._emitError(err));
     socket.on('end', () => {
       // Peer finished without (or after) the close handshake: finish our side.
@@ -462,7 +463,7 @@ class WebSocketServer extends EventEmitter {
       res.writeHead(426, { Upgrade: 'websocket', Connection: 'close', 'Content-Type': 'text/plain' });
       res.end('Upgrade Required');
     });
-    this._server.on('upgrade', (req, socket, head) => this._onUpgrade(req, socket, head));
+    this._server.on('upgrade', (req, socket, head) => this._onUpgrade(req, /** @type {import('node:net').Socket} */ (socket), head));
     this._server.on('listening', () => this.emit('listening'));
     this._server.on('error', (err) => {
       // A failed bind leaves nothing to close; a later close() resolves at once.

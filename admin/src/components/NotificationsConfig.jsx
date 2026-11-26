@@ -2,7 +2,7 @@ import Button from './ui/Button'
 import { useState, useEffect, useRef } from 'react'
 import { apiGet, apiPost, apiPut, describeMutationFailure } from '../utils/apiClient'
 import useRealtimeRefresh from '../hooks/useRealtimeRefresh'
-import { useNotify } from './Toast'
+import { useNotify } from './useToast'
 
 const EVENT_GROUPS = {
   'Critical': [

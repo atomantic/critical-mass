@@ -118,7 +118,7 @@ const createBackupScheduler = ({
       lookupFailed(err);
       return;
     }
-    if (newest && typeof newest.then === 'function') {
+    if (newest && typeof newest === 'object' && typeof newest.then === 'function') {
       newest.then(applyDue).catch(lookupFailed);
       return;
     }

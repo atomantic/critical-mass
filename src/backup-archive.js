@@ -59,8 +59,10 @@ const PROTECTED_ARCHIVE_PREFIXES = [
  * names, and file/directory collisions before unzip can touch staging. Case
  * and Unicode-equivalent spellings are refused for portable restores on
  * case-insensitive or normalization-insensitive filesystems.
+ * @returns {{ok: true, entries: string[], members: Map<string, string>} | {ok: false, code: string, error: string}}
  */
 const parseArchivePaths = (records) => {
+  /** @returns {{ok: false, code: string, error: string}} */
   const refuse = (detail) => ({
     ok: false,
     code: 'archive-unsafe-paths',
@@ -109,6 +111,7 @@ const parseArchivePaths = (records) => {
 // the same bytes drive both collision checks and unzip's eventual extraction.
 // The generator lets backup creation/preflight use async file reads while the
 // existing synchronous restore/inspection APIs share exactly the same rules.
+/** @returns {Generator<{position: number, length: number}, ReturnType<typeof parseArchivePaths>, Buffer>} */
 function* readArchiveDirectory(size) {
   const fail = (reason) => { throw new Error(reason); };
   if (size < 22) fail('missing end-of-directory record');
@@ -211,6 +214,7 @@ function* readArchiveDirectory(size) {
   return parseArchivePaths(records);
 }
 
+/** @returns {{ok: false, code: string, error: string}} */
 const archiveReadFailure = (error) => ({
   ok: false, code: 'archive-unsafe-paths',
   error: `Archive member metadata could not be verified: ${error.message}. No files were changed.`,
@@ -222,7 +226,7 @@ const inspectArchivePaths = (zipPath) => {
     fd = fs.openSync(zipPath, 'r');
     const reader = readArchiveDirectory(fs.fstatSync(fd).size);
     let step = reader.next();
-    while (!step.done) {
+    while (step.done === false) {
       const data = Buffer.alloc(step.value.length);
       if (fs.readSync(fd, data, 0, data.length, step.value.position) !== data.length) throw new Error('truncated archive');
       step = reader.next(data);
@@ -238,7 +242,7 @@ const inspectArchivePathsAsync = async (zipPath) => {
     fd = await fs.promises.open(zipPath, 'r');
     const reader = readArchiveDirectory((await fd.stat()).size);
     let step = reader.next();
-    while (!step.done) {
+    while (step.done === false) {
       const data = Buffer.alloc(step.value.length);
       if ((await fd.read(data, 0, data.length, step.value.position)).bytesRead !== data.length) throw new Error('truncated archive');
       step = reader.next(data);
@@ -306,7 +310,7 @@ const evaluateArchive = ({ archive, readManifest, allowLegacy }) => {
   const read = readManifest(manifestName);
   if (read.error || !read.present) return { ok: false, error: read.error || `Missing ${MANIFEST_FILENAME}` };
   const validated = readManifestSnapshot(read.manifest);
-  if (!validated.ok) return { ok: false, error: validated.error };
+  if (validated.ok === false) return { ok: false, error: validated.error };
   if (!validated.snapshot || typeof validated.snapshot !== 'object' || Array.isArray(validated.snapshot)) {
     return { ok: false, error: `${MANIFEST_FILENAME} has no valid configuration snapshot` };
   }
@@ -345,7 +349,7 @@ const payloadMemberVerdict = (entry, target, read) => {
     return { ok: false, code: 'archive-corrupt', error: `Unable to read ${entry} from the archive. No files were changed.` };
   }
   const checked = validatePersistedPayload(target, read.stdout);
-  return checked.ok
+  return checked.ok === true
     ? { ok: true }
     : { ok: false, code: 'payload-incompatible', error: `Archive accounting is not readable by this build: ${checked.error}. No files were changed.` };
 };
@@ -375,7 +379,7 @@ const validateBackupArchiveAsync = async (zipPath, { allowLegacy = false } = {})
   const integrityFailure = checkTailFailure(integrity, 'Archive integrity check failed');
   if (integrityFailure) return integrityFailure;
   const archive = await inspectArchivePathsAsync(zipPath);
-  if (!archive.ok) return archive;
+  if (archive.ok === false) return archive;
   const manifestName = archive.members.get(MANIFEST_FILENAME);
   const manifestRead = manifestName ? await spawnAsync('unzip', ['-p', zipPath, unzipMember(manifestName)]) : null;
   const evaluated = evaluateArchive({ archive, allowLegacy, readManifest: () => parseManifestRead(manifestRead) });

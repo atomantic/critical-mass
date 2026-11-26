@@ -17,7 +17,7 @@ const socket = vi.hoisted(() => {
 })
 vi.mock('../src/lib/realtime', () => ({ getRealtimeClient: () => socket }))
 
-afterEach(() => { cleanup(); vi.unstubAllGlobals() })
+afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals() })
 
 const body = (url) => {
   if (url.includes('/regime/status')) return { status: { position: {}, market: { lastPrice: 100 } } }
@@ -26,6 +26,7 @@ const body = (url) => {
 }
 
 it('re-reads for its own fund only, once per throttle window, and rereads a change that lands mid-read', async () => {
+  vi.useFakeTimers()
   const reads = () => fetchMock.mock.calls.filter(([url]) => String(url).includes('/regime/status')).length
   let release
   let hold = false
@@ -36,21 +37,22 @@ it('re-reads for its own fund only, once per throttle window, and rereads a chan
     return { ok: true, status: 200, json: async () => body(url) }
   })
   vi.stubGlobal('fetch', fetchMock)
-  render(<CostBasisRegime exchange="coinbase" pair="BTC-USDC" />)
-  await waitFor(() => expect(reads()).toBe(1))
+  await act(async () => { render(<CostBasisRegime exchange="coinbase" pair="BTC-USDC" />) })
+  expect(reads()).toBe(1)
 
   await act(async () => { socket.fire('regime:changed', { exchange: 'gemini', pair: 'BTC-USDC' }) })
   expect(reads()).toBe(1)
 
-  await new Promise(resolve => setTimeout(resolve, 2100))
+  await act(() => vi.advanceTimersByTimeAsync(2000))
   hold = true
   await act(async () => { socket.fire('regime:changed', { exchange: 'coinbase', pair: 'BTC-USDC' }) })
-  await waitFor(() => expect(reads()).toBe(2))
+  expect(reads()).toBe(2)
   // A second change while that read is still pending is queued, not dropped.
   await act(async () => { socket.fire('regime:state', { exchange: 'coinbase', pair: 'BTC-USDC' }) })
   hold = false
   await act(async () => { release() })
-  await waitFor(() => expect(reads()).toBe(3), { timeout: 4000 })
+  await act(() => vi.advanceTimersByTimeAsync(2000))
+  expect(reads()).toBe(3)
 })
 
 it('keeps a newer socket price when an older HTTP batch settles later', async () => {

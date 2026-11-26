@@ -3,7 +3,7 @@ import { useState, useEffect, useRef } from 'react'
 import ConfirmDialog from './ui/ConfirmDialog'
 import { plural } from '../utils/plural.mjs'
 import { apiGet, apiPost, apiPut, apiDelete, describeMutationFailure } from '../utils/apiClient'
-import { useNotify } from './Toast'
+import { useNotify } from './useToast'
 
 const EXCHANGE_DISPLAY_NAMES = { coinbase: 'Coinbase', gemini: 'Gemini', cryptocom: 'Crypto.com' }
 
@@ -147,7 +147,7 @@ function KeysConfig({ exchange, funds = [], onSave }) {
         setStatusAnnouncement('')
       }
     }
-  }, [testResult])
+  }, [testResult, exchangeName])
 
   const handleChange = (key, value) => {
     if (writePendingRef.current) return

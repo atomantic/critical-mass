@@ -5,7 +5,7 @@
 // Covers issue #404: archive creation must exclude credentials, restore must
 // never clobber live credential files, and deleteBackup/restoreBackup must
 // reject path traversal and symlink attacks; pruneBackups must enforce retention.
-const { describe, it, beforeEach, afterEach, after } = require('node:test');
+const { describe, it, before, beforeEach, afterEach, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
@@ -220,20 +220,30 @@ describe('backup-service — createBackup/restoreBackup', () => {
   it('keeps the event loop responsive while zip is running (issue #1158)', async () => {
     const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-fake-zip-'));
     const realZip = spawnSync('which', ['zip']).stdout.toString().trim();
-    fs.writeFileSync(path.join(fakeBin, 'zip'), `#!/bin/sh\nsleep 1\nexec ${realZip} "$@"\n`, { mode: 0o755 });
+    const shim = path.join(fakeBin, 'zip');
+    fs.writeFileSync(shim, `#!/bin/sh
+: > "$0.ready"
+attempts=0
+while [ ! -f "$0.release" ]; do
+  attempts=$((attempts + 1))
+  [ "$attempts" -lt 100 ] || exit 75
+  sleep 0.02
+done
+exec "${realZip}" "$@"
+`, { mode: 0o755 });
     process.env.PATH = `${fakeBin}${path.delimiter}${originalPath}`;
-    let ticks = 0;
-    const timer = setInterval(() => { ticks += 1; }, 20);
+    const timer = setInterval(() => {
+      if (fs.existsSync(shim + '.ready')) fs.writeFileSync(shim + '.release', '');
+    }, 10);
     try {
       const result = await createBackup();
       assert.equal(result.success, true, result.error);
+      assert.ok(fs.existsSync(shim + '.release'), 'event loop released the running zip process');
     } finally {
       clearInterval(timer);
       process.env.PATH = originalPath;
       fs.rmSync(fakeBin, { recursive: true, force: true });
     }
-    // A blocking spawnSync would starve the interval for the full second.
-    assert.ok(ticks >= 10, `expected timer ticks during zip, got ${ticks}`);
   });
 
   it('returns the real spawnSync error (not "Unknown zip error") when the zip binary is missing', async () => {
@@ -658,14 +668,25 @@ describe('backup-service — pruneBackups retention', () => {
   const prefix = '__backup_service_test_prune__';
   const created = [];
 
+  let fixtureArchive;
+  before(() => {
+    const sourceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-backup-retention-'));
+    try {
+      fs.writeFileSync(path.join(sourceDir, 'backup-manifest.json'), JSON.stringify({
+        manifestVersion: 1, createdAt: '2026-01-01T00:00:00Z', config: {},
+      }));
+      const archivePath = path.join(sourceDir, 'archive.zip');
+      const result = spawnSync('zip', ['-q', archivePath, 'backup-manifest.json'], { cwd: sourceDir });
+      assert.equal(result.status, 0);
+      fixtureArchive = fs.readFileSync(archivePath);
+    } finally {
+      fs.rmSync(sourceDir, { recursive: true, force: true });
+    }
+  });
+
   const makeBackup = (name, mtimeMs) => {
     const filePath = path.join(BACKUP_DIR, name);
-    const sourceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-backup-retention-'));
-    const manifest = path.join(sourceDir, 'backup-manifest.json');
-    fs.writeFileSync(manifest, JSON.stringify({ manifestVersion: 1, createdAt: new Date(mtimeMs).toISOString(), config: {} }));
-    const result = spawnSync('zip', ['-q', filePath, 'backup-manifest.json'], { cwd: sourceDir });
-    fs.rmSync(sourceDir, { recursive: true, force: true });
-    assert.equal(result.status, 0);
+    fs.writeFileSync(filePath, fixtureArchive);
     const mtime = new Date(mtimeMs);
     fs.utimesSync(filePath, mtime, mtime);
     created.push(filePath);
@@ -798,7 +819,7 @@ describe('backup-service — pruneBackups retention', () => {
     it('keeps the event loop running through a cold listing, and concurrent listings share one test per archive', async () => {
       // Slow every integrity test so a synchronous listing would starve the timer.
       const realUnzip = spawnSync('which', ['unzip'], { env: { PATH: originalPath } }).stdout.toString().trim();
-      fs.writeFileSync(path.join(fakeBin, 'unzip'), `#!/bin/sh\necho "$1" >> "${logFile}"\n[ "$1" = "-tq" ] && sleep 0.1\nexec ${realUnzip} "$@"\n`, { mode: 0o755 });
+      fs.writeFileSync(path.join(fakeBin, 'unzip'), `#!/bin/sh\necho "$1" >> "${logFile}"\n[ "$1" = "-tq" ] && sleep 0.03\nexec ${realUnzip} "$@"\n`, { mode: 0o755 });
       let ticks = 0;
       const timer = setInterval(() => { ticks++; }, 20);
       try {
@@ -808,7 +829,7 @@ describe('backup-service — pruneBackups retention', () => {
       } finally {
         clearInterval(timer);
       }
-      assert.ok(ticks >= 5, `timers kept firing during the listing (ticks=${ticks})`);
+      assert.ok(ticks >= 2, `timers kept firing during the listing (ticks=${ticks})`);
       assert.equal(integrityTests(), 5, 'each cold archive is tested once across both listings');
     });
 

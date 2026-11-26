@@ -1,0 +1,1 @@
+- Speed up backend and admin validation, keep backend tests independent of the admin install, and select changed tests from static dependencies.

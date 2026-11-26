@@ -38,8 +38,8 @@
 
 const fs = require('fs');
 const path = require('path');
-const { randomUUID } = require('crypto');
 const { performance } = require('perf_hooks');
+const { acquireIdentityLock } = require('./file-lock');
 const { DATA_DIR } = require('./paths');
 const { fsyncDir } = require('./fsync-dir');
 const { atomicWriteSync, fsyncFile } = require('./durable-write');
@@ -61,7 +61,6 @@ const OWNER_PREFIX = '.restore-owner-';
 const OWNER_DIR = `${OWNER_PREFIX}lock`;
 const OWNER_WAIT_MS = 5_000;
 const OWNER_POLL_MS = 25;
-const ownerSleep = new Int32Array(new SharedArrayBuffer(4));
 
 /** A staging directory younger than this may still be extracting in another process. */
 const ORPHAN_STAGE_MIN_AGE_MS = 10 * 60_000;
@@ -103,57 +102,16 @@ const attempt = (fn) => {
  * ESRCH is the only proof of death; live/reused PIDs never expire with time.
  */
 const acquireRestoreOwnership = (dataDir, waitMs) => {
-  const identity = `${process.pid}-${randomUUID()}`;
-  const candidate = path.join(dataDir, `${OWNER_PREFIX}${identity}`);
-  const ownerDir = path.join(dataDir, OWNER_DIR);
-  const deadline = performance.now() + Math.max(0, waitMs);
-  const removeEmptyOwnerDir = () => {
-    try { fs.rmdirSync(ownerDir); } catch (error) {
-      // Another contender may already have published its nonempty directory.
-      if (!['ENOENT', 'ENOTEMPTY', 'EEXIST'].includes(error.code)) throw error;
-    }
-  };
-  const retire = (observedIdentity) => {
-    fs.rmSync(path.join(ownerDir, observedIdentity), { force: true });
-    removeEmptyOwnerDir();
-  };
-  try {
-    fs.mkdirSync(dataDir, { recursive: true });
-    fs.mkdirSync(candidate, { mode: 0o700 });
-    fs.writeFileSync(path.join(candidate, identity), '', { flag: 'wx', mode: 0o600 });
-    while (true) {
-      try {
-        fs.renameSync(candidate, ownerDir);
-        return { ok: true, release: () => retire(identity) };
-      } catch (error) {
-        if (!['ENOTEMPTY', 'EEXIST'].includes(error.code)) throw error;
-      }
-      const listed = attempt(() => fs.readdirSync(ownerDir));
-      if (!listed.ok) {
-        if (listed.error.code !== 'ENOENT') throw listed.error;
-      } else if (listed.value.length === 0) {
-        // An owner died after unlinking its identity. Removing an empty dir is
-        // safe even if someone else just published: their dir is nonempty.
-        removeEmptyOwnerDir();
-      } else {
-        const [observedIdentity] = listed.value;
-        const parsed = /^([1-9]\d*)-[0-9a-f-]{36}$/.exec(observedIdentity);
-        if (listed.value.length !== 1 || !parsed || !Number.isSafeInteger(Number(parsed[1]))) {
-          throw new Error('Unrecognized restore ownership identity');
-        }
-        let dead = false;
-        try { process.kill(Number(parsed[1]), 0); } catch (error) { dead = error.code === 'ESRCH'; }
-        if (dead) retire(observedIdentity);
-      }
-      if (performance.now() >= deadline) throw new Error(`Restore ownership is busy after ${waitMs}ms; retry after the current owner exits`);
-      Atomics.wait(ownerSleep, 0, 0, Math.min(OWNER_POLL_MS, Math.max(1, deadline - performance.now())));
-    }
-  } catch (error) {
-    return { ok: false, error: error.message };
-  } finally {
-    // This path is unique to this attempt and is absent after publication.
-    attempt(() => fs.rmSync(candidate, { recursive: true, force: true }));
-  }
+  const acquired = attempt(() => acquireIdentityLock(path.join(dataDir, OWNER_DIR), {
+    waitMs,
+    pollMs: OWNER_POLL_MS,
+    now: () => performance.now(),
+    candidatePrefix: path.join(dataDir, OWNER_PREFIX),
+    invalidOwner: () => new Error('Unrecognized restore ownership identity'),
+  }));
+  if (!acquired.ok) return { ok: false, error: acquired.error.message };
+  if (!acquired.value) return { ok: false, error: `Restore ownership is busy after ${waitMs}ms; retry after the current owner exits` };
+  return { ok: true, release: acquired.value };
 };
 
 /** Never let a release error hide a result that must keep writers stopped. */

@@ -33,7 +33,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
-          fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
       # No setup-node: this job installs nothing, and the runner's preinstalled
@@ -52,11 +51,17 @@ jobs:
 
       - name: Check if tag exists
         id: tag-check
+        env:
+          TAG: ${{ steps.package-version.outputs.release_tag }}
         run: |
-          if git rev-parse "v${{ steps.package-version.outputs.version }}" >/dev/null 2>&1; then
-            echo "exists=true" >> $GITHUB_OUTPUT
+          if git ls-remote --exit-code --tags --refs origin "refs/tags/$TAG" >/dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
           else
-            echo "exists=false" >> $GITHUB_OUTPUT
+            status=$?
+            if [ "$status" -ne 2 ]; then
+              exit "$status"
+            fi
+            echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
       # Fail before any tag exists when a new version has no release notes.
@@ -119,3 +124,10 @@ jobs:
     permissions:
       contents: read
       packages: write
+
+  scan-image:
+    name: Scan release image
+    needs: [release, publish-image]
+    uses: ./.github/workflows/image-security.yml
+    with:
+      release_tag: ${{ needs.release.outputs.release_tag }}

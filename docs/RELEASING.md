@@ -2,7 +2,13 @@
 
 Critical Mass uses a single release branch: `main`. The Release workflow runs on pushes to `main`, reads the root `package.json` version, and publishes a matching `vX.Y.Z` tag and GitHub Release only when that tag does not already exist. After a new release is created, it invokes the reusable Docker workflow with that exact tag. Ordinary merges with an unchanged version intentionally do not publish another release or republish its image.
 
-Pull requests that touch the Docker packaging (`Dockerfile`, `docker/`, `docker-entrypoint.sh`, dependency manifests and similar) run the path-filtered **Docker check** workflow, which builds the linux/amd64 image without pushing and runs the seed-config smoke test, so a broken image is caught before a tag exists. It is deliberately not a required check, because a path-filtered required check would leave unrelated PRs pending; reviewers should look for it on Docker-related PRs.
+Pull requests that touch the Docker packaging (`Dockerfile`, `docker/`, `docker-entrypoint.sh`, dependency manifests and similar) run the path-filtered **Docker check** workflow, which builds the linux/amd64 image without pushing and runs the seed-config, storage, and stop-order smoke tests, so a broken image is caught before a tag exists. It is deliberately not a required check, because a path-filtered required check would leave unrelated PRs pending; reviewers should look for it on Docker-related PRs.
+
+The required `build (26.x)` check reports the combined results of the
+parallel backend, admin, and typecheck jobs. Docker PR checks can restore the
+default branch's amd64 release build cache and keep their own PR-scoped cache.
+Release images are built on native amd64 and arm64 runners and published as a
+single multi-platform manifest assembled from the two image digests.
 
 ## Prepare and publish
 
@@ -16,6 +22,10 @@ Pull requests that touch the Docker packaging (`Dockerfile`, `docker/`, `docker-
 8. The Release workflow starts only after the CI workflow succeeds on the merge commit (it is triggered by `workflow_run`, and a failed CI run on `main` produces no release). Watch CI first (`gh run list --workflow ci.yml --commit <merge-sha>`), then the Release run for the same commit (`gh run list --workflow release.yml --commit <merge-sha>`; the run is attributed to the tip of `main`, so list recent runs if the merge was not the tip when CI finished). It must succeed with its **Publish release image** job run, not skipped: a skipped publication means the tag already existed and nothing new was released. `gh release view vX.Y.Z` then confirms the GitHub Release. A merged PR alone is not completion.
    `latest` only moves forward: CI runs for two quick successive version bumps can finish out of order, so after creating the release the workflow runs `scripts/should-promote-latest.sh`, which compares the new tag with the remote's `vX.Y.Z` tags and promotes `latest` only when the new version is the highest stable one. An older version released second therefore still gets its tag, GitHub Release and versioned image, but leaves `latest` on the newer release. The Release run's log line `Promote latest for vX.Y.Z: true|false` records the decision. Do not add a `concurrency` group to `release.yml`: GitHub keeps only one pending run per group and would silently drop a release.
 9. The image check is automated: the Docker Build workflow fails unless the pushed `vX.Y.Z` manifest lists both `linux/amd64` and `linux/arm64` and its checkout is the tag's commit. A successful **Publish release image** job is the confirmation. To read the index digest for Umbrel, see below.
+
+### Published image security
+
+After image publication succeeds, the Release workflow runs **Image Security** on the new versioned image. The scheduled and manual **Image Security** runs scan `latest`. Trivy checks the published linux/amd64 image and reports fixable HIGH and CRITICAL findings in the job summary. Findings fail the scan job after publication. Check **Publish release image** to confirm whether publication succeeded.
 
 ## Automation compatibility
 
@@ -31,7 +41,5 @@ The Umbrel manifests (`umbrel/docker-compose.yml`, `umbrel/umbrel-app.yml`) have
 2. Set `version:` in `umbrel/umbrel-app.yml` to the same `X.Y.Z` and write user-facing `releaseNotes` for the Umbrel update.
 3. Run `npm test`. `tests/umbrel-packaging-contract.test.js` checks, offline and without credentials, that the image is digest-pinned, that both manifests record the same version, that the selected release is not older than the gateway port migration, and that `APP_PORT`, `umbrel-app.yml` `port`, the Dockerfile `EXPOSE` and `ecosystem.config.cjs` `PORTS.API` all agree.
 4. Smoke-test the pinned image the way Umbrel runs it: start it with a fresh disposable data directory bound to `/app/data`, confirm `GET /` on the gateway port returns the dashboard and a protected API route returns HTTP 401, then read `data/operator-bootstrap-secret` from the mounted directory and complete operator enrollment. Restart the container against the same data directory and confirm the enrolled operator and configuration survive the upgrade path.
-
-After changing the pinned Umbrel digest, run **Actions → Image Security** so the new image's inventories and findings replace the old evidence; `scripts/verify-image-scan-evidence.js` rejects evidence whose Umbrel digest no longer matches the manifest (see `docs/IMAGE_SECURITY.md`).
 
 The Umbrel store copies these manifests verbatim, so a mismatch between the pinned version and the proxy port ships an installation that cannot reach its own dashboard.

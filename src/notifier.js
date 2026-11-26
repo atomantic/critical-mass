@@ -248,6 +248,7 @@ const createNotifier = ({ sleep = defaultSleep, onStatsChanged = () => {} } = {}
   const retryWakers = new Set();
   // Sends are serialized through one tail so batches (and retries of an earlier
   // batch) are delivered in enqueue order.
+  /** @type {Promise<boolean|void>} */
   let sendTail = Promise.resolve();
 
   const trackSend = (promise) => {

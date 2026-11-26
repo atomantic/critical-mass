@@ -2,6 +2,12 @@ import React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import OperatorLogin from '../src/components/OperatorLogin'
+import { pauseRealtimeClient, reconnectRealtimeClient } from '../src/lib/realtime'
+
+vi.mock('../src/lib/realtime', () => ({
+  pauseRealtimeClient: vi.fn(),
+  reconnectRealtimeClient: vi.fn(),
+}))
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.clearAllMocks() })
 
@@ -89,10 +95,11 @@ describe('OperatorLogin recovery', () => {
 })
 
 describe('OperatorLogin session expiry', () => {
-  it('returns to sign-in when any API call later answers 401', async () => {
+  it('pauses realtime on an API 401 and reconnects as soon as sign-in succeeds', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(sessionResponse({ required: true, authenticated: true }))
       .mockResolvedValueOnce({ ok: false, status: 401, json: async () => ({ error: 'Sign in required' }) })
+      .mockResolvedValueOnce(sessionResponse({ required: true, authenticated: true }))
     vi.stubGlobal('fetch', fetchMock)
     const { apiGet } = await import('../src/utils/apiClient')
     render(<OperatorLogin><p>Private controls</p></OperatorLogin>)
@@ -100,6 +107,13 @@ describe('OperatorLogin session expiry', () => {
     await apiGet('/api/anything')
     expect(await screen.findByLabelText('Password')).toBeTruthy()
     expect(screen.queryByText('Private controls')).toBeNull()
+    expect(pauseRealtimeClient).toHaveBeenCalledTimes(1)
+    expect(reconnectRealtimeClient).not.toHaveBeenCalled()
+
+    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'secret' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
+    await screen.findByText('Private controls')
+    expect(reconnectRealtimeClient).toHaveBeenCalledTimes(1)
   })
 
   it('does not patch window.fetch', async () => {

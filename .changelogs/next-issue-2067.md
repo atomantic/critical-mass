@@ -1,0 +1,2 @@
+- Run backend checks, admin checks, and typechecking in parallel. Docker builds reuse cached layers, build release images on native amd64 and arm64 runners, and exercise config seeding, storage, and ordered shutdown before release.
+- Build container images without copying the installed application into a second layer, and lock the container's PM2 log rotation dependencies.

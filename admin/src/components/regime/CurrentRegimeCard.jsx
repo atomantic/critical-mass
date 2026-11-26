@@ -1,5 +1,6 @@
 import React from 'react'
-import { ConfigTooltip, REGIME_TOOLTIPS } from './RegimeHelp'
+import { ConfigTooltip } from './RegimeHelp'
+import { REGIME_TOOLTIPS } from './regimeTooltips'
 import { REGIME_COLORS, HEALTH_COLORS, MACRO_COLORS, SUGGESTED_LEVEL_STYLES } from './regimeStyles'
 
 export default function CurrentRegimeCard({ regime, healthMode, macroEnabled, macro }) {
