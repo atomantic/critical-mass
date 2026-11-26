@@ -1,6 +1,6 @@
 import Button from './ui/Button'
 import { INTERVAL_OPTIONS } from '../utils/intervals.mjs'
-import { useState, useEffect, useId, useLayoutEffect, useRef } from 'react'
+import { useState, useEffect, useId, useCallback, useLayoutEffect, useRef } from 'react'
 import { formatCurrency, formatPrice } from './charts/chartUtils'
 import { CartesianChart } from './charts/primitives/CartesianChart'
 import { pairQuery } from '../utils/api'
@@ -124,7 +124,7 @@ function FundBacktest({ summary, exchange = 'coinbase', pair, quoteCurrency: def
   const [loading, setLoading] = useState(false)
   const [results, setResults] = useState(null)
   const [error, setError] = useState(null)
-  const [configLoaded, setConfigLoaded] = useState(false)
+  const configLoaded = useRef(false)
   const activeRequest = useRef(null)
 
   // Parse the productId for display
@@ -132,15 +132,36 @@ function FundBacktest({ summary, exchange = 'coinbase', pair, quoteCurrency: def
     ? parseProductId(params.productId)
     : parseProductId(summary?.config?.productId)
 
-  // Auto-load config when exchange or summary changes
-  useEffect(() => {
-    if (summary?.config && !configLoaded) {
-      loadFromConfig()
-      setConfigLoaded(true)
-    }
-  }, [summary?.config])
+  const config = summary?.config
+  const loadFromConfig = useCallback(() => {
+    if (!config) return
+    const configIntervals = config.intervalsToSpread || config.daysToSpread || 60
+    const intervalType = config.intervalType || 'daily'
+    const periods = getPeriodsForInterval(intervalType)
+
+    setParams({
+      intervalBuyAmount: config.totalAllocation / configIntervals || 500,
+      sellMarkupPercent: config.sellMarkupPercent || 10,
+      holdbackPercent: config.holdbackPercent ?? 5,
+      feePercent: 0.125,
+      rebatePercent: 0.031,
+      intervals: periods[periods.length > 2 ? 2 : periods.length - 1].intervals,
+      intervalType,
+      fundSize: config.totalAllocation || 0,
+      productId: config.productId || null
+    })
+    setSelectedPeriod(periods[periods.length > 2 ? 2 : periods.length - 1].label)
+  }, [config])
 
   useLayoutEffect(() => () => activeRequest.current?.abort(), [])
+
+  // Load the active fund’s config once it becomes available
+  useEffect(() => {
+    if (config && !configLoaded.current) {
+      loadFromConfig()
+      configLoaded.current = true
+    }
+  }, [config, loadFromConfig])
 
   // formatCurrency for balances/totals (fixed 2 decimals)
   // formatPrice for prices (smart decimals based on magnitude)
@@ -185,27 +206,6 @@ function FundBacktest({ summary, exchange = 'coinbase', pair, quoteCurrency: def
 
   const handleParamChange = (key, value) => {
     setParams(p => ({ ...p, [key]: parseFloat(value) || 0 }))
-  }
-
-  const loadFromConfig = () => {
-    if (!summary?.config) return
-    const config = summary.config
-    const configIntervals = config.intervalsToSpread || config.daysToSpread || 60
-    const intervalType = config.intervalType || 'daily'
-    const periods = getPeriodsForInterval(intervalType)
-
-    setParams({
-      intervalBuyAmount: config.totalAllocation / configIntervals || 500,
-      sellMarkupPercent: config.sellMarkupPercent || 10,
-      holdbackPercent: config.holdbackPercent ?? 5,
-      feePercent: 0.125,
-      rebatePercent: 0.031,
-      intervals: periods[periods.length > 2 ? 2 : periods.length - 1].intervals,
-      intervalType,
-      fundSize: config.totalAllocation || 0,
-      productId: config.productId || null
-    })
-    setSelectedPeriod(periods[periods.length > 2 ? 2 : periods.length - 1].label)
   }
 
   const resetToDefaults = () => {

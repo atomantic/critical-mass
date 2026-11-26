@@ -61,9 +61,8 @@ limits; see [Simulation endpoint limits](docs/simulation-limits.md).
 
 ## Requirements
 
-- Node.js 22.12.0 or newer to run Critical Mass. Production accounting synchronously loads shared ESM modules, and the locked admin build toolchain also requires Node 22.12 or newer on the Node 22 line. Running the admin test suite (jsdom 31) needs Node 22.22.2+, 24.15+ or 26+; `npm ci --prefix admin --engine-strict` refuses older versions.
+- Node.js 26 or newer for the gateway, engines and admin tooling. CI and the Docker image use Node.js 26.
 - PM2 available on your `PATH` for the production commands below (installed separately from the project dependencies)
-- `lsof` for the native npm startup port checks
 - `zip` and `unzip` for creating, listing, and restoring full backup archives
 - Exchange API key with View and Trade permissions
 
@@ -115,7 +114,7 @@ start:
 ```bash
 sudo ./scripts/prepare-docker-storage.sh
 docker compose up -d --build
-# With alpine:3.20 and node:22-alpine already cached:
+# With alpine:3.20 and node:26-alpine already cached:
 npm run test:docker-storage
 ```
 
@@ -254,12 +253,12 @@ Restart after changing settings. For PM2, use `npm start` to recreate the
 processes with fresh values. `npm run pm2:start` and `npm run pm2:restart` use the
 same sequence: stop and confirm the gateway first while engines remain available
 for its drain, then stop the engines and development UI, recreate the processes,
-and save the PM2 list only after all five report online. Engines are launched
+and save the PM2 list only after all four report online. Engines are launched
 before the gateway; this does not wait for fund initialization or migration, so
 follow [UPGRADE.md](UPGRADE.md) when upgrading on-disk state. A failed stop or
 port check aborts startup; inspect the error and PM2 status before retrying.
 `npm run pm2:stop` uses the same shutdown order and keeps process registrations.
-PM2 and the combined development launcher still use their configured service ports.
+Production PM2 uses the ports in `ecosystem.config.cjs`. The development launcher accepts port overrides.
 
 Local environment files are ignored by Git and Docker. Compose/Umbrel deployments
 continue to inject environment settings through their container configuration;
@@ -290,7 +289,7 @@ pm2 delete critical-mass-coinbase critical-mass-gemini critical-mass-cryptocom
 ```
 
 Warnings:
-- Stop any production gateway/UI (`critical-mass`, `critical-mass-ui`) before running `npm run dev`; both use the same ports.
+- The production gateway and development gateway share port 5570 by default. Set `PORT` to override the development gateway port, `VITE_PORT` for Vite, and `VITE_API_PORT` if Vite should proxy to a different gateway. `npm run dev:server` and `npm run dev:ui` launch the two independently.
 - Engines auto-resume configured funds on start. Use a separate development checkout/configuration with funds disabled or `dryRun: true` so no real orders are placed.
 - See [docs/pm2-architecture.md](docs/pm2-architecture.md#development-topology) for the topology.
 
@@ -301,6 +300,8 @@ npm install -g pm2   # One-time prerequisite for a native install; Docker includ
 npm run build
 npm run pm2:start
 ```
+
+The production gateway serves the built admin UI. Use `npm run dev:ui` for Vite, or set `CRITICAL_MASS_DEV_UI=1` when explicitly starting only `critical-mass-ui` via PM2.
 
 **URLs:**
 - **API/Production UI:** http://localhost:5570
@@ -346,10 +347,12 @@ npm test -- tests/fill-ledger.test.js --test-name-pattern="holdback"
 npm run test:watch                         # re-run on change (combine with a file path)
 npm run test:changed                       # tests changed vs origin/main, plus tests that
                                            # mention a changed src/, shared/ or engines/ file
-npm run test:admin                         # admin (vitest) suite
+npm run test:admin                         # admin (Vitest) suite after npm ci --prefix admin
+npm run test:browser-smoke                  # optional React 19 smoke in local Chromium
 npm run test:all                           # backend, then admin
-npm run lint:admin                         # ESLint on admin/ (react-hooks rules; warning ceiling in admin/package.json)
-npm run typecheck                          # tsc over the // @ts-check backend files, ratcheted against typecheck-baseline.json
+npm run lint:admin                         # ESLint on admin/ with zero warnings allowed
+npm run typecheck                          # tsc over backend, engines, shared modules and tooling
+npm run typecheck -- --strict-ratchet       # CI also requires lowering stale baseline counts
 npm run check                              # test:all, lint:admin, typecheck, then the admin build
 ```
 
@@ -364,14 +367,18 @@ counts; use it only when a toolchain bump legitimately shifts counts, or when a
 baselined file was renamed or split (the new path counts as a clean file), and say so in
 the PR after checking that the baseline diff only moves the existing errors. `typescript` and `@types/node` are exact-pinned devDependencies, so the image
 (`npm ci --omit=dev`) is unaffected and the counts are the same on every machine.
-Errors inside `node_modules` are ignored. CI runs the same step in the `build` job.
+Errors inside `node_modules` are ignored. CI uses `--strict-ratchet` to reject stale baseline counts in the `build` job.
 
 File or directory arguments replace the default file list; `--test-*` and other
 options keep forwarding to `node --test`. Every launch goes through the runner,
 so tests always run against a disposable temp data root with the quiet-console,
 isolated-data-root and skip-fsync preloads and can never resolve the real
 `data/`. Do not run `node --test` directly: it refuses to start without that
-isolation. `test:changed` falls back to the full suite when nothing matches.
+isolation. The backend suite needs only the root `npm ci`. `test:changed`
+follows static relative imports from changed files to their tests, including
+imports through scripts, entry points and test helpers. It falls back to the
+full suite when a changed backend file has no known test dependency, or a
+runner-wide input such as a preload changes.
 Set `TEST_CONSOLE=1` to keep console output that the quiet-console preload
 otherwise suppresses.
 

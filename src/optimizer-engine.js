@@ -68,8 +68,8 @@ const requireSupportedIntervals = (intervals) => {
 /**
  * Pre-fetch and cache price data for selected interval types
  * This improves performance by avoiding redundant API calls
- * @param {string[]} intervals - Interval types to fetch
- * @param {string[]} periods - Periods to fetch (determines max intervals needed)
+ * @param {readonly string[]} intervals - Interval types to fetch
+ * @param {readonly string[]} periods - Periods to fetch (determines max intervals needed)
  * @param {function} onProgress - Progress callback
  * @param {string} exchange - Exchange name (coinbase, gemini, cryptocom)
  * @param {boolean} forceRefresh - If true, fetch fresh data; otherwise prefer cached data
@@ -103,6 +103,7 @@ const prefetchPriceData = async (intervals, periods, onProgress, exchange = 'coi
     // Use preferCache option to avoid fetching new data if we have enough cached
     // Wrap in error handling to prevent crashes from API failures
     const freshness = {};
+    /** @type {Error|null} */
     let fetchError = null;
     const priceData = await getPriceData(maxIntervals, intervalType, exchange, {
       preferCache: !forceRefresh,
@@ -264,7 +265,7 @@ const runSingleBacktest = async (params, priceCache, fees, exchange, productId =
  * @param {string[]} [options.periods] - Periods to test (default: 30D, 60D, 90D, 1Y)
  * @param {Object} [options.buyAmounts] - Buy amounts per interval (default: scaled)
  * @param {{feePercent: number, rebatePercent: number}} [options.fees] - Resolved fund fee assumptions
- * @returns {Object} Optimization results
+ * @returns {Promise<Object>} Optimization results
  */
 const runOptimizer = async ({
   fundSize = 10000,

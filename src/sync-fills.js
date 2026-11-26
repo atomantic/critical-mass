@@ -28,7 +28,7 @@ const indexFillsByTradeId = (fills) => new Map(fills.map(fill => [fill.tradeId, 
  * @param {Object} fillLedger - Fill ledger instance
  * @param {Object} manualTradeStore - Manual trade store instance
  * @param {Object} options
- * @param {string} options.startDate - Required ISO date string
+ * @param {string} [options.startDate] - Required ISO date string
  * @param {string} [options.pair] - Fund pair/productId (e.g. 'ETH-USDC', 'ETHUSD'). Defaults to the legacy BTC pair for backward compatibility.
  * @param {AbortSignal} [options.signal] - Cancels the exchange history read
  * @param {(progress: import('./types').ReconciliationScanProgress) => void} [options.onProgress] - History-read progress

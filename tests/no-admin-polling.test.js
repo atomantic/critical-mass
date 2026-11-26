@@ -27,7 +27,7 @@ const UI_ONLY_INTERVALS = new Map([
 const UI_ONLY_NAMED_BODIES = new Map([
   ['components/Dashboard.jsx', ['updateCountdown', `{
     const now = Date.now()
-    const target = new Date(nextTrade.nextTradeTime).getTime()
+    const target = new Date(nextTradeTime).getTime()
     const remaining = target - now
     setCountdown(formatCountdown(remaining))
   }`]],

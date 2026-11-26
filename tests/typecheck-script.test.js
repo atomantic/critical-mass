@@ -79,7 +79,11 @@ describe('typecheck ratchet: script against a fixture project', () => {
     const improved = run();
     assert.equal(improved.status, 0);
     assert.match(improved.stdout, /Lower the baseline/);
+    const strict = run('--strict-ratchet');
+    assert.equal(strict.status, 1);
+    assert.match(strict.stdout, /clean\.js: 1 -> 0/);
     run('--update');
     assert.deepEqual(JSON.parse(fs.readFileSync(baseline, 'utf8')), {});
+    assert.equal(run('--strict-ratchet').status, 0);
   });
 });

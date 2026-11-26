@@ -1,6 +1,7 @@
 import Button from './ui/Button'
 import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react'
-import { Link, useNavigate } from '../lib/router'
+import { Link } from '../lib/router'
+import { useNavigate } from '../lib/routerContext'
 import { ExternalLink } from './icons'
 import { useMultiRegimeStatuses } from '../hooks/useTradeEvents'
 import { getBaseCurrency, getQuoteCurrency } from '../utils/productId.mjs'
@@ -33,6 +34,12 @@ const getEngineStatus = (isRunning, isDryRun, lifecycle, engineDown) => {
   return { label: 'Stopped', color: 'bg-gray-600', textColor: 'text-gray-300' }
 }
 
+// Per-fund key used in snapshotMap. The /api/exchanges response now returns
+// one entry per (exchange, pair) fund — we use composite keys so two funds
+// on the same exchange (e.g., coinbase BTC-USDC and coinbase ETH-USDC) keep
+// independent status entries.
+const fundKey = (ex) => `${ex.name}::${ex.pair || ex.productId || ex.name || 'default'}`
+
 function Overview() {
   const navigate = useNavigate()
   const [exchanges, setExchanges] = useState([])
@@ -55,12 +62,6 @@ function Overview() {
     const result = await apiGet('/api/exchanges')
     if (result.ok) setExchanges(result.data.exchanges || [])
   }
-
-  // Per-fund key used in snapshotMap. The /api/exchanges response now returns
-  // one entry per (exchange, pair) fund — we use composite keys so two funds
-  // on the same exchange (e.g., coinbase BTC-USDC and coinbase ETH-USDC) keep
-  // independent status entries.
-  const fundKey = (ex) => `${ex.name}::${ex.pair || ex.productId || ex.name || 'default'}`
 
   const getOrCreateOwner = useCallback((ex) => {
     const key = fundKey(ex)
@@ -87,18 +88,8 @@ function Overview() {
     return owner
   }, [])
 
-  const retryFund = useCallback(async (card) => {
-    const key = card.key || fundKey(card)
-    const owner = ownersRef.current.get(key)
-    if (owner) {
-      await owner.retry()
-    } else {
-      await load()
-    }
-  }, [])
-
   // Fetch exchange list and each fund status as one retryable, fenced page load (#1817).
-  const load = async () => {
+  const load = useCallback(async () => {
     const loadId = ++loadOwnerRef.current
     abortControllerRef.current?.abort()
     const controller = new AbortController()
@@ -196,20 +187,32 @@ function Overview() {
         setLoading(false)
       }
     }
-  }
+  }, [getOrCreateOwner])
+
+  const retryFund = useCallback(async (card) => {
+    const key = card.key || fundKey(card)
+    const owner = ownersRef.current.get(key)
+    if (owner) {
+      await owner.retry()
+    } else {
+      await load()
+    }
+  }, [load])
 
   useEffect(() => {
+    const owners = ownersRef.current
+    const fallbackStatuses = fallbackStatusesRef.current
     load()
     return () => {
       loadOwnerRef.current += 1
       abortControllerRef.current?.abort()
-      for (const owner of ownersRef.current.values()) {
+      for (const owner of owners.values()) {
         owner.dispose()
       }
-      ownersRef.current.clear()
-      fallbackStatusesRef.current.clear()
+      owners.clear()
+      fallbackStatuses.clear()
     }
-  }, [])
+  }, [load])
 
   // Merge WebSocket updates into snapshot map. wsSnapshots is keyed by
   // `${exchange}::${pair}` with monotonic generations so each fund updates

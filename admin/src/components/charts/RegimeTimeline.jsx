@@ -1,7 +1,7 @@
 import { memo, useId, useMemo } from 'react'
 import { formatTime, timeScale } from '../../lib/chart-math'
 import ChartDataAlternative from './ChartDataAlternative'
-import { useElementSize } from './primitives/Responsive'
+import { useElementSize } from './primitives/chartMeasurement'
 import {
   REGIME_INTERVAL_COLUMNS,
   buildRegimeIntervals,
@@ -41,23 +41,18 @@ function RegimeTimeline({
   const summaryId = useId()
 
   // Sort and prepare regime data
-  const regimeData = useMemo(() => {
+  const { regimeData, timeWindow } = useMemo(() => {
+    const now = Date.now()
+    const timeWindow = { now, timeStart: now - 60 * 60 * 1000 }
     if (data.length === 0 && currentRegime) {
       // If no history but we have current regime, show it
-      return [{
+      return { timeWindow, regimeData: [{
         mode: currentRegime.mode,
-        timestamp: currentRegime.since || Date.now() - 60000,
-      }]
+        timestamp: currentRegime.since || now - 60000,
+      }] }
     }
-    return [...data].sort((a, b) => a.timestamp - b.timestamp)
+    return { timeWindow, regimeData: [...data].sort((a, b) => a.timestamp - b.timestamp) }
   }, [data, currentRegime])
-
-  // One-hour window ending "now", fixed per data change so the drawn bar and the text equivalent
-  // below use identical boundaries.
-  const timeWindow = useMemo(() => {
-    const now = Date.now()
-    return { now, timeStart: now - 60 * 60 * 1000 }
-  }, [regimeData])
 
   const textAlternative = useMemo(() => {
     const { now, timeStart } = timeWindow

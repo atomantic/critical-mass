@@ -52,6 +52,9 @@ const ROOT_COMPARE_MAX_BYTES = 512 * 1024 * 1024;
 /**
  * Promise-wrapped spawn with spawnSync's result shape ({status, error, stdout,
  * stderr}), so callers keep the same exit-code and error handling.
+ * @param {string} command
+ * @param {string[]} args
+ * @param {{cwd?: string, timeout?: number}} [options]
  */
 const spawnAsync = (command, args, { cwd, timeout = SPAWN_TIMEOUT_MS } = {}) => new Promise((resolve) => {
   const out = [];
@@ -173,9 +176,9 @@ const readJsonFile = (file) => {
  */
 const readEffectiveConfig = ({ baseConfigFile, userConfigFile }) => {
   const baseRead = readJsonFile(baseConfigFile);
-  if (!baseRead.ok) return { ok: false, error: baseRead.error };
+  if (baseRead.ok === false) return { ok: false, error: baseRead.error };
   const userRead = readJsonFile(userConfigFile);
-  if (!userRead.ok) return { ok: false, error: userRead.error };
+  if (userRead.ok === false) return { ok: false, error: userRead.error };
   const base = baseRead.value || {};
   return { ok: true, base, config: normalizeToMultiExchange(deepMerge(base, userRead.value || {})) };
 };

@@ -426,7 +426,7 @@ const createRiskManager = (exchange, config, productId) => {
 
   /**
    * Get current risk state
-   * @returns {{peakEquity: number, maxDrawdownSeen: number, isDrawdownPaused: boolean, drawdownPausedAt: number|null, drawdownPausedHours: number|null, equityDepleted: boolean}}
+   * @returns {{peakEquity: number, maxDrawdownSeen: number, currentDrawdownPercent: number, isDrawdownPaused: boolean, drawdownPausedAt: number|null, drawdownPausedHours: number|null, drawdownResetHours: number, equityDepleted: boolean}}
    */
   const getState = () => {
     let drawdownPausedHours = null;

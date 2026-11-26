@@ -461,7 +461,7 @@ const createMacroRegime = (exchange, config, adapter, productId) => {
 
   /**
    * Get full state for dashboard/persistence
-   * @returns {MacroRegimeState}
+   * @returns {MacroRegimeState & {longTermBias: (ReturnType<typeof computeDepressionScore> & {advisory: typeof suggestion, cache: ReturnType<NonNullable<typeof longTermStore>['getStats']>|null})|null}}
    */
   const getState = () => ({
     mode,

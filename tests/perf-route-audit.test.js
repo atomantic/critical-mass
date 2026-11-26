@@ -32,12 +32,12 @@ describe('perf metrics', () => {
 
 describe('route audit against the synthetic fixture', () => {
   it('serves a 30,000-fill ledger as a bounded page and passes all checks', async () => {
-    const fixture = await startFixture()
+    const fixture = await startFixture({ statusIntervalMs: 40 })
     try {
       assert.equal(fixture.ledgerSize, 30000)
       const huge = await (await fetch(`${fixture.baseUrl}/api/coinbase/regime/fills?paged=true&pageSize=100000`)).json()
       assert.ok(huge.fills.length <= PAGE_CAP)
-      const result = await runAudit({ baseUrl: fixture.baseUrl, pollMs: 200, idleMs: 1500, roomsOf: fixture.roomsOf })
+      const result = await runAudit({ baseUrl: fixture.baseUrl, pollMs: 100, idleMs: 120, roomsOf: fixture.roomsOf })
       for (const c of result.checks) assert.ok(c.ok, c.name)
       assert.equal(Object.keys(result.config.http).length, 1)
       assert.ok(result.transactions.http['GET /api/:exchange/config'].count === 1)

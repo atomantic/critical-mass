@@ -31,16 +31,10 @@ jobs:
         with:
           node-version: 26.x
           cache: npm
-          cache-dependency-path: |
-            package-lock.json
-            admin/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Install dependencies
         run: npm ci
-
-      # The root suite also exercises admin components and the browser fixture.
-      - name: Install admin dependencies for integration tests
-        run: npm ci --prefix admin
 
       - name: Run backend tests
         run: npm test
@@ -91,7 +85,7 @@ jobs:
         run: npm ci
 
       - name: Typecheck
-        run: npm run typecheck
+        run: npm run typecheck -- --strict-ratchet
 
   build:
     # Preserve the check name configured in the main branch ruleset.

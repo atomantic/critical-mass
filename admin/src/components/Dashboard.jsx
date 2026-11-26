@@ -8,7 +8,7 @@ import ConfirmDialog from './ui/ConfirmDialog'
 import FailedSellPlacements from './FailedSellPlacements'
 import DcaPlacementRecovery from './DcaPlacementRecovery'
 import DcaPendingBuyRecovery from './DcaPendingBuyRecovery'
-import { useToast } from './Toast'
+import { useToast } from './useToast'
 import { formatCurrency, formatPrice } from './charts/chartUtils'
 import { getBaseCurrency, getQuoteCurrency } from '../utils/productId.mjs'
 import { pairQuery as buildPairQuery } from '../utils/api'
@@ -104,17 +104,18 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
     onRefresh: fetchLive,
   })
 
+  const { nextTradeTime, enabled, fullyAllocated } = summary?.nextTrade || {}
+
   // Live countdown timer
   useEffect(() => {
-    const { nextTrade } = summary || {}
-    if (!nextTrade?.nextTradeTime || !nextTrade.enabled || nextTrade.fullyAllocated) {
+    if (!nextTradeTime || !enabled || fullyAllocated) {
       setCountdown('')
       return
     }
 
     const updateCountdown = () => {
       const now = Date.now()
-      const target = new Date(nextTrade.nextTradeTime).getTime()
+      const target = new Date(nextTradeTime).getTime()
       const remaining = target - now
       setCountdown(formatCountdown(remaining))
     }
@@ -122,7 +123,7 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
     updateCountdown()
     const interval = setInterval(updateCountdown, 1000)
     return () => clearInterval(interval)
-  }, [summary?.nextTrade?.nextTradeTime, summary?.nextTrade?.enabled, summary?.nextTrade?.fullyAllocated])
+  }, [nextTradeTime, enabled, fullyAllocated])
 
   const toggleConfig = async (key, value) => {
     await runDashboardAction({

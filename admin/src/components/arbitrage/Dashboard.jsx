@@ -3,7 +3,7 @@ import { useState, useEffect, useCallback } from 'react'
 import useRealtimeRefresh from '../../hooks/useRealtimeRefresh'
 import { getRealtimeClient } from '../../lib/realtime'
 import { apiGet, apiPost, apiPut, apiDelete, describeMutationFailure } from '../../utils/apiClient'
-import { useNotify } from '../Toast'
+import { useNotify } from '../useToast'
 
 const ROOM = 'arbitrage'
 // Bumped with the gateway's ARBITRAGE_DASHBOARD_VERSION whenever the page and

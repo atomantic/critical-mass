@@ -82,8 +82,11 @@ test('CI keeps the required check name and cancels only superseded pull request 
   assert.match(ciWorkflow, /  build:[\s\S]*?name: build \(26\.x\)[\s\S]*?needs: \[backend-tests, admin, typecheck\]\n    if: \$\{\{ always\(\) \}\}/);
   assert.equal((ciWorkflow.match(/node-version: 26\.x/g) || []).length, 3);
   assert.match(ciWorkflow, /  admin:[\s\S]*?cache-dependency-path: admin\/package-lock\.json/);
-  assert.match(ciWorkflow, /  backend-tests:[\s\S]*?cache-dependency-path: \|\n            package-lock\.json\n            admin\/package-lock\.json/);
-  assert.match(ciWorkflow, /run: npm ci --prefix admin\n\n      - name: Run backend tests\n        run: npm test/);
+  const backendJob = ciWorkflow.match(/^  backend-tests:\n([\s\S]*?)(?=^  admin:)/m)?.[1];
+  assert.ok(backendJob);
+  assert.match(backendJob, /cache-dependency-path: package-lock\.json/);
+  assert.match(backendJob, /run: npm ci\n\n      - name: Run backend tests\n        run: npm test/);
+  assert.doesNotMatch(backendJob, /admin\/package-lock\.json|npm ci --prefix admin/);
   assert.match(ciWorkflow, /  typecheck:[\s\S]*?cache-dependency-path: package-lock\.json/);
   assert.doesNotMatch(ciWorkflow, /matrix:|\[skip ci\]|\bdev\b/);
   assert.match(releaseDocs, /workflow_run/);

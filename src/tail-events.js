@@ -33,7 +33,7 @@ const createInitialPauseState = () => ({
 /**
  * Create tail events monitor instance
  * @param {string} exchange - Exchange name
- * @param {RegimeStrategyConfig} config - Configuration
+ * @param {RegimeStrategyConfig & {productId?: string}} config - Configuration
  * @param {Object} [callbacks] - Event callbacks
  * @param {Function} [callbacks.onSpreadPause] - Called once on entering a spread pause with (spreadBps, maxSpreadBps)
  * @param {Function} [callbacks.onDepthPause] - Called on depth pause

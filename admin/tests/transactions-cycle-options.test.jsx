@@ -18,14 +18,14 @@ const socket = vi.hoisted(() => {
 vi.mock('../src/lib/realtime', () => ({ getRealtimeClient: () => socket }))
 // Changes are throttled to one read per 2 s, counting the mount-time read.
 const pushChange = async () => {
-  await new Promise(resolve => setTimeout(resolve, 2100))
+  vi.setSystemTime(Date.now() + 2000)
   await act(async () => { socket.fire('regime:changed', { exchange: 'coinbase', pair: 'BTC-USDC' }) })
 }
 
 const require = createRequire(import.meta.url)
 const { createTransactionsReadView } = require('../../src/transactions-regime-query.js')
 const response = (body, status = 200) => ({ ok: status === 200, status, json: async () => body })
-afterEach(() => { cleanup(); vi.unstubAllGlobals() })
+afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals() })
 
 it('coalesces a burst of cycle-search edits into one ledger read', async () => {
   const view = createTransactionsReadView(() => [], () => 'r1')
@@ -85,6 +85,8 @@ it('does not carry a pending cycle search to a newly selected fund', async () =>
 })
 
 for (const cycles of [3000, 15000]) it(`keeps 30,000-fill requests and rendered options bounded at ${cycles} cycles, including refreshes and historical selection`, async () => {
+  // Keep Testing Library's polling timers real while moving the socket throttle.
+  vi.useFakeTimers({ toFake: ['Date'] })
   const history = Array.from({ length: 30000 }, (_, i) => ({ tradeId: `trade-${i}`, orderId: `order-${i}`, timestamp: i + 1000,
     cycleId: `cycle-${i % cycles}`, side: 'buy', size: 0.01, price: i + 1, quoteAmount: (i + 1) / 100, fee: 0 }))
   let revision = 'r1'
