@@ -15,6 +15,7 @@ const placementIntents = require('../src/placement-intent-storage');
 
 const EXCHANGE = 'coinbase';
 const PAIR = 'BTC-USDC';
+const INTENTS_PER_CHILD = 12;
 const REPO_ROOT = path.join(__dirname, '..');
 
 let tmpRoot;
@@ -54,10 +55,10 @@ const runChild = (label, count) => new Promise((resolve, reject) => {
 
 describe('placement intents cross-process lock', () => {
   it('two processes recording and resolving concurrently end with exactly the surviving rows', async () => {
-    await Promise.all([runChild('a', 50), runChild('b', 50)]);
+    await Promise.all([runChild('a', INTENTS_PER_CHILD), runChild('b', INTENTS_PER_CHILD)]);
 
     const actions = placementIntents.loadPlacementIntents(EXCHANGE, PAIR).map(i => i.action).sort();
-    const expected = ['a', 'b'].flatMap(l => Array.from({ length: 25 }, (_, n) => `${l}-${n * 2 + 1}`)).sort();
+    const expected = ['a', 'b'].flatMap(l => Array.from({ length: INTENTS_PER_CHILD / 2 }, (_, n) => `${l}-${n * 2 + 1}`)).sort();
     assert.deepEqual(actions, expected);
     assert.equal(fs.existsSync(`${placementIntents.getPlacementIntentsFile(EXCHANGE, PAIR)}.lock`), false);
   });

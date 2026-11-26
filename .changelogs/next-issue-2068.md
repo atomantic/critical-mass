@@ -1,0 +1,2 @@
+- Scan published container images with Trivy weekly and after release publication, with fixable high and critical vulnerabilities listed in the GitHub Actions job summary.
+- Update the Umbrel package to the published v2.31.0 multi-platform image.

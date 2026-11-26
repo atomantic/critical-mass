@@ -40,7 +40,7 @@ npm run build
 For browser rendering, with Chrome/Chromium already installed:
 
 ```sh
-node tests/admin-react19-browser-smoke.js
+npm run test:browser-smoke
 node scripts/perf-browser-audit.js --json
 ```
 

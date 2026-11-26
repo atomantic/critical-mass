@@ -14,6 +14,8 @@ on:
       - config.example.json
       - shared/**
       - scripts/docker-*.sh
+      - scripts/prepare-docker-storage.sh
+      - .github/workflows/docker-build.yml
       - .github/workflows/docker-check.yml
 
 concurrency:
@@ -26,9 +28,13 @@ permissions:
 jobs:
   docker-check:
     runs-on: ubuntu-latest
+    env:
+      IMAGE: critical-mass-pr-check:ci
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
@@ -40,11 +46,24 @@ jobs:
           platforms: linux/amd64
           load: true
           push: false
-          tags: critical-mass-pr-check:ci
-          cache-from: type=gha,scope=docker-check
+          tags: ${{ env.IMAGE }}
+          cache-from: |
+            type=gha,scope=docker-check
+            type=gha
           cache-to: type=gha,mode=max,scope=docker-check
 
       - name: Seed config smoke test
+        run: npm run test:docker-seed
+
+      - name: Storage smoke test
         env:
-          IMAGE: critical-mass-pr-check:ci
-        run: scripts/docker-seed-config-smoke-test.sh
+          ALPINE_IMAGE: alpine:3.20
+          NODE_IMAGE: ${{ env.IMAGE }}
+        run: |
+          docker pull "$ALPINE_IMAGE"
+          npm run test:docker-storage
+
+      - name: Stop order smoke test
+        env:
+          NODE_IMAGE: ${{ env.IMAGE }}
+        run: npm run test:docker-stop-order
