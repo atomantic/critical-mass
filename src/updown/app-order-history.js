@@ -45,6 +45,9 @@ const buyCost = (btc, c, qty = 1) => qty * (contractValue(btc, c) + FEE_PER_CONT
 /** Proceeds of selling `qty` contracts at `btc`, fee deducted (settlement included). */
 const sellProceeds = (btc, c, qty = 1) => qty * (contractValue(btc, c) - FEE_PER_CONTRACT);
 
+/** Knock-out or expiry proceeds cannot be negative. */
+const settlementProceeds = (btc, c, qty = 1) => Math.max(0, sellProceeds(btc, c, qty));
+
 const newYorkHour = new Intl.DateTimeFormat('en-US', {
   timeZone: 'America/New_York', hour: 'numeric', hourCycle: 'h23',
 });
@@ -177,6 +180,7 @@ module.exports = {
   contractValue,
   buyCost,
   sellProceeds,
+  settlementProceeds,
   expiryMs,
   appOrderKey,
   validateAppOrder,

@@ -16,7 +16,7 @@ import UpDipPanel from './UpDipPanel'
 import ScorecardPanel from './ScorecardPanel'
 import TimeWarningBanner from './TimeWarningBanner'
 import { parseExpiry } from '../../utils/parseExpiry.mjs'
-import { calculateManualPositionPnl, isFreshTick } from './position-tracker-math'
+import { isFreshTick } from './position-tracker-math'
 import { labelHistoryActions } from '../../constants/signals'
 import { formatCurrencyIntl as formatCurrency } from '../charts/chartUtils'
 import { createRequestOwner } from '../../utils/requestOwner.mjs'
@@ -65,13 +65,17 @@ export default function UpDownDashboard() {
       // Seed signal annotations from backend history on first load
       if (!seededRef.current && data.signalHistory?.length) {
         seededRef.current = true
-        setSignalAnnotations(labelHistoryActions(data.signalHistory)
-          .filter(s => s.action === 'OPEN' || s.action === 'ADD' || s.action === 'CLOSE')
+        const history = labelHistoryActions(data.signalHistory)
+          .filter(s => s.filled !== false && ['OPEN', 'ADD', 'CLOSE'].includes(s.action))
           .map(s => ({
             timestamp: s.timestamp,
             type: s.action,
             score: s.score ?? 0,
-          })))
+          }))
+        setSignalAnnotations(prev => {
+          const entries = new Map([...history, ...prev].map(entry => [`${entry.timestamp}:${entry.type}`, entry]))
+          return [...entries.values()].sort((a, b) => a.timestamp - b.timestamp).slice(-100)
+        })
       }
     }
     setLoading(false)
@@ -93,15 +97,17 @@ export default function UpDownDashboard() {
   // Track signal changes for chart annotations + audio alerts
   useEffect(() => {
     if (!signal?.type) return
-    if (signal.type === prevSignalRef.current) return
-    prevSignalRef.current = signal.type
+    const eventKey = `${signal.timestamp}:${signal.type}:${signal.action}:${signal.filled}`
+    if (eventKey === prevSignalRef.current) return
+    prevSignalRef.current = eventKey
 
     const action = signal.action
-    const isFillAction = !!signal.filled && (action === 'OPEN' || action === 'ADD' || action === 'CLOSE')
+    const isFillAction = signal.filled === true && ['OPEN', 'ADD', 'CLOSE'].includes(action)
     const isLegacyDirectional = !action && signal.type !== 'NEUTRAL' && signal.type !== 'NO_TRADE_ZONE'
     if (isFillAction || isLegacyDirectional) {
       setSignalAnnotations(prev => {
-        const entry = { timestamp: signal.timestamp || Date.now(), type: action || signal.type, score: signal.score ?? 0 }
+        const entry = { timestamp: signal.timestamp ?? Date.now(), type: action || signal.type, score: signal.score ?? 0 }
+        if (prev.some(s => s.timestamp === entry.timestamp && s.type === entry.type)) return prev
         return [...prev, entry].slice(-100)
       })
     }
@@ -119,7 +125,7 @@ export default function UpDownDashboard() {
       osc.stop(ctx.currentTime + 0.2)
       osc.onended = () => ctx.close()
     }
-  }, [signal?.type, signal?.action, signal?.filled, signal?.score, signal?.timestamp, audioEnabled])
+  }, [signal, audioEnabled])
 
   const handleStart = async () => {
     setStarting(true)
@@ -177,15 +183,6 @@ export default function UpDownDashboard() {
   // still fresh. Do not let its old countdown or P&L override the new status.
   const timeRemaining = tickFresh && tick?.contract?.expiry === status?.contract?.expiry
     ? tick?.timeRemaining : null
-  const trackedPosition = status?.position
-  const contractPnl = trackedPosition && priceFresh
-    ? calculateManualPositionPnl({
-      currentPrice,
-      entryPrice: trackedPosition.entryPrice,
-      contracts: trackedPosition.contracts,
-      direction: trackedPosition.direction === 'down' ? 'Down' : 'Up',
-    })?.pnl ?? null
-    : null
 
   // Time remaining for signal banner
   const expiryMs = parseExpiry(status?.contract?.expiry)
@@ -343,18 +340,20 @@ export default function UpDownDashboard() {
             timeRemaining={msLeft}
             position={status?.position}
           />
-          <UpDipPanel />
-          <ScorecardPanel
-            scorecard={socketScorecard || status?.scorecard}
-            perp={rawIndicators?.perp || tick?.perp || status?.perp}
-          />
           <ContractSetup initialContract={status?.contract} />
           <PositionTracker
             initialPosition={status?.position}
             currentPrice={currentPrice}
-            contractPnl={contractPnl}
             priceFresh={priceFresh}
           />
+          <UpDipPanel />
+          <details className="bg-gray-800 rounded-lg border border-gray-700">
+            <summary className="min-h-10 px-4 py-2.5 cursor-pointer text-sm font-semibold">Scorecard &amp; perp paper book</summary>
+            <ScorecardPanel
+              scorecard={socketScorecard || status?.scorecard}
+              perp={rawIndicators?.perp || tick?.perp || status?.perp}
+            />
+          </details>
         </div>
       </div>
 

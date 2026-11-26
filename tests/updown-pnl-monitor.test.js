@@ -2,6 +2,7 @@
 const { describe, it } = require('node:test')
 const assert = require('node:assert/strict')
 const { verdictOf, summarize, replaySignals, priceAt } = require('../src/updown/pnl-monitor')
+const { createPerpBook } = require('../src/updown/perp-book')
 
 describe('pnl-monitor verdict', () => {
   it('is NO_FILLS when the book never opened', () => {
@@ -13,6 +14,15 @@ describe('pnl-monitor verdict', () => {
     assert.equal(verdictOf({ contracts: 1, rounds: 0, totalPnl: 12 }), 'PROFITABLE')
     assert.equal(verdictOf({ contracts: 0, rounds: 1, totalPnl: -5 }), 'UNDERWATER')
     assert.equal(verdictOf({ contracts: 1, rounds: 0, totalPnl: 0 }), 'FLAT')
+  })
+
+  it('uses net marks and labels a book that contains old gross profits', () => {
+    const book = createPerpBook({}, { feePerContract: 0.5, slippageBps: 2 })
+    book.applyFill('OPEN', 100_000, 1)
+    assert.equal(verdictOf(book.snapshot(100_100)), 'UNDERWATER')
+    assert.equal(verdictOf(book.snapshot()), 'MARK_UNAVAILABLE')
+    book.hydrate({ contractSizeBtc: 0.01, realizedPnl: 10, closedTrades: [{ pnl: 10 }] })
+    assert.equal(verdictOf(book.snapshot()), 'MIXED_COST_BASIS')
   })
 })
 
