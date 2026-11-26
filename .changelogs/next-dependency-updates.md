@@ -1,0 +1,1 @@
+- Updated `admin` devDependencies: `vite` to `^8.4.0` and `vitest` to `5.1.2`.
