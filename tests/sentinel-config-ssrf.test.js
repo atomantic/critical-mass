@@ -61,6 +61,20 @@ describe('PUT /api/sentinel/config rejects unsafe feed URLs (issue #215-A)', () 
     assert.equal(getUpdatedWith(), null);
   });
 
+  it('rejects a local RSS feed even when its origin is allowlisted for AI', async (t) => {
+    const previous = process.env.AI_ALLOWED_ENDPOINTS;
+    process.env.AI_ALLOWED_ENDPOINTS = 'http://localhost:11434';
+    t.after(() => {
+      if (previous === undefined) delete process.env.AI_ALLOWED_ENDPOINTS;
+      else process.env.AI_ALLOWED_ENDPOINTS = previous;
+    });
+
+    const { app, getUpdatedWith } = setup();
+    const res = await invoke(app, { feeds: [{ name: 'local', url: 'http://localhost:11434/rss' }] });
+    assert.equal(res.statusCode, 400);
+    assert.equal(getUpdatedWith(), null);
+  });
+
   it('rejects a non-string feed url', async () => {
     const { app } = setup();
     const res = await invoke(app, { feeds: [{ name: 'bad', url: 12345 }] });

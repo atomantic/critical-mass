@@ -62,6 +62,19 @@ describe('AI provider security policy', () => {
     assert.equal(targetReached, false);
   });
 
+  it('rejects credentials and non-HTTP schemes on redirects to allowlisted origins', async () => {
+    const locations = ['https://user:secret@api.example.com/final', 'blob:https://api.example.com/fixture'];
+    for (const location of locations) {
+      let calls = 0;
+      const guarded = createAllowlistedFetch(allowed, async () => {
+        calls++;
+        return Response.redirect(location, 307);
+      });
+      await assert.rejects(guarded('https://api.example.com/start'), /redirect must (not contain credentials|use http or https)/);
+      assert.equal(calls, 1);
+    }
+  });
+
   it('follows allowlisted redirects and drops Authorization across origins', async (t) => {
     const seen = [];
     const target = await listen((req, res) => { seen.push({ method: req.method, auth: req.headers.authorization }); res.end('ok'); });

@@ -59,6 +59,19 @@ const parseAllowedOrigins = (value = process.env.AI_ALLOWED_ENDPOINTS || '') => 
 );
 
 /**
+ * @param {URL} endpoint
+ * @param {Set<string>} allowedOrigins
+ */
+const validateOrigin = (endpoint, allowedOrigins) => {
+  if (endpoint.protocol !== 'http:' && endpoint.protocol !== 'https:') return 'must use http or https';
+  if (endpoint.username || endpoint.password) return 'must not contain credentials';
+  if (!allowedOrigins.has(endpoint.origin)) return `origin is not allowlisted: ${endpoint.origin}`;
+  return null;
+};
+
+class AiEndpointError extends Error {}
+
+/**
  * Why a provider may not be stored or contacted, or null when it may.
  * @param {any} provider
  * @param {Set<string>} allowedOrigins
@@ -67,12 +80,10 @@ const parseAllowedOrigins = (value = process.env.AI_ALLOWED_ENDPOINTS || '') => 
 const validateProvider = (provider, allowedOrigins) => {
   if (provider?.type === 'cli') return 'CLI providers are not supported; configure an API provider';
   if (provider?.type !== 'api') return 'Provider type must be api';
-  if (typeof provider.endpoint !== 'string' || !URL.canParse(provider.endpoint)) return 'Provider endpoint must be a valid URL';
-  const endpoint = new URL(provider.endpoint);
-  if (endpoint.protocol !== 'http:' && endpoint.protocol !== 'https:') return 'Provider endpoint must use http or https';
-  if (endpoint.username || endpoint.password) return 'Provider endpoint must not contain credentials';
-  if (!allowedOrigins.has(endpoint.origin)) return `Provider endpoint origin is not allowlisted: ${endpoint.origin}`;
-  return null;
+  const endpoint = typeof provider.endpoint === 'string' ? URL.parse(provider.endpoint) : null;
+  if (!endpoint) return 'Provider endpoint must be a valid URL';
+  const error = validateOrigin(endpoint, allowedOrigins);
+  return error ? `Provider endpoint ${error}` : null;
 };
 
 /**
@@ -154,17 +165,18 @@ const createAllowlistedFetch = (allowedOrigins, fetchImpl = globalThis.fetch) =>
   /** @type {RequestInit} */
   let options = { ...init, redirect: 'manual' };
   for (let redirects = 0; ; redirects += 1) {
-    if (!allowedOrigins.has(url.origin)) {
-      throw new Error(`AI provider ${redirects ? 'redirect ' : ''}origin is not allowlisted: ${url.origin}`);
-    }
+    options.signal?.throwIfAborted();
+    const error = validateOrigin(url, allowedOrigins);
+    if (error) throw new AiEndpointError(`AI provider ${redirects ? 'redirect ' : ''}${error}`);
     const response = await fetchImpl(url, options);
     if (!REDIRECT_STATUSES.has(response.status)) return boundResponse(response, options.signal);
     const location = response.headers.get('location');
     if (!location) return boundResponse(response, options.signal);
-    await response.body?.cancel().catch(() => {});
+    void response.body?.cancel().catch(() => {});
     if (redirects === MAX_REDIRECTS) throw new Error('AI provider exceeded the redirect limit');
 
-    const nextUrl = new URL(location, url);
+    const nextUrl = URL.parse(location, url);
+    if (!nextUrl) throw new AiEndpointError('AI provider redirect must be a valid URL');
     if (response.status === 303 || ((response.status === 301 || response.status === 302) && options.method === 'POST')) {
       options = { ...options, method: 'GET' };
       delete options.body;
@@ -178,4 +190,4 @@ const createAllowlistedFetch = (allowedOrigins, fetchImpl = globalThis.fetch) =>
   }
 };
 
-module.exports = { MAX_RESPONSE_BYTES, REDACTED, createAllowlistedFetch, parseAllowedOrigins, redactSecrets, restoreRedactedValues, validateProvider };
+module.exports = { AiEndpointError, MAX_RESPONSE_BYTES, REDACTED, createAllowlistedFetch, parseAllowedOrigins, redactSecrets, restoreRedactedValues, validateProvider };

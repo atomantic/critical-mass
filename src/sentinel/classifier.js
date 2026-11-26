@@ -11,8 +11,7 @@ const { readFile } = require('fs/promises');
 const path = require('path');
 const { createContextLogger } = require('../logger');
 const { SENTINEL_DEFAULTS } = require('../config-utils');
-const { validateEndpointUrl, safeFetch } = require('../url-validator');
-const { parseAllowedOrigins } = require('../ai-security');
+const { createAllowlistedFetch, parseAllowedOrigins, validateProvider } = require('../ai-security');
 const { DATA_DIR } = require('../paths');
 
 /** Classification is provider-scoped; the provider travels per call. */
@@ -140,7 +139,8 @@ const classifyByAI = async (item, aiConfig, deadlineSignal) => {
     const activeProvider = isEnabledApi(configured) ? configured : Object.values(providers).find(isEnabledApi);
     if (!activeProvider) return null;
     const allowedOrigins = parseAllowedOrigins();
-    if (!URL.canParse(activeProvider.endpoint) || !allowedOrigins.has(new URL(activeProvider.endpoint).origin)) return null;
+    if (validateProvider(activeProvider, allowedOrigins)) return null;
+    const fetchProvider = createAllowlistedFetch(allowedOrigins);
 
     // Feed content (title/description) is untrusted external input — delimited and
     // explicitly flagged as data-only so embedded instructions in a malicious/compromised
@@ -167,29 +167,12 @@ Return:
   "suggestedAction": "<brief action suggestion for a crypto trader>"
 }`;
 
-    // Validate provider endpoint URL to prevent SSRF attacks (includes async DNS check).
-    signal.throwIfAborted();
-    const endpointValidation = await validateEndpointUrl(activeProvider.endpoint, { signal });
-    signal.throwIfAborted();
-    if (!endpointValidation.valid) {
-      classifierLogger.warn(`⚠️ Sentinel AI classification rejected: unsafe endpoint: ${endpointValidation.error}`, {
-        action: 'classify',
-        provider: activeProvider.name,
-        error: endpointValidation.error,
-      });
-      return null;
-    }
-
     const headers = { 'Content-Type': 'application/json' };
     if (activeProvider.apiKey) headers['Authorization'] = `Bearer ${activeProvider.apiKey}`;
 
-    // safeFetch re-validates every redirect target against the SSRF denylist and
-    // strips the Authorization header on cross-origin redirect — a bare fetch()
-    // here would leak activeProvider.apiKey to a redirect target and only
-    // validated the pre-redirect URL (issue #215-A class of bug).
+    /** @type {RequestInit} */
     const requestOptions = {
       method: 'POST',
-      allowedOrigins,
       headers,
       body: JSON.stringify({
         model: activeProvider.defaultModel,
@@ -199,14 +182,18 @@ Return:
       signal,
     };
 
-    // Validation awaited above: recheck and reserve synchronously so concurrent
+    // Reading the provider file yielded: recheck and reserve synchronously so concurrent
     // calls cannot oversubscribe. Every dispatched attempt consumes quota,
     // including timeouts, HTTP errors and invalid responses; never refund it.
+    signal.throwIfAborted();
     if (!hasAIQuota(maxPerHour)) return null;
     aiCallsThisHour++;
-    const response = await safeFetch(`${activeProvider.endpoint}/chat/completions`, requestOptions);
+    const response = await fetchProvider(`${activeProvider.endpoint}/chat/completions`, requestOptions);
 
-    if (!response.ok) return null;
+    if (!response.ok) {
+      await response.body?.cancel();
+      return null;
+    }
 
     const result = await response.json();
     signal.throwIfAborted();

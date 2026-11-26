@@ -1,0 +1,1 @@
+- Allow Sentinel classification and UpDown Vision to use explicitly allowlisted local AI providers such as Ollama and LM Studio.

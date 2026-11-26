@@ -8,6 +8,8 @@
  * dependency: the route validates the HTTP request and shapes the response.
  */
 
+const { AiEndpointError, createAllowlistedFetch, validateProvider } = require('../ai-security');
+
 // Strictly parse a finite number, or NaN. Unlike parseFloat, this rejects
 // numeric-prefix junk, empty strings, arrays, and booleans.
 const parseFiniteNumber = (v) => {
@@ -182,9 +184,10 @@ const applyExpiry = (extracted, now = Date.now()) => {
  */
 
 /**
- * @param {{validateEndpointUrl: (url: string, options?: {signal?: AbortSignal}) => Promise<{valid: boolean, error?: string}>, safeFetch: Function, allowedOrigins: Set<string>}} deps
+ * @param {{fetchImpl?: typeof fetch, allowedOrigins: Set<string>}} deps
  */
-const createVisionClient = ({ validateEndpointUrl, safeFetch, allowedOrigins }) => {
+const createVisionClient = ({ fetchImpl, allowedOrigins }) => {
+  const fetchProvider = createAllowlistedFetch(allowedOrigins, fetchImpl);
   /**
    * Send a screenshot to an OpenAI-compatible vision provider and return the
    * sanitized extracted fields, or an `{ ok:false, status, error }` the route
@@ -193,6 +196,16 @@ const createVisionClient = ({ validateEndpointUrl, safeFetch, allowedOrigins }) 
    * @returns {Promise<VisionResult>}
    */
   const analyzeScreenshot = async ({ provider, providerId, model, imageBuffer, mediaType, logger }) => {
+    const endpointError = validateProvider(provider, allowedOrigins);
+    if (endpointError) {
+      logger.warn(`⚠️ 🤖 UpDown screenshot rejected: unsafe endpoint for "${providerId}": ${endpointError}`, {
+        action: 'screenshot',
+        provider: providerId,
+        error: endpointError,
+      });
+      return { ok: false, status: 400, error: 'Provider endpoint is misconfigured. Contact the administrator.' };
+    }
+
     const base64Image = imageBuffer.toString('base64');
     const headers = { 'Content-Type': 'application/json' };
     if (provider.apiKey) headers['Authorization'] = `Bearer ${provider.apiKey}`;
@@ -214,30 +227,13 @@ const createVisionClient = ({ validateEndpointUrl, safeFetch, allowedOrigins }) 
 
     let aiResponse;
     try {
-      // Validate provider endpoint URL to prevent SSRF attacks (includes async DNS check).
-      const endpointValidation = await validateEndpointUrl(provider.endpoint, { signal: controller.signal });
-      controller.signal.throwIfAborted();
-      if (!endpointValidation.valid) {
-        // Log the full detail server-side (includes URL); return only a generic message to the caller.
-        logger.warn(`⚠️ 🤖 UpDown screenshot rejected: unsafe endpoint for "${providerId}": ${endpointValidation.error}`, {
-          action: 'screenshot',
-          provider: providerId,
-          error: endpointValidation.error,
-        });
-        return { ok: false, status: 400, error: 'Provider endpoint is misconfigured. Contact the administrator.' };
-      }
       logger.info(`ℹ️ 🤖 UpDown screenshot → ${providerId}/${model}`, {
         action: 'screenshot',
         provider: providerId,
         model,
       });
-      // safeFetch re-validates every redirect target through validateEndpointUrl,
-      // strips Authorization on cross-origin redirects, and re-checks the
-      // resolved IP at connect time (closes the redirect + TOCTOU SSRF gaps
-      // that a bare fetch() would leave open — issue #207).
-      const response = await safeFetch(`${provider.endpoint}/chat/completions`, {
+      const response = await fetchProvider(`${provider.endpoint}/chat/completions`, {
         method: 'POST',
-        allowedOrigins,
         headers,
         signal: controller.signal,
         body: JSON.stringify(body)
@@ -257,11 +253,7 @@ const createVisionClient = ({ validateEndpointUrl, safeFetch, allowedOrigins }) 
       const result = await response.json();
       aiResponse = result.choices?.[0]?.message?.content || '';
     } catch (err) {
-      // safeFetch's redirect/TOCTOU guard errors ("Blocked endpoint...",
-      // "Blocked private/reserved...") can name the internal address it
-      // refused to connect to — log that detail server-side but return a
-      // generic message to the caller (same treatment as the pre-check above).
-      const isSsrfBlock = /^Blocked (endpoint|private)/.test(err.message || '');
+      const isSsrfBlock = err instanceof AiEndpointError;
       logger.error(`❌ 🤖 UpDown screenshot AI failed: ${err.message}`, {
         action: 'screenshot',
         provider: providerId,
