@@ -16,7 +16,7 @@ const UI_ONLY_INTERVALS = new Map([
   ['components/Dashboard.jsx', ['updateCountdown']], // next-trade countdown
   ['components/regime/LiveStatusBar.jsx', ['() => setNow(Date.now())']], // elapsed-time clock
   ['components/updown/Dashboard.jsx', ['() => setClock(n => n + 1)']], // stale-price clock
-  ['hooks/useBtcSeconds.js', ['() => setElapsedAt(performance.now())']], // feed-age clock
+  ['hooks/useBtcSeconds.js', ['updateClock']], // feed-age clock
   ['hooks/useChartDataBuffer.js', ['flush']], // batches already-received ticks
   ['hooks/useCandleData.js', ['syncChart']], // renders already-received candles
 ])
@@ -31,6 +31,9 @@ const UI_ONLY_NAMED_BODIES = new Map([
     const remaining = target - now
     setCountdown(formatCountdown(remaining))
   }`]],
+  ['hooks/useBtcSeconds.js', ['updateClock', `{
+    setElapsedAt(performance.now())
+  }`]],
   ['hooks/useChartDataBuffer.js', ['flush', `{
     if (!dirtyRef.current) return
     dirtyRef.current = false
@@ -42,6 +45,8 @@ const UI_ONLY_NAMED_BODIES = new Map([
     setRegimeHistory([...regimeRef.current])
   }`]],
   ['hooks/useCandleData.js', ['syncChart', `{
+    if (!dirtyRef.current || document.visibilityState === 'hidden') return
+    dirtyRef.current = false
     const map = bucketsRef.current
     for (const bucket of map.values()) bucket.signalChange = null
     applySignalAnnotations(map, signalAnnotationsRef.current, bucketMs)

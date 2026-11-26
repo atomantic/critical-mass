@@ -1,14 +1,23 @@
 import React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, screen } from '@testing-library/react'
-import UpDipPanel from '../src/components/updown/UpDipPanel.jsx'
+import Panel from '../src/components/updown/UpDipPanel.jsx'
+import useUpDip from '../src/hooks/useUpDip.js'
 
 const api = vi.hoisted(() => ({ body: null }))
-vi.mock('../src/utils/apiClient', () => ({ apiGet: async () => ({ data: api.body }) }))
+vi.mock('../src/utils/apiClient', async importOriginal => ({
+  ...await importOriginal(),
+  apiGet: async () => ({ ok: true, data: api.body }),
+}))
 vi.mock('../src/hooks/useRealtimeRefresh', () => ({ default: () => {} }))
 vi.mock('../src/components/updown/AppQuoteForm', () => ({ default: () => <div data-testid="quote-form" /> }))
 
 afterEach(cleanup)
+
+function UpDipPanel() {
+  const upDip = useUpDip(true)
+  return <Panel {...upDip} />
+}
 
 const AT = Date.parse('2026-11-23T18:55:00Z')
 const contract = { floor: 59800, ceiling: 61800, expiryDate: '2026-11-28' }

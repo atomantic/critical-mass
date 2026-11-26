@@ -88,10 +88,12 @@ test('UpDown sync callbacks keep updating OHLC, indicators and annotations witho
   for (const [maxBuckets, bucketMs] of views) {
     const bucketsRef = { current: new Map(entries(Array.from({ length: maxBuckets }, (_, i) => i * bucketMs))) }
     const signalAnnotationsRef = { current: null }
+    const dirtyRef = { current: true }
     let snapshot
     const labelCacheRef = { current: createCandleLabelCache(key => { calls++; return String(key) }) }
     const syncChart = vm.runInNewContext(`${annotations}\n${sync}\nsyncChart`, {
-      bucketsRef, signalAnnotationsRef, labelCacheRef, bucketMs, maxBuckets, exchange: 'coinbase',
+      bucketsRef, signalAnnotationsRef, labelCacheRef, dirtyRef, bucketMs, maxBuckets, exchange: 'coinbase',
+      document: { visibilityState: 'visible' },
       useCallback: fn => fn, setChartData: value => { snapshot = value },
     })
     syncChart()
@@ -100,13 +102,18 @@ test('UpDown sync callbacks keep updating OHLC, indicators and annotations witho
     const bucket = bucketsRef.current.get(0)
     Object.assign(bucket, { open: 9, price: 12, high: 14, low: 8, haClose: 11, rsi: 62 })
     signalAnnotationsRef.current = [{ timestamp: 0, type: 'BUY', score: 40 }]
+    dirtyRef.current = true
+    syncChart()
+    const updated = snapshot
     for (let i = 0; i < 12; i++) syncChart()
+    assert.equal(snapshot, updated)
     assert.equal(calls, initialCalls)
     assert.notEqual(snapshot, previous)
     assert.equal(previous[0].price, 10)
     for (const key of ['open', 'price', 'high', 'low', 'haClose', 'rsi']) assert.equal(snapshot[0][key], bucket[key])
     assert.equal(snapshot[0].signalChange.type, 'BUY')
     signalAnnotationsRef.current = null
+    dirtyRef.current = true
     syncChart()
     assert.equal(snapshot[0].signalChange, null)
     assert.equal(labelCacheRef.current.size, maxBuckets)

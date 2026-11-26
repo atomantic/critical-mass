@@ -1,9 +1,7 @@
-import { useState, useEffect, useCallback } from 'react'
+import { memo } from 'react'
 import { TrendingUp } from '../icons'
 import UpDipHeld from './UpDipHeld'
 import AppQuoteForm from './AppQuoteForm'
-import { apiGet } from '../../utils/apiClient'
-import useRealtimeRefresh from '../../hooks/useRealtimeRefresh'
 import { formatSpread, formatUsd } from '../../utils/format.mjs'
 import { signedPrefix } from '../../utils/pnlFormat.mjs'
 
@@ -189,25 +187,7 @@ function ShadowBook({ book }) {
   )
 }
 
-export default function UpDipPanel() {
-  const [data, setData] = useState(null)
-  const [error, setError] = useState(null)
-
-  const load = useCallback(async (isActive = () => true) => {
-    const { data: body } = await apiGet('/api/updown/up-dip')
-    if (!isActive()) return
-    if (body?.success) { setData(body); setError(null) } else setError(body?.error || 'Up dip recommendations unavailable.')
-  }, [])
-
-  useEffect(() => {
-    let active = true
-    load(() => active)
-    return () => { active = false }
-  }, [load])
-
-  // The gateway emits updown:up-dip after each completed 1m bar it evaluates.
-  useRealtimeRefresh({ events: ['updown:up-dip'], rooms: ['updown'], minIntervalMs: 5000, onRefresh: load })
-
+function UpDipPanel({ data, error, load }) {
   const book = data?.latest?.decision
   // Market signal = the rule as if flat. Gateways without it only report the book's own decision.
   const decision = data?.latest?.signal ?? book
@@ -324,3 +304,5 @@ export default function UpDipPanel() {
     </>
   )
 }
+
+export default memo(UpDipPanel)

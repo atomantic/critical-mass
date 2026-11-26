@@ -7,7 +7,7 @@ import {
   computeStochasticSeries,
   computeMACDSeries,
 } from '../utils/computeIndicatorSeries'
-import { apiGet } from '../utils/apiClient'
+import { createSharedGet } from '../utils/sharedGet'
 import computeHeikinAshi from '../utils/computeHeikinAshi'
 import { createCandleLabelCache } from '../utils/candleLabels.mjs'
 
@@ -102,6 +102,10 @@ export const TIME_RANGES_BY_INTERVAL = {
 }
 
 const SYNC_INTERVAL_MS = 5_000
+let observationSeq = 0
+const stampHistory = () => ({ startedAt: Date.now(), seq: ++observationSeq })
+const readHistory = createSharedGet({ stamp: stampHistory })
+const retryHistory = createSharedGet({ stamp: stampHistory, delay: SYNC_INTERVAL_MS })
 
 /**
  * Create an empty bucket at a given time key
@@ -321,10 +325,9 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
   const labelCacheRef = useRef(null)
   if (labelCacheRef.current === null) labelCacheRef.current = createCandleLabelCache()
   const lastBucketKeyRef = useRef(null)
-  const historicalCandlesRef = useRef(null)
   const lastHARef = useRef(null) // previous bucket's HA values for live tick updates
   const activeSeriesKeyRef = useRef(null)
-  const fetchSeqRef = useRef(0)
+  const dirtyRef = useRef(false)
   const lastTickTimeRef = useRef(null)
   const lastTickWallClockRef = useRef(null)
   const lastProcessedTickRef = useRef({ price: null, timestamp: null, seriesKey: null })
@@ -349,6 +352,8 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
 
   // Sync buckets ref → chart state
   const syncChart = useCallback(() => {
+    if (!dirtyRef.current || document.visibilityState === 'hidden') return
+    dirtyRef.current = false
     const map = bucketsRef.current
     // Clear previous signal annotations then re-apply current set
     for (const bucket of map.values()) bucket.signalChange = null
@@ -558,7 +563,7 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
         const candleEndTime = sourceKey + sourceCandleMs
         const isCandleCompleted = now >= candleEndTime
         const requestStartedAfterCandleEnd = requestTime != null && requestTime >= candleEndTime
-        const isResponseAuthoritative = requestStartedAfterCandleEnd && fetchSeq != null && (existing.lastTickFetchSeq == null || fetchSeq > existing.lastTickFetchSeq)
+        const isResponseAuthoritative = requestStartedAfterCandleEnd && fetchSeq != null && (existing.lastTickSeq == null || fetchSeq > existing.lastTickSeq)
 
         if (existing.hasLiveTicks && (!isCandleCompleted || !requestStartedAfterCandleEnd)) {
           // Unfinished source candle or request started before candle completion:
@@ -595,20 +600,16 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
 
   // Fetch historical candles on mount or timeframe/exchange change.
   // Retries once after 5s if the requested candleTf is missing (derived TFs may not be ready yet)
-  const retryRef = useRef(false)
   useEffect(() => {
-    let cancelled = false
-    let retryTimer = null
-    let controller = new AbortController()
+    const controller = new AbortController()
+    const { signal } = controller
 
-    // Isolated timeframe/exchange check:
     if (activeSeriesKeyRef.current !== seriesKey) {
       activeSeriesKeyRef.current = seriesKey
       sourceCandlesMapRef.current = new Map()
       bucketsRef.current = new Map()
       lastBucketKeyRef.current = null
       lastHARef.current = null
-      historicalCandlesRef.current = null
       labelCacheRef.current.clear()
       setChartData([])
       lastTickTimeRef.current = null
@@ -617,57 +618,50 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
       liveObservationsMapRef.current = new Map()
     }
 
-    retryRef.current = false
     setIsLoading(true)
     setError(null)
-    const doFetch = () => {
-      const fetchSeq = ++fetchSeqRef.current
-      const requestTime = getNow()
-      controller = new AbortController()
-      apiGet(`/api/candles/${exchange}`, { signal: controller.signal })
-        .then(result => {
-          if (!result.ok) throw new Error(result.status >= 400 ? `Candle history request failed (${result.status})` : result.error)
-          return result.data
-        })
-        .then(data => {
-          if (cancelled) return
-          if (!data?.candles) { setIsLoading(false); return }
-          historicalCandlesRef.current = data.candles
-          // If the requested TF has data or we already retried, done loading
-          if (data.candles[candleTf]?.length || retryRef.current) {
-            if (data.candles[candleTf]?.length) {
-              mergeHistoricalCandlesRef.current(data.candles[candleTf], requestTime, fetchSeq)
-              syncChartRef.current()
-            }
-            setIsLoading(false)
-          } else {
-            // Derived TF not seeded yet — retry once after 5s (keep isLoading=true)
-            retryRef.current = true
-            retryTimer = setTimeout(() => { if (!cancelled) doFetch() }, 5000)
-          }
-        })
-        .catch(err => {
-          if (cancelled || err?.name === 'AbortError') return
-          setError(err?.message || 'Candle history request failed')
-          setIsLoading(false)
-        })
+    const url = `/api/candles/${exchange}`
+    const read = async (get) => {
+      const clockOffset = getNow() - Date.now()
+      const result = await get(url, { signal })
+      if (!result.ok) throw new Error(result.status >= 400 ? `Candle history request failed (${result.status})` : result.error)
+      // Translate the shared transport's start time to this chart's live clock
+      // as observed at subscription time. Later ticks cannot move that boundary.
+      return { ...result, requestTime: result.startedAt + clockOffset }
     }
-    doFetch()
-    return () => {
-      cancelled = true
-      controller.abort()
-      if (retryTimer !== null) clearTimeout(retryTimer)
+    const load = async () => {
+      try {
+        let result = await read(readHistory)
+        if (signal.aborted) return
+        if (result.data?.candles && !result.data.candles[candleTf]?.length) {
+          result = await read(retryHistory)
+          if (signal.aborted) return
+        }
+        const candles = result.data?.candles?.[candleTf]
+        if (candles?.length) {
+          mergeHistoricalCandlesRef.current(candles, result.requestTime, result.seq)
+          dirtyRef.current = true
+          syncChartRef.current()
+        }
+      } catch (err) {
+        if (!signal.aborted) setError(err?.message || 'Candle history request failed')
+      } finally {
+        if (!signal.aborted) setIsLoading(false)
+      }
     }
+    load()
+    return () => controller.abort()
   }, [exchange, candleTf, retryNonce, seriesKey, getNow])
 
   // Derive projection on display limit / range / bucket aggregation / annotations change
   useEffect(() => {
     updateFromSourceCandles()
+    dirtyRef.current = true
     syncChart()
   }, [bucketMs, maxBuckets, options.signalAnnotations, syncChart, updateFromSourceCandles])
 
   // Process live ticks into source candles and buckets (ref mutation only — no re-render per tick)
-  useEffect(() => {
+  const observeTick = useCallback((tickPrice, tickTimestamp) => {
     if (!Number.isFinite(tickPrice) || tickPrice <= 0) return
 
     // Avoid updating canonical source candles when only display dependencies change without a new tick observation
@@ -681,6 +675,8 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
     const now = tickTimestamp != null ? Number(tickTimestamp) : Date.now()
     lastTickTimeRef.current = now
     lastTickWallClockRef.current = Date.now()
+    const tickSeq = ++observationSeq
+    dirtyRef.current = true
 
     // 1. Record fine-grained live observation
     const liveKey = Math.floor(now / 1000) * 1000
@@ -715,7 +711,7 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
     if (sc) {
       sc.close = tickPrice
       sc.hasLiveTicks = true
-      sc.lastTickFetchSeq = fetchSeqRef.current
+      sc.lastTickSeq = tickSeq
       if (tickPrice > sc.high) sc.high = tickPrice
       if (tickPrice < sc.low) sc.low = tickPrice
     } else {
@@ -727,7 +723,7 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
         close: tickPrice,
         volume: 0,
         hasLiveTicks: true,
-        lastTickFetchSeq: fetchSeqRef.current,
+        lastTickSeq: tickSeq,
       })
     }
 
@@ -779,15 +775,32 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
       syncChart()
     }
     lastBucketKeyRef.current = bKey
-  }, [tickPrice, tickTimestamp, sourceCandleMs, bucketMs, legacyMode, syncChart, updateFromSourceCandles, views, candleTf, seriesKey])
+  }, [sourceCandleMs, bucketMs, legacyMode, syncChart, updateFromSourceCandles, views, candleTf, seriesKey])
+
+  const { subscribeTicks } = options
+  useEffect(() => {
+    observeTick(tickPrice, tickTimestamp)
+  }, [observeTick, tickPrice, tickTimestamp])
+  useEffect(() => subscribeTicks?.(tick => observeTick(tick.price, tick.timestamp)), [observeTick, subscribeTicks])
 
   useEffect(() => () => labelCacheRef.current.clear(), [])
 
   // Periodic sync (renders chart at most every 5s)
   // NOTE: must use window.setInterval to avoid the custom setInterval (line ~187) shadowing
   useEffect(() => {
-    const t = window.setInterval(syncChart, SYNC_INTERVAL_MS)
-    return () => window.clearInterval(t)
+    let timer
+    const onVisibility = () => {
+      window.clearInterval(timer)
+      if (document.visibilityState === 'hidden') return
+      syncChart()
+      timer = window.setInterval(syncChart, SYNC_INTERVAL_MS)
+    }
+    onVisibility()
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
   }, [syncChart])
 
   return {

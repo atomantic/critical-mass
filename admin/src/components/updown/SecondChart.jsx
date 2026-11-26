@@ -1,12 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { memo, useMemo, useState } from 'react'
 import Button from '../ui/Button'
 import { CartesianChart } from '../charts/primitives/CartesianChart'
 import HeikinAshiRenderer from '../charts/HeikinAshiRenderer'
 import VolumeRenderer from '../charts/VolumeRenderer'
 import { AXIS_TICK, BTC_TOOLTIP_STYLE, GRID, colors, formatBTCPrice } from '../charts/chartUtils'
 import useBtcSeconds from '../../hooks/useBtcSeconds'
-import useRealtimeRefresh from '../../hooks/useRealtimeRefresh'
-import { apiGet } from '../../utils/apiClient'
 import { formatUsd } from '../../utils/format.mjs'
 import { INTERVALS, MOVE_SECONDS, RANGES, buildSlots, contractBounds, freshness, isAllowed, priceMoves } from '../../utils/btcSeconds.mjs'
 
@@ -43,23 +41,44 @@ function priceDomain(slots) {
   return [min - pad, max + pad]
 }
 
-// The operator's hand-entered contract, shared with the Up Dip panel. Undefined until read.
-function useHeldContract() {
-  const [held, setHeld] = useState(undefined)
-  const load = useCallback(async () => {
-    const res = await apiGet('/api/updown/up-dip')
-    if (res.ok) setHeld(res.data?.held ?? null)
-  }, [])
-  useEffect(() => { load() }, [load])
-  useRealtimeRefresh({ events: ['updown:up-dip'], rooms: ['updown'], minIntervalMs: 5000, onRefresh: load })
-  return held
-}
+const SecondPricePlots = memo(function SecondPricePlots({ slots, floor, ceiling }) {
+  const domain = useMemo(() => priceDomain(slots), [slots])
+  const xAxis = useMemo(() => ({
+    dataKey: 'chartIndex', tickFormatter: i => (slots[i] ? clock(slots[i].t) : ''), tick: AXIS_TICK, interval: 'preserveStartEnd',
+  }), [slots])
+  const yAxes = useMemo(() => [{ domain: domain ?? ['auto', 'auto'], allowDataOverflow: true, tick: AXIS_TICK, tickFormatter: formatBTCPrice, width: Y_WIDTH }], [domain])
+  const volumeYAxes = useMemo(() => [{
+    domain: [0, Math.max(...slots.map(s => s.buyVolume + s.sellVolume), 0) || 1], tick: AXIS_TICK, tickFormatter: v => v.toFixed(1), width: Y_WIDTH,
+  }], [slots])
+  const tooltip = useMemo(() => ({
+    labelFormatter: i => (slots[i] ? clock(slots[i].t) : ''),
+    contentStyle: BTC_TOOLTIP_STYLE,
+    labelStyle: { color: '#9ca3af' },
+    formatter: (value, name) => [formatBTCPrice(value), name],
+  }), [slots])
+  // ReferenceLine itself draws nothing for a level outside the axis.
+  const referenceLines = useMemo(() => floor == null ? [] : [
+    { y: floor, stroke: colors.red, strokeDasharray: '3 3', label: { value: 'Floor', fontSize: 10 } },
+    { y: ceiling, stroke: colors.green, strokeDasharray: '3 3', label: { value: 'Ceiling', fontSize: 10 } },
+  ], [floor, ceiling])
+
+  return domain && (
+    <>
+      <CartesianChart
+        data={slots} height={240} margin={MAIN_MARGIN} grid={GRID} xAxis={xAxis} yAxes={yAxes} tooltip={tooltip}
+        series={SERIES} referenceLines={referenceLines} underlay={<HeikinAshiRenderer data={slots} fields={OHLC} />}
+      />
+      <CartesianChart
+        data={slots} height={60} margin={VOLUME_MARGIN} xAxis={VOLUME_X_AXIS} yAxes={volumeYAxes} underlay={<VolumeRenderer data={slots} />}
+      />
+    </>
+  )
+})
 
 /** Sub-minute BTC: Coinbase 1s candles and volume, the Crypto.com index, and contract distances. */
-export default function SecondChart({ contract }) {
+function SecondChart({ contract, held }) {
   const [interval, setIntervalSeconds] = useState(1)
   const [range, setRange] = useState(300)
-  const held = useHeldContract()
   const { bars, index, nowMs, ages, error } = useBtcSeconds(range)
 
   const chooseInterval = (next) => {
@@ -84,25 +103,7 @@ export default function SecondChart({ contract }) {
     () => (slotNow === null ? [] : buildSlots({ bars, index, interval, range, nowMs: slotNow })),
     [bars, index, interval, range, slotNow],
   )
-  const domain = useMemo(() => priceDomain(slots), [slots])
-  const xAxis = useMemo(() => ({
-    dataKey: 'chartIndex', tickFormatter: i => (slots[i] ? clock(slots[i].t) : ''), tick: AXIS_TICK, interval: 'preserveStartEnd',
-  }), [slots])
-  const yAxes = useMemo(() => [{ domain: domain ?? ['auto', 'auto'], allowDataOverflow: true, tick: AXIS_TICK, tickFormatter: formatBTCPrice, width: Y_WIDTH }], [domain])
-  const volumeYAxes = useMemo(() => [{
-    domain: [0, Math.max(...slots.map(s => s.buyVolume + s.sellVolume), 0) || 1], tick: AXIS_TICK, tickFormatter: v => v.toFixed(1), width: Y_WIDTH,
-  }], [slots])
-  const tooltip = useMemo(() => ({
-    labelFormatter: i => (slots[i] ? clock(slots[i].t) : ''),
-    contentStyle: BTC_TOOLTIP_STYLE,
-    labelStyle: { color: '#9ca3af' },
-    formatter: (value, name) => [formatBTCPrice(value), name],
-  }), [slots])
-  // ReferenceLine itself draws nothing for a level outside the axis.
-  const referenceLines = bounds ? [
-    { y: bounds.floor, stroke: colors.red, strokeDasharray: '3 3', label: { value: 'Floor', fontSize: 10 } },
-    { y: bounds.ceiling, stroke: colors.green, strokeDasharray: '3 3', label: { value: 'Ceiling', fontSize: 10 } },
-  ] : []
+  const { floor, ceiling } = bounds ?? {}
 
   return (
     <section aria-label="BTC 1-second chart" className="bg-gray-800 rounded-lg p-4 border border-gray-700">
@@ -132,17 +133,7 @@ export default function SecondChart({ contract }) {
       {error && <div role="alert" className="text-red-400 text-xs mb-2">1-second feed: {error}</div>}
       {!error && !bars.length && <div className="text-gray-400 text-sm text-center py-12">Waiting for trades…</div>}
 
-      {domain && (
-        <>
-          <CartesianChart
-            data={slots} height={240} margin={MAIN_MARGIN} grid={GRID} xAxis={xAxis} yAxes={yAxes} tooltip={tooltip}
-            series={SERIES} referenceLines={referenceLines} underlay={<HeikinAshiRenderer data={slots} fields={OHLC} />}
-          />
-          <CartesianChart
-            data={slots} height={60} margin={VOLUME_MARGIN} xAxis={VOLUME_X_AXIS} yAxes={volumeYAxes} underlay={<VolumeRenderer data={slots} />}
-          />
-        </>
-      )}
+      <SecondPricePlots slots={slots} floor={floor} ceiling={ceiling} />
 
       {bounds && (
         <div data-testid="second-bounds" className="mt-2 text-xs font-mono text-gray-300">
@@ -152,3 +143,5 @@ export default function SecondChart({ contract }) {
     </section>
   )
 }
+
+export default memo(SecondChart)

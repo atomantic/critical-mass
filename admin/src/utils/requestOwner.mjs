@@ -15,6 +15,7 @@ import { apiFetch } from './apiClient.js'
 
 export const createRequestOwner = ({
   fetchImpl = apiFetch,
+  readImpl,
   createAbortController = () => new AbortController(),
 } = {}) => {
   const state = { generation: 0, controller: null }
@@ -51,6 +52,11 @@ export const createRequestOwner = ({
   const read = async (url, options = {}) => {
     const token = claim()
     const signal = state.controller?.signal
+    if (readImpl) {
+      const result = await readImpl(url, { ...options, signal }).catch(() => null)
+      if (!owns(token)) return { owned: false, ok: false, data: null, token, signal }
+      return { ...result, owned: true, ok: result?.ok === true, data: result?.data ?? null, token, signal }
+    }
     const response = await fetchImpl(url, { ...options, signal }).catch(() => null)
     if (!owns(token)) return { owned: false, ok: false, data: null, token, signal }
 

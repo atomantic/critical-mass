@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { getRealtimeClient } from '../lib/realtime'
 
 const THROTTLE_MS = 250
@@ -18,6 +18,13 @@ export const useUpDownSocket = (options = {}) => {
   const [error, setError] = useState(null)
 
   const tickRef = useRef(null)
+  const publishedTick = useRef(null)
+  const tickListeners = useRef(new Set())
+  const subscribeTicks = useCallback(listener => {
+    tickListeners.current.add(listener)
+    if (publishedTick.current) listener(publishedTick.current)
+    return () => tickListeners.current.delete(listener)
+  }, [])
   const indicatorsRef = useRef(null)
   const tickThrottleRef = useRef(null)
   const indicatorsThrottleRef = useRef(null)
@@ -47,7 +54,9 @@ export const useUpDownSocket = (options = {}) => {
       if (!tickThrottleRef.current) {
         tickThrottleRef.current = setTimeout(() => {
           tickThrottleRef.current = null
-          setTick(tickRef.current)
+          publishedTick.current = tickRef.current
+          for (const listener of tickListeners.current) listener(publishedTick.current)
+          setTick(publishedTick.current)
         }, THROTTLE_MS)
       }
     }
@@ -100,7 +109,7 @@ export const useUpDownSocket = (options = {}) => {
     }
   }, [autoConnect])
 
-  return { connected, tick, indicators, signal, scorecard, error }
+  return { connected, tick, subscribeTicks, indicators, signal, scorecard, error }
 }
 
 export default useUpDownSocket

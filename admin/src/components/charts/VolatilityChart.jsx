@@ -71,16 +71,9 @@ function VolatilityChart({
       describeSeries('Volatility baseline', summarizeSeries(chartData, 'volBaseline'), formatPct),
       describeRegimeIntervals(intervals, 'the latest sample'),
     ]
-    const rows = chartData.map(d => ({
-      time: formatStamp(d.timestamp),
-      atr1m: formatUsd(d.atr1m),
-      atr5m: formatUsd(d.atr5m),
-      realizedVol: formatPct(d.realizedVol),
-      volBaseline: formatPct(d.volBaseline),
-    }))
     return {
       summary,
-      tables: [
+      getTables: () => [
         {
           caption: `Volatility samples from ${formatClock(start)} to ${formatClock(end)}`,
           columns: [
@@ -90,7 +83,14 @@ function VolatilityChart({
             { key: 'realizedVol', label: 'Realized volatility (%)' },
             { key: 'volBaseline', label: 'Volatility baseline (%)' },
           ],
-          rows,
+          rows: chartData,
+          formatRow: d => ({
+            time: formatStamp(d.timestamp),
+            atr1m: formatUsd(d.atr1m),
+            atr5m: formatUsd(d.atr5m),
+            realizedVol: formatPct(d.realizedVol),
+            volBaseline: formatPct(d.volBaseline),
+          }),
         },
         {
           caption: 'Regime intervals in the plotted window',
@@ -206,7 +206,7 @@ function VolatilityChart({
           </g>
         )}
       </svg>
-      <ChartDataAlternative summaryId={summaryId} summary={textAlternative.summary} tables={textAlternative.tables} />
+      <ChartDataAlternative summaryId={summaryId} summary={textAlternative.summary} getTables={textAlternative.getTables} />
     </div>
   )
 }

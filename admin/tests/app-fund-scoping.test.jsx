@@ -29,7 +29,21 @@ vi.mock('../src/components/Overview', () => ({ default: () => <div>Overview page
 vi.mock('../src/components/NotificationsConfig', () => ({ default: () => <div>Notifications page</div> }))
 vi.mock('../src/components/BackupRestore', () => ({ default: () => <div>Backups page</div> }))
 vi.mock('../src/components/Systems', () => ({ default: () => <div>Systems page</div> }))
-vi.mock('../src/components/RegimeDashboard', () => ({ default: () => <div>Regime dashboard</div> }))
+vi.mock('../src/components/RegimeDashboard', () => ({
+  default: function RegimeDashboardFixture({ exchange, pair, readInitialStatus }) {
+    const [loaded, setLoaded] = React.useState(false)
+    return (
+      <div>
+        Regime dashboard
+        <button onClick={async () => {
+          const result = await readInitialStatus(`/api/${exchange}/regime/status?pair=${encodeURIComponent(pair)}`)
+          setLoaded(result.ok)
+        }}>Read initial route status</button>
+        {loaded && <span>Route status loaded</span>}
+      </div>
+    )
+  },
+}))
 vi.mock('../src/components/Dashboard', () => ({ default: ({ summary }) => <div>DCA dashboard {summary?.marker}</div> }))
 vi.mock('../src/components/sentinel/AlertBanner', () => ({ default: () => null }))
 
@@ -132,7 +146,8 @@ it('keeps the regime summary off the dashboard, reads it for Config, and never r
   expect(urls.some(url => url.includes('/summary'))).toBe(false)
 
   fireEvent.click(screen.getByRole('link', { name: 'Config' }))
-  await screen.findByDisplayValue('111')
+  // Include the first lazy Config import on a busy test worker.
+  await screen.findByDisplayValue('111', {}, { timeout: 5000 })
   expect(urls.filter(url => url.includes('/summary'))).toEqual(['/api/coinbase/summary?pair=BTC-USDC'])
   expect(exchangeReads()).toHaveLength(1)
 })
@@ -191,4 +206,12 @@ it('discards a status read that was in flight when the operator left the fund fo
   await act(async () => { window.dispatchEvent(new PopStateEvent('popstate')) })
   expect(await screen.findByRole('button', { name: 'Start', exact: true })).toBeTruthy()
   expect(screen.queryByRole('button', { name: 'Stop', exact: true })).toBeNull()
+})
+
+it('shares the shell status response when the lazy route reads it after settlement', async () => {
+  mount('/coinbase/BTC-USDC')
+  await screen.findByRole('button', { name: 'Start', exact: true })
+  fireEvent.click(await screen.findByRole('button', { name: 'Read initial route status' }))
+  await screen.findByText('Route status loaded')
+  expect(fundReads()).toEqual(['/api/coinbase/regime/status?pair=BTC-USDC'])
 })

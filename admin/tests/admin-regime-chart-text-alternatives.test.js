@@ -49,26 +49,14 @@ describe('chartDataText helpers', () => {
 })
 
 describe('ChartDataAlternative', () => {
-  const columns = [{ key: 'a', label: 'Time' }, { key: 'b', label: 'Value (USD)' }]
-  it('renders a native details disclosure with a captioned table and scoped headers', () => {
-    const html = renderToStaticMarkup(React.createElement(Alt, {
-      summaryId: 'sum', summary: ['hello'], tables: [{ caption: 'Cap', columns, rows: [{ a: 't1', b: '$1' }] }],
-    }))
+  it('renders a closed native disclosure and its summary without building tables', () => {
+    const html = render(Alt, {
+      summaryId: 'sum', summary: ['hello'],
+      getTables: () => { throw new Error('closed disclosure must not build tables') },
+    })
     assert.match(html, /<details[^>]*>\s*<summary[^>]*>View chart data<\/summary>/)
-    assert.match(html, /<caption[^>]*>Cap<\/caption>/)
-    assert.match(html, /<th scope="col"[^>]*>Value \(USD\)<\/th>/)
     assert.match(html, /<div id="sum"[^>]*><p[^>]*>hello<\/p>/)
-    assert.doesNotMatch(html, /aria-live/)
-    assert.doesNotMatch(html, /Next/) // single page: no pagination
-  })
-
-  it('paginates numeric samples at 100 rows', () => {
-    const rows = Array.from({ length: 250 }, (_, i) => ({ a: `t${i}`, b: `$${i}` }))
-    const html = renderToStaticMarkup(React.createElement(Alt, { summaryId: 's', tables: [{ caption: 'Cap', columns, rows }] }))
-    assert.equal((html.match(/<tr /g) || []).length, 100)
-    assert.match(html, /Rows 1 to 100 of 250/)
-    assert.match(html, /<button type="button"[^>]*disabled=""[^>]*>Previous<\/button>/)
-    assert.match(html, /<button type="button"[^>]*>Next<\/button>/)
+    assert.doesNotMatch(html, /<table|aria-live/)
   })
 })
 
@@ -99,14 +87,11 @@ describe('regime chart consumers', () => {
     assert.match(html, /1 of 4 samples have no value/)
     assert.match(html, /upper trigger \$105\.00, lower trigger \$95\.00/)
     assert.match(html, /HARVEST from \d\d:\d\d:\d\d to \d\d:\d\d:\d\d \(began before the window\); TREND from \d\d:\d\d:\d\d to the latest sample/)
-    assert.match(html, /Latest sample \(/)
-    // chronological rows, outside-window sample excluded, missing shown as such
-    const rows = [...html.matchAll(/<tr [^>]*><th scope="row"[^>]*>([^<]*)<\/th><td[^>]*>([^<]*)<\/td>/g)].map(m => m[2])
-    assert.deepEqual(rows.slice(0, 4), ['$100.00', 'missing', '$120.00', '$90.00'])
+    assert.doesNotMatch(html, /<table/)
     assert.doesNotMatch(html, /\$1\.00/)
   })
 
-  it('volatility chart lists every series with units and sorted rows', () => {
+  it('volatility chart summarizes every series with units', () => {
     const atrData = [
       { timestamp: now - 2 * MIN, atr1m: 12, atr5m: 15, realizedVol: 0, volBaseline: 1.5 },
       { timestamp: now - 4 * MIN, atr1m: 10, atr5m: 14, realizedVol: 0.5, volBaseline: null },
@@ -118,10 +103,7 @@ describe('regime chart consumers', () => {
     assert.match(html, /ATR 1m rose from \$10\.00 to \$12\.00/)
     assert.match(html, /Realized volatility fell from 0\.50% to 0\.00%/)
     assert.match(html, /Volatility baseline was unchanged at 1\.50% .*; 1 of 2 samples have no value/)
-    for (const h of ['ATR 1m \\(USD\\)', 'ATR 5m \\(USD\\)', 'Realized volatility \\(%\\)', 'Volatility baseline \\(%\\)']) {
-      assert.match(html, new RegExp(`<th scope="col"[^>]*>${h}</th>`))
-    }
-    assert.match(html, /<td[^>]*>missing<\/td>/)
+    assert.doesNotMatch(html, /<table/)
     assert.doesNotMatch(html, /99\.00/)
   })
 
@@ -129,8 +111,7 @@ describe('regime chart consumers', () => {
     const html = render(Timeline, { data: regimes })
     assert.match(svgTag(html), /role="img"/)
     assert.match(html, /2 regime intervals: HARVEST from .* to \d\d:\d\d:\d\d; TREND from .* to now/)
-    assert.match(html, /<th scope="col"[^>]*>Duration<\/th>/)
-    assert.match(html, /Now \(/)
+    assert.doesNotMatch(html, /<table/)
     const empty = render(Timeline, { data: [] })
     assert.match(empty, /No regime history in the window\./)
     const fallback = render(Timeline, { data: [], currentRegime: { mode: 'CAUTION', since: now - 20 * MIN } })

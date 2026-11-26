@@ -12,6 +12,7 @@ import SignalPanel from './SignalPanel'
 import SignalBanner from './SignalBanner'
 import TimeframeGrid from './TimeframeGrid'
 import TradeHistory from './TradeHistory'
+import useUpDip from '../../hooks/useUpDip'
 import UpDipPanel from './UpDipPanel'
 import ScorecardPanel from './ScorecardPanel'
 import TimeWarningBanner from './TimeWarningBanner'
@@ -25,7 +26,7 @@ import useRealtimeRefresh from '../../hooks/useRealtimeRefresh'
 import { useNotify } from '../useToast'
 
 export default function UpDownDashboard() {
-  const { connected, tick, indicators: rawIndicators, signal, scorecard: socketScorecard } = useUpDownSocket()
+  const { connected, tick, subscribeTicks, indicators: rawIndicators, signal, scorecard: socketScorecard } = useUpDownSocket()
   // Flatten indicators.timeframes[tf].indicators into indicators[tf] for child components
   const indicators = useMemo(() => {
     if (!rawIndicators?.timeframes) return null
@@ -36,6 +37,7 @@ export default function UpDownDashboard() {
     return flat
   }, [rawIndicators])
   const [status, setStatus] = useState(null)
+  const upDip = useUpDip(Boolean(status))
   const [loading, setLoading] = useState(true)
   const [starting, setStarting] = useState(false)
   const [stopping, setStopping] = useState(false)
@@ -323,9 +325,9 @@ export default function UpDownDashboard() {
           <TradeHistory />
         </div>
         <div className="lg:col-span-2 flex flex-col gap-4">
-          <SecondChart contract={status?.contract} />
+          <SecondChart contract={status?.contract} held={upDip.data ? upDip.data.held ?? null : undefined} />
           <PriceChart
-            tick={tick}
+            subscribeTicks={subscribeTicks}
             indicators={indicators}
             weeklyTrend={rawIndicators?.weeklyTrend}
             dailySMA={rawIndicators?.dailySMA}
@@ -346,7 +348,7 @@ export default function UpDownDashboard() {
             currentPrice={currentPrice}
             priceFresh={priceFresh}
           />
-          <UpDipPanel />
+          <UpDipPanel data={upDip.data} error={upDip.error} load={upDip.load} />
           <details className="bg-gray-800 rounded-lg border border-gray-700">
             <summary className="min-h-10 px-4 py-2.5 cursor-pointer text-sm font-semibold">Scorecard &amp; perp paper book</summary>
             <ScorecardPanel
