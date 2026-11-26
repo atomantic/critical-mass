@@ -344,7 +344,8 @@ npm test -- tests/fill-ledger.test.js --test-name-pattern="holdback"
 npm run test:watch                         # re-run on change (combine with a file path)
 npm run test:changed                       # tests changed vs origin/main, plus tests that
                                            # mention a changed src/, shared/ or engines/ file
-npm run test:admin                         # admin (vitest) suite
+npm run test:admin                         # admin (Vitest) suite after npm ci --prefix admin
+npm run test:browser-smoke                  # optional React 19 smoke in local Chromium
 npm run test:all                           # backend, then admin
 npm run lint:admin                         # ESLint on admin/ (react-hooks rules; warning ceiling in admin/package.json)
 npm run typecheck                          # tsc over the // @ts-check backend files, ratcheted against typecheck-baseline.json
@@ -369,7 +370,11 @@ options keep forwarding to `node --test`. Every launch goes through the runner,
 so tests always run against a disposable temp data root with the quiet-console,
 isolated-data-root and skip-fsync preloads and can never resolve the real
 `data/`. Do not run `node --test` directly: it refuses to start without that
-isolation. `test:changed` falls back to the full suite when nothing matches.
+isolation. The backend suite needs only the root `npm ci`. `test:changed`
+follows static relative imports from changed files to their tests, including
+imports through scripts, entry points and test helpers. It falls back to the
+full suite when a changed backend file has no known test dependency, or a
+runner-wide input such as a preload changes.
 Set `TEST_CONSOLE=1` to keep console output that the quiet-console preload
 otherwise suppresses.
 

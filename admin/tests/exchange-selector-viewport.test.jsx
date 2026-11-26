@@ -64,3 +64,28 @@ it('tracks visual viewport changes, including zoom and viewport panning', () => 
   fireEvent(viewport, new Event('scroll'))
   expect(popup.style.left).toBe('86px')
 })
+
+it('restores focus on Escape and leaves outside focus alone on pointer dismissal', () => {
+  render(<>
+    <ExchangeSelector currentExchange="coinbase" currentPair="BTC-USD"
+      exchanges={[{ name: 'coinbase', pair: 'BTC-USD' }]} onChange={() => {}} />
+    <button type="button">Outside</button>
+  </>)
+  const trigger = screen.getByRole('button', { name: /BTC-USD/ })
+  fireEvent.click(trigger)
+  const options = document.getElementById(trigger.getAttribute('aria-controls'))
+  expect(options).toBeTruthy()
+  expect(trigger.getAttribute('aria-expanded')).toBe('true')
+
+  options.querySelector('button').focus()
+  expect(fireEvent.keyDown(document.activeElement, { key: 'Escape' })).toBe(false)
+  expect(trigger.getAttribute('aria-expanded')).toBe('false')
+  expect(document.activeElement).toBe(trigger)
+
+  fireEvent.click(trigger)
+  const outside = screen.getByRole('button', { name: 'Outside' })
+  outside.focus()
+  fireEvent.click(outside)
+  expect(trigger.getAttribute('aria-expanded')).toBe('false')
+  expect(document.activeElement).toBe(outside)
+})

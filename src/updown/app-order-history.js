@@ -45,13 +45,17 @@ const buyCost = (btc, c, qty = 1) => qty * (contractValue(btc, c) + FEE_PER_CONT
 /** Proceeds of selling `qty` contracts at `btc`, fee deducted (settlement included). */
 const sellProceeds = (btc, c, qty = 1) => qty * (contractValue(btc, c) - FEE_PER_CONTRACT);
 
+const newYorkHour = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'America/New_York', hour: 'numeric', hourCycle: 'h23',
+});
+
 /** Expiry instant: Saturday 04:00 America/New_York of the given YYYY-MM-DD. */
 const expiryMs = (date) => {
   const [y, m, d] = date.split('-').map(Number);
   // 04:00 New York is 08:00 UTC during DST and 09:00 UTC otherwise.
   for (const hourUtc of [8, 9]) {
     const ms = Date.UTC(y, m - 1, d, hourUtc);
-    const ny = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: 'numeric', hourCycle: 'h23' }).format(ms);
+    const ny = newYorkHour.format(ms);
     if (Number(ny) === 4) return ms;
   }
   return Date.UTC(y, m - 1, d, 9);
