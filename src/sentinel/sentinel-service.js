@@ -250,16 +250,24 @@ const createSentinelService = (io, deps) => {
       const matched = candidates.filter(c => c.keywordResult);
       if (matched.length > 0) {
         let timer;
-        let expired = false;
+        const controller = new AbortController();
+        const { signal } = controller;
         const deadline = new Promise(resolve => {
-          timer = setTimeout(() => { expired = true; resolve(); }, aiClassifyDeadlineMs);
+          timer = setTimeout(() => { controller.abort(); resolve(); }, aiClassifyDeadlineMs);
         });
         const classifications = Promise.all(matched.map(async (c) => {
-          const aiResult = await classifyAI(c.item, config.aiClassification).catch(() => null);
-          if (!expired) c.aiResult = aiResult ?? null; // late results are discarded
+          try {
+            const aiResult = await classifyAI(c.item, config.aiClassification, signal);
+            if (!signal.aborted) c.aiResult = aiResult ?? null;
+          } catch {
+            // Keep keyword classification for this item.
+          }
         }));
-        await Promise.race([classifications, deadline]);
-        clearTimeout(timer);
+        try {
+          await Promise.race([classifications, deadline]);
+        } finally {
+          clearTimeout(timer);
+        }
       }
       if (!isCurrent()) return;
 

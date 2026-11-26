@@ -51,7 +51,7 @@
   "src/routes/exchange-routes.js": 3,
   "src/routes/regime-routes.js": 2,
   "src/routes/route-utils.js": 2,
-  "src/routes/settings-routes.js": 7,
+  "src/routes/settings-routes.js": 2,
   "src/routes/updown-routes.js": 10,
   "src/sell-fill-correction.js": 11,
   "src/sentinel/sentinel-service.js": 6,

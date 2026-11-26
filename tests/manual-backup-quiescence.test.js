@@ -22,7 +22,7 @@ const deferred = () => {
 
 // Exercise the actual server registration wrapper and shared backup runner
 // without starting listeners, PM2, real exchange clients, or live services.
-const setup = (t, { disconnected = false, resumeFails = false, createFails = false } = {}) => {
+const setup = (t, { disconnected = false, resumeFails = false, createFails = false, pausePrune = false, pruneFails = false } = {}) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-manual-backup-'));
   const paths = { dataDir: path.join(root, 'data'), baseConfigFile: path.join(root, 'base.json') };
   const fundDir = path.join(paths.dataDir, 'coinbase', 'BTC-USDC');
@@ -33,6 +33,9 @@ const setup = (t, { disconnected = false, resumeFails = false, createFails = fal
   const events = [];
   const gates = [];
   const operations = [];
+  const pruneEntered = deferred();
+  const finishPrune = deferred();
+  gates.push(finishPrune);
   let copies = 0;
   let prunes = 0;
   const write = (file, generation) => fs.writeFileSync(path.join(fundDir, file), JSON.stringify(fixturePayload(file, { generation })));
@@ -69,6 +72,8 @@ const setup = (t, { disconnected = false, resumeFails = false, createFails = fal
     drainPendingWrites: (_timeoutMs, matches) => drainPendingWrites(100, matches),
     SCORECARD_JOURNAL_WRITE_LABEL: JOURNAL_WRITE_LABEL,
     updownService: service('updown', true), sentinelService: service('sentinel', false), arbitrageService: service('arbitrage', true),
+    upDipPaper: { ...service('paper', true), isRunning: () => true },
+    upDipShadow: { ...service('shadow', true), isRunning: () => true },
     btcFeedService: { pauseHistory: async () => {}, resumeHistory() {} },
     createContextLogger: () => logger,
     // Capture the scheduler's kinds so tests run the server's own fund-state job.
@@ -91,7 +96,13 @@ const setup = (t, { disconnected = false, resumeFails = false, createFails = fal
           events.push('archive');
           return createFails ? { success: false, error: 'Synthetic archive failure' } : backup.createBackup({ ...options, paths });
         },
-        pruneBackups: () => { prunes++; return { pruned: 0, remaining: 1 }; },
+        pruneBackups: async () => {
+          prunes++;
+          pruneEntered.resolve();
+          if (pausePrune) await finishPrune.promise;
+          if (pruneFails) throw new Error('Synthetic retention failure');
+          return { pruned: 0, remaining: 1 };
+        },
       };
       if (name === '../config-utils') return { ...routeRequire(name),
         getBackupConfig: () => ({ maxBackups: 7, includePriceCache: false }),
@@ -119,6 +130,7 @@ const setup = (t, { disconnected = false, resumeFails = false, createFails = fal
     fs.rmSync(root, { recursive: true, force: true });
   });
   return { paths, fundDir, events, write, invoke, copies: () => copies, prunes: () => prunes,
+    pruneEntered: pruneEntered.promise, finishPrune: finishPrune.resolve,
     fundStateJob: runtime.backupScheduler.kinds.fundState,
     pendingWriter: async () => {
       const gate = deferred();
@@ -184,6 +196,37 @@ describe('manual backups use the server writer-quiescence gate', () => {
     assert.equal(maintenance.getMaintenanceState().reason, 'restore existing archive');
   });
 
+  it('holds the maintenance lock and delays the response until retention finishes', async (t) => {
+    const w = setup(t, { pausePrune: true });
+    w.write('regime-state.json', 1);
+    let responded = false;
+    const response = w.invoke().then((res) => { responded = true; return res; });
+
+    await Promise.race([w.pruneEntered, response.then(() => assert.fail('backup responded before pruning started'))]);
+    await nextTurn();
+    assert.equal(responded, false);
+    assert.equal(maintenance.getMaintenanceState().reason, 'backup manual archive');
+    const racing = await w.invoke();
+    assert.equal(racing.statusCode, 409);
+    assert.equal(w.copies(), 1);
+    assert.equal(w.prunes(), 1);
+    w.finishPrune();
+    assert.equal((await response).body.success, true);
+    assert.equal(maintenance.isMaintenanceActive(), false);
+  });
+
+  it('returns the completed archive and resumes writers if retention fails', async (t) => {
+    const w = setup(t, { pruneFails: true });
+    w.write('regime-state.json', 1);
+    const res = await w.invoke();
+    assert.equal(res.body.success, true);
+    assert.ok(res.body.filename);
+    assert.equal(w.prunes(), 1);
+    assert.ok(w.events.includes('start:paper'));
+    assert.ok(w.events.includes('start:shadow'));
+    assert.equal(maintenance.isMaintenanceActive(), false);
+  });
+
   it('preserves stopped gateway services and returns engine resume warnings', async (t) => {
     const w = setup(t, { resumeFails: true });
     w.write('regime-state.json', 1);
@@ -211,7 +254,7 @@ describe('manual backups use the server writer-quiescence gate', () => {
     const paused = w.events.indexOf('engine:backup-pause');
     assert.ok(paused >= 0 && paused < w.events.indexOf('fund-state'), 'engines must be quiesced before the copy');
     assert.ok(w.events.includes('engine:backup-resume'));
-    for (const name of ['updown', 'sentinel', 'arbitrage']) {
+    for (const name of ['updown', 'sentinel', 'arbitrage', 'paper', 'shadow']) {
       assert.ok(!w.events.includes(`stop:${name}`), `${name} owns no file a fund-state snapshot copies`);
     }
     assert.equal(maintenance.isMaintenanceActive(), false);

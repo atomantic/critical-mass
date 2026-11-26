@@ -85,18 +85,22 @@ describe('createCorsMiddleware', () => {
   const listed = ['http://localhost:5570', 'http://localhost:5571']
   const middleware = createCorsMiddleware(listed)
 
-  it('answers OPTIONS preflight for allowed origin', () => {
+  it('answers credentialed PATCH preflight for an allowed origin', () => {
     const headers = {}
     let status = null
     let nextCalled = false
-    const req = { method: 'OPTIONS', headers: { origin: 'https://void.taile8179.ts.net' } }
+    const req = { method: 'OPTIONS', headers: { origin: 'https://void.taile8179.ts.net', 'access-control-request-method': 'PATCH' } }
     const res = {
       header: (k, v) => { headers[k] = v },
+      vary: (field) => { headers.Vary = field },
       sendStatus: (s) => { status = s },
     }
     middleware(req, res, () => { nextCalled = true })
     assert.equal(status, 204)
     assert.equal(headers['Access-Control-Allow-Origin'], 'https://void.taile8179.ts.net')
+    assert.equal(headers['Access-Control-Allow-Credentials'], 'true')
+    assert.ok(headers['Access-Control-Allow-Methods'].split(',').includes('PATCH'))
+    assert.equal(headers.Vary, 'Origin')
     assert.equal(nextCalled, false)
   })
 
@@ -107,12 +111,22 @@ describe('createCorsMiddleware', () => {
     const req = { method: 'OPTIONS', headers: { origin: 'http://evil.example' } }
     const res = {
       header: (k, v) => { headers[k] = v },
+      vary: () => {},
       sendStatus: (s) => { status = s },
     }
     middleware(req, res, () => { nextCalled = true })
     assert.equal(status, null)
     assert.equal(headers['Access-Control-Allow-Origin'], undefined)
+    assert.equal(headers['Access-Control-Allow-Credentials'], undefined)
     assert.equal(nextCalled, true)
+  })
+
+  it('does not grant credentials when no Origin was sent', () => {
+    const headers = {}
+    const res = { header: (k, v) => { headers[k] = v }, vary: () => {} }
+    middleware({ method: 'PATCH', headers: {} }, res, () => {})
+    assert.equal(headers['Access-Control-Allow-Credentials'], undefined)
+    assert.equal(headers['Access-Control-Allow-Origin'], undefined)
   })
 })
 

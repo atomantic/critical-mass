@@ -1,0 +1,3 @@
+- Full backups pause both UpDown paper books and await archive retention. The books start only after the gateway binds all listeners.
+- Sentinel uses the selected enabled API provider and cancels unfinished classification calls when the poll deadline expires.
+- CORS advertises PATCH and credentials to allowed browser origins, exchange validation reflects configuration changes immediately, and manual imports record fees in the reported asset or the fund's quote currency.

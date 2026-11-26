@@ -213,26 +213,34 @@ module.exports = (app, deps) => {
     const config = getBackupConfig();
     logger.info('ℹ️ 💾 Manual backup triggered', { action: 'create-backup' });
 
-    const result = await runBackup('manual archive', () => createBackup({ includePriceCache: config.includePriceCache }));
+    const result = await runBackup('manual archive', async () => {
+      const archive = await createBackup({ includePriceCache: config.includePriceCache });
+      if (!archive.success) return archive;
+
+      const sizeMB = (archive.sizeBytes / 1024 / 1024).toFixed(1);
+      logger.info(`ℹ️ 💾 Manual backup created: ${archive.filename} (${sizeMB} MB)`, {
+        action: 'create-backup',
+        filename: archive.filename,
+        sizeBytes: archive.sizeBytes,
+      });
+
+      try {
+        const pruneResult = await pruneBackups(config.maxBackups);
+        if (pruneResult.pruned > 0) {
+          logger.info(`ℹ️ 💾 Pruned ${pruneResult.pruned} old backups, ${pruneResult.remaining} remaining`, {
+            action: 'prune-backups',
+            pruned: pruneResult.pruned,
+            remaining: pruneResult.remaining,
+          });
+        }
+      } catch (err) {
+        logger.error(`❌ 💾 Backup created but retention pruning failed: ${err.message}`, { action: 'prune-backups' });
+      }
+      return archive;
+    });
     if (!result.success) {
       const status = ['maintenance-in-progress', 'writers-not-quiesced'].includes(result.code) ? 409 : 500;
       return res.status(status).json(result);
-    }
-
-    const sizeMB = (result.sizeBytes / 1024 / 1024).toFixed(1);
-    logger.info(`ℹ️ 💾 Manual backup created: ${result.filename} (${sizeMB} MB)`, {
-      action: 'create-backup',
-      filename: result.filename,
-      sizeBytes: result.sizeBytes,
-    });
-
-    const pruneResult = pruneBackups(config.maxBackups);
-    if (pruneResult.pruned > 0) {
-      logger.info(`ℹ️ 💾 Pruned ${pruneResult.pruned} old backups, ${pruneResult.remaining} remaining`, {
-        action: 'prune-backups',
-        pruned: pruneResult.pruned,
-        remaining: pruneResult.remaining,
-      });
     }
 
     res.json(result);

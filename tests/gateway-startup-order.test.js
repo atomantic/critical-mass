@@ -49,7 +49,6 @@ const runStartBlock = ({ stopping = false, host, allowRemote = true } = {}) => {
     io: { attach: recorder('io.attach') },
     getEnabledExchanges: () => [], getConfiguredExchanges: () => ['fake'], getEnabledFunds: () => [],
     normalizeConfig: (c) => c, getFundConfig: () => ({}), formatInterval: () => '', getTimeUntilNext: () => ({ formatted: '' }), fundLabel: () => '',
-    KNOWN_EXCHANGES: new Set(),
     notifier: { start: recorder('notifier.start') },
     exchangeIPCMap: { coinbase: { connect: recorder('ipc.connect:coinbase') }, gemini: { connect: recorder('ipc.connect:gemini') } },
     candleCache: { seedAll: recorder('candleCache.seedAll') },
@@ -58,16 +57,21 @@ const runStartBlock = ({ stopping = false, host, allowRemote = true } = {}) => {
     arbitrageService: { start: recorder('arbitrage.start') },
     btcFeedService: { start: recorder('btcFeed.start') },
     upDipCandles: { start: recorder('upDipCandles.start') },
+    upDipPaper: { start: recorder('upDipPaper.start') },
+    upDipShadow: { start: recorder('upDipShadow.start') },
     rescheduleBackupTimer: recorder('rescheduleBackupTimer'),
     getGlobalConfig: () => ({ schedulerInterval: 30000 }),
     checkAndRunIntervalTrade: recorder('checkAndRunIntervalTrade'),
   });
-  vm.runInContext(`let exchangeRefreshTimer = null; let schedulerTimer = null; let tailscaleWatcher = null;\n${startBlock}`, context);
+  vm.runInContext(`let schedulerTimer = null; let tailscaleWatcher = null;\n${startBlock}`, context);
   return { bind, started, logs, exits, bindArgs, watchArgs, context };
 };
 
 describe('gateway startup order', () => {
   it('starts no writer, scheduler or engine connection until every listener is bound', async () => {
+    for (const book of ['upDipPaper', 'upDipShadow']) {
+      assert.equal(source.split(`${book}.start();`).length, 2, `${book} must start only in the startup block`);
+    }
     const { bind, started, exits, bindArgs } = runStartBlock();
     assert.equal(bindArgs.length, 1);
     assert.deepEqual(bindArgs[0].hosts, ['127.0.0.1']);
@@ -80,9 +84,12 @@ describe('gateway startup order', () => {
     assert.deepEqual(exits, []);
     assert.equal(started[0], 'notifier.start', 'the notifier subscribes before any producer can emit');
     for (const name of ['ipc.connect:coinbase', 'ipc.connect:gemini', 'candleCache.seedAll', 'updown.start', 'sentinel.start', 'arbitrage.start', 'btcFeed.start', 'upDipCandles.start',
-      'interval:60000', 'rescheduleBackupTimer', 'interval:30000', 'checkAndRunIntervalTrade']) {
+      'upDipPaper.start', 'upDipShadow.start', 'rescheduleBackupTimer', 'interval:30000', 'checkAndRunIntervalTrade']) {
       assert.ok(started.includes(name), `${name} starts after the bind`);
     }
+    assert.ok(started.indexOf('upDipCandles.start') < started.indexOf('upDipPaper.start'));
+    assert.ok(started.indexOf('upDipCandles.start') < started.indexOf('upDipShadow.start'));
+    assert.ok(!started.includes('interval:60000'), 'exchange validation needs no refresh timer');
   });
 
   it('exits non-zero on a bind failure without starting anything', async () => {
@@ -140,4 +147,27 @@ describe('gateway startup order', () => {
       }
     });
   });
+});
+
+it('validates exchange params against additions and removals on the next request', () => {
+  const paramBlock = source.slice(source.indexOf('// Exchange param validation middleware'), source.indexOf('// ============ Backup Scheduler'));
+  let exchanges = ['coinbase'];
+  let validate;
+  vm.runInNewContext(paramBlock, {
+    app: { param: (name, fn) => { assert.equal(name, 'exchange'); validate = fn; } },
+    getConfiguredExchanges: () => exchanges,
+  });
+
+  const check = (exchange) => {
+    let status = 200;
+    const res = { status: (code) => { status = code; return res; }, json: () => {} };
+    validate({}, res, () => {}, exchange);
+    return status;
+  };
+  assert.equal(check('coinbase'), 200);
+  assert.equal(check('gemini'), 400);
+  exchanges = ['gemini'];
+  assert.equal(check('coinbase'), 400);
+  assert.equal(check('gemini'), 200);
+  assert.equal(check('Gemini'), 400);
 });

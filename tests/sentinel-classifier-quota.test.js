@@ -27,19 +27,19 @@ const loadClassifier = (options = {}) => {
     __dirname: path.dirname(sourcePath),
     Date: { now: () => now },
     URL,
-    AbortController, setTimeout, clearTimeout,
+    AbortController, AbortSignal, setTimeout, clearTimeout,
     require: (name) => {
       if (name === 'path') return path;
-      if (name === 'fs/promises') return { readFile: async () => JSON.stringify({ providers }) };
+      if (name === 'fs/promises') return { readFile: async () => JSON.stringify({ providers, activeProvider: options.activeProvider }) };
       if (name === '../logger') return { createContextLogger: () => ({ warn: () => {} }) };
       if (name === '../config-utils') return { SENTINEL_DEFAULTS: { keywords } };
       if (name === '../paths') return { DATA_DIR: '/synthetic-data' };
       if (name === '../ai-security') return { parseAllowedOrigins: () => new Set(['https://provider.example']) };
       if (name === '../url-validator') return {
         validateEndpointUrl: options.validate || (async () => ({ valid: true })),
-        safeFetch: async () => {
+        safeFetch: async (url, request) => {
           dispatches++;
-          return (options.fetch || successfulResponse)();
+          return options.fetch ? options.fetch(url, request) : successfulResponse();
         },
       };
       throw new Error('Unexpected dependency: ' + name);
@@ -52,6 +52,47 @@ const loadClassifier = (options = {}) => {
     setProviders: (value) => { providers = value; },
   };
 };
+
+describe('Sentinel AI provider selection and cancellation', () => {
+  it('prefers the active enabled API provider, and falls back for disabled or non-API selections', async () => {
+    const models = [];
+    const fixture = loadClassifier({
+      activeProvider: 'selected',
+      fetch: (_url, request) => { models.push(JSON.parse(request.body).model); return successfulResponse(); },
+    });
+    const fallback = { enabled: true, type: 'api', endpoint: 'https://provider.example', defaultModel: 'fallback' };
+    const selected = { ...fallback, defaultModel: 'preferred' };
+    fixture.setProviders({ fallback, selected });
+    await fixture.classifier.classifyByAI(item, aiConfig);
+    fixture.setProviders({ fallback, selected: { ...selected, enabled: false } });
+    await fixture.classifier.classifyByAI(item, aiConfig);
+    fixture.setProviders({ fallback, selected: { ...selected, type: 'cli' } });
+    await fixture.classifier.classifyByAI(item, aiConfig);
+    assert.deepEqual(models, ['preferred', 'fallback', 'fallback']);
+  });
+
+  it('cancels the in-flight provider request when the poll signal aborts', async () => {
+    const deadline = new AbortController();
+    let validationSignal;
+    let signalForRequest;
+    const dispatched = new Promise((resolve) => { signalForRequest = resolve; });
+    const fixture = loadClassifier({
+      validate: async (_url, { signal }) => { validationSignal = signal; return { valid: true }; },
+      fetch: (_url, { signal }) => new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+        signalForRequest(signal);
+      }),
+    });
+    const result = fixture.classifier.classifyByAI(item, aiConfig, deadline.signal);
+    const requestSignal = await dispatched;
+    assert.equal(requestSignal, validationSignal);
+    deadline.abort();
+    assert.equal(requestSignal.aborted, true);
+    assert.equal(await result, null);
+    await fixture.classifier.classifyByAI(item, aiConfig, deadline.signal);
+    assert.equal(fixture.dispatchCount(), 1, 'an already expired poll sends no request');
+  });
+});
 
 describe('Sentinel process-local hourly AI attempt budget', () => {
   for (const [outcome, fetch] of [

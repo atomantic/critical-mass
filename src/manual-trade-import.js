@@ -28,7 +28,7 @@ const { loadFundRegimeState, saveFundRegimeState } = require('./regime-state-sto
 const { STATUS, INTENT_PHASE, SIZE_EPSILON, getUncoveredSize } = require('./manual-trades');
 const { FillValidationError, validateFillInput, LEGACY_CONSUMPTION_KEY } = require('./fill-ledger');
 const { readBooleanFlag, isFilledStatus, isCancelledStatus, sleep } = require('./shared-utils');
-const { getRegimeConfig } = require('./config-utils');
+const { getQuoteCurrency, getRegimeConfig } = require('./config-utils');
 
 /** Logger used when a caller supplies none (tests, CLI paths). */
 const NOOP_LOGGER = { info: () => {}, warn: () => {}, error: () => {} };
@@ -51,7 +51,7 @@ const canonicalProduct = (exchange, productId) => {
 
 const lc = (value) => String(value).toLowerCase();
 
-const toLedgerFill = (raw, orderId, defaultSide) => ({
+const toLedgerFill = (raw, orderId, defaultSide, quoteCurrency) => ({
   tradeId: raw.tradeId,
   orderId,
   side: raw.side?.toLowerCase() || defaultSide,
@@ -72,7 +72,7 @@ const toLedgerFill = (raw, orderId, defaultSide) => ({
   netFee: raw.netFee,
   liquidityIndicator: raw.liquidityIndicator || 'TAKER',
   tradeTime: raw.tradeTime,
-  fee_asset: 'USDC',
+  fee_asset: raw.commissionAsset || raw.fee_asset || quoteCurrency,
 });
 
 /**
@@ -81,10 +81,10 @@ const toLedgerFill = (raw, orderId, defaultSide) => ({
  * fill, or null. Call before ingestAdapterFills so a malformed fill can never
  * be acknowledged as a successful import or leave a half-ingested order.
  */
-const validateAdapterFills = (fills, orderId, defaultSide) => {
+const validateAdapterFills = (fills, orderId, defaultSide, quoteCurrency) => {
   for (const raw of fills) {
     try {
-      validateFillInput(toLedgerFill(raw, orderId, defaultSide));
+      validateFillInput(toLedgerFill(raw, orderId, defaultSide, quoteCurrency));
     } catch (err) {
       if (!(err instanceof FillValidationError)) throw err;
       return `${err.message} (order ${orderId}, trade ${raw.tradeId ?? 'unknown'})`;
@@ -105,9 +105,10 @@ const validateAdapterFills = (fills, orderId, defaultSide) => {
  * @param {Object[]} fills - Raw adapter fills
  * @param {string} orderId - Exchange order id the fills belong to
  * @param {'buy'|'sell'} defaultSide - Side to use when a fill omits its own
+ * @param {string} quoteCurrency - Default fee currency for the fund
  * @returns {{ tradeIds: string[], totalSize: number, totalQuote: number }}
  */
-const ingestAdapterFills = (fillLedger, fills, orderId, defaultSide) => {
+const ingestAdapterFills = (fillLedger, fills, orderId, defaultSide, quoteCurrency) => {
   const tradeIds = [];
   let totalSize = 0;
   let totalQuote = 0;
@@ -115,7 +116,7 @@ const ingestAdapterFills = (fillLedger, fills, orderId, defaultSide) => {
     tradeIds.push(raw.tradeId);
     totalSize += raw.size;
     totalQuote += raw.price * raw.size;
-    fillLedger.ingestFill(toLedgerFill(raw, orderId, defaultSide), null, { skipPersist: true, cycleId: null });
+    fillLedger.ingestFill(toLedgerFill(raw, orderId, defaultSide, quoteCurrency), null, { skipPersist: true, cycleId: null });
   }
   return { tradeIds, totalSize, totalQuote };
 };
@@ -211,6 +212,10 @@ const createManualTradeImporter = ({
   const fail = (error) => ({ success: false, error });
 
   const expectedProduct = () => fundConfig?.productId || 'BTC-USDC';
+  const getFundQuoteCurrency = () => {
+    const quote = getQuoteCurrency(String(fundConfig?.productId || pair || expectedProduct()).trim().toUpperCase());
+    return exchange === 'gemini' && quote === 'USDC' ? 'USD' : quote;
+  };
 
   /**
    * Check that an order and its fills really are the requested role (buy/sell)
@@ -314,7 +319,8 @@ const createManualTradeImporter = ({
     const { fills: sellFills, error } = await fetchOrderFills(sellOrderId, 'sell');
     if (error) return fail(error);
 
-    const invalidSell = validateAdapterFills(sellFills, sellOrderId, 'sell');
+    const quoteCurrency = getFundQuoteCurrency();
+    const invalidSell = validateAdapterFills(sellFills, sellOrderId, 'sell', quoteCurrency);
     if (invalidSell) return fail(invalidSell);
     // A linked existing buy must really be a buy of this fund's product before
     // anything is persisted (issue #1023).
@@ -322,7 +328,7 @@ const createManualTradeImporter = ({
       const invalidLink = await verifyOrderIdentity(null, existingBuyOrderId, 'buy');
       if (invalidLink) return fail(invalidLink);
     }
-    const { tradeIds, totalSize, totalQuote } = ingestAdapterFills(fillLedger, sellFills, sellOrderId, 'sell');
+    const { tradeIds, totalSize, totalQuote } = ingestAdapterFills(fillLedger, sellFills, sellOrderId, 'sell', quoteCurrency);
     fillLedger.persist();
 
     // Idempotent by sellOrderId — a retry returns the existing record.
@@ -578,7 +584,8 @@ const createManualTradeImporter = ({
     }
     const mismatch = await verifyOrderIdentity(buyFills, buyOrderId, 'buy', orderStatus);
     if (mismatch) return checkFailed(mismatch);
-    const invalidBuy = validateAdapterFills(buyFills, buyOrderId, 'buy');
+    const quoteCurrency = getFundQuoteCurrency();
+    const invalidBuy = validateAdapterFills(buyFills, buyOrderId, 'buy', quoteCurrency);
     if (invalidBuy) return checkFailed(invalidBuy);
     const visibleSize = buyFills.reduce((sum, f) => sum + f.size, 0);
     // Executions the exchange admits to but no visible fill shows yet are
@@ -597,7 +604,7 @@ const createManualTradeImporter = ({
     }
 
     const remainingBefore = getUncoveredSize(trade);
-    const { tradeIds, totalSize, totalQuote } = ingestAdapterFills(fillLedger, buyFills, buyOrderId, 'buy');
+    const { tradeIds, totalSize, totalQuote } = ingestAdapterFills(fillLedger, buyFills, buyOrderId, 'buy', quoteCurrency);
     if (buyFills.length > 0) {
       // Pair the buy to its sell so it is not counted as an open position.
       fillLedger.annotateFillsByOrderId(buyOrderId, { sellOrderId: trade.sellOrderId });
@@ -904,9 +911,10 @@ const createManualTradeImporter = ({
     const { fills: buyFills, error } = await fetchOrderFills(buyOrderId, 'buy');
     if (error) return fail(error);
 
-    const invalidBuy = validateAdapterFills(buyFills, buyOrderId, 'buy');
+    const quoteCurrency = getFundQuoteCurrency();
+    const invalidBuy = validateAdapterFills(buyFills, buyOrderId, 'buy', quoteCurrency);
     if (invalidBuy) return fail(invalidBuy);
-    const { tradeIds, totalSize, totalQuote } = ingestAdapterFills(fillLedger, buyFills, buyOrderId, 'buy');
+    const { tradeIds, totalSize, totalQuote } = ingestAdapterFills(fillLedger, buyFills, buyOrderId, 'buy', quoteCurrency);
     fillLedger.persist();
 
     const avgBuyPrice = averagePrice(totalQuote, totalSize);
@@ -1377,15 +1385,16 @@ const createManualTradeImporter = ({
     const sell = await fetchOrderFills(sellOrderId, 'sell');
     if (sell.error) return fail(sell.error);
 
-    const invalidLeg = validateAdapterFills(buy.fills, buyOrderId, 'buy') || validateAdapterFills(sell.fills, sellOrderId, 'sell');
+    const quoteCurrency = getFundQuoteCurrency();
+    const invalidLeg = validateAdapterFills(buy.fills, buyOrderId, 'buy', quoteCurrency) || validateAdapterFills(sell.fills, sellOrderId, 'sell', quoteCurrency);
     if (invalidLeg) return fail(invalidLeg);
     // Recheck after the awaits, synchronously with the writes below: paths
     // that hold neither leg's lock (the engine's own fills, a recovery under
     // another sell's lock) may have claimed an order while the fetches ran.
     const conflict = findPairOwnershipConflict(buyOrderId, sellOrderId);
     if (conflict) return fail(conflict);
-    const buyTotals = ingestAdapterFills(fillLedger, buy.fills, buyOrderId, 'buy');
-    const sellTotals = ingestAdapterFills(fillLedger, sell.fills, sellOrderId, 'sell');
+    const buyTotals = ingestAdapterFills(fillLedger, buy.fills, buyOrderId, 'buy', quoteCurrency);
+    const sellTotals = ingestAdapterFills(fillLedger, sell.fills, sellOrderId, 'sell', quoteCurrency);
 
     // Link buy fills to their sell so the cycle is closed for P&L.
     fillLedger.annotateFillsByOrderId(buyOrderId, { sellOrderId });

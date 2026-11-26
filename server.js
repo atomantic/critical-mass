@@ -149,7 +149,7 @@ let schedulerTimer = null;
 let tailscaleWatcher = null;
 const gatewayShutdown = createGatewayShutdown({
   cancelSchedules: () => {
-    for (const timer of [schedulerTimer, exchangeRefreshTimer]) clearInterval(timer);
+    clearInterval(schedulerTimer);
     schedulerTimer = null;
     backupScheduler.stop();
     tailscaleWatcher?.stop();
@@ -229,15 +229,13 @@ log('INFO', operatorAuth.hasPassword()
     : '🔐 Operator bootstrap mode — gateway is loopback-only until a password is set');
 
 // Exchange param validation middleware
-const KNOWN_EXCHANGES = new Set(getConfiguredExchanges());
-let exchangeRefreshTimer = null;
-
 app.param('exchange', (req, res, next, exchange) => {
   if (!/^[a-z0-9_-]+$/.test(exchange)) {
     return res.status(400).json({ success: false, error: `Invalid exchange name: ${exchange}` });
   }
-  if (!KNOWN_EXCHANGES.has(exchange)) {
-    return res.status(400).json({ success: false, error: `Unknown exchange: ${exchange}. Configured: ${[...KNOWN_EXCHANGES].join(', ')}` });
+  const configuredExchanges = getConfiguredExchanges();
+  if (!configuredExchanges.includes(exchange)) {
+    return res.status(400).json({ success: false, error: `Unknown exchange: ${exchange}. Configured: ${configuredExchanges.join(', ')}` });
   }
   next();
 });
@@ -260,6 +258,9 @@ const runBackup = (kind, create, { stopGatewayWriters = true } = {}) => performB
       stop: () => name === 'Arbitrage' ? service.stop({ preserveAlerts: true }) : service.stop(),
       resume: () => wasRunning ? service.start() : undefined,
     };
+  }), ...[{ name: 'UpDown paper book', book: upDipPaper }, { name: 'UpDown shadow book', book: upDipShadow }].map(({ name, book }) => {
+    const wasRunning = book.isRunning();
+    return { name, stop: () => book.stop(), resume: () => wasRunning ? book.start() : undefined };
   }), { name: 'BTC index history', stop: () => btcFeedService.pauseHistory(), resume: () => btcFeedService.resumeHistory() }] : [],
   logger: createContextLogger({ module: 'backup-coordinator' }),
 });
@@ -278,16 +279,16 @@ const backupScheduler = createBackupScheduler({
       newest: getNewestBackupTimeAsync,
       run: async (config) => {
         log('INFO', '💾 Running scheduled backup...');
-        const result = await runBackup('full archive', () => createBackup({ includePriceCache: config.includePriceCache }));
-        if (result.success) {
-          const sizeMB = (result.sizeBytes / 1024 / 1024).toFixed(1);
-          log('INFO', `💾 Scheduled backup created: ${result.filename} (${sizeMB} MB)`);
+        return runBackup('full archive', async () => {
+          const result = await createBackup({ includePriceCache: config.includePriceCache });
+          if (!result.success) return result;
+          log('INFO', `💾 Scheduled backup created: ${result.filename} (${(result.sizeBytes / 1024 / 1024).toFixed(1)} MB)`);
           const pruneResult = await pruneBackups(config.maxBackups);
           if (pruneResult.pruned > 0) {
             log('INFO', `💾 Pruned ${pruneResult.pruned} old backups, ${pruneResult.remaining} remaining`);
           }
-        }
-        return result;
+          return result;
+        });
       },
     },
     fundState: {
@@ -422,7 +423,6 @@ const upDipPaper = createUpDipPaper({
     io.to('updown').emit('updown:up-dip', {});
   },
 });
-upDipPaper.start();
 // SHADOW paper book: same rule plus the daily-trend stand-aside filter (chosen after
 // seeing held-out results, so it is under live test). Separate state file; the base
 // book above is untouched. UPDOWN_SHADOW_MAX_BELOW_SMA_PCT overrides the 4% default
@@ -444,7 +444,6 @@ const upDipShadow = createUpDipPaper({
   }),
   onChange: () => io.to('updown').emit('updown:up-dip', {}),
 });
-upDipShadow.start();
 
 // Forward coinbase BTC price data to updown service for realtime emission + P&L.
 // Only the default (BTC) pair — a second coinbase fund must not drive the BTC
@@ -719,8 +718,8 @@ const startGatewayServices = () => {
   arbitrageService.start();
   btcFeedService.start();
   upDipCandles.start();
-
-  exchangeRefreshTimer = setInterval(() => { for (const e of getConfiguredExchanges()) KNOWN_EXCHANGES.add(e); }, 60_000);
+  upDipPaper.start();
+  upDipShadow.start();
 
   // Start backup scheduler
   rescheduleBackupTimer();
