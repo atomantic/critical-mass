@@ -38,6 +38,7 @@ describe('execution lifecycle structured logging', () => {
         cancelRateLimitMs: 0,
       }, {
         cancelOrder: async () => ({ success: true }),
+        getOrder: async () => ({ status: 'CANCELLED', filledSize: 0 }),
       }, 'BTC-USDC');
       executor.restorePendingOrder('entry-order-123', {
         type: 'entry',

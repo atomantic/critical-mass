@@ -402,12 +402,12 @@ describe('cancelAllEntries — refused-cancel fill handling (issue #209 A)', () 
     assert.equal(exec.getPendingCounts().entries, 1, 'still-open order remains tracked for the polling backstop');
   });
 
-  it('routes partial fills when a refused cancel resolves to CANCELLED, and counts it cancelled', async () => {
+  it('routes partial fills when a refused cancel resolves to EXPIRED, and counts it cancelled', async () => {
     const captured = [];
     const entryCancelled = [];
     const adapter = {
       cancelOrder: async () => ({ success: false }),
-      getOrder: async () => ({ status: 'CANCELLED', completionPercentage: 20, filledSize: 0.02, side: 'BUY' }),
+      getOrder: async () => ({ status: 'EXPIRED', completionPercentage: 20, filledSize: 0.02, side: 'BUY' }),
     };
     const exec = createOrderExecutor('gemini', baseConfig(), adapter, 'ETH-USD', {
       onFillDetected: (orderId, status) => captured.push({ orderId, status }),
@@ -425,26 +425,54 @@ describe('cancelAllEntries — refused-cancel fill handling (issue #209 A)', () 
     assert.equal(exec.getPendingCounts().entries, 0);
   });
 
-  it('counts a genuinely-successful cancel and drops tracking', async () => {
-    // A successful cancel ack ({success:true}) is now verified with a
-    // getOrder check (issue #674 Fix step 1 — no adapter's cancelOrder
-    // response carries filledSize, so the ack alone can't rule out a partial
-    // fill). A getOrder failure here must not block the clean-cancel path —
-    // fall back to trusting the ack, matching every other cancel path's
-    // "can't verify, don't block on it" fallback.
-    const adapter = {
-      cancelOrder: async () => ({ success: true }),
-      getOrder: async () => { throw new Error('network blip on the post-cancel check'); },
-    };
-    const exec = createOrderExecutor('gemini', baseConfig(), adapter, 'ETH-USD', {});
-    restoreEntry(exec, 'entry-clean-1');
-    restoreEntry(exec, 'entry-clean-2');
+  for (const observed of ['OPEN', 'PENDING_CANCEL', null, 'lookup error']) {
+    it(`keeps an acknowledged cancel tracked after ${observed} and books its eventual fill`, async () => {
+      let settled = false;
+      const captured = [];
+      const adapter = {
+        cancelOrder: async () => ({ success: true }),
+        getOrder: async () => {
+          if (settled) return { status: 'EXPIRED', side: 'BUY', filledSize: 0.02 };
+          if (observed === 'lookup error') throw new Error('temporary outage');
+          return observed ? { status: observed, filledSize: 0 } : null;
+        },
+      };
+      const exec = createOrderExecutor('gemini', baseConfig(), adapter, 'ETH-USD', {
+        onFillDetected: (id, status) => captured.push([id, status.filledSize]),
+      });
+      restoreEntry(exec, 'eventual-cancel');
+      assert.equal(await exec.cancelAllEntries(), 0);
+      assert.equal(exec.getPendingCounts().entries, 1);
+      settled = true;
+      await exec.checkPendingOrderFills();
+      assert.deepEqual(captured, [['eventual-cancel', 0.02]]);
+      assert.equal(exec.getPendingCounts().entries, 0);
+      exec.clearTimers();
+    });
+  }
 
-    const cancelled = await exec.cancelAllEntries();
-
-    assert.equal(cancelled, 2);
-    assert.equal(exec.getPendingCounts().entries, 0);
-  });
+  for (const route of ['poll', 'refused cancel']) {
+    it(`contains a rejected full-fill callback and processes the next order during ${route}`, async () => {
+      const handled = [];
+      const adapter = {
+        cancelOrder: async () => ({ success: false }),
+        getOrder: async () => ({ status: 'FILLED', filledSize: 0.1, side: 'BUY' }),
+      };
+      const exec = createOrderExecutor('gemini', baseConfig(), adapter, 'ETH-USD', {
+        onFillDetected: async (id) => {
+          await new Promise(setImmediate);
+          if (id === 'first') throw new Error('failed booking');
+          handled.push(id);
+        },
+      });
+      restoreEntry(exec, 'first');
+      restoreEntry(exec, 'second');
+      if (route === 'poll') await exec.checkPendingOrderFills();
+      else await exec.cancelAllEntries();
+      assert.deepEqual(handled, ['second']);
+      exec.clearTimers();
+    });
+  }
 
   it('routes a partial fill through onFillDetected when a SUCCESSFUL cancel carries a fill (issue #674 Fix step 1 / PR #712 follow-up)', async () => {
     // The exchange acknowledges the cancel ({success:true}) — the `!refused`
@@ -903,6 +931,50 @@ describe('order-executor placement paths — unknown-outcome reconciliation (iss
     assert.equal(placeCalls, 1, 'must NOT re-place a possibly-executed entry bid');
     assert.equal(result.success, true);
     assert.equal(result.orderId, 'real-entry-1');
+  });
+
+  it('retries an expired empty bid with a fresh timer and settles its replacement on expiry', async (t) => {
+    const clock = useVirtualClock(t);
+    const cancelled = [];
+    let placements = 0;
+    let staleChecks = 0;
+    let replacementExpired = false;
+    const exec = createOrderExecutor('gemini', configFor(), {
+      placeLimitBuy: async () => ({ success: true, orderId: `bid-${++placements}` }),
+      getOrder: async id => ({ status: id === 'bid-1' || replacementExpired ? 'EXPIRED' : 'OPEN', filledSize: 0 }),
+      getBidAsk: async () => ({ bid: 100, ask: 101 }),
+    }, 'TEST-USD', {
+      withStaleCheckFence: async run => { staleChecks++; await run(); },
+      onEntryCancelled: id => cancelled.push(id),
+    });
+    const result = await clock.run(exec.placeEntryBid(50, 100, 101, 0, null, 2_000));
+    assert.equal(result.orderId, 'bid-2');
+    assert.deepEqual(exec.getPendingOrdersList().map(o => o.orderId), ['bid-2']);
+    replacementExpired = true;
+    await clock.advance(2_000);
+    assert.equal(staleChecks, 1, 'only the replacement timer fires');
+    assert.deepEqual(cancelled, ['bid-2']);
+    assert.equal(exec.getPendingCounts().entries, 0);
+    exec.clearTimers();
+  });
+
+  it('rejects empty expired ladder rungs and keeps executed rungs for booking', async (t) => {
+    const clock = useVirtualClock(t);
+    let placed = 0;
+    let verifyingPlacement = true;
+    const captured = [];
+    const exec = createOrderExecutor('gemini', configFor(), {
+      placeLimitBuy: async () => ({ success: true, orderId: `rung-${++placed}` }),
+      getOrder: async id => ({ status: 'EXPIRED', side: 'buy', filledSize: id === 'rung-2' && verifyingPlacement ? 0.001 : 0 }),
+    }, 'TEST-USD', { onFillDetected: (id, status) => captured.push([id, status.filledSize]) });
+    const levels = [0, 1].map(index => ({ index, price: 100 - index, sizeUsdc: 10, assetQty: 0.1 }));
+    const result = await clock.run(exec.placeLadderOrders(levels));
+    assert.equal(result.failedCount, 1);
+    assert.deepEqual(result.orders.map(o => o.orderId), ['rung-2']);
+    assert.deepEqual(exec.getPendingOrdersList().map(o => o.orderId), ['rung-2']);
+    verifyingPlacement = false;
+    await exec.checkPendingOrderFills();
+    assert.deepEqual(captured, [['rung-2', 0.001]]);
   });
 
   it('placeEntryBid rejects an invalid bid/ask before touching the exchange (#1336)', async () => {
