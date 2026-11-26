@@ -72,7 +72,9 @@ export default function ScorecardPanel({ scorecard, perp: perpOverride }) {
       {/* Perp long paper book — 0.01 BTC per contract, flatten on Close */}
       <div className="mb-4">
         <div className="flex items-center justify-between mb-1">
-          <span className="text-2xs uppercase tracking-wide text-gray-400">Perp long P&amp;L (0.01 BTC / contract)</span>
+          <span className="text-2xs uppercase tracking-wide text-gray-400">
+            {perp?.hasLegacyRealizedPnl ? 'Perp P&L includes pre-cost history' : 'Perp paper P&L after modeled costs'}
+          </span>
           {perp?.contracts > 0 && (
             <span className="text-2xs font-mono text-teal-400">{perp.contracts} open @ {scoreUsd(perp.avgEntry)}</span>
           )}
@@ -81,9 +83,11 @@ export default function ScorecardPanel({ scorecard, perp: perpOverride }) {
           <span className={`text-2xl font-bold font-mono ${pnlColor(perp?.totalPnl ?? 0)}`}>
             {scoreUsd(perp?.totalPnl ?? 0)}
           </span>
-          <span className="text-xs text-gray-400" title="Realized from closed rounds + mark-to-market on open lots">
+          <span className="text-xs text-gray-400" title="Closed rounds plus estimated net proceeds on open lots">
             {scoreUsd(perp?.realizedPnl ?? 0)} real
-            {perp?.contracts > 0 && <span className={`ml-1 ${pnlColor(perp.unrealizedPnl)}`}>{scoreUsd(perp.unrealizedPnl)} mtm</span>}
+            {perp?.contracts > 0 && (perp.markAvailable === false
+              ? <span className="ml-1">mark unavailable</span>
+              : <span className={`ml-1 ${pnlColor(perp.unrealizedPnl)}`}>{scoreUsd(perp.unrealizedPnl)} mtm</span>)}
           </span>
         </div>
         <div className="flex justify-between text-xs text-gray-400">

@@ -16,6 +16,7 @@ const { UPDOWN_DATA_DIR } = require('../paths')
 const { appendScorecardRecord, withScorecardLock } = require('./scorecard-maintenance')
 const { INDICATORS, INDICATOR_WEIGHTS } = require('./indicator-config')
 const { ALL_SIGNAL_TFS: ALL_TFS } = require('./signal-engine')
+const { buyCost, settlementProceeds } = require('./app-order-history')
 const {
   getDirection,
   evaluateDirection,
@@ -65,13 +66,6 @@ const BASE_WEIGHTS = INDICATOR_WEIGHTS
  * @returns {Record<string, number>} Normalized adaptive weights summing to 1.0
  */
 const computeAdaptiveWeights = (byIndicator, baseWeights, prevWeights, alpha = 0.15) => {
-  // Find max prediction count across all indicators for activity ratio
-  let maxPredictions = 0
-  for (const ind of INDICATORS) {
-    const count = byIndicator[ind]?.predictions ?? 0
-    if (count > maxPredictions) maxPredictions = count
-  }
-
   const rawWeights = {}
   for (const ind of INDICATORS) {
     const base = baseWeights[ind] ?? 0.1
@@ -83,18 +77,6 @@ const computeAdaptiveWeights = (byIndicator, baseWeights, prevWeights, alpha = 0
     if (data?.accuracy != null && data.predictions >= 10) {
       if (data.accuracy > 55) rawWeight = base * 1.3
       else if (data.accuracy < 45) rawWeight = base * 0.7
-    }
-
-    // Activity ratio penalty: penalize indicators that rarely produce non-neutral scores
-    if (maxPredictions > 0) {
-      const activityRatio = (data?.predictions ?? 0) / maxPredictions
-      if (activityRatio < 0.05) {
-        rawWeight *= 0.2 // nearly dead → 20% of base
-      } else if (activityRatio < 0.20) {
-        // Linear ramp from 0.2 to 0.7 between 5% and 20% activity
-        const t = (activityRatio - 0.05) / 0.15
-        rawWeight *= 0.2 + t * 0.5
-      }
     }
 
     rawWeights[ind] = alpha * rawWeight + (1 - alpha) * prev
@@ -112,6 +94,24 @@ const computeAdaptiveWeights = (byIndicator, baseWeights, prevWeights, alpha = 0
     result[ind] = Math.round((rawWeights[ind] / total) * 10000) / 10000
   }
   return result
+}
+
+/** Use only timeframe/window matches, including in older multi-timeframe journal rows. */
+const computeTrainingMetrics = (outcomes) => {
+  const counts = Object.fromEntries(INDICATORS.map(ind => [ind, { correct: 0, predictions: 0 }]))
+  for (const outcome of outcomes) {
+    if (!WINDOW_MS[outcome.window]) continue
+    for (const ind of INDICATORS) {
+      const hit = outcome.indicatorTfResults?.[ind]?.[outcome.window]?.correct
+      if (hit == null) continue
+      counts[ind].predictions++
+      if (hit) counts[ind].correct++
+    }
+  }
+  return Object.fromEntries(INDICATORS.map(ind => {
+    const { correct, predictions } = counts[ind]
+    return [ind, { predictions, accuracy: predictions ? Math.round(correct / predictions * 10000) / 100 : null }]
+  }))
 }
 
 let predictionCounter = 0
@@ -174,17 +174,18 @@ const appendRecord = async (record, options) => {
 const buildOutcomeRecord = (prediction, windowMs, exitPrice, opts = {}) => {
   const priceChangeBps = ((exitPrice - prediction.price) / prediction.price) * 10000
   // compositeCorrect = options (flat = miss). perpCorrect = scratch on no-move.
-  const compositeCorrect = evaluateDirection(prediction.compositeDirection, priceChangeBps, windowMs, 'options')
-  const perpCorrect = evaluateDirection(prediction.compositeDirection, priceChangeBps, windowMs, 'perp')
+  const trainingOnly = prediction.compositeDirection !== 'up'
+  const compositeCorrect = trainingOnly ? null : evaluateDirection('up', priceChangeBps, windowMs, 'options')
+  const perpCorrect = trainingOnly ? null : evaluateDirection('up', priceChangeBps, windowMs, 'perp')
 
   // Per-timeframe / per-indicator use perp mode so adaptive weights skip chops
   // instead of treating every no-move as "every indicator was wrong."
+  const window = WINDOW_LABELS[windowMs]
+  const tfData = prediction.timeframes?.[window]
   const tfResults = {}
-  for (const tf of ALL_TFS) {
-    const tfData = prediction.timeframes?.[tf]
-    if (!tfData) continue
+  if (tfData) {
     const direction = getDirection(tfData.score)
-    tfResults[tf] = {
+    tfResults[window] = {
       direction,
       correct: evaluateDirection(direction, priceChangeBps, windowMs, 'perp'),
     }
@@ -193,25 +194,13 @@ const buildOutcomeRecord = (prediction, windowMs, exitPrice, opts = {}) => {
   const indicatorResults = {}
   const indicatorTfResults = {}
   for (const ind of INDICATORS) {
-    indicatorTfResults[ind] = {}
-    let predictions = 0
-    let correct = 0
-    for (const tf of ALL_TFS) {
-      const tfData = prediction.timeframes?.[tf]
-      const indScore = tfData?.scores?.[ind]
-      if (indScore == null) continue
-      const direction = getDirection(indScore)
-      if (direction === 'neutral') continue
-      const hit = evaluateDirection(direction, priceChangeBps, windowMs, 'perp')
-      indicatorTfResults[ind][tf] = { direction, correct: hit }
-      if (hit == null) continue
-      predictions++
-      if (hit) correct++
-    }
+    const direction = getDirection(tfData?.scores?.[ind])
+    const hit = evaluateDirection(direction, priceChangeBps, windowMs, 'perp')
+    indicatorTfResults[ind] = direction === 'neutral' ? {} : { [window]: { direction, correct: hit } }
     indicatorResults[ind] = {
-      predictions,
-      correct,
-      accuracy: predictions > 0 ? correct / predictions : null,
+      predictions: hit == null ? 0 : 1,
+      correct: hit === true ? 1 : 0,
+      accuracy: hit == null ? null : Number(hit),
     }
   }
 
@@ -223,7 +212,9 @@ const buildOutcomeRecord = (prediction, windowMs, exitPrice, opts = {}) => {
     // made, not the settlement/evaluation hour (`ts` above, up to 1h later) — the
     // time-of-day multiplier in signal-engine.js applies byHour[predictionHour].
     predictionTs: prediction.ts,
-    window: WINDOW_LABELS[windowMs],
+    window,
+    alignedIndicators: true,
+    ...(trainingOnly ? { trainingOnly } : {}),
     entryPrice: prediction.price,
     exitPrice,
     priceChangeBps: Math.round(priceChangeBps * 100) / 100,
@@ -241,11 +232,10 @@ const buildOutcomeRecord = (prediction, windowMs, exitPrice, opts = {}) => {
 }
 
 /**
- * Build the one contract outcome emitted at the snapshotted expiry time.
- * Returns null for incomplete/expired-at-prediction contracts or an early mark.
+ * Build the single outcome for a bound touch or expiry.
  * @param {Object} prediction
  * @param {number} exitPrice
- * @param {{ts?: string}} [opts]
+ * @param {{ts?: string, knockout?: 'target'|'stop'}} [opts]
  * @returns {Object|null}
  */
 const buildContractOutcomeRecord = (prediction, exitPrice, opts = {}) => {
@@ -253,10 +243,14 @@ const buildContractOutcomeRecord = (prediction, exitPrice, opts = {}) => {
   const predictionTs = Date.parse(prediction.ts)
   const settlementTs = Date.parse(opts.ts ?? new Date().toISOString())
   if (!Number.isFinite(expiry) || !Number.isFinite(predictionTs) ||
-      expiry <= predictionTs || !Number.isFinite(settlementTs) || settlementTs < expiry) {
+      expiry <= predictionTs || !Number.isFinite(settlementTs) ||
+      (opts.knockout ? settlementTs <= predictionTs || settlementTs >= expiry
+        || contractTouch(prediction.contract, exitPrice) !== opts.knockout
+        : settlementTs < expiry)) {
     return null
   }
-  const contractOutcome = evaluateContractOutcome(prediction.contract, exitPrice)
+  const contractOutcome = evaluateContractOutcome(prediction.contract, exitPrice, prediction.price)
+  if (contractOutcome == null) return null
   return {
     type: 'outcome',
     predictionId: prediction.id,
@@ -274,26 +268,56 @@ const buildContractOutcomeRecord = (prediction, exitPrice, opts = {}) => {
     indicatorTfResults: {},
     contractExpiry: expiry,
     contractRange: prediction.contract?.range ?? null,
+    contractExitReason: opts.knockout ?? 'expiry',
     contractOutcome,
   }
 }
 
 /**
- * Evaluate a contract against its settlement mark.
+ * Evaluate the net payout at the first knockout mark or at expiry.
  * @param {{target: number, stop: number, direction: string}} contractSnapshot
  * @param {number} exitPrice
+ * @param {number} entryPrice
  * @returns {'win' | 'loss' | null}
  */
-const evaluateContractOutcome = (contractSnapshot, exitPrice) => {
-  if (!contractSnapshot?.target || !contractSnapshot?.stop || !exitPrice) return null
-  if (contractSnapshot.direction === 'up') {
-    if (exitPrice >= contractSnapshot.target) return 'win'
-    if (exitPrice <= contractSnapshot.stop) return 'loss'
-  } else if (contractSnapshot.direction === 'down') {
-    if (exitPrice <= contractSnapshot.target) return 'win'
-    if (exitPrice >= contractSnapshot.stop) return 'loss'
-  }
+const evaluateContractOutcome = (contractSnapshot, exitPrice, entryPrice) => {
+  if (!validContractEntry(contractSnapshot, entryPrice) ||
+      !Number.isFinite(exitPrice) || exitPrice <= 0) return null
+  const { target, stop, direction } = contractSnapshot
+  const floor = Math.min(target, stop)
+  const ceiling = Math.max(target, stop)
+  const priceForPayout = (price) => direction === 'up' ? price : floor + ceiling - price
+  const terms = { floor, ceiling }
+  const cost = buyCost(priceForPayout(entryPrice), terms)
+  const proceeds = settlementProceeds(priceForPayout(exitPrice), terms)
+  return proceeds > cost ? 'win' : 'loss'
+}
+
+const validContractEntry = (contract, price) => {
+  const { target, stop, direction } = contract ?? {}
+  if (![target, stop, price].every(p => Number.isFinite(p) && p > 0)) return false
+  return direction === 'up' ? stop < price && price < target
+    : direction === 'down' && target < price && price < stop
+}
+
+/** @returns {'target'|'stop'|null} */
+const contractTouch = ({ target, stop, direction }, price) => {
+  if (direction === 'up') return price <= stop ? 'stop' : price >= target ? 'target' : null
+  if (direction === 'down') return price >= stop ? 'stop' : price <= target ? 'target' : null
   return null
+}
+
+const contractKey = ({ target, stop, direction, expiry }) => `${direction}:${target}:${stop}:${expiry}`
+
+const firstPriceIndexAt = (prices, ts) => {
+  let lo = 0
+  let hi = prices.length
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1
+    if (prices[mid].ts < ts) lo = mid + 1
+    else hi = mid
+  }
+  return lo
 }
 
 /**
@@ -313,8 +337,8 @@ const tallyHistory = (records) => {
   let skipCount = 0
   for (const record of records) {
     if (!record) continue
-    if (record.type === 'outcome' && record.compositeDirection !== 'down' &&
-        (record.compositeCorrect != null || (record.window === 'contract' && record.contractOutcome != null))) {
+    if (record.type === 'outcome' && (record.trainingOnly || (record.compositeDirection !== 'down' &&
+        (record.compositeCorrect != null || (record.window === 'contract' && record.contractOutcome != null))))) {
       outcomes.push(record)
     } else if (record.type === 'prediction') {
       predCount++
@@ -360,9 +384,8 @@ const findUnsettledPredictions = (records, now) => {
       const ts = Date.parse(record.ts)
       if (Number.isNaN(ts)) continue
       // Every sample's price feeds backfill, including DOWN/NEUTRAL journals.
-      // Only UP calls are unsettled (the ones we actually schedule live).
       if (record.price) priceTimeline.push({ ts, price: record.price })
-      if (record.compositeDirection === 'up') {
+      if (record.compositeDirection === 'up' || record.trainIndicators === true) {
         predictions.push({ ...record, _ts: ts })
       }
     } else if (record.type === 'expired') {
@@ -425,15 +448,19 @@ const buildExpiredRecord = (prediction, window) => ({
 
 /**
  * Find UP predictions whose valid snapshotted contract has not been settled.
- * Uses only the first observed price at/after expiry; never a pre-expiry fallback.
+ * Recover the first observed touch between prediction and expiry, or use the
+ * first observed expiry mark if no earlier touch was captured.
  * @param {Array<Object|null>} records
  * @param {number} now
- * @returns {{pending: Array<{prediction: Object, targetTs: number, remainingMs: number}>, elapsed: Array<{prediction: Object, targetTs: number, settlementTs: number|null, exitPrice: number|null}>}}
+ * @param {Array<{price: number, timestamp: number}>} [recentTicks]
  */
-const findUnsettledContractPredictions = (records, now) => {
+const findUnsettledContractPredictions = (records, now, recentTicks = []) => {
   const predictions = []
-  const prices = []
+  const prices = recentTicks
+    .filter(tick => Number.isFinite(tick.timestamp) && Number.isFinite(tick.price) && tick.price > 0)
+    .map(tick => ({ ts: tick.timestamp, price: tick.price }))
   const settled = new Set()
+  const knockouts = new Map()
   for (const record of records) {
     if (!record) continue
     const ts = Date.parse(record.ts)
@@ -446,6 +473,17 @@ const findUnsettledContractPredictions = (records, now) => {
           Number.isFinite(expiry) && expiry > ts) {
         predictions.push(record)
       }
+    } else if (record.type === 'contract_knockout') {
+      const { contract, price } = record
+      if (!contract || !Number.isFinite(price) || price <= 0 || !Number.isFinite(ts)
+          || !Number.isFinite(contract.expiry) || ts > now || ts >= contract.expiry) continue
+      const knockout = contractTouch(contract, price)
+      if (!knockout) continue
+      prices.push({ ts, price })
+      const key = contractKey(contract)
+      if (!knockouts.has(key) || ts < knockouts.get(key).ts) {
+        knockouts.set(key, { contract, ts, price, knockout, recorded: true })
+      }
     } else if (record.type === 'expired') {
       if (record.window === 'contract' && record.predictionId) settled.add(record.predictionId)
     } else if (record.type === 'outcome') {
@@ -456,17 +494,49 @@ const findUnsettledContractPredictions = (records, now) => {
     }
   }
   prices.sort((a, b) => a.ts - b.ts)
+  // Look for the first sampled touch for each listing from its earliest known
+  // entry, including entries whose outcome was already written by an old build.
+  const firstEntries = new Map()
+  for (const { contract, price, ts } of predictions) {
+    if (!validContractEntry(contract, price)) continue
+    const key = contractKey(contract)
+    const entryTs = Date.parse(ts)
+    if (!firstEntries.has(key) || entryTs < firstEntries.get(key).ts) {
+      firstEntries.set(key, { contract, ts: entryTs })
+    }
+  }
+  for (const [key, { contract, ts }] of firstEntries) {
+    const limit = Math.min(now, contract.expiry - 1, (knockouts.get(key)?.ts ?? Infinity) - 1)
+    for (let i = firstPriceIndexAt(prices, ts + 1); i < prices.length && prices[i].ts <= limit; i++) {
+      const mark = prices[i]
+      const knockout = contractTouch(contract, mark.price)
+      if (!knockout) continue
+      knockouts.set(key, { contract, ...mark, knockout, recorded: false })
+      break
+    }
+  }
+
   const pending = []
   const elapsed = []
   for (const prediction of predictions) {
     if (settled.has(prediction.id)) continue
-    const targetTs = Number(prediction.contract.expiry)
+    const { contract } = prediction
+    const targetTs = Number(contract.expiry)
+    if (validContractEntry(contract, prediction.price)) {
+      const touch = knockouts.get(contractKey(contract))
+      if (touch) {
+        if (Date.parse(prediction.ts) < touch.ts) {
+          elapsed.push({ prediction, targetTs, settlementTs: touch.ts, exitPrice: touch.price, knockout: touch.knockout })
+        }
+        continue
+      }
+    }
     if (targetTs > now) {
       pending.push({ prediction, targetTs, remainingMs: targetTs - now })
       continue
     }
-    const found = prices.find(p => p.ts >= targetTs)
-    const mark = found && found.ts - targetTs <= MAX_EVAL_LAG_MS ? found : null
+    const found = prices[firstPriceIndexAt(prices, targetTs)]
+    const mark = found && found.ts <= now && found.ts - targetTs <= MAX_EVAL_LAG_MS ? found : null
     elapsed.push({
       prediction,
       targetTs,
@@ -475,8 +545,15 @@ const findUnsettledContractPredictions = (records, now) => {
       expired: mark == null && now - targetTs > MAX_EVAL_LAG_MS,
     })
   }
-  return { pending, elapsed }
+  return { pending, elapsed, knockouts }
 }
+
+const knockoutRecord = (contract, ts, price) => ({
+  type: 'contract_knockout',
+  ts: new Date(ts).toISOString(),
+  contract,
+  price,
+})
 
 /**
  * Compute per-UTC-hour accuracy (minimum 5 samples) from evaluated outcomes.
@@ -513,6 +590,7 @@ const computeByHour = (outcomes) => {
  * @param {Object} opts.io - realtime bus (src/realtime-bus.js)
  * @param {Function} opts.lastPriceFn - Returns current BTC price
  * @param {Function} [opts.contractFn] - Returns current contract config
+ * @param {() => Array<{price: number, timestamp: number}>} [opts.recentTicksFn] - Ticks received during hydration
  * @param {Function} [opts.journalWriter] - Testable persistence boundary; receives (record, {signal})
  * @param {string} [opts.scorecardDir] - Testable history source directory
  * @param {(file: string) => Promise<void>} [opts.unlinkFile] - Testable history deletion boundary
@@ -520,14 +598,17 @@ const computeByHour = (outcomes) => {
  * @param {number} [opts.pruneLockWaitMs] - How long retention waits for the maintenance lock before skipping
  * @param {number} [opts.historyLockWaitMs] - How long hydration waits for a replay before reading unlocked
  * @param {{snapshot: Function, hydrate: Function, isLong: Function, serialize: Function}|null} [opts.perpBook] - Shared 0.01-BTC-per-contract paper book
- * @returns {{recordPrediction: Function, recordPerpFill: Function, getMetrics: Function, start: Function, stop: Function}}
+ * @returns {{recordPrediction: Function, recordPerpFill: Function, observePrice: (price: number, ts: number) => void, getMetrics: Function, start: Function, stop: Function}}
  */
-const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRecord, scorecardDir = SCORECARD_DIR, unlinkFile = unlink, retentionLogger = scorecardLogger, perpBook = null, pruneLockWaitMs = PRUNE_LOCK_WAIT_MS, historyLockWaitMs = HISTORY_LOCK_WAIT_MS }) => {
+const createScorecard = ({ io, lastPriceFn, contractFn, recentTicksFn = () => [], journalWriter = appendRecord, scorecardDir = SCORECARD_DIR, unlinkFile = unlink, retentionLogger = scorecardLogger, perpBook = null, pruneLockWaitMs = PRUNE_LOCK_WAIT_MS, historyLockWaitMs = HISTORY_LOCK_WAIT_MS }) => {
   /** @type {Array<Object>} Ring buffer of evaluated outcomes */
   const outcomeBuffer = []
 
   /** @type {Set<NodeJS.Timeout>} Pending evaluation timeouts */
   const pendingTimeouts = new Set()
+  // One live subscription and expiry timer per set of contract terms.
+  const pendingContracts = new Map()
+  const knockedOutContracts = new Map()
 
   /** @type {NodeJS.Timeout | null} */
   let sampleInterval = null
@@ -567,12 +648,18 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
         journal.healthy = false
         journal.lastError = err?.message || String(err)
         journal.lastErrorAt = new Date().toISOString()
-        scorecardLogger.error(`❌ 📊 Scorecard journal write failed type=${record?.type || 'unknown'} err=${journal.lastError}`, {
+        const recordType = (Array.isArray(record) ? record[0]?.type : record?.type) || 'unknown'
+        scorecardLogger.error(`❌ 📊 Scorecard journal write failed type=${recordType} err=${journal.lastError}`, {
           action: 'journal-write',
-          recordType: record?.type || 'unknown',
+          recordType,
           error: journal.lastError,
         })
       })
+  }
+
+  const persistBatch = (records) => {
+    if (journalWriter === appendRecord) persistRecord(records)
+    else for (const record of records) persistRecord(record)
   }
 
   /**
@@ -625,6 +712,7 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
       signalType: result.type,
       confidence: result.confidence,
       trigger,
+      trainIndicators: true,
       timeframes,
       regime,
       contract,
@@ -664,14 +752,11 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
     return true
   }
 
-  /** Settle a contract once, at (or just after) its snapshotted expiry. */
-  const evaluateContract = (prediction) => {
-    const exitPrice = lastPriceFn()
-    if (!exitPrice) return false
-    const outcome = buildContractOutcomeRecord(prediction, exitPrice)
-    if (!outcome) return true // invalid/early snapshots are not retryable work
-    persistRecord(outcome)
-    outcomeBuffer.push(outcome)
+  const settleContracts = (predictions, exitPrice, opts, marker) => {
+    const outcomes = predictions.map(prediction => buildContractOutcomeRecord(prediction, exitPrice, opts)).filter(Boolean)
+    if (outcomes.length === 0) return
+    persistBatch(marker ? [marker, ...outcomes] : outcomes)
+    outcomeBuffer.push(...outcomes)
     if (outcomeBuffer.length > BUFFER_SIZE) {
       outcomeBuffer.splice(0, outcomeBuffer.length - BUFFER_SIZE)
     }
@@ -680,7 +765,6 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
       lastEmitTs = now
       io.to('updown').emit('updown:scorecard', getMetrics())
     }
-    return true
   }
 
   /**
@@ -688,11 +772,12 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
    * retry briefly instead of scoring an old price or silently losing the window.
    */
   const scheduleEvaluation = (prediction, targetTs, evaluate, label) => {
+    let timeout
     const arm = () => {
       if (!running) return
       const now = Date.now()
       const delay = now < targetTs ? targetTs - now : EVAL_RETRY_MS
-      const timeout = setTimeout(() => {
+      timeout = setTimeout(() => {
         pendingTimeouts.delete(timeout)
         if (!running) return
         try {
@@ -724,6 +809,50 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
       pendingTimeouts.add(timeout)
     }
     arm()
+    return () => {
+      clearTimeout(timeout)
+      pendingTimeouts.delete(timeout)
+    }
+  }
+
+  const registerContract = (prediction) => {
+    const { contract } = prediction
+    if (!validContractEntry(contract, prediction.price)) return
+    const { expiry } = contract
+    const key = contractKey(contract)
+    const now = Date.now()
+    for (const [closedKey, expiresAt] of knockedOutContracts) {
+      if (expiresAt <= now) knockedOutContracts.delete(closedKey)
+    }
+    if (knockedOutContracts.has(key)) return
+    let pending = pendingContracts.get(key)
+    if (!pending) {
+      const predictions = []
+      const cancel = scheduleEvaluation(prediction, expiry + MAX_EVAL_LAG_MS + 1, () => {
+        pendingContracts.delete(key)
+        persistBatch(predictions.map(p => buildExpiredRecord(p, 'contract')))
+        return true
+      }, 'contract')
+      pending = { contract, predictions, cancel }
+      pendingContracts.set(key, pending)
+    }
+    pending.predictions.push(prediction)
+  }
+
+  const observePrice = (price, ts) => {
+    for (const [key, { contract, predictions, cancel }] of pendingContracts) {
+      const { expiry } = contract
+      if (ts > expiry + MAX_EVAL_LAG_MS) continue
+      const knockout = ts < expiry ? contractTouch(contract, price) : null
+      if (ts < expiry && !knockout) continue
+      const eligible = predictions.filter(p => Date.parse(p.ts) < ts)
+      if (eligible.length === 0) continue
+      if (knockout) knockedOutContracts.set(key, expiry)
+      cancel()
+      pendingContracts.delete(key)
+      settleContracts(eligible, price, { ts: new Date(ts).toISOString(), knockout },
+        knockout ? knockoutRecord(contract, ts, price) : null)
+    }
   }
 
   /**
@@ -749,23 +878,19 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
 
     if (prediction.compositeDirection !== 'up') {
       totalSkipped++
-      // DOWN and NEUTRAL are not longs we score. Still journal them.
-      persistRecord(prediction)
-      return
+    } else {
+      totalPredictions++
+      scorecardLogger.info(`ℹ️ 📊 Scorecard prediction=${prediction.id} price=$${prediction.price} dir=${prediction.compositeDirection} trigger=${trigger}`, {
+        action: 'record-prediction',
+        predictionId: prediction.id,
+        price: prediction.price,
+        direction: prediction.compositeDirection,
+        trigger,
+      })
     }
-
-    totalPredictions++
 
     // Persist prediction to JSONL
     persistRecord(prediction)
-
-    scorecardLogger.info(`ℹ️ 📊 Scorecard prediction=${prediction.id} price=$${prediction.price} dir=${prediction.compositeDirection} trigger=${trigger}`, {
-      action: 'record-prediction',
-      predictionId: prediction.id,
-      price: prediction.price,
-      direction: prediction.compositeDirection,
-      trigger,
-    })
 
     // Schedule evaluations for each window
     const predictionTs = Date.parse(prediction.ts)
@@ -779,8 +904,8 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
     }
 
     const expiry = Number(prediction.contract?.expiry)
-    if (Number.isFinite(expiry) && expiry > predictionTs) {
-      scheduleEvaluation(prediction, expiry, () => evaluateContract(prediction), 'contract')
+    if (prediction.compositeDirection === 'up' && Number.isFinite(expiry) && expiry > predictionTs) {
+      registerContract(prediction)
     }
   }
 
@@ -810,8 +935,7 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
 
   /** Advance the adaptive model exactly once for a changed training set. */
   const updateAdaptiveWeights = (alpha = 0.15, persist = true) => {
-    const scored = outcomeBuffer.filter(o => o.compositeDirection !== 'down' && o.window !== 'contract')
-    const byIndicator = computeIndicatorMetrics(scored)
+    const byIndicator = computeTrainingMetrics(outcomeBuffer)
     adaptiveWeights = computeAdaptiveWeights(byIndicator, BASE_WEIGHTS, adaptiveWeights, alpha)
 
     const weightNow = Date.now()
@@ -898,7 +1022,7 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
   }
 
   const getMetrics = () => {
-    const scored = outcomeBuffer.filter(o => o.compositeDirection !== 'down')
+    const scored = outcomeBuffer.filter(o => !o.trainingOnly && o.compositeDirection !== 'down')
     const evaluated = scored.filter(o => o.compositeCorrect != null)
     const correct = evaluated.filter(o => o.compositeCorrect === true)
     const incorrect = evaluated.filter(o => o.compositeCorrect === false)
@@ -922,8 +1046,7 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
     // By timeframe
     const byTimeframe = computeTimeframeMetrics(scored)
 
-    // By indicator — weighted by composite signal strength so strong signals influence
-    // adaptive weights more than marginal ones (score 30 = 1x, score 60+ = 2x).
+    // Published-call diagnostics retain the composite strength weighting.
     const byIndicator = computeIndicatorMetrics(scored)
 
     // Time-of-day multiplier in signal-engine assumes 50% = coin-flip. Options
@@ -1040,7 +1163,13 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
     // up normally.
     const now = Date.now()
     const { pending, elapsed } = findUnsettledPredictions(allRecords, now)
-    const contractRecovery = findUnsettledContractPredictions(allRecords, now)
+    const contractRecovery = findUnsettledContractPredictions(allRecords, now, recentTicksFn())
+    for (const [key, touch] of contractRecovery.knockouts) {
+      if (touch.contract.expiry > now) {
+        knockedOutContracts.set(key, touch.contract.expiry)
+        if (!touch.recorded) persistRecord(knockoutRecord(touch.contract, touch.ts, touch.price))
+      }
+    }
 
     let backfilled = 0
     // Fell due during the downtime with no recorded mark, but still inside the
@@ -1072,15 +1201,16 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
       )
     }
 
-    for (const { prediction, targetTs, settlementTs, exitPrice, expired } of contractRecovery.elapsed) {
+    for (const { prediction, settlementTs, exitPrice, expired, knockout } of contractRecovery.elapsed) {
       if (expired) persistRecord(buildExpiredRecord(prediction, 'contract'))
       if (exitPrice == null && !expired) {
-        lateWindows.push({ prediction, targetTs, evaluate: () => evaluateContract(prediction), label: 'contract' })
+        registerContract(prediction)
         continue
       }
       if (exitPrice == null || settlementTs == null) continue
       const outcome = buildContractOutcomeRecord(prediction, exitPrice, {
         ts: new Date(settlementTs).toISOString(),
+        knockout,
       })
       if (!outcome) continue
       outcome.backfilled = true
@@ -1089,8 +1219,8 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
       backfilled++
     }
 
-    for (const { prediction, targetTs } of contractRecovery.pending) {
-      scheduleEvaluation(prediction, targetTs, () => evaluateContract(prediction), 'contract')
+    for (const { prediction } of contractRecovery.pending) {
+      registerContract(prediction)
     }
 
     for (const { prediction, targetTs, evaluate, label } of lateWindows) {
@@ -1252,6 +1382,8 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
       clearTimeout(t)
     }
     pendingTimeouts.clear()
+    pendingContracts.clear()
+    knockedOutContracts.clear()
     computeSignalsFn = null
     scorecardLogger.info(`ℹ️ 📊 Scorecard stopped predictions=${totalPredictions} evaluated=${outcomeBuffer.length}`, {
       action: 'stop',
@@ -1260,12 +1392,13 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
     })
   }
 
-  return { recordPrediction, recordPerpFill, getMetrics, start, stop }
+  return { recordPrediction, recordPerpFill, observePrice, getMetrics, start, stop }
 }
 
 module.exports = {
   createScorecard,
   computeAdaptiveWeights,
+  computeTrainingMetrics,
   evaluateContractOutcome,
   buildContractOutcomeRecord,
   tallyHistory,

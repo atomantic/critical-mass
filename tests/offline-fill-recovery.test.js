@@ -185,6 +185,36 @@ describe('#367 offline recovery — partial celestial body TP fill (pre-existing
 });
 
 describe('#367 offline recovery — offline entry buy fill', () => {
+  it('books a later expired partial buy when the previous entry status lookup fails', async () => {
+    const orderId = 'expired-offline-buy';
+    const eng = makeEngine({
+      adapter: {
+        getOrder: async id => {
+          if (id === 'unreadable-entry') throw new Error('temporary outage');
+          return { status: 'EXPIRED', filledSize: 0.005, averageFilledPrice: 50000 };
+        },
+        getOrderFills: async () => buyFill(orderId, 0.005, 50000),
+      },
+      executor: { getPendingEntries: () => new Map([['unreadable-entry', {}], [orderId, {}]]) },
+    });
+    assert.equal((await eng._test.checkOfflineOrderFills()).entriesFilled, 1);
+    const body = eng._getPositionState().celestialBodies.find(b => b.sourceOrderIds.includes(orderId));
+    assert.equal(body?.assetQty, 0.005);
+  });
+
+  it('retires an expired WebSocket ladder rung and preserves other resting orders', async () => {
+    const cancelled = [];
+    const eng = makeEngine({ executor: { handleOrderCancel: id => cancelled.push(id) } });
+    const pos = eng._getPositionState();
+    pos.pendingEntryOrders = [{ orderId: 'other-entry' }];
+    pos.pendingLadderOrders = [{ orderId: 'dead-rung' }, { orderId: 'live-rung' }];
+    eng._test.handleWsOrderUpdate({ orderId: 'dead-rung', side: 'buy', status: 'EXPIRED', filledSize: 0 });
+    await require('../src/pending-writes').drainPendingWrites(5_000);
+    assert.deepEqual(cancelled, ['dead-rung']);
+    assert.deepEqual(pos.pendingLadderOrders, [{ orderId: 'live-rung' }]);
+    assert.deepEqual(pos.pendingEntryOrders, [{ orderId: 'other-entry' }]);
+  });
+
   it('creates a celestial body and places its dynamic TP instead of mutating flat totalAsset', async () => {
     let tpPlacements = 0;
     const eng = makeEngine({

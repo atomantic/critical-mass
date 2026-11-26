@@ -11,7 +11,7 @@ const path = require('path');
 const { createSignalEngine, scoreToSignalDynamic, resolveNoTradeZoneType, applyUpOnlyGate } = require('./signal-engine');
 const { clampScoreToExistingType, preventTickCreatedSignal, alignJournalType } = require('./signal-stability');
 const { createScorecard } = require('./scorecard');
-const { createPerpBook } = require('./perp-book');
+const { createPerpBook, livePerpCosts } = require('./perp-book');
 const { UPDOWN_STATE_FORMAT_VERSION } = require('../persisted-payload-validation');
 const { PERP_CONTRACT_SIZE_BTC, calculatePerpPnl } = require('./perp-contract');
 const { labelHistoryActions } = require('./signal-actions');
@@ -94,12 +94,13 @@ const createUpDownService = (io, deps) => {
   const signalEngine = signalEngineFactory(candleAdapter);
   // The live and scorecard samplers maintain independent signal stability and flush setup state.
   const scorecardSignalEngine = signalEngineFactory(candleAdapter);
-  const perpBook = createPerpBook();
+  const perpBook = createPerpBook({}, livePerpCosts());
   const scorecardFactory = deps.createScorecard ?? createScorecard;
   const scorecard = scorecardFactory({
     io,
     lastPriceFn: () => isFreshPrice(lastPrice, lastTickAt) ? lastPrice : null,
     contractFn: () => contract,
+    recentTicksFn: () => tickBuffer,
     perpBook,
   });
 
@@ -140,7 +141,8 @@ const createUpDownService = (io, deps) => {
     position = null;
     signalHistory.length = 0;
     signalEngine.setStabilityState({});
-    signalEngine.setFlushSetupState?.({});
+    signalEngine.setFlushSetupState?.(saved?.flushSetup ?? {});
+    scorecardSignalEngine.setFlushSetupState?.(saved?.flushSetup ?? {});
     perpBook.hydrate({});
     if (!saved) return;
     if (saved.contract) contract = { ...contract, ...saved.contract };
@@ -149,7 +151,7 @@ const createUpDownService = (io, deps) => {
       signalHistory.length = 0;
       // Filter out only NO_TRADE_ZONE — keep NEUTRAL and all directional signals
       for (const s of saved.signalHistory) {
-        if (s.type !== 'NO_TRADE_ZONE') {
+        if (s.type !== 'NO_TRADE_ZONE' || s.filled === true) {
           signalHistory.push(s);
         }
       }
@@ -163,9 +165,6 @@ const createUpDownService = (io, deps) => {
       // Continue silently from the restored published type so a restart does
       // not re-journal / re-emit the current signal as a fresh change.
       if (saved.stability.publishedType) lastSignal = saved.stability.publishedType;
-    }
-    if (saved.flushSetup) {
-      signalEngine.setFlushSetupState?.(saved.flushSetup);
     }
     if (saved.perpBook) {
       perpBook.hydrate(saved.perpBook);
@@ -264,6 +263,7 @@ const createUpDownService = (io, deps) => {
     lastPrice = numericPrice;
     lastTickAt = now;
     const tickTimestamp = Number.isFinite(Number(timestamp)) ? Number(timestamp) : now;
+    scorecard.observePrice?.(numericPrice, tickTimestamp);
 
     // Buffer all raw ticks for momentum computation
     tickBuffer.push({ price: numericPrice, timestamp: tickTimestamp });
@@ -292,19 +292,19 @@ const createUpDownService = (io, deps) => {
   /**
    * Append a type change to the bounded journal, retaining consecutive-type debounce.
    */
-  const appendSignalHistory = (result, action, price) => {
-    // Record all signal changes including NEUTRAL (skip only NO_TRADE_ZONE)
-    // Debounce: skip only consecutive same-type entries within SIGNAL_DEBOUNCE_MS
+  const appendSignalHistory = (result, action, price, filled) => {
+    // Retain all fills. Debounce consecutive same-type changes with no fill.
     // (BUY→NEUTRAL→BUY is NOT debounced — the intervening signal makes it meaningful)
-    if (result.type !== 'NO_TRADE_ZONE') {
+    if (result.type !== 'NO_TRADE_ZONE' || filled) {
       const lastEntry = signalHistory.length > 0 ? signalHistory[signalHistory.length - 1] : null;
       const isConsecutiveDuplicate = lastEntry &&
         lastEntry.type === result.type &&
         (result.timestamp - lastEntry.timestamp) < SIGNAL_DEBOUNCE_MS;
-      if (!isConsecutiveDuplicate) {
+      if (filled || !isConsecutiveDuplicate) {
         signalHistory.push({
           type: result.type,
           action,
+          filled,
           ...(result.source === 'flush-setup' ? { source: 'flush-setup' } : {}),
           score: result.score,
           confidence: result.confidence,
@@ -441,10 +441,11 @@ const createUpDownService = (io, deps) => {
       perp: perpSnap,
     });
 
-    // Emit signal change event only when signal changes
-    if (result.type !== lastSignal) {
+    // A fill is its own event, including a fill with an unchanged display type.
+    const typeChanged = result.type !== lastSignal;
+    if (typeChanged || fillResult.fill) {
       lastSignal = result.type;
-      appendSignalHistory(result, action, lastPrice);
+      appendSignalHistory(result, action, lastPrice, !!fillResult.fill);
 
       // A failed save must not drop the prediction or the dashboard alert:
       // lastSignal already matches, so the change would never be re-emitted.
@@ -458,7 +459,7 @@ const createUpDownService = (io, deps) => {
       }
 
       // Record signal change for scorecard tracking
-      scorecard.recordPrediction(result, 'signal_change');
+      if (typeChanged) scorecard.recordPrediction(result, 'signal_change');
 
       io.to('updown').emit('updown:signal', {
         type: result.type,
@@ -476,7 +477,7 @@ const createUpDownService = (io, deps) => {
         adxRegime: result.adxRegime,
         volatility: result.volatility,
         pivotPoints: result.pivotPoints,
-      horizonPrediction: result.horizonPrediction,
+        horizonPrediction: result.horizonPrediction,
         trendGate: result.trendGate,
         source: result.source ?? 'composite',
         flushSetup: result.flushSetup ?? null,
@@ -510,7 +511,12 @@ const createUpDownService = (io, deps) => {
     startPromise = Promise.resolve(scorecard.start(() => {
       if (!candleCache.isSeeded('coinbase')) return null;
       const sampled = scorecardSignalEngine.computeSignals(contract.expiry, scorecard.getMetrics());
-      return alignJournalType(sampled, lastSignalResult?.type);
+      const aligned = alignJournalType(sampled, lastSignalResult?.type);
+      if (aligned && lastSignalResult) {
+        aligned.source = lastSignalResult.source;
+        aligned.trendGate = lastSignalResult.trendGate;
+      }
+      return aligned;
     })).then(() => {
       if (running && generation === lifecycleGeneration) {
         // Start live cycles only after scorecard hydration completes. Otherwise

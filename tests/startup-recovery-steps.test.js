@@ -223,7 +223,7 @@ describe('startup recovery step boundaries (#1006)', () => {
     });
   }
 
-  it('prefetches saved status concurrently and preserves entry-versus-ladder unknown retention', async () => {
+  it('prefetches saved statuses concurrently and retains unresolved entries and ladder rungs for retry', async () => {
     const pair = '__startup_steps_unknown__';
     const reads = [];
     const waits = [];
@@ -258,7 +258,7 @@ describe('startup recovery step boundaries (#1006)', () => {
     }
     assert.equal((await started).success, true);
     for (const position of [eng._getPositionState(), persistedPosition(pair)]) {
-      assert.deepEqual(position.pendingEntryOrders, []);
+      assert.deepEqual(position.pendingEntryOrders.map(o => o.orderId), ['entry-reject', 'entry-null', 'entry-open']);
       assert.deepEqual(position.pendingLadderOrders.map(o => o.orderId), ['ladder-reject', 'ladder-null', 'ladder-open']);
       assert.equal(position.ladderActive, true);
     }

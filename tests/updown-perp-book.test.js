@@ -229,6 +229,19 @@ describe('perp book paper-trades 0.01 BTC per contract and flattens on Close', (
     assert.equal(snap.closedTrades[0].pnl, 300)
     assert.equal(restored.serialize().contractSizeBtc, PERP_CONTRACT_SIZE_BTC)
   })
+
+  it('charges both sides on every lot and retains its entry costs through hydration', () => {
+    const costs = { feePerContract: 0.5, slippageBps: 2 }
+    const book = createPerpBook({}, costs)
+    book.applyFill('OPEN', 100_000, 1)
+    book.applyFill('ADD', 99_000, 2)
+    const restored = createPerpBook(book.serialize(), costs)
+    assert.equal(restored.snapshot(99_500).unrealizedPnl, -2.80)
+    const { trade } = restored.applyFill('CLOSE', 99_500, 3)
+    assert.equal(trade.pnl, -2.80)
+    assert.equal(trade.feesUsd, 2)
+    assert.equal(restored.snapshot().realizedPnl, -2.80)
+  })
 })
 
 describe('UpDown perpetual contract sizing', () => {

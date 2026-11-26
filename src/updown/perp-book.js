@@ -2,13 +2,13 @@
 /**
  * Simulated 0.01-BTC-per-contract perpetual-long book.
  *
- * Every OPEN or ADD buys one 0.01 BTC contract at the mark. CLOSE sells the entire book at
- * the mark. Same-side repeats (BUY staying BUY, or BUY→STRONG_BUY) do not
+ * Every OPEN or ADD buys one 0.01 BTC contract. CLOSE sells the entire book.
+ * Same-side repeats (BUY staying BUY, or BUY→STRONG_BUY) do not
  * pyramid — a new fill requires a side change (Hold→Buy while already long
  * is ADD; Buy→Sell is CLOSE).
  *
- * P&L is mark-to-market USD with 0.01 BTC per contract: Δprice × contracts × 0.01.
- * No fees, no funding — this is the scorecard's "if we followed the signals" book.
+ * P&L includes adverse execution slippage and a USD fee per contract per side
+ * when configured. Open P&L estimates the net proceeds of flattening at the mark.
  */
 
 const { resolveAction, signalSide } = require('./signal-actions')
@@ -17,8 +17,21 @@ const { PERP_CONTRACT_SIZE_BTC, calculatePerpPnl } = require('./perp-contract')
 const { round2 } = require('../value-guards')
 const round8 = (n) => Math.round(n * 1e8) / 1e8
 
+const livePerpCosts = (env = process.env) => {
+  const read = (value, fallback, max = Infinity) => {
+    const n = value?.trim() ? Number(value) : fallback
+    return Number.isFinite(n) && n >= 0 && n < max ? n : fallback
+  }
+  return {
+    feePerContract: read(env.UPDOWN_PERP_FEE_PER_CONTRACT, 0.5),
+    slippageBps: read(env.UPDOWN_PERP_SLIPPAGE_BPS, 2, 10000),
+  }
+}
+
 const cloneLot = (lot) => ({
   entryPrice: lot.entryPrice,
+  executionPrice: lot.executionPrice,
+  entryFee: lot.entryFee,
   entryTs: lot.entryTs,
   action: lot.action,
 })
@@ -30,41 +43,38 @@ const normalizeClosedTrade = (trade, pnlScale) => ({
 
 /**
  * @param {Object} [initial]
- * @param {Array<{entryPrice: number, entryTs: number, action?: string}>} [initial.lots]
+ * @param {Array<{entryPrice: number, executionPrice?: number, entryFee?: number, entryTs: number, action?: string}>} [initial.lots]
  * @param {number} [initial.realizedPnl]
  * @param {Array<Object>} [initial.closedTrades]
  * @param {number} [initial.maxContracts]
  * @param {'BUY'|'SELL'|'HOLD'} [initial.lastSide]
+ * @param {{feePerContract?: number, slippageBps?: number}} [costs]
  */
-const createPerpBook = (initial = {}) => {
-  let lots = Array.isArray(initial.lots) ? initial.lots.filter(l => Number.isFinite(l?.entryPrice)).map(cloneLot) : []
-  // Versions before contractSizeBtc reported P&L as if every contract were 1 BTC.
-  // Existing saved paper-book state is normalized when it is first loaded.
-  const initialContractSize = Number.isFinite(initial.contractSizeBtc) && initial.contractSizeBtc > 0
-    ? initial.contractSizeBtc
-    : 1
-  const initialPnlScale = PERP_CONTRACT_SIZE_BTC / initialContractSize
-  let realizedPnl = Number.isFinite(initial.realizedPnl) ? initial.realizedPnl * initialPnlScale : 0
-  let closedTrades = Array.isArray(initial.closedTrades)
-    ? initial.closedTrades.map(trade => normalizeClosedTrade(trade, initialPnlScale))
-    : []
-  let maxContracts = Number.isFinite(initial.maxContracts) ? initial.maxContracts : lots.length
-  let lastSide = initial.lastSide === 'BUY' || initial.lastSide === 'SELL' || initial.lastSide === 'HOLD'
-    ? initial.lastSide
-    : (lots.length > 0 ? 'BUY' : 'HOLD')
-  let open = initial.open === true || lots.length > 0
+const createPerpBook = (initial = {}, { feePerContract = 0, slippageBps = 0 } = {}) => {
+  if (!Number.isFinite(feePerContract) || feePerContract < 0 ||
+      !Number.isFinite(slippageBps) || slippageBps < 0 || slippageBps >= 10000) {
+    throw new RangeError('Invalid perp execution costs')
+  }
+  let lots = []
+  let realizedPnl = 0
+  let closedTrades = []
+  let maxContracts = 0
+  let lastSide = 'HOLD'
+  let open = false
+  let hasLegacyRealizedPnl = false
+
+  const executionAt = (price, side) => price * (1 + side * slippageBps / 10000)
+  const exitFees = () => lots.length * feePerContract
+  const entryFees = () => lots.reduce((sum, lot) => sum + lot.entryFee, 0)
+  const netAt = (execution) => lots.reduce((sum, lot) =>
+    sum + calculatePerpPnl(lot.executionPrice, execution, 1), 0) - entryFees() - exitFees()
 
   const isLong = () => open || lots.length > 0
   const contracts = () => lots.length
 
   const avgEntry = () => {
     if (lots.length === 0) return 0
-    return lots.reduce((s, l) => s + l.entryPrice, 0) / lots.length
-  }
-
-  const unrealizedAt = (price) => {
-    if (!Number.isFinite(price) || lots.length === 0) return 0
-    return lots.reduce((s, l) => s + calculatePerpPnl(l.entryPrice, price, 1), 0)
+    return lots.reduce((s, l) => s + l.executionPrice, 0) / lots.length
   }
 
   const closedStats = () => {
@@ -89,7 +99,8 @@ const createPerpBook = (initial = {}) => {
    */
   const snapshot = (markPrice) => {
     const n = contracts()
-    const unrealized = Number.isFinite(markPrice) ? unrealizedAt(markPrice) : 0
+    const markAvailable = Number.isFinite(markPrice) && markPrice > 0
+    const unrealized = markAvailable ? netAt(executionAt(markPrice, -1)) : 0
     const stats = closedStats()
     return {
       contracts: n,
@@ -99,6 +110,10 @@ const createPerpBook = (initial = {}) => {
       realizedPnl: round2(realizedPnl),
       unrealizedPnl: round2(unrealized),
       totalPnl: round2(realizedPnl + unrealized),
+      markAvailable,
+      feePerContract,
+      slippageBps,
+      hasLegacyRealizedPnl,
       maxContracts,
       lastSide,
       ...stats,
@@ -159,11 +174,14 @@ const createPerpBook = (initial = {}) => {
       }
       const n = lots.length
       const avg = avgEntry()
-      const pnl = round2(unrealizedAt(price))
+      const executionPrice = executionAt(price, -1)
+      const feeUsd = exitFees()
+      const pnl = round2(netAt(executionPrice))
       const trade = {
         contracts: n,
         avgEntry: round2(avg),
-        exitPrice: price,
+        exitPrice: executionPrice,
+        feesUsd: round8(entryFees() + feeUsd),
         pnl,
         openedAt: lots[0].entryTs,
         closedAt: ts,
@@ -176,7 +194,7 @@ const createPerpBook = (initial = {}) => {
       lots = []
       return {
         action,
-        fill: { side: 'sell', action, contracts: n, price, ts, pnl },
+        fill: { side: 'sell', action, contracts: n, price, executionPrice, feeUsd, ts, pnl },
         trade,
       }
     }
@@ -186,11 +204,12 @@ const createPerpBook = (initial = {}) => {
     if (action === 'OPEN' || action === 'ADD') {
       lastSide = 'BUY'
       open = true
-      lots.push({ entryPrice: price, entryTs: ts, action })
+      const executionPrice = executionAt(price, 1)
+      lots.push({ entryPrice: price, executionPrice, entryFee: feePerContract, entryTs: ts, action })
       if (lots.length > maxContracts) maxContracts = lots.length
       return {
         action,
-        fill: { side: 'buy', action, contracts: 1, price, ts },
+        fill: { side: 'buy', action, contracts: 1, price, executionPrice, feeUsd: feePerContract, ts },
         trade: null,
       }
     }
@@ -202,7 +221,12 @@ const createPerpBook = (initial = {}) => {
    * @param {Object} [next]
    */
   const hydrate = (next = {}) => {
-    lots = Array.isArray(next.lots) ? next.lots.filter(l => Number.isFinite(l?.entryPrice)).map(cloneLot) : []
+    lots = Array.isArray(next.lots) ? next.lots.filter(l => Number.isFinite(l?.entryPrice)).map(lot => ({
+        ...cloneLot(lot),
+        executionPrice: Number.isFinite(lot.executionPrice) ? lot.executionPrice : executionAt(lot.entryPrice, 1),
+        entryFee: Number.isFinite(lot.entryFee) ? lot.entryFee : feePerContract,
+      })) : []
+    // Pre-contractSizeBtc state reported dollars as if a contract were 1 BTC.
     const previousContractSize = Number.isFinite(next.contractSizeBtc) && next.contractSizeBtc > 0
       ? next.contractSizeBtc
       : 1
@@ -211,6 +235,8 @@ const createPerpBook = (initial = {}) => {
     closedTrades = Array.isArray(next.closedTrades)
       ? next.closedTrades.map(trade => normalizeClosedTrade(trade, pnlScale))
       : []
+    hasLegacyRealizedPnl = next.hasLegacyRealizedPnl === true ||
+      (next.hasLegacyRealizedPnl == null && (realizedPnl !== 0 || closedTrades.some(t => !Number.isFinite(t.feesUsd))))
     maxContracts = Number.isFinite(next.maxContracts) ? next.maxContracts : lots.length
     lastSide = next.lastSide === 'BUY' || next.lastSide === 'SELL' || next.lastSide === 'HOLD'
       ? next.lastSide
@@ -222,12 +248,14 @@ const createPerpBook = (initial = {}) => {
     contractSizeBtc: PERP_CONTRACT_SIZE_BTC,
     lots: lots.map(cloneLot),
     realizedPnl,
+    hasLegacyRealizedPnl,
     closedTrades: closedTrades.slice(-200),
     maxContracts,
     lastSide,
     open: isLong(),
   })
 
+  hydrate(initial)
   return {
     actionFor,
     applySignal,
@@ -240,4 +268,4 @@ const createPerpBook = (initial = {}) => {
   }
 }
 
-module.exports = { createPerpBook }
+module.exports = { createPerpBook, livePerpCosts }
