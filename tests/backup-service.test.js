@@ -867,11 +867,13 @@ describe('backup-service — pruneBackups retention', () => {
   });
 
   it('anchors the schedule to the newest valid archive, not a newer corrupt one', async () => {
+    const newestValid = Date.parse((await listBackups())[0].createdAt);
     const corrupt = path.join(BACKUP_DIR, `backup-${prefix}-newer-corrupt.zip`);
     fs.writeFileSync(corrupt, 'partial archive');
     created.push(corrupt);
-    const newestValid = Date.parse((await listBackups())[0].createdAt);
-    assert.ok(fs.statSync(corrupt).mtimeMs >= newestValid);
+    const newerMtime = new Date(newestValid + 1000);
+    fs.utimesSync(corrupt, newerMtime, newerMtime);
+    assert.ok(fs.statSync(corrupt).mtimeMs > newestValid);
     assert.ok(Math.abs(await getNewestBackupTimeAsync() - newestValid) <= 1);
   });
 
