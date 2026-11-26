@@ -28,7 +28,7 @@ const key = (c) => `${c.openedAt}-${c.closedAt}-${c.reason}`;
 
 describe('Up dip backtest costs', () => {
   for (const gain of [4, 40]) {
-    it(`with no spread reproduces the results from before costs (${gain}% target)`, () => {
+    it(`pins the zero-spread results after the hourly trend warms up (${gain}% target)`, () => {
       const { cycles, fills, maxDrawdown } = baseline(gain, 0);
       assert.deepEqual(cycles.map((c) => [c.openedAt, c.closedAt, c.reason, c.floor, r6(c.pnl)]), golden[gain].cycles);
       assert.equal(fills.length, golden[gain].fills);
