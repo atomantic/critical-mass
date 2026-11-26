@@ -32,7 +32,7 @@ function ChartsRegime({ exchange = 'coinbase', pair, fillDebounceMs = 1500, read
   const readState = useRef(null)
   const fetchFillsRef = useRef(null)
 
-  const { connected, status: socketStatus, statusSeq: socketSeqProp } = useRegimeEvents(exchange, pair)
+  const { status: socketStatus, statusSeq: socketSeqProp } = useRegimeEvents(exchange, pair)
   const prevSocketStatusRef = useRef(socketStatus)
   const syntheticSocketSeqRef = useRef(0)
 
@@ -311,34 +311,9 @@ function ChartsRegime({ exchange = 'coinbase', pair, fillDebounceMs = 1500, read
       {effectiveStale && !probeFailed && <div role="status" className="bg-yellow-900/30 border border-yellow-600 rounded-lg p-3 flex items-center justify-between"><span className="text-yellow-400">Data is stale. Waiting for a successful refresh...</span><Button onClick={fetchData} variant="warning" size="sm">Refresh Now</Button></div>}
       {!effectiveStale && !probeFailed && <div className="flex justify-end"><Button onClick={fetchData} variant="secondary" size="sm">Refresh</Button></div>}
       {historyUnavailable && <p className="text-sm text-yellow-400">Price history unavailable.</p>}
-      {/* Status Banner */}
-      <div className="bg-gray-800 rounded-lg p-4 flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2">
-            <span className={`w-2 h-2 rounded-full ${isRunning ? 'bg-green-500 animate-pulse' : (status?.engineDown ? 'bg-orange-500' : 'bg-gray-500')}`} />
-            <span className={isRunning ? 'text-green-400' : (status?.engineDown ? 'text-orange-400' : 'text-gray-400')}>
-              {isRunning ? 'Engine Running' : (status?.engineDown ? 'Engine Unreachable' : 'Engine Stopped')}
-            </span>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className={`w-2 h-2 rounded-full ${connected ? 'bg-blue-500' : 'bg-red-500'}`} />
-            <span className="text-sm text-gray-400">
-              WebSocket {connected ? 'Connected' : 'Disconnected'}
-            </span>
-          </div>
-          {isDryRun && (
-            <span className="px-2 py-1 bg-purple-900/50 border border-purple-500 text-purple-400 text-xs rounded-sm">
-              Dry-Run Mode
-            </span>
-          )}
-        </div>
-        <div>
-          <span className="text-gray-400">Current Price:</span>
-          <span className="text-2xl font-bold ml-3">
-            {formatPrice(market.lastPrice || 0)}
-          </span>
-        </div>
-      </div>
+      <p className="text-gray-400">
+        <span>Current Price:</span> <span className="ml-2 text-xl font-semibold text-white">{formatPrice(market.lastPrice || 0)}</span>
+      </p>
 
       {/* Quick Stats */}
       <div className="grid grid-cols-2 md:grid-cols-6 gap-3">

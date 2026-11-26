@@ -100,6 +100,7 @@ function createView(name) {
         }
       }
       if (name === '../hooks/useRealtimeRefresh') return asHookModule(() => {})
+      if (name === './config/ConfigFormControls') return { DurationInput: 'duration-input' }
       if (name === './ModalDialog') return ({ children }) => children
       if (name === './ui/ConfirmDialog') return ConfirmDialogFixture
       if (name === './ui/Button') return 'button'
@@ -120,16 +121,18 @@ function createView(name) {
 function elements(tree) { tree = expand(tree); return Array.isArray(tree) ? tree.flatMap(elements) : React.isValidElement(tree) ? [tree, ...elements(tree.props.children)] : [] }
 function text(tree) { tree = expand(tree); return Array.isArray(tree) ? tree.map(text).join('') : React.isValidElement(tree) ? text(tree.props.children) : typeof tree === 'string' ? tree : '' }
 function find(tree, predicate) { const node = elements(tree).find(predicate); assert.ok(node, 'expected rendered control'); return node }
-const field = (tree, id) => find(tree, node => node.props.id === id)
+const field = (tree, id) => find(tree, node => id === 'batch-window'
+  ? node.type === 'duration-input' && node.props.label === 'Batch Window'
+  : node.props.id === id)
 const button = (tree, label) => find(tree, node => node.type === 'button' && text(node) === label)
 const locked = tree => find(tree, node => node.type === 'fieldset').props.disabled
 const edit = (view, id, value) => {
   const input = field(view.render(), id)
-  input.props.onChange(input.type === 'number-input' ? Number(value) : { target: { value } })
+  input.props.onChange((input.type === 'number-input' || input.type === 'duration-input') ? Number(value) : { target: { value } })
 }
 
 for (const [name, url, fieldId, saveLabel] of [
-  ['NotificationsConfig', '/api/notifications/config', 'rate-limit-ms', 'Save'],
+  ['NotificationsConfig', '/api/notifications/config', 'batch-window', 'Save'],
   ['BackupRestore', '/api/backups/config', 'backup-max-count', 'Save Settings'],
 ]) describe(`${name} owned settings transaction (#948)`, () => {
   it('synchronously blocks duplicate saves and edits until the write and reconciliation settle', async () => {
@@ -198,11 +201,11 @@ describe('notification reconciliation and token ownership', () => {
     const read = deferred()
     view.queue('/api/notifications/config', 'GET', read.promise)
     const refresh = button(view.render(), 'Refresh').props.onClick()
-    edit(view, 'rate-limit-ms', '6000')
+    edit(view, 'batch-window', '6000')
     edit(view, 'bot-token', 'synthetic-next-token')
     read.resolve(response(notificationConfig()))
     await refresh
-    assert.equal(field(view.render(), 'rate-limit-ms').props.value, 6000)
+    assert.equal(field(view.render(), 'batch-window').props.value, 6000)
     assert.equal(field(view.render(), 'bot-token').props.value, 'synthetic-next-token')
   })
 
@@ -215,13 +218,13 @@ describe('notification reconciliation and token ownership', () => {
     const stale = deferred()
     view.queue('/api/notifications/config', 'GET', stale.promise)
     const refresh = button(view.render(), 'Refresh').props.onClick()
-    edit(view, 'rate-limit-ms', '6000')
+    edit(view, 'batch-window', '6000')
     view.queue('/api/notifications/config', 'PUT', response({ success: true }))
     view.queue('/api/notifications/config', 'GET', response({ ...notificationConfig(), rateLimitMs: 6000 }))
     await button(view.render(), 'Save').props.onClick()
     stale.resolve(response(notificationConfig()))
     await refresh
-    assert.equal(field(view.render(), 'rate-limit-ms').props.value, 6000)
+    assert.equal(field(view.render(), 'batch-window').props.value, 6000)
     assert.equal(view.requests.filter(r => r.method === 'PUT').at(-1).body.telegram.botToken, undefined)
   })
 

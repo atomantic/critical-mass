@@ -110,10 +110,7 @@ function AppContent() {
   const mainContentRef = useRef(null)
   const mobileDestinationRef = useRef(null)
 
-  const handleMobileSection = (event, to) => {
-    // Match Link's same-window activation rules. Modified clicks keep both
-    // their native browser behavior and the current menu/focus position.
-    if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.altKey || event.ctrlKey || event.shiftKey) return
+  const handleMobileSection = (to) => {
     mobileDestinationRef.current = to
     setMobileMenuOpen(false)
   }
@@ -269,7 +266,7 @@ function AppContent() {
                     {/* DCA-only routes (backtest, optimizer) */}
                     {simpleDcaEnabled && currentStrategy !== 'regime' && <>
                       <Route path={routePaths.backtest} element={<Backtest summary={summary} exchange={currentExchange} pair={currentPair} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />} />
-                      <Route path={routePaths.optimizer} element={<Optimizer key={`${currentExchange}:${currentPair}`} exchange={currentExchange} pair={currentPair} />} />
+                      <Route path={routePaths.optimizer} element={<Optimizer key={`${currentExchange}:${currentPair}`} exchange={currentExchange} pair={currentPair} onApply={refreshFund} />} />
                     </>}
 
                     {/* API Keys - in sub-nav tabs */}

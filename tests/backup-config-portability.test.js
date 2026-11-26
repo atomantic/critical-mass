@@ -673,6 +673,25 @@ describe('backup config portability — disclosing and gating removed funds (#53
     assert.deepEqual(fundIdentities(dest), ['coinbase/BTC-USDC']);
   });
 
+  it('rejects an unseen removal even when confirming another fund, then accepts the reviewed list', async () => {
+    const source = makeInstall('source', SOURCE_BASE);
+    const created = await createBackup({ paths: source.paths });
+    const dest = makeInstall('dest', DEST_BASE);
+    transferArchive(source, dest, created.filename);
+
+    const refused = restoreBackup(created.filename, {
+      paths: dest.paths, acceptFundRemoval: true, acknowledgedRemovedFunds: ['coinbase/SOL-USDC'],
+    });
+    assert.equal(refused.code, 'fund-removal-unacknowledged');
+    assert.deepEqual(fundIdentities(dest), ['coinbase/BTC-USDC']);
+
+    const restored = restoreBackup(created.filename, {
+      paths: dest.paths, acknowledgedRemovedFunds: ['coinbase/BTC-USDC'],
+    });
+    assert.equal(restored.success, true, restored.error);
+    assert.deepEqual(fundIdentities(dest), ['coinbase/ETH-USDC']);
+  });
+
   it('succeeds and drops the fund once acceptFundRemoval is set', async () => {
     const source = makeInstall('source', SOURCE_BASE);
     const created = await createBackup({ paths: source.paths });

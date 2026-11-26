@@ -41,7 +41,8 @@ function ModalDialog({ onClose, labelledBy, describedBy, dismissible = true, max
     const dialog = dialogRef.current
     if (!dialog) return undefined
 
-    previouslyFocusedRef.current = document.activeElement
+    // Strict Mode replays this effect while the native dialog still owns focus.
+    previouslyFocusedRef.current ??= document.activeElement
     dialog.showModal()
     // React's autoFocus runs on mount, when the dialog is still closed.
     dialog.querySelector('[data-dialog-initial-focus]:not(:disabled)')?.focus()

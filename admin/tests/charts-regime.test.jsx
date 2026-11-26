@@ -44,9 +44,9 @@ it('renders the regime charts after the initial loading transition', async () =>
   render(<RenderBoundary><ChartsRegime exchange="coinbase" pair="BTC-USDC" /></RenderBoundary>)
   expect(screen.getByText('Loading regime charts...')).toBeTruthy()
   releaseFetch()
-  expect(await screen.findByText('Engine Running')).toBeTruthy()
+  expect(await screen.findByText('Price chart')).toBeTruthy()
   expect(screen.queryByRole('alert')).toBeNull()
-  expect(screen.getByText('Price chart')).toBeTruthy()
+  expect(screen.queryByText('Engine Running')).toBeNull()
 })
 
 it('shows a retryable error instead of stopped and zero-fill data when status fails', async () => {
@@ -56,7 +56,7 @@ it('shows a retryable error instead of stopped and zero-fill data when status fa
   render(<ChartsRegime exchange="coinbase" pair="BTC-USDC" />)
   expect(await screen.findByText('Error: Status fetch failed: HTTP 504')).toBeTruthy()
   expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy()
-  expect(screen.queryByText('Engine Stopped')).toBeNull()
+  expect(screen.queryByText('No chart data available')).toBeNull()
   expect(screen.queryByText('Total Entries')).toBeNull()
 })
 
@@ -66,7 +66,7 @@ it.each(['/regime/status', '/regime/config', '/regime/fills/cycles'])('blocks th
     : { ok: true, json: async () => ({ status: { isRunning: true }, config: {}, buyCount: 7, sellCount: 3, pnlPoints: [], candles: [] }) }))
   render(<ChartsRegime />)
   expect(await screen.findByRole('button', { name: 'Retry' })).toBeTruthy()
-  expect(screen.queryByText('Engine Running')).toBeNull()
+  expect(screen.queryByText('Price chart')).toBeNull()
   expect(screen.queryByText('Total Entries')).toBeNull()
 })
 
@@ -78,7 +78,7 @@ it('retries a network failure and displays the successful snapshot', async () =>
   vi.stubGlobal('fetch', fetchMock)
   render(<ChartsRegime />)
   fireEvent.click(await screen.findByRole('button', { name: 'Retry' }))
-  expect(await screen.findByText('Engine Running')).toBeTruthy()
+  expect(await screen.findByText('Price chart')).toBeTruthy()
 })
 
 it('keeps the last snapshot and marks it stale after a later required read fails', async () => {
@@ -89,14 +89,14 @@ it('keeps the last snapshot and marks it stale after a later required read fails
   })
   vi.stubGlobal('fetch', fetchMock)
   render(<ChartsRegime />)
-  expect(await screen.findByText('Engine Running')).toBeTruthy()
+  expect(await screen.findByText('Price chart')).toBeTruthy()
   expect(screen.getByText('Total Entries').previousElementSibling.textContent).toBe('7')
   expect(screen.getByText('TPs Filled').previousElementSibling.textContent).toBe('3')
   expect(fetchMock.mock.calls.some(([url]) => url.includes('/regime/fills/cycles'))).toBe(true)
   expect(fetchMock.mock.calls.some(([url]) => /\/regime\/fills(?:\?|$)/.test(url))).toBe(false)
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Refresh' })) })
   expect(screen.getByText(/Data is stale/)).toBeTruthy()
-  expect(screen.getByText('Engine Running')).toBeTruthy()
+  expect(screen.getByText('Price chart')).toBeTruthy()
   expect(screen.getByText('Total Entries').previousElementSibling.textContent).toBe('7')
 })
 
@@ -106,7 +106,7 @@ it('reports optional candle and cache failures while retaining the dashboard', a
     : { ok: true, json: async () => ({ status: { isRunning: true }, config: {}, buyCount: 0, sellCount: 0, pnlPoints: [], candles: [] }) }))
   render(<ChartsRegime />)
   expect(await screen.findByText('Price history unavailable.')).toBeTruthy()
-  expect(screen.getByText('Engine Running')).toBeTruthy()
+  expect(screen.getByText('Price chart')).toBeTruthy()
 })
 
 describe('deriveFillMarker', () => {
@@ -159,7 +159,7 @@ describe('live fill marker refreshes', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     const { rerender } = render(<ChartsRegime exchange="coinbase" pair="BTC-USDC" fillDebounceMs={1500} />)
-    expect(await screen.findByText('Engine Running')).toBeTruthy()
+    expect(await screen.findByText('Price chart')).toBeTruthy()
     expect(screen.getByText('TPs Filled').previousElementSibling.textContent).toBe('1')
 
     const initialFillsCalls = fetchMock.mock.calls.filter(([url]) => url.includes('/regime/fills/cycles')).length
@@ -206,7 +206,7 @@ describe('live fill marker refreshes', () => {
       market: { lastPrice: 60000 },
     }
     const { rerender } = render(<ChartsRegime exchange="coinbase" pair="BTC-USDC" fillDebounceMs={1500} />)
-    expect(await screen.findByText('Engine Running')).toBeTruthy()
+    expect(await screen.findByText('Price chart')).toBeTruthy()
 
     const fillsCallsBefore = fetchMock.mock.calls.filter(([url]) => url.includes('/regime/fills/cycles')).length
 
@@ -245,7 +245,7 @@ describe('live fill marker refreshes', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     const { rerender } = render(<ChartsRegime exchange="coinbase" pair="BTC-USDC" fillDebounceMs={1500} />)
-    expect(await screen.findByText('Engine Running')).toBeTruthy()
+    expect(await screen.findByText('Price chart')).toBeTruthy()
 
     const initialFillsCalls = fetchMock.mock.calls.filter(([url]) => url.includes('/regime/fills/cycles')).length
     expect(initialFillsCalls).toBe(1)
@@ -312,7 +312,7 @@ describe('live fill marker refreshes', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     const { rerender } = render(<ChartsRegime exchange="coinbase" pair="BTC-USDC" fillDebounceMs={1500} />)
-    expect(await screen.findByText('Engine Running')).toBeTruthy()
+    expect(await screen.findByText('Price chart')).toBeTruthy()
     expect(screen.getByText('TPs Filled').previousElementSibling.textContent).toBe('1')
     expect(screen.getByText('Total Entries').previousElementSibling.textContent).toBe('3')
 
@@ -424,7 +424,7 @@ describe('live fill marker refreshes', () => {
 
     // Full page read finishes, trailing fills read fires
     expect(fillsCalls).toBe(2)
-    expect(screen.getByText('Engine Running')).toBeTruthy()
+    expect(screen.getByText('Price chart')).toBeTruthy()
     expect(screen.getByText('TPs Filled').previousElementSibling.textContent).toBe('2')
     expect(screen.getByText('Total Entries').previousElementSibling.textContent).toBe('3')
   })
@@ -452,7 +452,7 @@ describe('live fill marker refreshes', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     const { rerender } = render(<ChartsRegime exchange="coinbase" pair="BTC-USDC" fillDebounceMs={1500} />)
-    expect(await screen.findByText('Engine Running')).toBeTruthy()
+    expect(await screen.findByText('Price chart')).toBeTruthy()
     expect(screen.getByText('TPs Filled').previousElementSibling.textContent).toBe('1')
 
     vi.useFakeTimers()
@@ -511,7 +511,7 @@ describe('live fill marker refreshes', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     const { rerender, unmount } = render(<ChartsRegime exchange="coinbase" pair="BTC-USDC" fillDebounceMs={1500} />)
-    expect(await screen.findByText('Engine Running')).toBeTruthy()
+    expect(await screen.findByText('Price chart')).toBeTruthy()
 
     vi.useFakeTimers()
 
@@ -568,7 +568,7 @@ describe('live fill marker refreshes', () => {
 
     fixture.status = null // WebSocket disconnected
     render(<ChartsRegime exchange="coinbase" pair="BTC-USDC" fillDebounceMs={1500} />)
-    expect(await screen.findByText('Engine Running')).toBeTruthy()
+    expect(await screen.findByText('Price chart')).toBeTruthy()
     expect(screen.getByText('TPs Filled').previousElementSibling.textContent).toBe('1')
     expect(fillsCalls).toBe(1)
 
@@ -608,12 +608,12 @@ describe('live fill marker refreshes', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     const { rerender } = render(<ChartsRegime exchange="coinbase" pair="BTC-USDC" fillDebounceMs={1500} />)
-    expect(await screen.findByText('Engine Running')).toBeTruthy()
+    expect(await screen.findByText('Price chart')).toBeTruthy()
     expect(fillsCalls).toBe(1)
 
     // Switch pair to ETH-USDC where initial status has the same marker
     rerender(<ChartsRegime exchange="coinbase" pair="ETH-USDC" fillDebounceMs={1500} />)
-    expect(await screen.findByText('Engine Running')).toBeTruthy()
+    expect(await screen.findByText('Price chart')).toBeTruthy()
     expect(fillsCalls).toBe(2) // Initial page read for ETH-USDC
 
     vi.useFakeTimers()
@@ -653,7 +653,7 @@ describe('live fill marker refreshes', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     const { rerender } = render(<ChartsRegime exchange="coinbase" pair="BTC-USDC" fillDebounceMs={1500} />)
-    expect(await screen.findByText('Engine Running')).toBeTruthy()
+    expect(await screen.findByText('Price chart')).toBeTruthy()
     expect(fillsCalls).toBe(1)
 
     vi.useFakeTimers()
@@ -705,7 +705,7 @@ describe('HTTP and realtime status snapshot arbitration (#1817)', () => {
     fixture.status = { isRunning: true }
     fixture.statusSeq = 10
     render(<ChartsRegime exchange="coinbase" pair="BTC-USDC" />)
-    expect(await screen.findByText('Engine Running')).toBeTruthy()
+    expect(await screen.findByText('Price chart')).toBeTruthy()
 
     // Server transitions to stopped; manual Refresh returns the newer stopped status
     currentHttpStatus = { isRunning: false }
@@ -714,7 +714,7 @@ describe('HTTP and realtime status snapshot arbitration (#1817)', () => {
     })
 
     // Newer HTTP status replaces the older socket status
-    expect(await screen.findByText('Engine Stopped')).toBeTruthy()
+    expect(await screen.findByText('No chart data available')).toBeTruthy()
   })
 
   it('keeps a socket event delivered during an HTTP read over that delayed read', async () => {
@@ -743,8 +743,8 @@ describe('HTTP and realtime status snapshot arbitration (#1817)', () => {
     })
 
     // The socket event arrived after HTTP read started, so stopped status wins
-    expect(await screen.findByText('Engine Stopped')).toBeTruthy()
-    expect(screen.queryByText('Engine Running')).toBeNull()
+    expect(await screen.findByText('No chart data available')).toBeTruthy()
+    expect(screen.queryByText('Price chart')).toBeNull()
   })
 
   it('allows a newer HTTP read to overwrite an older socket event (reverse ordering)', async () => {
@@ -760,7 +760,7 @@ describe('HTTP and realtime status snapshot arbitration (#1817)', () => {
 
     fixture.status = { isRunning: false }
     render(<ChartsRegime exchange="coinbase" pair="BTC-USDC" />)
-    expect(await screen.findByText('Engine Stopped')).toBeTruthy()
+    expect(await screen.findByText('No chart data available')).toBeTruthy()
 
     // Server transitions to running, Refresh runs
     currentHttpStatus = { isRunning: true }
@@ -768,12 +768,12 @@ describe('HTTP and realtime status snapshot arbitration (#1817)', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
     })
 
-    expect(await screen.findByText('Engine Running')).toBeTruthy()
+    expect(await screen.findByText('Price chart')).toBeTruthy()
   })
 })
 
 describe('ChartsRegime silent engine status expiration', () => {
-  it('stops presenting Engine Running within STATUS_STALE_MS and probes status endpoint', async () => {
+  it('hides empty live charts within STATUS_STALE_MS and probes status', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     let statusCalls = 0
     let releaseProbe
@@ -789,7 +789,7 @@ describe('ChartsRegime silent engine status expiration', () => {
     }))
 
     render(<ChartsRegime exchange="coinbase" pair="BTC-USDC" />)
-    expect(await screen.findByText('Engine Running')).toBeTruthy()
+    expect(await screen.findByText('Price chart')).toBeTruthy()
     expect(statusCalls).toBe(1)
 
     // Advance to STATUS_STALE_MS
@@ -798,18 +798,18 @@ describe('ChartsRegime silent engine status expiration', () => {
     })
 
     // Stopped presenting healthy running fund while probe is in flight
-    expect(screen.queryByText('Engine Running')).toBeNull()
-    expect(screen.getByText('Engine Unreachable')).toBeTruthy()
+    expect(screen.queryByText('Price chart')).toBeNull()
+    expect(screen.getByText('No chart data available')).toBeTruthy()
     expect(statusCalls).toBe(2)
 
     // Probe resolves with running status -> recovers
     await act(async () => {
       releaseProbe({ ok: true, json: async () => ({ status: { isRunning: true, market: { lastPrice: 50000 } } }) })
     })
-    expect(await screen.findByText('Engine Running')).toBeTruthy()
+    expect(await screen.findByText('Price chart')).toBeTruthy()
   })
 
-  it('offline success removes running indication and shows Engine Stopped', async () => {
+  it('a stopped status keeps the empty-chart state', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     let statusCalls = 0
     vi.stubGlobal('fetch', vi.fn(async url => {
@@ -825,14 +825,14 @@ describe('ChartsRegime silent engine status expiration', () => {
     }))
 
     render(<ChartsRegime exchange="coinbase" pair="BTC-USDC" />)
-    expect(await screen.findByText('Engine Running')).toBeTruthy()
+    expect(await screen.findByText('Price chart')).toBeTruthy()
 
     await act(async () => {
       vi.advanceTimersByTime(STATUS_STALE_MS)
     })
 
-    expect(screen.queryByText('Engine Running')).toBeNull()
-    expect(screen.getByText('Engine Stopped')).toBeTruthy()
+    expect(screen.queryByText('Price chart')).toBeNull()
+    expect(screen.getByText('No chart data available')).toBeTruthy()
     expect(screen.queryByRole('alert')).toBeNull()
   })
 
@@ -852,7 +852,7 @@ describe('ChartsRegime silent engine status expiration', () => {
     }))
 
     render(<ChartsRegime exchange="coinbase" pair="BTC-USDC" />)
-    expect(await screen.findByText('Engine Running')).toBeTruthy()
+    expect(await screen.findByText('Price chart')).toBeTruthy()
     expect(screen.getByText('Current Price:').nextElementSibling.textContent).toContain('50,000')
 
     await act(async () => {
@@ -872,7 +872,7 @@ describe('ChartsRegime silent engine status expiration', () => {
       vi.advanceTimersByTime(100)
     })
     expect(screen.queryByRole('alert')).toBeNull()
-    expect(screen.getByText('Engine Running')).toBeTruthy()
+    expect(screen.getByText('Price chart')).toBeTruthy()
   })
 
   it('fresh socket events recover the fund without remounting', async () => {
@@ -890,7 +890,7 @@ describe('ChartsRegime silent engine status expiration', () => {
     }))
 
     const { rerender } = render(<ChartsRegime exchange="coinbase" pair="BTC-USDC" />)
-    expect(await screen.findByText('Engine Running')).toBeTruthy()
+    expect(await screen.findByText('Price chart')).toBeTruthy()
 
     await act(async () => {
       vi.advanceTimersByTime(STATUS_STALE_MS)
@@ -902,7 +902,7 @@ describe('ChartsRegime silent engine status expiration', () => {
     rerender(<ChartsRegime exchange="coinbase" pair="BTC-USDC" />)
 
     expect(screen.queryByRole('alert')).toBeNull()
-    expect(screen.getByText('Engine Running')).toBeTruthy()
+    expect(screen.getByText('Price chart')).toBeTruthy()
   })
 
   it('stopped snapshots do not repeatedly probe', async () => {
@@ -917,7 +917,7 @@ describe('ChartsRegime silent engine status expiration', () => {
     }))
 
     const { unmount } = render(<ChartsRegime exchange="coinbase" pair="BTC-USDC" />)
-    expect(await screen.findByText('Engine Stopped')).toBeTruthy()
+    expect(await screen.findByText('No chart data available')).toBeTruthy()
     expect(statusCalls).toBe(1)
 
     // Stopped fund does not probe after 2 * STATUS_STALE_MS
@@ -945,7 +945,7 @@ describe('ChartsRegime silent engine status expiration', () => {
       return { ok: true, json: async () => ({ config: {}, buyCount: 0, sellCount: 0, pnlPoints: [], candles: [] }) }
     }))
     const { unmount } = render(<ChartsRegime exchange="coinbase" pair="BTC-USDC" />)
-    expect(await screen.findByText('Engine Running')).toBeTruthy()
+    expect(await screen.findByText('Price chart')).toBeTruthy()
     expect(statusCalls).toBe(1)
     unmount()
     await act(async () => { vi.advanceTimersByTime(STATUS_STALE_MS * 2) })

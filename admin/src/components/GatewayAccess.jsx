@@ -91,6 +91,9 @@ export default function GatewayAccess() {
           Gateway APIs always require operator authentication. The password is stored as a hash in <code className="text-gray-300">data/operator-auth.json</code>, not as an environment variable.
           {' '}Authenticated browsers stay signed in for 30 days after each visit.
         </p>
+        <Link to="/systems" className="mt-2 inline-flex min-h-10 items-center text-sm text-blue-300 hover:underline">
+          Celestial visualization showcase
+        </Link>
       </div>
 
       <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">

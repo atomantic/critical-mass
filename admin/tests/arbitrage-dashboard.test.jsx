@@ -1,8 +1,10 @@
 import React from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { renderWithToasts as render } from './renderWithToasts'
 import ArbitrageDashboard from '../src/components/arbitrage/Dashboard.jsx'
+
+HTMLDialogElement.prototype.showModal = function () { this.open = true }
 
 const config = {
   enabled: true, pollIntervalMs: 60000, notionalUsd: 1000, alertMinNetBps: 50, minAlertNotionalUsd: 500,
@@ -109,4 +111,37 @@ it('warns when the gateway is newer than this admin build', async () => {
   })
   render(<ArbitrageDashboard />)
   expect(await screen.findByText(/This page is older than the gateway/)).toBeTruthy()
+})
+
+it('confirms clearing history and serializes the delete while it is pending', async () => {
+  let finish
+  const closed = { ...opportunity, id: 'closed-1', status: 'closed' }
+  let items = [opportunity, closed]
+  fetch.mockImplementation(async (url, options) => {
+    if (options?.method === 'DELETE') return new Promise(resolve => {
+      finish = () => { items = [opportunity]; resolve(ok({ success: true })) }
+    })
+    if (url === '/api/arbitrage/status') return ok(status)
+    if (url === '/api/arbitrage/snapshot') return ok(snapshot)
+    return ok({ success: true, items })
+  })
+  const deletes = () => fetch.mock.calls.filter(([, options]) => options?.method === 'DELETE')
+  render(<ArbitrageDashboard />)
+  const clear = await screen.findByRole('button', { name: 'Clear history' })
+  fireEvent.click(clear)
+  const dialog = screen.getByRole('dialog', { name: 'Clear Alert History' })
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+  expect(deletes()).toHaveLength(0)
+  fireEvent.click(clear)
+  const confirm = within(screen.getByRole('dialog')).getByRole('button', { name: 'Clear History' })
+  act(() => {
+    fireEvent.click(confirm)
+    fireEvent.click(confirm)
+  })
+  expect(deletes()).toHaveLength(1)
+  expect(confirm.disabled).toBe(true)
+  await act(async () => finish())
+  expect(screen.queryByRole('dialog')).toBeNull()
+  expect(screen.getByText('No closed alerts yet.')).toBeTruthy()
+  expect(screen.getByText('Opportunity')).toBeTruthy()
 })

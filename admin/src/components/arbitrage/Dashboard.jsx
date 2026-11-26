@@ -1,6 +1,7 @@
+import ConfirmDialog from '../ui/ConfirmDialog'
 import NumberInput from '../ui/NumberInput'
 import Button from '../ui/Button'
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import useRealtimeRefresh from '../../hooks/useRealtimeRefresh'
 import { getRealtimeClient } from '../../lib/realtime'
 import { apiGet, apiPost, apiPut, apiDelete, describeMutationFailure } from '../../utils/apiClient'
@@ -222,6 +223,9 @@ export default function ArbitrageDashboard() {
   const [alerts, setAlerts] = useState(null)
   const [loadError, setLoadError] = useState(null)
   const [polling, setPolling] = useState(false)
+  const [clearHistoryOpen, setClearHistoryOpen] = useState(false)
+  const [clearingHistory, setClearingHistory] = useState(false)
+  const clearingHistoryRef = useRef(false)
   const [saving, setSaving] = useState(false)
   const [draft, setDraft] = useState(null)
   const [showDismissed, setShowDismissed] = useState(false)
@@ -284,9 +288,21 @@ export default function ArbitrageDashboard() {
   }
 
   const handleClearHistory = async () => {
-    const result = await apiDelete('/api/arbitrage/alerts')
-    if (!result.ok) notify('error', describeMutationFailure(result, 'Could not clear history'))
-    await refresh()
+    if (clearingHistoryRef.current) return
+    clearingHistoryRef.current = true
+    setClearingHistory(true)
+    try {
+      const result = await apiDelete('/api/arbitrage/alerts')
+      if (!result.ok) {
+        notify('error', describeMutationFailure(result, 'Could not clear history'))
+        return
+      }
+      setClearHistoryOpen(false)
+      await refresh()
+    } finally {
+      clearingHistoryRef.current = false
+      setClearingHistory(false)
+    }
   }
 
   const handleSaveSettings = () => {
@@ -435,10 +451,22 @@ export default function ArbitrageDashboard() {
         </section>
       )}
 
+      {clearHistoryOpen && (
+        <ConfirmDialog
+          title="Clear Alert History"
+          description="Permanently remove historical arbitrage alerts? Open alerts will remain."
+          confirmLabel="Clear History"
+          busyLabel="Clearing…"
+          touchTarget="always"
+          busy={clearingHistory}
+          onConfirm={handleClearHistory}
+          onClose={() => setClearHistoryOpen(false)}
+        />
+      )}
       <section className="space-y-3">
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-semibold text-white">History</h2>
-          {history.length + dismissed.filter(a => a.status !== 'open').length > 0 && <Button onClick={handleClearHistory} variant="quiet-danger" size="xs" touchTarget="always">Clear history</Button>}
+          {history.length + dismissed.filter(a => a.status !== 'open').length > 0 && <Button onClick={() => setClearHistoryOpen(true)} disabled={clearingHistory} variant="quiet-danger" size="xs" touchTarget="always">Clear history</Button>}
         </div>
         {alerts && history.length === 0 && <p className="text-sm text-gray-400">No closed alerts yet.</p>}
         {history.map(a => <OpportunityCard key={a.id} alert={a} onDismiss={handleDismiss} />)}

@@ -324,6 +324,9 @@ module.exports = (app, deps) => {
       // Explicit operator acknowledgement that the archive would remove
       // funds this machine currently runs from its configuration (#533).
       acceptFundRemoval: req.body?.acceptFundRemoval === true,
+      ...(req.body?.acknowledgedRemovedFunds !== undefined && {
+        acknowledgedRemovedFunds: Array.isArray(req.body.acknowledgedRemovedFunds) ? req.body.acknowledgedRemovedFunds : [],
+      }),
     };
 
     const { status, body } = await performRestore({

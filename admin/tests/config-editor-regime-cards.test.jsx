@@ -74,6 +74,7 @@ it.each(['save', 'toggle'])('disables every extracted fund control while a %s is
     ? new Promise(resolve => { finish = () => resolve({ ok: true, json: async () => ({}) }) })
     : Promise.resolve({ ok: true, json: async () => ({ presets: {} }) })))
   render(<ConfigEditor config={{ productId: 'BTC-USD', regime: { macroEnabled: true, tpAutoManaged: true, entryMode: 'ladder' } }} strategy="regime" />)
+  if (action === 'save') fireEvent.change(screen.getByLabelText('Max Open Orders'), { target: { value: '9' } })
   fireEvent.click(action === 'save' ? screen.getByRole('button', { name: /Save Configuration/ }) : screen.getByRole('switch', { name: 'Dry Run' }))
   const fieldset = screen.getByLabelText('Product ID').closest('fieldset')
   expect(fieldset.disabled).toBe(true)

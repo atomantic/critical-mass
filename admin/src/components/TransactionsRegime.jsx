@@ -25,7 +25,6 @@ function TransactionsRegime({ exchange = 'coinbase', pair, readInitialStatus }) 
   const [cycleFilter, setCycleFilter] = useState('all')
   const [cycleSearch, setCycleSearch] = useState('')
   const [searchQuery, setSearchQuery] = useState({ selection: null, value: '' })
-  const [cycleOffset, setCycleOffset] = useState(0)
   const [sortField, setSortField] = useState('timestamp')
   const [sortDir, setSortDir] = useState('desc')
   const [productId, setProductId] = useState(null)
@@ -45,7 +44,6 @@ function TransactionsRegime({ exchange = 'coinbase', pair, readInitialStatus }) 
     if (cycleSearch === settledCycleSearch) return undefined
     const timer = setTimeout(() => {
       setSearchQuery({ selection, value: cycleSearch })
-      setCycleOffset(0)
     }, 300)
     return () => clearTimeout(timer)
   }, [cycleSearch, settledCycleSearch, selection])
@@ -63,7 +61,7 @@ function TransactionsRegime({ exchange = 'coinbase', pair, readInitialStatus }) 
     setFillsError(null)
     setPage(0)
     setCycleSearch('')
-    setCycleOffset(0)
+    setCycleFilter('all')
     revision.current = null
     apiGet(`/api/${exchange}/config${pairQuery}`, { signal: controller.signal })
       .then(result => {
@@ -75,7 +73,7 @@ function TransactionsRegime({ exchange = 'coinbase', pair, readInitialStatus }) 
   }, [exchange, pairQuery, fund])
 
   const fetchData = useCallback(async () => {
-    const query = new URLSearchParams({ paged: 'true', page: String(page), pageSize: '100', side: filter, cycle: cycleFilter, sortField, sortDir, cycleOptionsPaged: 'true', cycleSearch: settledCycleSearch, cycleOffset: String(cycleOffset), cycleLimit: '100' })
+    const query = new URLSearchParams({ paged: 'true', page: String(page), pageSize: '100', side: filter, cycle: cycleFilter, sortField, sortDir, cycleOptionsPaged: 'true', cycleSearch: settledCycleSearch, cycleLimit: '100' })
     if (pair) query.set('pair', pair)
     if (revision.current) query.set('revision', revision.current)
     const { owned, data } = await reader.read({ exchange, pairQuery, query })
@@ -86,7 +84,6 @@ function TransactionsRegime({ exchange = 'coinbase', pair, readInitialStatus }) 
         revision.current = fillsData.revision
         setSnapshot(fillsData)
         setPage(fillsData.pageInfo.page)
-        if (fillsData.cycleOptionsInfo) setCycleOffset(fillsData.cycleOptionsInfo.offset)
         setFillsError(null)
       } else setFillsError(fillsData?.error || `Transactions unavailable (HTTP ${fillsStatus})`)
       if (statusData?.status) {
@@ -103,7 +100,7 @@ function TransactionsRegime({ exchange = 'coinbase', pair, readInitialStatus }) 
       setOrdersError('Open orders unavailable: request failed')
     }
     setLoading(false)
-  }, [exchange, pair, pairQuery, fund, page, filter, cycleFilter, settledCycleSearch, cycleOffset, sortField, sortDir, reader])
+  }, [exchange, pair, pairQuery, fund, page, filter, cycleFilter, settledCycleSearch, sortField, sortDir, reader])
 
   // Only the first read gates the page. A page/filter/sort change or a poll
   // keeps the current view mounted: the gate would unmount Manual Trades and
@@ -123,7 +120,7 @@ function TransactionsRegime({ exchange = 'coinbase', pair, readInitialStatus }) 
 
   const isDryRun = status?.isDryRun
   const baseCurrency = getBaseCurrency(productId || pair)
-  const { fills: displayFills, cycleIds, cycleOptionsInfo, pageInfo, summary } = snapshot
+  const { fills: displayFills, cycleIds, pageInfo, summary } = snapshot
   const { totalBuys, totalSells, totalAssetBought, totalBtcSold, totalFees, totalPnL, totalHoldbackBtc, totalHoldbackValue } = summary
   const handleSort = (field) => {
     setPage(0)
@@ -304,42 +301,37 @@ function TransactionsRegime({ exchange = 'coinbase', pair, readInitialStatus }) 
           ))}
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
-          <label htmlFor={cycleFilterId} className="text-sm text-gray-400">Cycle:</label>
-          <select
-            id={cycleFilterId}
-            value={cycleFilter}
-            onChange={(e) => { setCycleFilter(e.target.value); setPage(0) }}
-            className="px-2 py-1 bg-gray-700 border border-gray-600 rounded-sm text-sm text-white"
-          >
-            <option value="all">All Cycles</option>
-            <option value="current">Current</option>
-            {cycleFilter !== 'all' && cycleFilter !== 'current' && !cycleIds.includes(cycleFilter) && (
-              <option value={cycleFilter}>{cycleFilter} (selected)</option>
-            )}
-            {cycleIds.filter(id => id !== 'current').map(id => (
-              <option key={id} value={id}>{id}</option>
-            ))}
-          </select>
+        <form className="flex flex-wrap items-center gap-2" onSubmit={(event) => {
+          event.preventDefault()
+          setCycleFilter(cycleSearch.trim() || 'all')
+          setPage(0)
+        }}>
+          <label htmlFor={cycleFilterId} className="text-sm text-gray-400">Cycle ID</label>
           <input
-            aria-label="Search cycles"
-            type="search"
+            id={cycleFilterId}
+            list={`${cycleFilterId}-suggestions`}
             maxLength={200}
             value={cycleSearch}
             onChange={e => setCycleSearch(e.target.value)}
-            placeholder="Search cycles"
-            className="px-2 py-1 bg-gray-700 border border-gray-600 rounded-sm text-sm text-white w-40"
+            placeholder="Search or enter ID"
+            className="min-h-10 px-2 bg-gray-700 border border-gray-600 rounded-sm text-sm text-white w-44"
           />
-          {cycleOptionsInfo && (
-            <nav aria-label="Cycle options pagination" className="flex flex-wrap items-center gap-2 text-sm text-gray-400">
-              <Button type="button" variant="secondary" size="xs" disabled={!cycleOptionsInfo.hasPrev}
-                onClick={() => setCycleOffset(Math.max(0, cycleOptionsInfo.offset - cycleOptionsInfo.limit))}>Previous cycles</Button>
-              <span aria-live="polite">{cycleOptionsInfo.total === 0 ? 'No matching cycles' : `${cycleOptionsInfo.offset + 1}–${Math.min(cycleOptionsInfo.offset + cycleOptionsInfo.limit, cycleOptionsInfo.total)} of ${cycleOptionsInfo.total} cycles`}</span>
-              <Button type="button" variant="secondary" size="xs" disabled={!cycleOptionsInfo.hasNext}
-                onClick={() => setCycleOffset(cycleOptionsInfo.offset + cycleOptionsInfo.limit)}>Next cycles</Button>
-            </nav>
+          <datalist id={`${cycleFilterId}-suggestions`}>
+            <option value="current">Current cycle</option>
+            {cycleIds.filter(id => id !== 'current').map(id => <option key={id} value={id} />)}
+          </datalist>
+          <Button type="submit" variant="secondary" size="xs" touchTarget="always" disabled={!cycleSearch.trim()}>Go to cycle</Button>
+          {cycleFilter !== 'all' && (
+            <Button type="button" variant="secondary" size="xs" touchTarget="always" onClick={() => {
+              setCycleFilter('all')
+              setCycleSearch('')
+              setPage(0)
+            }}>All cycles</Button>
           )}
-        </div>
+          <span role="status" className="text-sm text-gray-400">
+            {cycleFilter === 'all' ? 'Showing all cycles' : `Showing cycle ${cycleFilter}`}
+          </span>
+        </form>
 
         <span className="ml-auto text-gray-400 text-sm">
           {pageInfo.total} transactions
@@ -365,15 +357,15 @@ function TransactionsRegime({ exchange = 'coinbase', pair, readInitialStatus }) 
                 ].map(col => (
                   <th
                     key={col.key}
-                    onClick={() => handleSort(col.key)}
-                    className="px-4 py-3 cursor-pointer hover:bg-gray-600"
+                    scope="col"
+                    aria-sort={sortField === col.key ? (sortDir === 'asc' ? 'ascending' : 'descending') : undefined}
                   >
-                    <div className="flex items-center gap-1">
+                    <button type="button" onClick={() => handleSort(col.key)} className="flex min-h-10 w-full items-center gap-1 px-4 py-3 hover:bg-gray-600 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-blue-400">
                       {col.label}
                       {sortField === col.key && (
-                        <span>{sortDir === 'asc' ? '↑' : '↓'}</span>
+                        <span aria-hidden="true">{sortDir === 'asc' ? '↑' : '↓'}</span>
                       )}
-                    </div>
+                    </button>
                   </th>
                 ))}
               </tr>

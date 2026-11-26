@@ -20,18 +20,19 @@ const listing = {
   }],
 }
 
-let writes, writeResponse
+let writes, writeResponse, compatibility
 const json = (status, body) => ({ ok: status >= 200 && status < 300, status, json: async () => body })
 
 beforeEach(() => {
   writes = []
   writeResponse = () => json(200, { success: true })
+  compatibility = { success: true, compatible: true, legacy: false }
   vi.stubGlobal('fetch', vi.fn(async (url, options = {}) => {
     if (options.method === 'DELETE' || options.method === 'POST') {
       writes.push({ url, method: options.method, body: options.body })
       return writeResponse(url, options)
     }
-    if (String(url).endsWith('/compatibility')) return json(200, { success: true, compatible: true, legacy: false })
+    if (String(url).endsWith('/compatibility')) return json(200, compatibility)
     return json(200, listing)
   }))
 })
@@ -79,7 +80,7 @@ it('Restore Fund State only opens the confirm dialog; Cancel sends nothing; Conf
   const trigger = await screen.findByRole('button', { name: 'Restore Fund State' })
   fireEvent.click(trigger)
   const dialog = screen.getByRole('dialog')
-  expect(within(dialog).getByText('coinbase/ETH-USDC')).toBeTruthy()
+  expect(within(dialog).getByText(/replace state files for coinbase\/ETH-USDC/)).toBeTruthy()
   expect(writes).toHaveLength(0)
 
   fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
@@ -94,7 +95,7 @@ it('Restore Fund State only opens the confirm dialog; Cancel sends nothing; Conf
   expect(JSON.parse(writes[0].body)).toEqual({ force: false })
 })
 
-it('fund-state restore blocked by unquiesced writers keeps the dialog open, lists the writers, and only forces after acknowledgement', async () => {
+it('fund-state restore blocked by unquiesced writers keeps the dialog open, lists the writers, and offers an explicit force action', async () => {
   writeResponse = (url, options) => JSON.parse(options.body).force
     ? json(200, { success: true, forced: true, unconfirmed: [{ exchange: 'coinbase', reason: 'ipc-timeout' }], message: 'Forced restore done' })
     : json(409, { code: 'writers-not-quiesced', error: 'writers still running', unconfirmed: [{ exchange: 'coinbase', reason: 'ipc-timeout' }] })
@@ -106,19 +107,14 @@ it('fund-state restore blocked by unquiesced writers keeps the dialog open, list
   const dialog = screen.getByRole('dialog')
   expect(within(dialog).getByRole('button', { name: 'Retry Restore' })).toBeTruthy()
   const force = within(dialog).getByRole('button', { name: 'Force Restore Anyway' })
-  expect(force.disabled).toBe(true)
-  fireEvent.click(force)
-  expect(writes).toHaveLength(1)
-
-  fireEvent.click(within(dialog).getByRole('checkbox'))
+  expect(within(dialog).getByText(/Force only after verifying/)).toBeTruthy()
   expect(force.disabled).toBe(false)
+  expect(writes).toHaveLength(1)
   fireEvent.click(within(dialog).getByRole('button', { name: 'Retry Restore' }))
-  await waitFor(() => expect(writes).toHaveLength(2))
+  await waitFor(() => expect(force.disabled).toBe(false))
+  expect(writes).toHaveLength(2)
   expect(JSON.parse(writes[1].body)).toEqual({ force: false })
-  await waitFor(() => expect(within(screen.getByRole('dialog')).getByRole('checkbox').checked).toBe(false))
-  expect(within(screen.getByRole('dialog')).getByRole('button', { name: 'Force Restore Anyway' }).disabled).toBe(true)
 
-  fireEvent.click(within(screen.getByRole('dialog')).getByRole('checkbox'))
   fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Force Restore Anyway' }))
   await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
   expect(writes).toHaveLength(3)
@@ -140,7 +136,7 @@ it('Cancel on a blocked fund-state restore clears the blocked list so the next d
   expect(within(screen.getByRole('dialog')).queryByRole('button', { name: 'Force Restore Anyway' })).toBeNull()
 })
 
-it('full archive Restore needs Confirm Restore; Cancel sends nothing; a 409 offers Retry and gated Force', async () => {
+it('full archive Restore needs Confirm Restore; Cancel sends nothing; a 409 offers Retry and explicit Force', async () => {
   writeResponse = (url, options) => JSON.parse(options.body).force
     ? json(200, { success: true, forced: true, unconfirmed: [{}], message: 'Restored 3 files' })
     : json(409, { code: 'writers-not-quiesced', unconfirmed: [{ exchange: 'gemini', reason: 'no-ack' }] })
@@ -161,12 +157,25 @@ it('full archive Restore needs Confirm Restore; Cancel sends nothing; a 409 offe
   expect(writes[0].url).toBe(`/api/backups/${FILENAME}/restore`)
   expect(screen.getByRole('button', { name: 'Retry Restore' })).toBeTruthy()
   const force = screen.getByRole('button', { name: 'Force Restore Anyway' })
-  expect(force.disabled).toBe(true)
-  fireEvent.click(screen.getByRole('checkbox', { name: /verified the listed writers/ }))
+  expect(force.disabled).toBe(false)
   fireEvent.click(force)
   expect(await screen.findByText(/FORCED past 1 unconfirmed writer/)).toBeTruthy()
   expect(writes).toHaveLength(2)
   expect(JSON.parse(writes[1].body).force).toBe(true)
+})
+
+it('one confirmation acknowledges only the fund removals shown in the compatibility summary', async () => {
+  compatibility.removedFunds = [{ exchange: 'gemini', pair: 'BTC-USD', hasStateOnDisk: true }]
+  render(<BackupRestore />)
+  fireEvent.click(await screen.findByRole('button', { name: 'Restore' }))
+  expect(await screen.findByText(/gemini\/BTC-USD/)).toBeTruthy()
+  const dialog = screen.getByRole('dialog')
+  expect(within(dialog).queryByRole('checkbox')).toBeNull()
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm Restore' }))
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  expect(JSON.parse(writes[0].body)).toEqual({
+    force: false, acceptLegacyWithoutBase: false, acknowledgedRemovedFunds: ['gemini/BTC-USD'],
+  })
 })
 
 it('full archive Restore confirmation lives in a dialog, returns focus to Restore, and cannot be dismissed while restoring', async () => {
@@ -187,7 +196,7 @@ it('full archive Restore confirmation lives in a dialog, returns focus to Restor
   fireEvent.click(trigger)
   await waitFor(() => expect(screen.getByRole('button', { name: 'Confirm Restore' }).disabled).toBe(false))
   fireEvent.click(screen.getByRole('button', { name: 'Confirm Restore' }))
-  await waitFor(() => expect(screen.getByRole('button', { name: 'Restoring...' })).toBeTruthy())
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Restoring…' })).toBeTruthy())
   const cancelEvent = new Event('cancel', { cancelable: true })
   expect(screen.getByRole('dialog').dispatchEvent(cancelEvent)).toBe(false)
   expect(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }).disabled).toBe(true)

@@ -60,6 +60,20 @@ it('restores focus to the invoking control when closed via Cancel or Escape (#43
   expect(document.activeElement).toBe(invoker)
 })
 
+it('keeps the original focus target when Strict Mode replays the open effect', () => {
+  render(<React.StrictMode><Host /></React.StrictMode>)
+  const invoker = screen.getByRole('button', { name: 'Invoke' })
+  const focus = invoker.focus.bind(invoker)
+  vi.spyOn(invoker, 'focus').mockImplementation(() => {
+    // A modal makes its trigger inert during Strict Mode's effect cleanup.
+    if (!document.querySelector('dialog[open]')) focus()
+  })
+  invoker.focus()
+  fireEvent.click(invoker)
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+  expect(document.activeElement).toBe(invoker)
+})
+
 it('closes on a backdrop click when dismissible, and ignores clicks inside the card', () => {
   render(<Host />)
   const { dialog } = openDialog()

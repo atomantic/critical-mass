@@ -3,6 +3,7 @@ import { useState, useEffect, useRef } from 'react'
 import { formatCurrency } from './charts/chartUtils'
 import { useToast } from './useToast'
 import Button from './ui/Button'
+import ConfirmDialog from './ui/ConfirmDialog'
 import { pairQuery as buildPairQuery } from '../utils/api'
 import { getRealtimeClient } from '../lib/realtime'
 import { plural } from '../utils/plural.mjs'
@@ -44,7 +45,10 @@ function ToggleChip({ label, checked, onChange, disabled }) {
   )
 }
 
-function Optimizer({ exchange = 'coinbase', pair }) {
+function Optimizer({ exchange = 'coinbase', pair, onApply }) {
+  const [applyTarget, setApplyTarget] = useState(null)
+  const [applying, setApplying] = useState(false)
+  const applyingRef = useRef(false)
   const [fundSize, setFundSize] = useState(10000)
   const [loading, setLoading] = useState(false)
   const [initialLoading, setInitialLoading] = useState(true)
@@ -268,36 +272,39 @@ function Optimizer({ exchange = 'coinbase', pair }) {
       .catch(err => setError(err.message))
   }
 
-  const applySettings = async (result) => {
-    const config = {
+  const confirmApply = (result) => {
+    setApplyTarget({
       intervalType: result.intervalType,
       intervalsToSpread: result.intervals,
-      totalAllocation: fundSize,
+      totalAllocation: results.fundSize ?? fundSize,
       sellMarkupPercent: result.sellMarkupPercent,
       holdbackPercent: result.holdbackPercent
-    }
+    })
+  }
 
-    apiPut(`/api/${exchange}/config${pairQuery}`, config)
-      .then(({ status, data }) => {
-        if (data?.success) {
-          addToast({
-            type: 'success',
-            title: 'Settings Applied',
-            message: `Configuration updated for ${exchange}`
-          })
-        } else {
-          addToast({
-            type: 'error',
-            title: 'Apply Failed',
-            message: describeConfigSaveError(status, data).message
-          })
-        }
-      })
-      .catch(err => addToast({
-        type: 'error',
-        title: 'Apply Failed',
-        message: err.message
-      }))
+  const applySettings = async () => {
+    if (!applyTarget || applyingRef.current) return
+    applyingRef.current = true
+    setApplying(true)
+    try {
+      const { ok, status, data, error } = await apiPut(`/api/${exchange}/config${pairQuery}`, applyTarget)
+      if (ok && data?.success) {
+        addToast({ type: 'success', title: 'Settings Applied', message: `Configuration updated for ${exchange}` })
+      } else {
+        addToast({
+          type: data?.persisted ? 'warning' : 'error',
+          title: data?.persisted ? 'Settings Saved' : 'Apply Failed',
+          message: status ? describeConfigSaveError(status, data).message : error
+        })
+      }
+      if ((ok && data?.success) || data?.persisted) {
+        setApplyTarget(null)
+        await onApply?.()
+      }
+    } finally {
+      applyingRef.current = false
+      setApplying(false)
+    }
   }
 
   if (initialLoading) {
@@ -310,6 +317,19 @@ function Optimizer({ exchange = 'coinbase', pair }) {
 
   return (
     <div className="space-y-6">
+      {applyTarget && (
+        <ConfirmDialog
+          title="Apply Optimizer Settings"
+          description={`Replace the saved DCA settings for ${pair ? `${exchange} / ${pair}` : exchange}? ${formatCurrency(applyTarget.totalAllocation)} across ${applyTarget.intervalsToSpread} ${applyTarget.intervalType} intervals, with ${applyTarget.sellMarkupPercent}% markup and ${applyTarget.holdbackPercent}% holdback.`}
+          confirmLabel="Apply Settings"
+          busyLabel="Applying…"
+          confirmVariant="warning"
+          touchTarget="always"
+          busy={applying}
+          onConfirm={applySettings}
+          onClose={() => setApplyTarget(null)}
+        />
+      )}
       {/* Configuration Panel */}
       <div className="bg-gray-800 rounded-lg p-6">
         <div className="flex items-center justify-between mb-4">
@@ -604,7 +624,8 @@ function Optimizer({ exchange = 'coinbase', pair }) {
             <Button
               variant="success"
               className="mt-4 font-medium"
-              onClick={() => applySettings(results.bestResult.params)}
+              onClick={() => confirmApply(results.bestResult.params)}
+              disabled={applying}
             >
               Apply Best Settings to Config
             </Button>
@@ -654,7 +675,7 @@ function Optimizer({ exchange = 'coinbase', pair }) {
                         {result.avgIntervalsToFill ? `${result.avgIntervalsToFill.toFixed(1)}` : 'N/A'}
                       </td>
                       <td className="py-2">
-                        <Button size="xs" onClick={() => applySettings(result)}>
+                        <Button size="xs" onClick={() => confirmApply(result)} disabled={applying}>
                           Apply
                         </Button>
                       </td>

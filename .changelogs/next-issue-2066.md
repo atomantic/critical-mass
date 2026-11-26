@@ -1,0 +1,3 @@
+- Clarify which fund controls apply immediately, warn before discarding configuration edits, and show shared preset and notification durations in seconds or minutes.
+- Jump directly to transaction cycles, sort columns with accessible buttons, and find the Celestial showcase under Gateway. Charts now use the fund header for engine status.
+- Confirm optimizer writes and arbitrage history deletion, and review restore consequences in one dialog before confirming.

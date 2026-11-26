@@ -1,8 +1,8 @@
 import React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { BrowserRouter, Link, NavLink, Navigate, Route, Routes } from '../src/lib/router'
-import { useLocation, useNavigate } from '../src/lib/routerContext'
+import { useLocation, useNavigate, useUnsavedChanges } from '../src/lib/routerContext'
 
 // Mirrors the shape of admin/src/App.jsx's route table, including its
 // declaration order: param routes are declared BEFORE the static
@@ -115,6 +115,32 @@ describe('admin router', () => {
     })
     expect(screen.getByText('updown')).toBeTruthy()
     expect(currentPath()).toBe('/updown')
+  })
+
+  it('keeps the indexed history entry on cancelled Back and traverses it on confirmation', async () => {
+    HTMLDialogElement.prototype.showModal = function () { this.open = true }
+    function Draft() {
+      useUnsavedChanges(useLocation().pathname === '/fund/config')
+      return <Link to="/fund/config">edit fund</Link>
+    }
+    renderAt('/gateway', <Draft />)
+    fireEvent.click(screen.getByText('edit fund'))
+    expect(currentPath()).toBe('/fund/config')
+    const unload = new Event('beforeunload', { cancelable: true })
+    expect(window.dispatchEvent(unload)).toBe(false)
+
+    window.history.back()
+    await screen.findByRole('dialog', { name: 'Discard Unsaved Changes?' })
+    expect(window.location.pathname).toBe('/fund/config')
+    fireEvent.click(screen.getByRole('button', { name: 'Keep Editing' }))
+    expect(currentPath()).toBe('/fund/config')
+
+    window.history.back()
+    await screen.findByRole('dialog', { name: 'Discard Unsaved Changes?' })
+    fireEvent.click(screen.getByRole('button', { name: 'Discard Changes' }))
+    await waitFor(() => expect(currentPath()).toBe('/gateway'))
+    window.history.forward()
+    await waitFor(() => expect(currentPath()).toBe('/fund/config'))
   })
 
   it('navigates programmatically, with and without replace', () => {

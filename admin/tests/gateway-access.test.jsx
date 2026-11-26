@@ -5,7 +5,7 @@ import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-libra
 import { renderWithToasts as render } from './renderWithToasts'
 import GatewayAccess from '../src/components/GatewayAccess'
 
-vi.mock('../src/lib/router', () => ({ Link: ({ children, ...props }) => <a {...props}>{children}</a> }))
+vi.mock('../src/lib/router', () => ({ Link: ({ children, to, ...props }) => <a href={to} {...props}>{children}</a> }))
 
 beforeEach(() => {
   HTMLDialogElement.prototype.showModal = function () { this.open = true }
@@ -29,6 +29,7 @@ describe('GatewayAccess', () => {
     vi.stubGlobal('fetch', fetch)
 
     render(<GatewayAccess />)
+    expect(screen.getByRole('link', { name: 'Celestial visualization showcase' }).getAttribute('href')).toBe('/systems')
     expect(screen.getByRole('status').textContent).toBe('Checking…')
     expect(screen.queryByLabelText('Current password')).toBeNull()
 

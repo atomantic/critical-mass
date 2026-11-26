@@ -1,3 +1,4 @@
+import { DurationInput } from './config/ConfigFormControls'
 import NumberInput from './ui/NumberInput'
 import Button from './ui/Button'
 import { useState, useEffect, useRef } from 'react'
@@ -346,18 +347,12 @@ function NotificationsConfig() {
             <h2 className="text-lg font-semibold mb-4">Timing</h2>
             <div className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label htmlFor="rate-limit-ms" className="block text-sm font-medium text-gray-300 mb-1">Batch Window (ms)</label>
-                  <NumberInput
-                    id="rate-limit-ms"
-                    value={config.rateLimitMs}
-                    onChange={value => updateConfig(prev => ({ ...prev, rateLimitMs: Math.trunc(value) }))}
-                    min={1000}
-                    max={60000}
-                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-hidden focus:border-blue-500"
-                  />
-                  <p className="mt-1 text-xs text-gray-400">Batch window for rapid events</p>
-                </div>
+                <DurationInput
+                  label="Batch Window"
+                  hint="Batch rapid events over 1 second to 5 minutes"
+                  value={config.rateLimitMs}
+                  onChange={rateLimitMs => updateConfig(prev => ({ ...prev, rateLimitMs }))}
+                />
                 <div>
                   <label htmlFor="daily-summary-hour" className="block text-sm font-medium text-gray-300 mb-1">Daily Summary Hour</label>
                   <NumberInput

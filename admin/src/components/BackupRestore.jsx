@@ -3,7 +3,6 @@ import { useState, useEffect, useRef } from 'react'
 import { formatBytes } from '../utils/format.mjs'
 import { plural } from '../utils/plural.mjs'
 import { apiGet, apiPost, apiPut, apiDelete, describeMutationFailure } from '../utils/apiClient'
-import ModalDialog from './ModalDialog'
 import ConfirmDialog from './ui/ConfirmDialog'
 import Button from './ui/Button'
 import { useNotify, useToast } from './useToast'
@@ -21,6 +20,42 @@ const FUND_STATE_INTERVAL_OPTIONS = [
   { label: '6 hours', value: 6 * 60 * 60 * 1000 },
   { label: '12 hours', value: 12 * 60 * 60 * 1000 },
 ]
+
+function RestoreDialog({ blockedWriters, busy, blocked = false, onRestore, children, confirmLabel, ...props }) {
+  return (
+    <ConfirmDialog
+      {...props}
+      busy={busy}
+      busyLabel="Restoring…"
+      confirmVariant="warning"
+      confirmLabel={blockedWriters ? 'Retry Restore' : confirmLabel}
+      confirmDisabled={blocked}
+      onConfirm={() => onRestore(false)}
+      touchTarget="always"
+      actionsClassName="flex flex-wrap justify-end gap-2"
+      extraActions={blockedWriters && (
+        <Button variant="destructive" touchTarget="always" disabled={busy || blocked} onClick={() => onRestore(true)}>
+          Force Restore Anyway
+        </Button>
+      )}
+    >
+      <div className="space-y-2 mb-4 text-sm text-gray-300">
+        {children}
+        {blockedWriters && (
+          <div role="alert" className="rounded bg-red-900/40 p-3 text-red-200">
+            <p>These writers did not confirm shutdown. No files were changed.</p>
+            <ul className="my-2 list-disc pl-5">
+              {blockedWriters.map(w => (
+                <li key={`${w.exchange}:${w.reason}`}>{w.exchange} · {w.reason}{w.error ? ` — ${w.error}` : ''}</li>
+              ))}
+            </ul>
+            <p>Force only after verifying that these writers have stopped. A live writer can overwrite restored data.</p>
+          </div>
+        )}
+      </div>
+    </ConfirmDialog>
+  )
+}
 
 function BackupRestore() {
   const [config, setConfig] = useState(null)
@@ -41,7 +76,6 @@ function BackupRestore() {
   // stopped (HTTP 409 `writers-not-quiesced`). Holds the blocking writers so the
   // operator can see WHAT is still alive before deciding to override (issue #429).
   const [blockedBy, setBlockedBy] = useState(null)
-  const [forceAcknowledged, setForceAcknowledged] = useState(false)
   // Pre-flight result for the selected archive: whether it carries a #430
   // configuration manifest, which funds it would restore, and whether that
   // replays cleanly onto THIS machine's base config. Read-only — fetched when
@@ -49,11 +83,6 @@ function BackupRestore() {
   const [compatibility, setCompatibility] = useState(null)
   const [compatibilityLoading, setCompatibilityLoading] = useState(false)
   const [compatibilityError, setCompatibilityError] = useState(null)
-  const [legacyAcknowledged, setLegacyAcknowledged] = useState(false)
-  // Required acknowledgement that funds this machine currently runs but the
-  // archive does not carry (compatibility.removedFunds) will be removed from
-  // the configuration by this restore (issue #533).
-  const [fundRemovalAcknowledged, setFundRemovalAcknowledged] = useState(false)
   const [deleting, setDeleting] = useState(null)
   const [deleteConfirm, setDeleteConfirm] = useState(null)
   const [refreshError, setRefreshError] = useState(null)
@@ -63,10 +92,8 @@ function BackupRestore() {
   // `writers-not-quiesced`), scoped to the fund-state restore dialog so the two
   // flows don't share state.
   const [fundStateBlockedBy, setFundStateBlockedBy] = useState(null)
-  const [fundStateForceAcknowledged, setFundStateForceAcknowledged] = useState(false)
-  // Snapshots from before placement intents were captured need an explicit ack.
-  const [fundStateIntentsAcknowledged, setFundStateIntentsAcknowledged] = useState(false)
 
+  const pendingRestore = useRef(false)
   const pendingSave = useRef(false)
   const dataRequest = useRef(0)
   const draftVersion = useRef(0)
@@ -124,10 +151,6 @@ function BackupRestore() {
     setCompatibilityLoading(true)
     setCompatibility(null)
     setCompatibilityError(null)
-    // A newly-selected archive has its own removal set; an acknowledgement
-    // ticked for a previous one must never carry over.
-    setLegacyAcknowledged(false)
-    setFundRemovalAcknowledged(false)
     apiGet(`/api/backups/${restoreTarget}/compatibility`)
       .then(({ ok, data, error }) => {
         if (cancelled) return
@@ -185,17 +208,17 @@ function BackupRestore() {
   }
 
   const handleRestoreFundState = (snapshotId, exchange, pair, placementIntentsCaptured) => {
-    setFundStateIntentsAcknowledged(false)
     setFundStateRestoreConfirm({ snapshotId, exchange, pair, placementIntentsCaptured })
   }
 
-  const handleExecuteFundStateRestore = async ({ force = false } = {}) => {
-    if (!fundStateRestoreConfirm) return
-    const { snapshotId, exchange, pair } = fundStateRestoreConfirm
+  const handleExecuteFundStateRestore = async (force) => {
+    if (!fundStateRestoreConfirm || pendingRestore.current) return
+    pendingRestore.current = true
+    const { snapshotId, exchange, pair, placementIntentsCaptured } = fundStateRestoreConfirm
     setFundStateRestoring(true)
     let blocked = null
     try {
-      const result = await apiPost(`/api/backups/fund-state/${encodeURIComponent(snapshotId)}/${encodeURIComponent(exchange)}/${encodeURIComponent(pair)}/restore`, { force, ...(fundStateIntentsAcknowledged ? { acceptMissingPlacementIntents: true } : {}) })
+      const result = await apiPost(`/api/backups/fund-state/${encodeURIComponent(snapshotId)}/${encodeURIComponent(exchange)}/${encodeURIComponent(pair)}/restore`, { force, ...(placementIntentsCaptured === false ? { acceptMissingPlacementIntents: true } : {}) })
       const data = result.data || {}
       if (result.ok && data.success) {
         notify(
@@ -216,9 +239,9 @@ function BackupRestore() {
         notify('error', data.error || describeMutationFailure(result, 'Fund-state restore failed'))
       }
     } finally {
+      pendingRestore.current = false
       setFundStateRestoring(false)
       setFundStateBlockedBy(blocked)
-      setFundStateForceAcknowledged(false)
       if (!blocked) setFundStateRestoreConfirm(null)
     }
   }
@@ -246,12 +269,17 @@ function BackupRestore() {
     }
   }
 
-  const handleRestore = async ({ force = false } = {}) => {
-    if (!restoreTarget) return
+  const handleRestore = async (force) => {
+    if (!restoreTarget || restoreBlocked || pendingRestore.current) return
+    pendingRestore.current = true
     setRestoring(true)
     let blocked = null
     try {
-      const result = await apiPost(`/api/backups/${restoreTarget}/restore`, { force, acceptLegacyWithoutBase: legacyAcknowledged, acceptFundRemoval: fundRemovalAcknowledged })
+      const result = await apiPost(`/api/backups/${restoreTarget}/restore`, {
+        force,
+        acceptLegacyWithoutBase: compatibility.legacy === true,
+        acknowledgedRemovedFunds: removedFunds.map(fund => `${fund.exchange}/${fund.pair}`),
+      })
       const data = result.data || {}
       if (result.ok && data.success) {
         notify(
@@ -272,8 +300,8 @@ function BackupRestore() {
         notify('error', data.error || 'Restore blocked: writers did not confirm shutdown')
       } else if (data.code === 'fund-removal-unacknowledged') {
         // Nothing was written. Surfaces if the removal set changed server-side
-        // since the pre-flight check ran — tick the checkbox again to retry.
-        notify('error', data.error || 'Restore blocked: acknowledge the funds this archive would remove')
+        // since the preflight ran. Reopening the dialog loads the new list.
+        notify('error', data.error || 'The list of funds to remove changed. Reopen the restore dialog to review it.')
       } else if (data.code === 'restore-incomplete-recovery') {
         // The application failed AND could not be rolled back: data/ is a mix of
         // archive-era and current-era files. Say so plainly — the recovery
@@ -284,8 +312,8 @@ function BackupRestore() {
       }
     } finally {
       setBlockedBy(blocked)
-      setForceAcknowledged(false)
       if (!blocked) setRestoreTarget(null)
+      pendingRestore.current = false
       setRestoring(false)
     }
     fetchData({ silent: true })
@@ -294,30 +322,18 @@ function BackupRestore() {
   const cancelFundStateRestore = () => {
     setFundStateRestoreConfirm(null)
     setFundStateBlockedBy(null)
-    setFundStateForceAcknowledged(false)
-    setFundStateIntentsAcknowledged(false)
   }
 
   const cancelRestore = () => {
     setRestoreTarget(null)
     setBlockedBy(null)
-    setForceAcknowledged(false)
-    setLegacyAcknowledged(false)
-    setFundRemovalAcknowledged(false)
   }
 
-  // A legacy archive carries no configuration, so restoring it is a data-only
-  // operation the operator has to opt into explicitly (issue #430). A
-  // compatible archive that would still remove funds this machine currently
-  // runs needs its own explicit acknowledgement (issue #533). A pre-multi-pair
-  // archive naming an exchange no fund can be resolved for would be refused by
-  // the server anyway, so the button is disabled rather than inviting the
-  // round trip (issue #541).
-  const restoreBlocked = compatibilityLoading
-    || (compatibility?.legacy === true && !legacyAcknowledged)
-    || (compatibility?.compatible === true && compatibility?.removedFunds?.length > 0 && !fundRemovalAcknowledged)
-    || compatibility?.unresolvableLayoutExchanges?.length > 0
-    || compatibility?.layoutConflicts?.length > 0
+  const removedFunds = compatibility?.removedFunds ?? []
+  const restoreBlocked = compatibilityLoading || !compatibility
+    || (!compatibility.compatible && !compatibility.legacy)
+    || compatibility.unresolvableLayoutExchanges?.length > 0
+    || compatibility.layoutConflicts?.length > 0
 
   if (error) {
     return (
@@ -362,86 +378,23 @@ function BackupRestore() {
         </ConfirmDialog>
       )}
 
-      {/* Fund-state restore confirmation dialog */}
       {fundStateRestoreConfirm && (
-        <ConfirmDialog
+        <RestoreDialog
           id="fund-state-restore"
           title="Restore Fund State"
-          description={<>Restore <span className="font-mono text-yellow-400">{fundStateRestoreConfirm.exchange}/{fundStateRestoreConfirm.pair}</span> from snapshot <span className="font-mono">{fundStateRestoreConfirm.snapshotId}</span>?</>}
-          confirmLabel={fundStateBlockedBy ? 'Retry Restore' : 'Restore Fund State'}
-          busyLabel="Restoring…"
-          confirmVariant="warning"
+          description={`Stop the running engine and replace state files for ${fundStateRestoreConfirm.exchange}/${fundStateRestoreConfirm.pair} with snapshot ${fundStateRestoreConfirm.snapshotId}?`}
+          confirmLabel="Restore Fund State"
           busy={fundStateRestoring}
-          confirmDisabled={fundStateRestoreConfirm.placementIntentsCaptured === false && !fundStateIntentsAcknowledged}
+          blockedWriters={fundStateBlockedBy}
           onClose={cancelFundStateRestore}
-          onConfirm={() => handleExecuteFundStateRestore()}
-          extraActions={fundStateBlockedBy && (
-            <Button
-              variant="destructive"
-              onClick={() => handleExecuteFundStateRestore({ force: true })}
-              disabled={fundStateRestoring || !fundStateForceAcknowledged || (fundStateRestoreConfirm.placementIntentsCaptured === false && !fundStateIntentsAcknowledged)}
-            >
-              Force Restore Anyway
-            </Button>
-          )}
+          onRestore={handleExecuteFundStateRestore}
         >
-          <p className="text-gray-400 text-xs mb-4">
-            Running engines will be stopped and state files replaced. This action cannot be undone.
-          </p>
           {fundStateRestoreConfirm.placementIntentsCaptured === false && (
-            <div className="bg-yellow-900/40 border border-yellow-700 rounded-lg p-4 mb-4">
-              <p className="text-sm font-semibold text-yellow-200 mb-2">
-                This snapshot predates placement-intent capture.
-              </p>
-              <p className="text-xs text-yellow-200/80 mb-3">
-                An order that was sent but not confirmed when it was taken cannot be recovered, so the
-                restored fund will not know about it. Intents already on this machine are kept. Check
-                the exchange for open or duplicate orders before restarting the fund.
-              </p>
-              <label className="flex items-center gap-2 text-xs text-yellow-200">
-                <input
-                  type="checkbox"
-                  checked={fundStateIntentsAcknowledged}
-                  onChange={e => setFundStateIntentsAcknowledged(e.target.checked)}
-                  className="accent-yellow-500"
-                />
-                I understand unresolved orders will not be restored
-              </label>
-            </div>
+            <p className="text-yellow-200">This snapshot did not capture unresolved orders. Check the exchange for open or duplicate orders before restarting.</p>
           )}
-          {fundStateBlockedBy && (
-            <div className="bg-red-900/40 border border-red-700 rounded-lg p-4 mb-4">
-              <p className="text-sm font-semibold text-red-200 mb-2">
-                Blocked: {plural(fundStateBlockedBy.length, "writer")} did not confirm shutdown. No files were changed.
-              </p>
-              <ul className="text-xs text-red-200/90 font-mono space-y-1 mb-3">
-                {fundStateBlockedBy.map(w => (
-                  <li key={`${w.exchange}:${w.reason}`}>
-                    {w.exchange} &middot; {w.reason}{w.error ? ` — ${w.error}` : ''}
-                  </li>
-                ))}
-              </ul>
-              <p className="text-xs text-red-200/80 mb-3">
-                Forcing the restore applies the snapshot anyway. If one of these writers is
-                still alive it will overwrite the recovered files with its own pre-restore
-                snapshot. Only force when you know the process is dead (e.g. a crashed
-                engine that cannot be reached over IPC).
-              </p>
-              <label className="flex items-center gap-2 text-xs text-red-200">
-                <input
-                  type="checkbox"
-                  checked={fundStateForceAcknowledged}
-                  onChange={e => setFundStateForceAcknowledged(e.target.checked)}
-                  className="accent-red-500"
-                />
-                I have verified the listed writers are not running
-              </label>
-            </div>
-          )}
-        </ConfirmDialog>
+        </RestoreDialog>
       )}
 
-      {/* Config Panel */}
       <div className="bg-gray-800 rounded-lg p-6">
         <h2 className="text-xl font-semibold mb-4">Backup Settings</h2>
 
@@ -605,209 +558,41 @@ function BackupRestore() {
 
       {/* Restore Confirmation (dialog so it is always in view, whatever the scroll position) */}
       {restoreTarget && (
-        <ModalDialog
+        <RestoreDialog
+          id="restore-confirm"
+          title="Confirm Restore"
+          description={`Stop all engines and replace current data files with ${restoreTarget}? Restart engines manually after the restore.`}
+          confirmLabel={compatibility?.legacy ? 'Restore Data Only' : 'Confirm Restore'}
+          busy={restoring}
+          blocked={restoreBlocked}
+          blockedWriters={blockedBy}
           onClose={cancelRestore}
-          dismissible={!restoring}
-          labelledBy="restore-confirm-title"
-          describedBy="restore-confirm-description"
-          maxWidthClassName="max-w-2xl"
+          onRestore={handleRestore}
         >
-          <h3 id="restore-confirm-title" className="text-lg font-semibold text-yellow-300 mb-2">Confirm Restore</h3>
-          <p className="text-sm text-yellow-200 mb-1">
-            Restoring <span className="font-mono font-medium">{restoreTarget}</span>
-          </p>
-          <p id="restore-confirm-description" className="text-sm text-yellow-200/80 mb-4">
-            This will stop all running engines and overwrite current data files.
-            API keys will NOT be affected. You will need to restart engines manually from the dashboard.
-          </p>
-          {compatibilityLoading && (
-            <div className="bg-gray-800/60 border border-gray-600 rounded-lg p-4 mb-4 text-sm text-gray-300">
-              Checking archive configuration compatibility...
-            </div>
+          {compatibilityLoading && <p role="status">Checking archive compatibility…</p>}
+          {compatibilityError && !compatibilityLoading && <p role="alert">Could not check archive compatibility: {compatibilityError}. Reopen this dialog to retry.</p>}
+          {compatibility?.legacy && <p>This legacy archive restores data files only and keeps the current fund configuration.</p>}
+          {compatibility?.compatible && <p>The archive replaces the fund configuration. This machine keeps its credentials.</p>}
+          {compatibility && !compatibility.legacy && !compatibility.compatible && (
+            <p role="alert">Archive configuration cannot be applied. {compatibility.error}</p>
           )}
-          {compatibility && !compatibilityLoading && (
-            compatibility.compatible ? (
-              <div className="space-y-3 mb-4">
-                {compatibility.removedFunds?.length > 0 && (
-                  <div className="bg-red-900/40 border border-red-700 rounded-lg p-4">
-                    <p className="text-sm font-semibold text-red-200 mb-2">
-                      This restore will REMOVE {plural(compatibility.removedFunds.length, "fund")} currently configured
-                      on this machine — the archive does not carry them.
-                    </p>
-                    <ul className="text-xs text-red-200/90 font-mono space-y-1 mb-3">
-                      {compatibility.removedFunds.map(f => (
-                        <li key={`${f.exchange}:${f.pair}`}>
-                          {f.exchange} &middot; {f.pair} &middot; {f.totalAllocation ?? '—'}
-                          {f.enabled ? ' · enabled' : ' · disabled'}{f.dryRun ? ' · dry-run' : ''}
-                          {f.hasStateOnDisk && ' · still has state on disk — possibly a live exchange order'}
-                        </li>
-                      ))}
-                    </ul>
-                    <label className="flex items-center gap-2 text-xs text-red-200">
-                      <input
-                        type="checkbox"
-                        checked={fundRemovalAcknowledged}
-                        onChange={e => setFundRemovalAcknowledged(e.target.checked)}
-                        className="accent-red-500"
-                      />
-                      Remove the funds listed above from this machine's configuration
-                    </label>
-                  </div>
-                )}
-                <div className="bg-green-900/30 border border-green-700 rounded-lg p-4">
-                  <p className="text-sm font-semibold text-green-200 mb-2">
-                    Archive carries its fund configuration (manifest v{compatibility.manifestVersion}).
-                    After restore, this machine will run the funds below.
-                  </p>
-                  <ul className="text-xs text-green-200/90 font-mono space-y-1">
-                    {compatibility.funds?.map(f => (
-                      <li key={`${f.exchange}:${f.pair}`}>
-                        {f.exchange} &middot; {f.pair} &middot; {f.totalAllocation ?? '—'}
-                        {f.enabled ? ' · enabled' : ' · disabled'}{f.dryRun ? ' · dry-run' : ''}
-                      </li>
-                    ))}
-                  </ul>
-                  <p className="text-xs text-green-200/70 mt-2">
-                    API keys, Telegram and Sentinel credentials on this machine are preserved.
-                  </p>
-                </div>
-              </div>
-            ) : (
-              <div className="bg-red-900/40 border border-red-700 rounded-lg p-4 mb-4">
-                <p className="text-sm font-semibold text-red-200 mb-2">
-                  {compatibility.legacy ? 'Legacy archive: no configuration manifest' : 'Archive configuration cannot be applied'}
-                </p>
-                <p className="text-xs text-red-200/90 mb-3">{compatibility.error}</p>
-                {compatibility.legacy && (
-                  <label className="flex items-center gap-2 text-xs text-red-200">
-                    <input
-                      type="checkbox"
-                      checked={legacyAcknowledged}
-                      onChange={e => setLegacyAcknowledged(e.target.checked)}
-                      className="accent-red-500"
-                    />
-                    Restore data files only and keep this machine's current fund configuration
-                  </label>
-                )}
-              </div>
-            )
-          )}
-          {compatibility?.droppedFields?.length > 0 && !compatibilityLoading && (
-            <div className="bg-amber-900/30 border border-amber-700 rounded-lg p-4 mb-4">
-              <p className="text-sm font-semibold text-amber-200 mb-2">
-                This archive was written by a newer build of critical-mass
-                {compatibility.snapshotFieldRevision ? ` (field revision ${compatibility.snapshotFieldRevision})` : ''}.
-                {' '}{plural(compatibility.droppedFields.length, "setting")} it carries {compatibility.droppedFields.length === 1 ? "is" : "are"} not understood here and will be ignored —
-                this machine keeps its own defaults for them.
-              </p>
-              <ul className="text-xs text-amber-200/90 font-mono space-y-1">
-                {compatibility.droppedFields.map(field => (
-                  <li key={field}>{field}</li>
-                ))}
+          {removedFunds.length > 0 && (
+            <div className="text-red-200">
+              <p>These funds will be removed from the configuration. Check any live exchange orders before restoring.</p>
+              <ul className="list-disc pl-5">
+                {removedFunds.map(f => <li key={`${f.exchange}/${f.pair}`}>{f.exchange}/{f.pair}{f.hasStateOnDisk && ' · has state on disk'}</li>)}
               </ul>
-              <p className="text-xs text-amber-200/70 mt-2">
-                Everything else restores normally. Upgrade this machine first if you need those settings applied.
-              </p>
             </div>
           )}
-          {compatibility?.legacyLayout && !compatibilityLoading && (
-            <div className="bg-amber-900/30 border border-amber-700 rounded-lg p-4 mb-4">
-              <p className="text-sm font-semibold text-amber-200 mb-2">
-                Pre-multi-pair archive: data files will be relocated into the per-fund layout.
-              </p>
-              {(compatibility.layoutTranslations?.length > 0 || compatibility.rootTranslation) && (
-                <ul className="text-xs text-amber-200/90 font-mono space-y-1">
-                  {compatibility.layoutTranslations?.map(t => (
-                    <li key={t.exchange}>
-                      {t.exchange}/ &rarr; {t.exchange}/{t.pair}/
-                    </li>
-                  ))}
-                  {compatibility.rootTranslation?.files.map(f => (
-                    <li key={f.name}>
-                      {f.name} &rarr; {f.target}
-                    </li>
-                  ))}
-                </ul>
-              )}
-              {compatibility.layoutConflicts?.length > 0 && (
-                <p className="text-xs text-red-200 mt-2">
-                  The archive holds conflicting copies of {compatibility.layoutConflicts.map(c => `${c.artifact} (vs ${c.existing})`).join(', ')} —
-                  the restore would be refused before any file is written. Preserve the copies and reconcile them before retrying;
-                  check unresolved placement intents against the exchange.
-                </p>
-              )}
-              {compatibility.unresolvableLayoutExchanges?.length > 0 && (
-                <p className="text-xs text-red-200 mt-2">
-                  Cannot resolve a fund for {compatibility.unresolvableLayoutExchanges.join(', ')} — neither the archive
-                  nor this machine names one, so the restore would be refused before any file is written.
-                  Configure the fund first.
-                </p>
-              )}
-            </div>
+          {compatibility?.droppedFields?.length > 0 && <p>Settings from a newer build will be skipped: {compatibility.droppedFields.join(', ')}.</p>}
+          {compatibility?.legacyLayout && <p>Legacy data files will move into the per-fund layout.</p>}
+          {compatibility?.layoutConflicts?.length > 0 && (
+            <p role="alert" className="text-red-200">Resolve conflicting archive copies before restoring: {compatibility.layoutConflicts.map(c => `${c.artifact} (vs ${c.existing})`).join(', ')}.</p>
           )}
-          {compatibilityError && !compatibilityLoading && (
-            <div className="bg-yellow-900/40 border border-yellow-700 rounded-lg p-4 mb-4 text-xs text-yellow-200">
-              Could not check archive compatibility: {compatibilityError}
-            </div>
+          {compatibility?.unresolvableLayoutExchanges?.length > 0 && (
+            <p role="alert" className="text-red-200">Configure a destination fund before restoring: {compatibility.unresolvableLayoutExchanges.join(', ')}.</p>
           )}
-          {blockedBy && (
-            <div className="bg-red-900/40 border border-red-700 rounded-lg p-4 mb-4">
-              <p className="text-sm font-semibold text-red-200 mb-2">
-                Blocked: {plural(blockedBy.length, "writer")} did not confirm shutdown. No files were changed.
-              </p>
-              <ul className="text-xs text-red-200/90 font-mono space-y-1 mb-3">
-                {blockedBy.map(w => (
-                  <li key={`${w.exchange}:${w.reason}`}>
-                    {w.exchange} &middot; {w.reason}{w.error ? ` — ${w.error}` : ''}
-                  </li>
-                ))}
-              </ul>
-              <p className="text-xs text-red-200/80 mb-3">
-                Forcing the restore applies the archive anyway. If one of these writers is
-                still alive it will overwrite the recovered files with its own pre-restore
-                snapshot. Only force when you know the process is dead (e.g. a crashed
-                engine that cannot be reached over IPC).
-              </p>
-              <label className="flex items-center gap-2 text-xs text-red-200">
-                <input
-                  type="checkbox"
-                  checked={forceAcknowledged}
-                  onChange={e => setForceAcknowledged(e.target.checked)}
-                  className="accent-red-500"
-                />
-                I have verified the listed writers are not running
-              </label>
-            </div>
-          )}
-          <div className="flex gap-3">
-            <Button
-              variant="cancel"
-              className="font-medium"
-              onClick={cancelRestore}
-              disabled={restoring}
-            >
-              Cancel
-            </Button>
-            <Button
-              variant="warning"
-              className="font-medium"
-              onClick={() => handleRestore()}
-              disabled={restoring || restoreBlocked}
-            >
-              {restoring ? 'Restoring...' : blockedBy ? 'Retry Restore' : 'Confirm Restore'}
-            </Button>
-            {blockedBy && (
-              <Button
-                variant="destructive"
-                className="font-medium"
-                onClick={() => handleRestore({ force: true })}
-                disabled={restoring || restoreBlocked || !forceAcknowledged}
-              >
-                Force Restore Anyway
-              </Button>
-            )}
-          </div>
-        </ModalDialog>
+        </RestoreDialog>
       )}
 
       {/* Backups List */}
